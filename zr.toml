@@ -1,0 +1,75 @@
+# Silica — Task Runner Configuration (zr)
+# Usage: zr run <task>
+
+# ─── Core Tasks ───
+
+[tasks.build]
+cmd = "zig build"
+description = "Build the Silica library"
+
+[tasks.test]
+cmd = "zig build test"
+deps = ["build"]
+description = "Run all unit tests"
+
+[tasks.bench]
+cmd = "zig build bench"
+deps = ["build"]
+description = "Run performance benchmarks"
+
+[tasks.clean]
+cmd = "rm -rf zig-out .zig-cache"
+description = "Clean build artifacts"
+
+# ─── Development Workflow ───
+
+[tasks.dev]
+cmd = "zig build test"
+description = "Quick development cycle: build + test"
+
+[tasks.check]
+cmd = "zig build -Doptimize=Debug"
+description = "Type-check only (fast compilation check)"
+
+# ─── Cross-compilation ───
+
+[tasks.cross-linux-x86]
+cmd = "zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe"
+description = "Cross-compile for Linux x86_64"
+
+[tasks.cross-linux-arm]
+cmd = "zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe"
+description = "Cross-compile for Linux aarch64"
+
+[tasks.cross-macos-x86]
+cmd = "zig build -Dtarget=x86_64-macos-none -Doptimize=ReleaseSafe"
+description = "Cross-compile for macOS x86_64"
+
+[tasks.cross-macos-arm]
+cmd = "zig build -Dtarget=aarch64-macos-none -Doptimize=ReleaseSafe"
+description = "Cross-compile for macOS aarch64"
+
+[tasks.cross-windows-x86]
+cmd = "zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe"
+description = "Cross-compile for Windows x86_64"
+
+[tasks.cross-windows-arm]
+cmd = "zig build -Dtarget=aarch64-windows-msvc -Doptimize=ReleaseSafe"
+description = "Cross-compile for Windows aarch64"
+
+[tasks.cross-all]
+cmd = "echo 'All cross-compilation targets built successfully'"
+deps = ["cross-linux-x86", "cross-linux-arm", "cross-macos-x86", "cross-macos-arm", "cross-windows-x86", "cross-windows-arm"]
+description = "Cross-compile for all 6 targets"
+
+# ─── Quality Assurance ───
+
+[tasks.release-build]
+cmd = "zig build -Doptimize=ReleaseSafe"
+deps = ["test"]
+description = "Build optimized release (after tests pass)"
+
+[tasks.ci]
+cmd = "echo 'CI pipeline complete'"
+deps = ["test", "cross-all"]
+description = "Full CI pipeline: test + cross-compile all targets"
