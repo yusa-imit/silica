@@ -883,6 +883,7 @@ pub const BTree = struct {
 
         // Read old leaf's sibling pointers from saved copy
         const old_next = getNextLeaf(saved);
+        const old_prev = getPrevLeaf(saved);
 
         // Reinitialize old page (safe now — cells reference saved copy)
         initLeafPage(frame.data, page_size, page_id);
@@ -898,7 +899,8 @@ pub const BTree = struct {
             insertLeafCell(new_frame.data, page_size, j, j, cells[i].key, cells[i].value) catch unreachable;
         }
 
-        // Update sibling pointers: old -> new -> old_next
+        // Update sibling pointers: old_prev <-> old -> new -> old_next
+        setPrevLeaf(frame.data, old_prev);
         setNextLeaf(frame.data, new_page_id);
         setPrevLeaf(new_frame.data, page_id);
         setNextLeaf(new_frame.data, old_next);
@@ -985,6 +987,249 @@ pub const BTree = struct {
             .promoted_key = promoted_key,
             .new_page_id = new_page_id,
         };
+    }
+};
+
+// ── Range Scan Cursor ─────────────────────────────────────────────────
+
+/// A cursor for iterating over B+Tree entries in key order.
+/// Supports forward and backward traversal using the leaf sibling chain.
+///
+/// Usage:
+///   var cursor = try Cursor.init(allocator, &tree);
+///   defer cursor.deinit();
+///   try cursor.seekFirst();
+///   while (try cursor.next()) |entry| {
+///       // use entry.key, entry.value
+///       allocator.free(entry.key);
+///       allocator.free(entry.value);
+///   }
+pub const Cursor = struct {
+    tree: *BTree,
+    allocator: std.mem.Allocator,
+    /// Current leaf page ID (0 = invalid/exhausted).
+    page_id: u32 = 0,
+    /// Current cell index within the leaf page.
+    cell_index: u16 = 0,
+    /// Number of cells in the current leaf page.
+    cell_count: u16 = 0,
+    /// Whether the cursor has been positioned.
+    valid: bool = false,
+
+    pub const Entry = struct {
+        key: []u8,
+        value: []u8,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, tree: *BTree) Cursor {
+        return .{
+            .tree = tree,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Cursor) void {
+        _ = self;
+    }
+
+    /// Position the cursor at the first (smallest) key in the tree.
+    pub fn seekFirst(self: *Cursor) !void {
+        var page_id = self.tree.root_page_id;
+
+        while (true) {
+            const frame = try self.tree.pool.fetchPage(page_id);
+            defer self.tree.pool.unpinPage(page_id, false);
+            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+
+            if (header.page_type == .leaf) {
+                self.page_id = page_id;
+                self.cell_index = 0;
+                self.cell_count = header.cell_count;
+                self.valid = header.cell_count > 0;
+                return;
+            } else if (header.page_type == .internal) {
+                if (header.cell_count == 0) {
+                    // Only right_child
+                    page_id = getRightChild(frame.data);
+                } else {
+                    // Go to leftmost child
+                    const cell = readInternalCell(frame.data, self.tree.pager.page_size, 0);
+                    page_id = cell.left_child;
+                }
+            } else {
+                return BTreeError.InvalidNodeType;
+            }
+        }
+    }
+
+    /// Position the cursor at the last (largest) key in the tree.
+    pub fn seekLast(self: *Cursor) !void {
+        var page_id = self.tree.root_page_id;
+
+        while (true) {
+            const frame = try self.tree.pool.fetchPage(page_id);
+            defer self.tree.pool.unpinPage(page_id, false);
+            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+
+            if (header.page_type == .leaf) {
+                self.page_id = page_id;
+                self.cell_count = header.cell_count;
+                self.cell_index = if (header.cell_count > 0) header.cell_count - 1 else 0;
+                self.valid = header.cell_count > 0;
+                return;
+            } else if (header.page_type == .internal) {
+                // Always go to rightmost child
+                page_id = getRightChild(frame.data);
+            } else {
+                return BTreeError.InvalidNodeType;
+            }
+        }
+    }
+
+    /// Position the cursor at the first key >= the given key.
+    /// If no such key exists, the cursor is invalidated.
+    pub fn seek(self: *Cursor, key: []const u8) !void {
+        var page_id = self.tree.root_page_id;
+        const page_size = self.tree.pager.page_size;
+
+        while (true) {
+            const frame = try self.tree.pool.fetchPage(page_id);
+            defer self.tree.pool.unpinPage(page_id, false);
+            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+
+            if (header.page_type == .leaf) {
+                const pos = leafSearchPosition(frame.data, page_size, header.cell_count, key);
+                if (pos.index < header.cell_count) {
+                    self.page_id = page_id;
+                    self.cell_index = pos.index;
+                    self.cell_count = header.cell_count;
+                    self.valid = true;
+                } else {
+                    // Key is beyond all entries in this leaf — check next leaf
+                    const next_id = getNextLeaf(frame.data);
+                    if (next_id != 0) {
+                        const next_frame = try self.tree.pool.fetchPage(next_id);
+                        defer self.tree.pool.unpinPage(next_id, false);
+                        const next_header = PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
+                        self.page_id = next_id;
+                        self.cell_index = 0;
+                        self.cell_count = next_header.cell_count;
+                        self.valid = next_header.cell_count > 0;
+                    } else {
+                        self.valid = false;
+                    }
+                }
+                return;
+            } else if (header.page_type == .internal) {
+                page_id = findChildInInternal(frame.data, page_size, header.cell_count, key);
+            } else {
+                return BTreeError.InvalidNodeType;
+            }
+        }
+    }
+
+    /// Return the current entry and advance the cursor forward.
+    /// Returns null when the cursor is exhausted.
+    /// Caller owns the returned key and value slices and must free them.
+    pub fn next(self: *Cursor) !?Entry {
+        if (!self.valid) return null;
+
+        const page_size = self.tree.pager.page_size;
+
+        // Read current entry
+        const frame = try self.tree.pool.fetchPage(self.page_id);
+        defer self.tree.pool.unpinPage(self.page_id, false);
+
+        const cell = readLeafCell(frame.data, page_size, self.cell_index);
+
+        // Copy key and value (caller owns)
+        const key_copy = try self.allocator.alloc(u8, cell.key.len);
+        @memcpy(key_copy, cell.key);
+        const val_copy = try self.allocator.alloc(u8, cell.value.len);
+        @memcpy(val_copy, cell.value);
+
+        // Advance cursor
+        self.cell_index += 1;
+        if (self.cell_index >= self.cell_count) {
+            // Move to next leaf
+            const next_id = getNextLeaf(frame.data);
+            if (next_id != 0) {
+                const next_frame = try self.tree.pool.fetchPage(next_id);
+                defer self.tree.pool.unpinPage(next_id, false);
+                const next_header = PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
+                self.page_id = next_id;
+                self.cell_index = 0;
+                self.cell_count = next_header.cell_count;
+                self.valid = next_header.cell_count > 0;
+            } else {
+                self.valid = false;
+            }
+        }
+
+        return .{ .key = key_copy, .value = val_copy };
+    }
+
+    /// Return the current entry and move the cursor backward.
+    /// Returns null when the cursor is exhausted.
+    /// Caller owns the returned key and value slices and must free them.
+    pub fn prev(self: *Cursor) !?Entry {
+        if (!self.valid) return null;
+
+        const page_size = self.tree.pager.page_size;
+
+        // Read current entry
+        const frame = try self.tree.pool.fetchPage(self.page_id);
+        defer self.tree.pool.unpinPage(self.page_id, false);
+
+        const cell = readLeafCell(frame.data, page_size, self.cell_index);
+
+        // Copy key and value (caller owns)
+        const key_copy = try self.allocator.alloc(u8, cell.key.len);
+        @memcpy(key_copy, cell.key);
+        const val_copy = try self.allocator.alloc(u8, cell.value.len);
+        @memcpy(val_copy, cell.value);
+
+        // Move backward
+        if (self.cell_index > 0) {
+            self.cell_index -= 1;
+        } else {
+            // Move to previous leaf
+            const prev_id = getPrevLeaf(frame.data);
+            if (prev_id != 0) {
+                const prev_frame = try self.tree.pool.fetchPage(prev_id);
+                defer self.tree.pool.unpinPage(prev_id, false);
+                const prev_header = PageHeader.deserialize(prev_frame.data[0..PAGE_HEADER_SIZE]);
+                self.page_id = prev_id;
+                self.cell_count = prev_header.cell_count;
+                self.cell_index = if (prev_header.cell_count > 0) prev_header.cell_count - 1 else 0;
+                self.valid = prev_header.cell_count > 0;
+            } else {
+                self.valid = false;
+            }
+        }
+
+        return .{ .key = key_copy, .value = val_copy };
+    }
+
+    /// Peek at the current entry without advancing.
+    /// Returns null when the cursor is invalid.
+    /// Caller owns the returned key and value slices and must free them.
+    pub fn current(self: *Cursor) !?Entry {
+        if (!self.valid) return null;
+
+        const page_size = self.tree.pager.page_size;
+
+        const frame = try self.tree.pool.fetchPage(self.page_id);
+        defer self.tree.pool.unpinPage(self.page_id, false);
+
+        const cell = readLeafCell(frame.data, page_size, self.cell_index);
+
+        const key_copy = try self.allocator.alloc(u8, cell.key.len);
+        @memcpy(key_copy, cell.key);
+        const val_copy = try self.allocator.alloc(u8, cell.value.len);
+        @memcpy(val_copy, cell.value);
+
+        return .{ .key = key_copy, .value = val_copy };
     }
 };
 
@@ -2750,4 +2995,386 @@ test "BTree delete from middle of leaf chain" {
             allocator.free(val.?);
         }
     }
+}
+
+// ── Cursor Tests (Milestone 2D) ───────────────────────────────────────
+
+test "Cursor forward scan all keys" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_forward.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+    const N: u32 = 60;
+
+    for (0..N) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Forward scan
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekFirst();
+
+    var count: u32 = 0;
+    var prev_key: ?[]u8 = null;
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        // Verify sorted order
+        if (prev_key) |pk| {
+            try std.testing.expect(std.mem.order(u8, pk, entry.key) == .lt);
+            allocator.free(pk);
+        }
+        prev_key = try allocator.alloc(u8, entry.key.len);
+        @memcpy(prev_key.?, entry.key);
+        count += 1;
+    }
+    if (prev_key) |pk| allocator.free(pk);
+
+    try std.testing.expectEqual(N, count);
+}
+
+test "Cursor backward scan all keys" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_backward.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+    const N: u32 = 60;
+
+    for (0..N) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Backward scan
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekLast();
+
+    var count: u32 = 0;
+    var prev_key: ?[]u8 = null;
+    while (try cursor.prev()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        // Verify reverse sorted order (each key should be less than previous)
+        if (prev_key) |pk| {
+            try std.testing.expect(std.mem.order(u8, entry.key, pk) == .lt);
+            allocator.free(pk);
+        }
+        prev_key = try allocator.alloc(u8, entry.key.len);
+        @memcpy(prev_key.?, entry.key);
+        count += 1;
+    }
+    if (prev_key) |pk| allocator.free(pk);
+
+    try std.testing.expectEqual(N, count);
+}
+
+test "Cursor seek to specific key" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_seek.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Insert even numbers only: k000000, k000002, k000004, ...
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+
+    for (0..30) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i * 2}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i * 2}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Seek to an existing key (k000010)
+    {
+        var cursor = Cursor.init(allocator, &tree);
+        defer cursor.deinit();
+        try cursor.seek("k000010");
+        const entry = try cursor.next();
+        try std.testing.expect(entry != null);
+        try std.testing.expectEqualStrings("k000010", entry.?.key);
+        allocator.free(entry.?.key);
+        allocator.free(entry.?.value);
+    }
+
+    // Seek to a non-existing key (k000011) — should position at k000012
+    {
+        var cursor = Cursor.init(allocator, &tree);
+        defer cursor.deinit();
+        try cursor.seek("k000011");
+        const entry = try cursor.next();
+        try std.testing.expect(entry != null);
+        try std.testing.expectEqualStrings("k000012", entry.?.key);
+        allocator.free(entry.?.key);
+        allocator.free(entry.?.value);
+    }
+
+    // Seek past all keys
+    {
+        var cursor = Cursor.init(allocator, &tree);
+        defer cursor.deinit();
+        try cursor.seek("z999999");
+        const entry = try cursor.next();
+        try std.testing.expect(entry == null);
+    }
+
+    // Seek to before all keys — should get first key
+    {
+        var cursor = Cursor.init(allocator, &tree);
+        defer cursor.deinit();
+        try cursor.seek("a000000");
+        const entry = try cursor.next();
+        try std.testing.expect(entry != null);
+        try std.testing.expectEqualStrings("k000000", entry.?.key);
+        allocator.free(entry.?.key);
+        allocator.free(entry.?.value);
+    }
+}
+
+test "Cursor range scan with seek" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_range.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+    const N: u32 = 100;
+
+    for (0..N) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Range scan: keys from k000020 to k000029
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seek("k000020");
+
+    var count: u32 = 0;
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        // Stop at k000030
+        if (std.mem.order(u8, entry.key, "k000030") != .lt) break;
+        count += 1;
+    }
+
+    try std.testing.expectEqual(@as(u32, 10), count);
+}
+
+test "Cursor on empty tree" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Forward scan on empty tree
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekFirst();
+    const entry = try cursor.next();
+    try std.testing.expect(entry == null);
+
+    // Backward scan on empty tree
+    try cursor.seekLast();
+    const entry2 = try cursor.prev();
+    try std.testing.expect(entry2 == null);
+}
+
+test "Cursor current without advancing" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_current.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    try tree.insert("alpha", "1");
+    try tree.insert("beta", "2");
+    try tree.insert("gamma", "3");
+
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekFirst();
+
+    // Current should return first key without advancing
+    const e1 = try cursor.current();
+    try std.testing.expect(e1 != null);
+    try std.testing.expectEqualStrings("alpha", e1.?.key);
+    allocator.free(e1.?.key);
+    allocator.free(e1.?.value);
+
+    // Calling current again should return the same key
+    const e2 = try cursor.current();
+    try std.testing.expect(e2 != null);
+    try std.testing.expectEqualStrings("alpha", e2.?.key);
+    allocator.free(e2.?.key);
+    allocator.free(e2.?.value);
+
+    // Now advance with next
+    const e3 = try cursor.next();
+    try std.testing.expect(e3 != null);
+    try std.testing.expectEqualStrings("alpha", e3.?.key);
+    allocator.free(e3.?.key);
+    allocator.free(e3.?.value);
+
+    // Current should now be "beta"
+    const e4 = try cursor.current();
+    try std.testing.expect(e4 != null);
+    try std.testing.expectEqualStrings("beta", e4.?.key);
+    allocator.free(e4.?.key);
+    allocator.free(e4.?.value);
+}
+
+test "Cursor single key tree" {
+    const allocator = std.testing.allocator;
+    const path = "test_cursor_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    try tree.insert("only", "one");
+
+    // Forward: should get exactly one entry
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekFirst();
+
+    const e1 = try cursor.next();
+    try std.testing.expect(e1 != null);
+    try std.testing.expectEqualStrings("only", e1.?.key);
+    try std.testing.expectEqualStrings("one", e1.?.value);
+    allocator.free(e1.?.key);
+    allocator.free(e1.?.value);
+
+    const e2 = try cursor.next();
+    try std.testing.expect(e2 == null);
+
+    // Backward: should get exactly one entry
+    try cursor.seekLast();
+    const e3 = try cursor.prev();
+    try std.testing.expect(e3 != null);
+    try std.testing.expectEqualStrings("only", e3.?.key);
+    allocator.free(e3.?.key);
+    allocator.free(e3.?.value);
+
+    const e4 = try cursor.prev();
+    try std.testing.expect(e4 == null);
 }
