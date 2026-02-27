@@ -14,6 +14,7 @@ pub const page = @import("storage/page.zig");
 pub const buffer_pool = @import("storage/buffer_pool.zig");
 pub const btree = @import("storage/btree.zig");
 pub const overflow = @import("storage/overflow.zig");
+pub const fuzz = @import("storage/fuzz.zig");
 
 test {
     // Pull in tests from all imported modules
