@@ -12,6 +12,7 @@ pub const varint = @import("util/varint.zig");
 // Storage modules
 pub const page = @import("storage/page.zig");
 pub const buffer_pool = @import("storage/buffer_pool.zig");
+pub const btree = @import("storage/btree.zig");
 
 test {
     // Pull in tests from all imported modules
