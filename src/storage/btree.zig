@@ -8,13 +8,17 @@
 //!   Leaf:     [PageHeader 16B][prev_leaf 4B][next_leaf 4B][cell_ptrs...] ... [cells←]
 //!   Internal: [PageHeader 16B][right_child 4B][cell_ptrs...] ... [cells←]
 //!
-//! Leaf cell:     [key_len varint][key_data][value_len varint][value_data]
+//! Leaf cell:     [key_len varint][key_data][value_len varint][encoded_value]
+//!   where encoded_value is either:
+//!     Inline:   [0x00][actual_value_bytes]
+//!     Overflow: [0x01][total_len u32 LE][inline_prefix][overflow_page_id u32 LE]
 //! Internal cell: [left_child u32 LE][key_len varint][key_data]
 
 const std = @import("std");
 const page_mod = @import("page.zig");
 const buffer_pool_mod = @import("buffer_pool.zig");
 const varint = @import("../util/varint.zig");
+const overflow_mod = @import("overflow.zig");
 
 const Pager = page_mod.Pager;
 const BufferPool = buffer_pool_mod.BufferPool;
@@ -35,6 +39,109 @@ const LEAF_HEADER_SIZE: u16 = 8;
 /// Internal page: bytes after page header reserved for right-most child pointer.
 /// [right_child: u32] = 4 bytes.
 const INTERNAL_HEADER_SIZE: u16 = 4;
+
+// ── Overflow Value Encoding ────────────────────────────────────────────
+//
+// Values stored in leaf cells are prefixed with a 1-byte flag:
+//   0x00: Inline value. Remaining bytes are the actual value.
+//   0x01: Overflow value. Layout: [0x01][total_len u32 LE][inline_prefix][overflow_page_id u32 LE]
+//
+// This encoding is transparent to the leaf cell layout functions (leafCellSize,
+// readLeafCell, insertLeafCell) which just see opaque byte slices.
+
+const OVERFLOW_FLAG_INLINE: u8 = 0x00;
+const OVERFLOW_FLAG_OVERFLOW: u8 = 0x01;
+
+/// Size of the overflow page pointer stored at the end of the encoded value.
+const OVERFLOW_PAGE_PTR_SIZE: u32 = 4;
+
+/// Size of the total-length field stored after the flag in overflow values.
+const OVERFLOW_TOTAL_LEN_SIZE: u32 = 4;
+
+/// Overhead bytes in an overflow-encoded value: flag(1) + total_len(4) + overflow_ptr(4) = 9.
+const OVERFLOW_ENCODING_OVERHEAD: u32 = 1 + OVERFLOW_TOTAL_LEN_SIZE + OVERFLOW_PAGE_PTR_SIZE;
+
+/// Encode a value for inline storage (prepend 0x00 flag).
+/// Caller must free the returned slice.
+fn encodeInlineValue(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    const encoded = try allocator.alloc(u8, 1 + value.len);
+    encoded[0] = OVERFLOW_FLAG_INLINE;
+    @memcpy(encoded[1..], value);
+    return encoded;
+}
+
+/// Encode a value for overflow storage. Writes the inline prefix + overflow pointer
+/// into a compact encoded slice. Returns the encoded value to store in the leaf cell.
+/// Caller must free the returned slice.
+fn encodeOverflowValue(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+    inline_prefix_len: u32,
+    overflow_page_id: u32,
+) ![]u8 {
+    const encoded_len = OVERFLOW_ENCODING_OVERHEAD + inline_prefix_len;
+    const encoded = try allocator.alloc(u8, encoded_len);
+    encoded[0] = OVERFLOW_FLAG_OVERFLOW;
+    std.mem.writeInt(u32, encoded[1..5], @intCast(value.len), .little);
+    @memcpy(encoded[5..][0..inline_prefix_len], value[0..inline_prefix_len]);
+    std.mem.writeInt(u32, encoded[5 + inline_prefix_len ..][0..4], overflow_page_id, .little);
+    return encoded;
+}
+
+/// Check if an encoded value stored in a leaf cell is an overflow value.
+fn isOverflowValue(encoded: []const u8) bool {
+    return encoded.len > 0 and encoded[0] == OVERFLOW_FLAG_OVERFLOW;
+}
+
+/// Decode an encoded value from a leaf cell. For inline values, returns a copy
+/// of the actual value. For overflow values, reads the overflow chain and returns
+/// the full reassembled value. Caller must free the returned slice.
+fn decodeValue(
+    allocator: std.mem.Allocator,
+    pool: *BufferPool,
+    page_size: u32,
+    encoded: []const u8,
+) ![]u8 {
+    if (encoded.len == 0) {
+        return try allocator.alloc(u8, 0);
+    }
+
+    if (encoded[0] == OVERFLOW_FLAG_INLINE) {
+        // Inline value: strip the flag byte
+        const result = try allocator.alloc(u8, encoded.len - 1);
+        @memcpy(result, encoded[1..]);
+        return result;
+    } else if (encoded[0] == OVERFLOW_FLAG_OVERFLOW) {
+        // Overflow value
+        if (encoded.len < OVERFLOW_ENCODING_OVERHEAD) {
+            return error.PageCorrupt;
+        }
+        const total_len: usize = std.mem.readInt(u32, encoded[1..5], .little);
+        const inline_prefix_len = encoded.len - OVERFLOW_ENCODING_OVERHEAD;
+        const inline_prefix = encoded[5..][0..inline_prefix_len];
+        const overflow_page_id = std.mem.readInt(u32, encoded[5 + inline_prefix_len ..][0..4], .little);
+
+        return overflow_mod.readOverflowValue(
+            allocator,
+            pool,
+            page_size,
+            overflow_page_id,
+            inline_prefix,
+            total_len,
+        );
+    } else {
+        // Unknown flag — treat as corrupt
+        return error.PageCorrupt;
+    }
+}
+
+/// Extract the overflow page ID from an encoded overflow value, or return 0 for inline.
+fn getOverflowPageId(encoded: []const u8) u32 {
+    if (encoded.len == 0 or encoded[0] != OVERFLOW_FLAG_OVERFLOW) return 0;
+    if (encoded.len < OVERFLOW_ENCODING_OVERHEAD) return 0;
+    const inline_prefix_len = encoded.len - OVERFLOW_ENCODING_OVERHEAD;
+    return std.mem.readInt(u32, encoded[5 + inline_prefix_len ..][0..4], .little);
+}
 
 // ── Error Types ────────────────────────────────────────────────────────
 
@@ -71,6 +178,7 @@ pub const BTree = struct {
     // ── Point Lookup ───────────────────────────────────────────────────
 
     /// Look up a key and return its value. Caller must free the returned slice.
+    /// Transparently handles overflow values by reading overflow page chains.
     pub fn get(self: *BTree, allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
         var page_id = self.root_page_id;
 
@@ -85,7 +193,7 @@ pub const BTree = struct {
                     page_id = findChildInInternal(frame.data, self.pager.page_size, header.cell_count, key);
                 },
                 .leaf => {
-                    return findInLeaf(allocator, frame.data, self.pager.page_size, header.cell_count, key);
+                    return findInLeafDecoded(allocator, self.pool, frame.data, self.pager.page_size, header.cell_count, key);
                 },
                 else => return BTreeError.InvalidNodeType,
             }
@@ -95,23 +203,61 @@ pub const BTree = struct {
     // ── Insert ─────────────────────────────────────────────────────────
 
     /// Insert a key-value pair. Returns error.DuplicateKey if key already exists.
+    /// Transparently handles overflow: large values are split into inline prefix
+    /// + overflow page chain.
     pub fn insert(self: *BTree, key: []const u8, value: []const u8) InsertError!void {
-        const result = try self.insertIntoNode(self.root_page_id, key, value);
+        const page_size = self.pager.page_size;
+
+        // Encode the value with overflow support
+        const encoded_value = try self.encodeValueForInsert(key, value);
+        defer self.pager.allocator.free(encoded_value);
+
+        const result = try self.insertIntoNode(self.root_page_id, key, encoded_value);
         if (result.split) |split| {
             // Root was split — create a new root
             const new_root_id = try self.pager.allocPage();
             const frame = try self.pool.fetchNewPage(new_root_id);
 
-            initInternalPage(frame.data, self.pager.page_size, new_root_id);
+            initInternalPage(frame.data, page_size, new_root_id);
             // Set right_child to the new (right) page
             setRightChild(frame.data, split.new_page_id);
             // Insert the promoted key with left_child = old root
-            insertInternalCell(frame.data, self.pager.page_size, 0, 0, self.root_page_id, split.promoted_key) catch unreachable;
+            insertInternalCell(frame.data, page_size, 0, 0, self.root_page_id, split.promoted_key) catch unreachable;
 
             self.pool.unpinPage(new_root_id, true);
 
             self.root_page_id = new_root_id;
         }
+    }
+
+    /// Encode a value for storage in a leaf cell. If the value is small enough,
+    /// it's stored inline with a 0x00 flag prefix. If it's too large, an overflow
+    /// chain is written and the encoded value contains the inline prefix + overflow pointer.
+    fn encodeValueForInsert(self: *BTree, key: []const u8, value: []const u8) ![]u8 {
+        const page_size = self.pager.page_size;
+
+        if (!overflow_mod.needsOverflow(page_size, key, value)) {
+            // Inline: [0x00][value_data]
+            return encodeInlineValue(self.pager.allocator, value);
+        }
+
+        // Overflow: compute inline prefix size
+        const inline_prefix_len = overflow_mod.inlineValueSize(page_size, key);
+
+        // Write overflow chain for the portion that doesn't fit inline
+        const overflow_page_id = try overflow_mod.writeOverflowChain(
+            self.pool,
+            self.pager,
+            value[inline_prefix_len..],
+        );
+
+        // Encode: [0x01][total_len u32][inline_prefix][overflow_page_id u32]
+        return encodeOverflowValue(
+            self.pager.allocator,
+            value,
+            inline_prefix_len,
+            overflow_page_id,
+        );
     }
 
     /// Recursive insert. Returns split info if the node was split.
@@ -254,6 +400,22 @@ pub const BTree = struct {
                 if (!pos.found) {
                     self.pool.unpinPage(page_id, false);
                     return BTreeError.KeyNotFound;
+                }
+                // Free overflow chain if the cell has one
+                const cell = readLeafCell(frame.data, self.pager.page_size, pos.index);
+                const overflow_page = getOverflowPageId(cell.value);
+                if (overflow_page != 0) {
+                    // Must unpin before freeing overflow pages to avoid deadlock
+                    self.pool.unpinPage(page_id, false);
+                    try overflow_mod.freeOverflowChain(self.pool, self.pager, overflow_page);
+                    // Re-fetch page after overflow free
+                    const re_frame = try self.pool.fetchPage(page_id);
+                    const re_header = PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
+                    deleteLeafCell(re_frame.data, self.pager.page_size, re_header.cell_count, pos.index);
+                    const new_count = re_header.cell_count - 1;
+                    const underflow = isLeafUnderflow(re_frame.data, self.pager.page_size, new_count);
+                    self.pool.unpinPage(page_id, true);
+                    return .{ .underflow = underflow };
                 }
                 deleteLeafCell(frame.data, self.pager.page_size, header.cell_count, pos.index);
                 const new_count = header.cell_count - 1;
@@ -1142,11 +1304,10 @@ pub const Cursor = struct {
 
         const cell = readLeafCell(frame.data, page_size, self.cell_index);
 
-        // Copy key and value (caller owns)
+        // Copy key and decode value (handles overflow transparently)
         const key_copy = try self.allocator.alloc(u8, cell.key.len);
         @memcpy(key_copy, cell.key);
-        const val_copy = try self.allocator.alloc(u8, cell.value.len);
-        @memcpy(val_copy, cell.value);
+        const val_copy = try decodeValue(self.allocator, self.tree.pool, page_size, cell.value);
 
         // Advance cursor
         self.cell_index += 1;
@@ -1183,11 +1344,10 @@ pub const Cursor = struct {
 
         const cell = readLeafCell(frame.data, page_size, self.cell_index);
 
-        // Copy key and value (caller owns)
+        // Copy key and decode value (handles overflow transparently)
         const key_copy = try self.allocator.alloc(u8, cell.key.len);
         @memcpy(key_copy, cell.key);
-        const val_copy = try self.allocator.alloc(u8, cell.value.len);
-        @memcpy(val_copy, cell.value);
+        const val_copy = try decodeValue(self.allocator, self.tree.pool, page_size, cell.value);
 
         // Move backward
         if (self.cell_index > 0) {
@@ -1226,8 +1386,7 @@ pub const Cursor = struct {
 
         const key_copy = try self.allocator.alloc(u8, cell.key.len);
         @memcpy(key_copy, cell.key);
-        const val_copy = try self.allocator.alloc(u8, cell.value.len);
-        @memcpy(val_copy, cell.value);
+        const val_copy = try decodeValue(self.allocator, self.tree.pool, page_size, cell.value);
 
         return .{ .key = key_copy, .value = val_copy };
     }
@@ -1396,6 +1555,16 @@ fn findInLeaf(allocator: std.mem.Allocator, data: []const u8, page_size: u32, ce
     const result = try allocator.alloc(u8, cell.value.len);
     @memcpy(result, cell.value);
     return result;
+}
+
+/// Like findInLeaf but decodes overflow values. Returns the actual user value.
+fn findInLeafDecoded(allocator: std.mem.Allocator, pool: *BufferPool, data: []const u8, page_size: u32, cell_count: u16, key: []const u8) !?[]u8 {
+    const pos = leafSearchPosition(data, page_size, cell_count, key);
+    if (!pos.found) return null;
+
+    const cell = readLeafCell(data, page_size, pos.index);
+    const decoded = try decodeValue(allocator, pool, page_size, cell.value);
+    return decoded;
 }
 
 /// Insert a cell into a leaf page at the given position.
@@ -3377,4 +3546,353 @@ test "Cursor single key tree" {
 
     const e4 = try cursor.prev();
     try std.testing.expect(e4 == null);
+}
+
+// ── Overflow Integration Tests ────────────────────────────────────────
+
+test "BTree insert and get large value (overflow)" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Create a value larger than max inline size (1018 for 4096 pages)
+    const large_value = try allocator.alloc(u8, 2000);
+    defer allocator.free(large_value);
+    for (0..2000) |i| {
+        large_value[i] = @intCast(i % 251);
+    }
+
+    // Insert
+    try tree.insert("large_key", large_value);
+
+    // Retrieve and verify
+    const result = try tree.get(allocator, "large_key");
+    try std.testing.expect(result != null);
+    defer allocator.free(result.?);
+    try std.testing.expectEqualSlices(u8, large_value, result.?);
+}
+
+test "BTree insert and get very large value (multi-page overflow)" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // 20KB value → multiple overflow pages
+    const large_value = try allocator.alloc(u8, 20000);
+    defer allocator.free(large_value);
+    for (0..20000) |i| {
+        large_value[i] = @intCast((i * 7 + 13) % 256);
+    }
+
+    try tree.insert("big_key", large_value);
+
+    const result = try tree.get(allocator, "big_key");
+    try std.testing.expect(result != null);
+    defer allocator.free(result.?);
+    try std.testing.expectEqualSlices(u8, large_value, result.?);
+}
+
+test "BTree mix of small and large values" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_mixed.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Insert small values
+    try tree.insert("small1", "hello");
+    try tree.insert("small2", "world");
+
+    // Insert a large value
+    const large_value = try allocator.alloc(u8, 5000);
+    defer allocator.free(large_value);
+    @memset(large_value, 0xAB);
+    try tree.insert("large1", large_value);
+
+    // Insert more small values
+    try tree.insert("small3", "foo");
+    try tree.insert("small4", "bar");
+
+    // Verify all values
+    {
+        const v = try tree.get(allocator, "small1");
+        try std.testing.expect(v != null);
+        try std.testing.expectEqualStrings("hello", v.?);
+        allocator.free(v.?);
+    }
+    {
+        const v = try tree.get(allocator, "small2");
+        try std.testing.expect(v != null);
+        try std.testing.expectEqualStrings("world", v.?);
+        allocator.free(v.?);
+    }
+    {
+        const v = try tree.get(allocator, "large1");
+        try std.testing.expect(v != null);
+        try std.testing.expectEqualSlices(u8, large_value, v.?);
+        allocator.free(v.?);
+    }
+    {
+        const v = try tree.get(allocator, "small3");
+        try std.testing.expect(v != null);
+        try std.testing.expectEqualStrings("foo", v.?);
+        allocator.free(v.?);
+    }
+    {
+        const v = try tree.get(allocator, "small4");
+        try std.testing.expect(v != null);
+        try std.testing.expectEqualStrings("bar", v.?);
+        allocator.free(v.?);
+    }
+}
+
+test "BTree delete large value frees overflow pages" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Insert a large value
+    const large_value = "X" ** 5000;
+    try tree.insert("delete_me", large_value);
+
+    // Verify it's there
+    const v1 = try tree.get(allocator, "delete_me");
+    try std.testing.expect(v1 != null);
+    try std.testing.expectEqualSlices(u8, large_value, v1.?);
+    allocator.free(v1.?);
+
+    // Record page count before delete
+    const pages_before = pager.page_count;
+
+    // Delete should free overflow pages
+    try tree.delete("delete_me");
+
+    // Should not be found anymore
+    const v2 = try tree.get(allocator, "delete_me");
+    try std.testing.expect(v2 == null);
+
+    // Re-inserting should reuse freed overflow pages
+    try tree.insert("new_key", large_value);
+    try std.testing.expect(pager.page_count <= pages_before);
+
+    const v3 = try tree.get(allocator, "new_key");
+    try std.testing.expect(v3 != null);
+    try std.testing.expectEqualSlices(u8, large_value, v3.?);
+    allocator.free(v3.?);
+}
+
+test "BTree cursor with overflow values" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_cursor.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Insert mix of small and large values in sorted order
+    try tree.insert("aaa", "small_a");
+
+    const large_b = try allocator.alloc(u8, 3000);
+    defer allocator.free(large_b);
+    @memset(large_b, 'B');
+    try tree.insert("bbb", large_b);
+
+    try tree.insert("ccc", "small_c");
+
+    // Cursor forward scan
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+
+    try cursor.seekFirst();
+
+    // First: "aaa" → "small_a"
+    const e1 = try cursor.next();
+    try std.testing.expect(e1 != null);
+    try std.testing.expectEqualStrings("aaa", e1.?.key);
+    try std.testing.expectEqualStrings("small_a", e1.?.value);
+    allocator.free(e1.?.key);
+    allocator.free(e1.?.value);
+
+    // Second: "bbb" → large overflow value
+    const e2 = try cursor.next();
+    try std.testing.expect(e2 != null);
+    try std.testing.expectEqualStrings("bbb", e2.?.key);
+    try std.testing.expectEqual(@as(usize, 3000), e2.?.value.len);
+    for (e2.?.value) |b| {
+        try std.testing.expectEqual(@as(u8, 'B'), b);
+    }
+    allocator.free(e2.?.key);
+    allocator.free(e2.?.value);
+
+    // Third: "ccc" → "small_c"
+    const e3 = try cursor.next();
+    try std.testing.expect(e3 != null);
+    try std.testing.expectEqualStrings("ccc", e3.?.key);
+    try std.testing.expectEqualStrings("small_c", e3.?.value);
+    allocator.free(e3.?.key);
+    allocator.free(e3.?.value);
+
+    // Exhausted
+    const e4 = try cursor.next();
+    try std.testing.expect(e4 == null);
+}
+
+test "BTree multiple large values with splits" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_splits.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Use smaller page size to trigger more splits
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // With 512-byte pages, max_inline is ~122 bytes
+    // Insert 10 values of 200 bytes each (all overflow)
+    var key_buf: [12]u8 = undefined;
+    var values: [10][]u8 = undefined;
+    for (0..10) |i| {
+        values[i] = try allocator.alloc(u8, 200);
+        @memset(values[i], @intCast(i + 65)); // 'A', 'B', 'C', ...
+    }
+    defer for (0..10) |i| allocator.free(values[i]);
+
+    for (0..10) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>5}", .{i}) catch unreachable;
+        try tree.insert(k, values[i]);
+    }
+
+    // Verify all 10 values
+    for (0..10) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>5}", .{i}) catch unreachable;
+        const result = try tree.get(allocator, k);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqual(@as(usize, 200), result.?.len);
+        try std.testing.expectEqual(@as(u8, @intCast(i + 65)), result.?[0]);
+        allocator.free(result.?);
+    }
+}
+
+test "BTree overflow value encoding roundtrip" {
+    // Test that needsOverflow correctly identifies large values
+    try std.testing.expect(!overflow_mod.needsOverflow(4096, "key", "small"));
+    try std.testing.expect(overflow_mod.needsOverflow(4096, "key", "x" ** 2000));
+    try std.testing.expect(overflow_mod.needsOverflow(512, "key", "x" ** 200));
+}
+
+test "BTree empty value with overflow encoding" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_overflow_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Empty value should work fine (stored inline with 0x00 flag)
+    try tree.insert("empty", "");
+
+    const v = try tree.get(allocator, "empty");
+    try std.testing.expect(v != null);
+    try std.testing.expectEqual(@as(usize, 0), v.?.len);
+    allocator.free(v.?);
 }
