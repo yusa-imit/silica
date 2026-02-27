@@ -21,7 +21,7 @@
 - [x] Leaf/internal merges, underflow handling, root shrink (2C)
 - [x] Range scan cursors (forward/backward) with seek (2D)
 - [x] Overflow pages for large values (2E)
-- [ ] Comprehensive B+Tree fuzz tests (2F — next priority)
+- [x] Comprehensive B+Tree fuzz tests (2F)
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -57,11 +57,22 @@
 - `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking
 - `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, splits, merges, cursor, overflow support
 - `src/storage/overflow.zig` — Overflow page chain management (write/read/free)
+- `src/storage/fuzz.zig` — Comprehensive B+Tree fuzz tests (12 tests)
 
-## Test Summary (134 tests total)
+## Test Summary (147 tests total)
 - `btree.zig`: 46 tests — CRUD, splits, merges, underflow, cursors, overflow insert/get/delete/cursor
+- `fuzz.zig`: 12 tests — random insert/delete, small pages, overflow mix, reinsert, cursor consistency, seek, multi-page-size, grow-shrink, duplicates
 - `overflow.zig`: 18 tests — chain write/read/free, single/multi-page, prefix, boundaries, min page size
 - `buffer_pool.zig`: 15 tests — fetch/unpin, LRU eviction, dirty flush, pool size=1, stress pin cycles
 - `page.zig`: 24 tests — header/alloc/free, checksums, freelist chains, max/min page sizes, persistence
 - `checksum.zig`: 12 tests — known values, incremental hashing, bit flip detection
 - `varint.zig`: 19 tests — roundtrip all ranges, boundary values, overflow detection, bit patterns
+
+## Next Phase: Phase 2 — SQL Layer (Weeks 7-14)
+
+### Milestone 3 — Tokenizer & Parser
+- [ ] Tokenizer (3A) — hand-written lexer, SQL keyword recognition
+- [ ] Parser (3B) — recursive descent → AST
+- [ ] DDL statements (3C) — CREATE TABLE, DROP TABLE
+- [ ] DML statements (3D) — SELECT, INSERT, UPDATE, DELETE
+- [ ] Parser error recovery (3E)
