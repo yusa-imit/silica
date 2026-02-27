@@ -19,7 +19,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.14.0
+          version: 0.15.2
 
       - name: Build
         run: zig build
@@ -45,7 +45,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.14.0
+          version: 0.15.2
 
       - name: Build for ${{ matrix.target }}
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
