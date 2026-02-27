@@ -9,6 +9,9 @@ const std = @import("std");
 pub const checksum = @import("util/checksum.zig");
 pub const varint = @import("util/varint.zig");
 
+// Storage modules
+pub const page = @import("storage/page.zig");
+
 test {
     // Pull in tests from all imported modules
     std.testing.refAllDecls(@This());
