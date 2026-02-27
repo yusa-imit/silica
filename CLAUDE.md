@@ -340,3 +340,63 @@ zig build bench
 12. **Never force push** — 파괴적 git 명령어 금지, `main` 브랜치 직접 수정 금지
 13. **Database correctness first** — 성능보다 정확성 우선. 데이터 무결성 검증 테스트 필수
 14. **Page-level atomicity** — 모든 페이지 쓰기는 원자적이어야 함. 부분 쓰기 = 데이터 손상
+
+---
+
+## Sailor Migration
+
+silica는 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점진적으로 도입한다.
+각 버전이 READY 상태가 되면, 해당 세션에서 마이그레이션을 수행한다.
+
+### 마이그레이션 프로토콜
+
+1. 세션 시작 시 이 섹션을 확인한다
+2. `status: READY`인 미완료 마이그레이션이 있으면, 현재 작업보다 **우선** 수행한다
+3. 마이그레이션 완료 후 `status: DONE`으로 변경하고 커밋한다
+4. `zig build test` 통과 확인 필수
+
+### v0.1.0 — arg, color (status: PENDING)
+
+sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
+
+**작업 내용**:
+- [ ] `build.zig.zon`에 sailor 의존성 추가
+- [ ] `build.zig`에 CLI executable 빌드 타겟 추가 (기존 library + 새 CLI)
+- [ ] `src/cli.zig` 생성 — `sailor.arg`로 CLI 진입점 구현
+  - `silica <db_path>` — interactive SQL 셸 진입
+  - `--help`, `--version`, `--header`, `--csv`, `--json` 플래그
+- [ ] 에러 출력에 `sailor.color` 적용
+- [ ] 기존 테스트 전체 통과 확인
+- [ ] 커밋: `feat: add CLI entry point with sailor v0.1.0`
+
+### v0.2.0 — repl (status: PENDING)
+
+**작업 내용**:
+- [ ] `sailor.repl`로 interactive SQL 셸 구현
+  - 프롬프트: `silica> ` (기본), `   ...> ` (multi-line)
+  - 히스토리: `~/.silica_history`
+  - 자동완성: SQL 키워드, 테이블명, 컬럼명
+  - 하이라이팅: SQL 키워드 색상
+  - 멀티라인: `;`로 끝나지 않으면 계속 입력
+- [ ] SQL tokenizer/parser 연결 (silica 자체 모듈)
+- [ ] 커밋: `feat: add interactive SQL shell with sailor.repl`
+
+### v0.3.0 — fmt (status: PENDING)
+
+**작업 내용**:
+- [ ] 쿼리 결과 포매팅에 `sailor.fmt` 적용
+- [ ] `.mode` 명령어 구현: table, csv, json, jsonl, plain
+- [ ] `SELECT` 결과를 정렬된 테이블로 표시
+- [ ] NULL 값 색상 처리
+- [ ] 커밋: `feat: add output modes with sailor.fmt`
+
+### v0.4.0 — tui (status: PENDING)
+
+**작업 내용**:
+- [ ] `silica --tui <db_path>` 모드 추가
+- [ ] `sailor.tui` 위젯으로 구현:
+  - 좌측: 스키마 트리 (Tree 위젯 — 테이블/컬럼/인덱스)
+  - 우측 상단: 쿼리 결과 (Table 위젯)
+  - 우측 하단: SQL 입력 (Input 위젯)
+  - 하단: StatusBar (행 수, 쿼리 시간, DB 크기)
+- [ ] 커밋: `feat: add TUI database browser with sailor.tui`
