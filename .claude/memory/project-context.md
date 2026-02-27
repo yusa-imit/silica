@@ -48,9 +48,10 @@
 - DB header: 64 bytes (magic, version, page_size, page_count, freelist_head, schema_version, wal_mode)
 
 ## Implemented Files
-- `build.zig` — Build system (Zig 0.15 API)
-- `build.zig.zon` — Package metadata
+- `build.zig` — Build system (Zig 0.15 API, library + CLI targets, sailor dep)
+- `build.zig.zon` — Package metadata (with sailor v0.1.0 dependency)
 - `src/main.zig` — Entry point with module imports
+- `src/cli.zig` — CLI entry point (sailor.arg parsing, sailor.color error styling)
 - `src/util/checksum.zig` — CRC32C using std.hash.crc.Crc32Iscsi
 - `src/util/varint.zig` — LEB128 unsigned varint encode/decode
 - `src/storage/page.zig` — Pager with header, read/write, freelist
@@ -58,8 +59,10 @@
 - `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, splits, merges, cursor, overflow support
 - `src/storage/overflow.zig` — Overflow page chain management (write/read/free)
 - `src/storage/fuzz.zig` — Comprehensive B+Tree fuzz tests (12 tests)
+- `src/sql/tokenizer.zig` — Hand-written SQL lexer (keywords, literals, operators, comments)
 
-## Test Summary (147 tests total)
+## Test Summary (203 tests total)
+- `tokenizer.zig`: 53 tests — all token types, keywords, operators, literals, comments, SQL statements
 - `btree.zig`: 46 tests — CRUD, splits, merges, underflow, cursors, overflow insert/get/delete/cursor
 - `fuzz.zig`: 12 tests — random insert/delete, small pages, overflow mix, reinsert, cursor consistency, seek, multi-page-size, grow-shrink, duplicates
 - `overflow.zig`: 18 tests — chain write/read/free, single/multi-page, prefix, boundaries, min page size
@@ -67,11 +70,12 @@
 - `page.zig`: 24 tests — header/alloc/free, checksums, freelist chains, max/min page sizes, persistence
 - `checksum.zig`: 12 tests — known values, incremental hashing, bit flip detection
 - `varint.zig`: 19 tests — roundtrip all ranges, boundary values, overflow detection, bit patterns
+- `cli.zig`: 3 tests — usage output, error formatting, version string
 
-## Next Phase: Phase 2 — SQL Layer (Weeks 7-14)
+## Current Phase: Phase 2 — SQL Layer (Weeks 7-14)
 
 ### Milestone 3 — Tokenizer & Parser
-- [ ] Tokenizer (3A) — hand-written lexer, SQL keyword recognition
+- [x] Tokenizer (3A) — hand-written lexer, SQL keyword recognition (53 tests)
 - [ ] Parser (3B) — recursive descent → AST
 - [ ] DDL statements (3C) — CREATE TABLE, DROP TABLE
 - [ ] DML statements (3D) — SELECT, INSERT, UPDATE, DELETE
