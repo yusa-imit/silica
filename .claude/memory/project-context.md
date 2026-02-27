@@ -16,8 +16,8 @@
 - [x] Basic test suite: create DB, write pages, reopen and verify
 
 ### Milestone 2 — B+Tree & Buffer Pool (Weeks 3-6)
-- [ ] LRU buffer pool with dirty page tracking (2A — next priority)
-- [ ] B+Tree insert, delete, point lookup (2B)
+- [x] LRU buffer pool with dirty page tracking (2A)
+- [ ] B+Tree insert, delete, point lookup (2B — next priority)
 - [ ] Leaf page splits and merges (2C)
 - [ ] Range scan cursors (forward/backward) (2D)
 - [ ] Overflow pages for large values (2E)
@@ -54,3 +54,4 @@
 - `src/util/checksum.zig` — CRC32C using std.hash.crc.Crc32Iscsi
 - `src/util/varint.zig` — LEB128 unsigned varint encode/decode
 - `src/storage/page.zig` — Pager with header, read/write, freelist
+- `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking

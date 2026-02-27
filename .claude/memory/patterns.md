@@ -81,4 +81,23 @@ const lib = b.addLibrary(.{ .name = "silica", .root_module = mod, .linkage = .st
 const tests = b.addTest(.{ .root_module = mod });
 ```
 
+### Buffer Pool pin/unpin — VERIFIED
+```zig
+const buffer_pool = @import("storage/buffer_pool.zig");
+var pool = try buffer_pool.BufferPool.init(allocator, &pager, 0); // 0 = default 2000
+defer pool.deinit();
+
+const frame = try pool.fetchPage(page_id);
+defer pool.unpinPage(page_id, false); // unpin on exit, dirty=false
+// Use frame.data[0..page_size]
+frame.markDirty(); // or pass dirty=true to unpinPage
+
+// For new pages:
+const new_pid = try pager.allocPage();
+const new_frame = try pool.fetchNewPage(new_pid);
+// new_frame is auto-dirty, write content, then unpin
+pool.unpinPage(new_pid, true);
+try pool.flushAll();
+```
+
 <!-- Add new patterns as they are verified through implementation -->
