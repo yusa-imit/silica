@@ -19,6 +19,7 @@ pub const fuzz = @import("storage/fuzz.zig");
 // SQL modules
 pub const tokenizer = @import("sql/tokenizer.zig");
 pub const ast = @import("sql/ast.zig");
+pub const parser = @import("sql/parser.zig");
 
 test {
     // Pull in tests from all imported modules
