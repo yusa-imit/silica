@@ -723,3 +723,242 @@ test "Pager with 512 byte page size" {
     defer pager.freePageBuf(read_buf);
     try pager.readPage(page_id, read_buf);
 }
+
+test "Pager freelist chain with 10 pages" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_freelist_chain_10.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate 10 pages (ids 2-11)
+    var page_ids: [10]u32 = undefined;
+    for (&page_ids, 0..) |*id, i| {
+        id.* = try pager.allocPage();
+        try std.testing.expectEqual(@as(u32, @intCast(i + 2)), id.*);
+    }
+
+    // Free all 10 pages
+    for (page_ids) |id| {
+        try pager.freePage(id);
+    }
+
+    // Allocate all 10 back - should get LIFO order (last freed = first allocated)
+    var reallocated: [10]u32 = undefined;
+    for (&reallocated, 0..) |*id, i| {
+        id.* = try pager.allocPage();
+        // LIFO: last freed (11) should be first allocated
+        try std.testing.expectEqual(@as(u32, @intCast(11 - i)), id.*);
+    }
+
+    // Freelist should be empty now
+    try std.testing.expectEqual(@as(u32, 0), pager.freelist_head);
+}
+
+test "Pager max page size 65536" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_max_page_size.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 65536 });
+    defer pager.deinit();
+
+    try std.testing.expectEqual(@as(u32, 65536), pager.page_size);
+
+    const page_id = try pager.allocPage();
+    const buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(buf);
+
+    @memset(buf, 0);
+    const header = PageHeader{
+        .page_type = .leaf,
+        .page_id = page_id,
+    };
+    header.serialize(buf[0..PAGE_HEADER_SIZE]);
+
+    // Write data near the end of the page (at offset page_size - 20)
+    const test_data = "END_OF_PAGE_DATA";
+    const offset = pager.page_size - 20;
+    @memcpy(buf[offset .. offset + test_data.len], test_data);
+
+    try pager.writePage(page_id, buf);
+
+    const read_buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(read_buf);
+    try pager.readPage(page_id, read_buf);
+
+    // Verify data at the end
+    try std.testing.expectEqualSlices(u8, test_data, read_buf[offset .. offset + test_data.len]);
+}
+
+test "Pager min page size 512 data integrity" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_min_page_size_integrity.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    try std.testing.expectEqual(@as(u32, 512), pager.page_size);
+    const content_size = pager.contentSize();
+    try std.testing.expectEqual(@as(u32, 496), content_size);
+
+    const page_id = try pager.allocPage();
+    const buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(buf);
+
+    @memset(buf, 0);
+    const header = PageHeader{
+        .page_type = .leaf,
+        .page_id = page_id,
+    };
+    header.serialize(buf[0..PAGE_HEADER_SIZE]);
+
+    // Fill the entire content area (496 bytes) with a pattern
+    const pattern: u8 = 0xAB;
+    @memset(buf[PAGE_HEADER_SIZE..], pattern);
+
+    try pager.writePage(page_id, buf);
+
+    const read_buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(read_buf);
+    try pager.readPage(page_id, read_buf);
+
+    // Verify the full content area matches
+    for (read_buf[PAGE_HEADER_SIZE..]) |byte| {
+        try std.testing.expectEqual(pattern, byte);
+    }
+}
+
+test "Pager multiple sequential allocations" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_sequential_alloc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate 20 pages in sequence
+    for (0..20) |i| {
+        const page_id = try pager.allocPage();
+        try std.testing.expectEqual(@as(u32, @intCast(i + 2)), page_id);
+    }
+
+    // Verify page_count is 22 (header=0, schema_root=1, plus 20 allocated)
+    try std.testing.expectEqual(@as(u32, 22), pager.page_count);
+}
+
+test "Pager write and reopen preserves multiple pages" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_reopen_multiple.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var page_ids: [5]u32 = undefined;
+    const test_patterns = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55 };
+
+    // Create pager, allocate 5 pages, write different data to each
+    {
+        var pager = try Pager.init(allocator, path, .{});
+        defer pager.deinit();
+
+        for (&page_ids, test_patterns) |*id, pattern| {
+            id.* = try pager.allocPage();
+            const buf = try pager.allocPageBuf();
+            defer pager.freePageBuf(buf);
+
+            @memset(buf, 0);
+            const header = PageHeader{
+                .page_type = .leaf,
+                .page_id = id.*,
+            };
+            header.serialize(buf[0..PAGE_HEADER_SIZE]);
+            @memset(buf[PAGE_HEADER_SIZE..], pattern);
+
+            try pager.writePage(id.*, buf);
+        }
+    }
+
+    // Reopen and verify all 5 pages
+    {
+        var pager = try Pager.init(allocator, path, .{});
+        defer pager.deinit();
+
+        for (page_ids, test_patterns) |id, pattern| {
+            const buf = try pager.allocPageBuf();
+            defer pager.freePageBuf(buf);
+
+            try pager.readPage(id, buf);
+
+            // Verify pattern in content area
+            for (buf[PAGE_HEADER_SIZE..]) |byte| {
+                try std.testing.expectEqual(pattern, byte);
+            }
+        }
+    }
+}
+
+test "Pager checksum over all-zero content" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_zero_content_checksum.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const page_id = try pager.allocPage();
+    const buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(buf);
+
+    // All-zero content (just header)
+    @memset(buf, 0);
+    const header = PageHeader{
+        .page_type = .leaf,
+        .page_id = page_id,
+    };
+    header.serialize(buf[0..PAGE_HEADER_SIZE]);
+
+    try pager.writePage(page_id, buf);
+
+    const read_buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(read_buf);
+
+    // Should succeed - all-zero content has valid checksum
+    try pager.readPage(page_id, read_buf);
+
+    // Verify it's still all zeros in content area
+    for (read_buf[PAGE_HEADER_SIZE..]) |byte| {
+        try std.testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "Pager freePage then allocPage reuses before extending" {
+    const allocator = std.testing.allocator;
+    const path = "test_pager_reuse_before_extend.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate 3 pages (ids 2, 3, 4)
+    const id1 = try pager.allocPage();
+    const id2 = try pager.allocPage();
+    const id3 = try pager.allocPage();
+    try std.testing.expectEqual(@as(u32, 2), id1);
+    try std.testing.expectEqual(@as(u32, 3), id2);
+    try std.testing.expectEqual(@as(u32, 4), id3);
+
+    // Free page 3
+    try pager.freePage(3);
+
+    // Allocate new page - should get id 3 (from freelist)
+    const id4 = try pager.allocPage();
+    try std.testing.expectEqual(@as(u32, 3), id4);
+
+    // Allocate another - should get id 5 (extends file)
+    const id5 = try pager.allocPage();
+    try std.testing.expectEqual(@as(u32, 5), id5);
+
+    // Verify page_count = 6 (header=0, schema_root=1, plus 2,3,4,5)
+    try std.testing.expectEqual(@as(u32, 6), pager.page_count);
+}

@@ -76,3 +76,46 @@ test "crc32c page-sized buffer" {
     try std.testing.expect(result != 0);
     try std.testing.expect(verify(&buf, result));
 }
+
+test "crc32c three-part incremental" {
+    const full_data = "hello world test";
+    const full = crc32c(full_data);
+
+    const part1 = "hello ";
+    const part2 = "world ";
+    const part3 = "test";
+    var incremental = crc32c(part1);
+    incremental = crc32cUpdate(incremental, part2);
+    incremental = crc32cUpdate(incremental, part3);
+
+    try std.testing.expectEqual(full, incremental);
+}
+
+test "crc32c single bit change detection" {
+    var buf: [64]u8 = undefined;
+    @memset(&buf, 0x00);
+    const original_checksum = crc32c(&buf);
+
+    // Flip each bit in byte 0 and verify checksum changes
+    for (0..8) |bit| {
+        buf[0] ^= @as(u8, 1) << @intCast(bit);
+        const modified_checksum = crc32c(&buf);
+        try std.testing.expect(modified_checksum != original_checksum);
+        // Reset the bit
+        buf[0] ^= @as(u8, 1) << @intCast(bit);
+    }
+}
+
+test "crc32c all 0xFF buffer" {
+    var buf: [4096]u8 = undefined;
+    @memset(&buf, 0xFF);
+    const result = crc32c(&buf);
+    try std.testing.expect(result != 0);
+    try std.testing.expect(verify(&buf, result));
+}
+
+test "crc32c empty update preserves value" {
+    const initial = crc32c("hello");
+    const after_empty_update = crc32cUpdate(initial, "");
+    try std.testing.expectEqual(initial, after_empty_update);
+}

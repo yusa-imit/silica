@@ -599,3 +599,278 @@ test "BufferPool eviction flushes dirty pages" {
     try pager.readPage(pids[0], raw);
     try std.testing.expectEqual(@as(u8, 0xAA), raw[PAGE_HEADER_SIZE]);
 }
+
+test "BufferPool pool size 1" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_size1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Create 3 pages on disk
+    var pids: [3]u32 = undefined;
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    for (&pids, 0..) |*pid, i| {
+        pid.* = try pager.allocPage();
+        @memset(raw, 0);
+        const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
+        hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+        // Write unique data to each page
+        raw[PAGE_HEADER_SIZE] = @as(u8, @truncate(i)) + 'A';
+        try pager.writePage(pid.*, raw);
+    }
+
+    // Pool with capacity 1
+    var pool = try BufferPool.init(allocator, &pager, 1);
+    defer pool.deinit();
+
+    // Fetch page 0, unpin
+    _ = try pool.fetchPage(pids[0]);
+    pool.unpinPage(pids[0], false);
+    try std.testing.expect(pool.containsPage(pids[0]));
+
+    // Fetch page 1 — evicts page 0
+    _ = try pool.fetchPage(pids[1]);
+    pool.unpinPage(pids[1], false);
+    try std.testing.expect(!pool.containsPage(pids[0]));
+    try std.testing.expect(pool.containsPage(pids[1]));
+
+    // Fetch page 2 — evicts page 1
+    _ = try pool.fetchPage(pids[2]);
+    pool.unpinPage(pids[2], false);
+    try std.testing.expect(!pool.containsPage(pids[1]));
+    try std.testing.expect(pool.containsPage(pids[2]));
+
+    // Fetch page 0 again — evicts page 2, verify data integrity
+    const frame = try pool.fetchPage(pids[0]);
+    try std.testing.expectEqual(@as(u8, 'A'), frame.data[PAGE_HEADER_SIZE]);
+    pool.unpinPage(pids[0], false);
+    try std.testing.expect(!pool.containsPage(pids[2]));
+    try std.testing.expect(pool.containsPage(pids[0]));
+}
+
+test "BufferPool LRU order with 5 pages" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_lru5.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Create 5 pages on disk
+    var pids: [5]u32 = undefined;
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    for (&pids) |*pid| {
+        pid.* = try pager.allocPage();
+        @memset(raw, 0);
+        const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
+        hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+        try pager.writePage(pid.*, raw);
+    }
+
+    // Pool with capacity 3
+    var pool = try BufferPool.init(allocator, &pager, 3);
+    defer pool.deinit();
+
+    // Load pages 0, 1, 2 and unpin all
+    for (pids[0..3]) |pid| {
+        _ = try pool.fetchPage(pid);
+        pool.unpinPage(pid, false);
+    }
+
+    // Access page 1 to make it MRU
+    _ = try pool.fetchPage(pids[1]);
+    pool.unpinPage(pids[1], false);
+
+    // Fetch page 3 — should evict page 0 (LRU tail)
+    _ = try pool.fetchPage(pids[3]);
+    pool.unpinPage(pids[3], false);
+    try std.testing.expect(!pool.containsPage(pids[0]));
+    try std.testing.expect(pool.containsPage(pids[1]));
+    try std.testing.expect(pool.containsPage(pids[2]));
+    try std.testing.expect(pool.containsPage(pids[3]));
+
+    // Fetch page 4 — should evict page 2
+    _ = try pool.fetchPage(pids[4]);
+    pool.unpinPage(pids[4], false);
+    try std.testing.expect(!pool.containsPage(pids[0]));
+    try std.testing.expect(pool.containsPage(pids[1]));
+    try std.testing.expect(!pool.containsPage(pids[2]));
+    try std.testing.expect(pool.containsPage(pids[3]));
+    try std.testing.expect(pool.containsPage(pids[4]));
+}
+
+test "BufferPool dirty flag cycles" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_dirty_cycles.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const pid = try pager.allocPage();
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    @memset(raw, 0);
+    const hdr = PageHeader{ .page_type = .leaf, .page_id = pid };
+    hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+    try pager.writePage(pid, raw);
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // First cycle: fetch, unpin as dirty, flush
+    const frame = try pool.fetchPage(pid);
+    pool.unpinPage(pid, true);
+    try std.testing.expect(frame.is_dirty);
+    try pool.flushPage(pid);
+    try std.testing.expect(!frame.is_dirty);
+
+    // Second cycle: fetch again, unpin as dirty again, flush again
+    _ = try pool.fetchPage(pid);
+    pool.unpinPage(pid, true);
+    try std.testing.expect(frame.is_dirty);
+    try pool.flushPage(pid);
+    try std.testing.expect(!frame.is_dirty);
+
+    // Third cycle to be sure
+    _ = try pool.fetchPage(pid);
+    pool.unpinPage(pid, true);
+    try std.testing.expect(frame.is_dirty);
+    try pool.flushPage(pid);
+    try std.testing.expect(!frame.is_dirty);
+}
+
+test "BufferPool re-fetch after eviction preserves data" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_refetch.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Create 3 pages
+    var pids: [3]u32 = undefined;
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    for (&pids) |*pid| {
+        pid.* = try pager.allocPage();
+        @memset(raw, 0);
+        const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
+        hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+        try pager.writePage(pid.*, raw);
+    }
+
+    // Pool with capacity 2
+    var pool = try BufferPool.init(allocator, &pager, 2);
+    defer pool.deinit();
+
+    // Write unique data to page 0 via pool
+    const f0 = try pool.fetchPage(pids[0]);
+    const unique_data = "PAGE_ZERO_DATA";
+    @memcpy(f0.data[PAGE_HEADER_SIZE..][0..unique_data.len], unique_data);
+    pool.unpinPage(pids[0], true); // Mark dirty
+
+    // Fetch page 1, unpin
+    _ = try pool.fetchPage(pids[1]);
+    pool.unpinPage(pids[1], false);
+
+    // Fetch page 2 — evicts page 0 (LRU), should flush dirty page 0
+    _ = try pool.fetchPage(pids[2]);
+    pool.unpinPage(pids[2], false);
+    try std.testing.expect(!pool.containsPage(pids[0]));
+
+    // Re-fetch page 0 — evicts page 1, load from disk
+    const f0_refetch = try pool.fetchPage(pids[0]);
+    const data_slice = f0_refetch.data[PAGE_HEADER_SIZE..][0..unique_data.len];
+    try std.testing.expectEqualStrings(unique_data, data_slice);
+    pool.unpinPage(pids[0], false);
+}
+
+test "BufferPool stress rapid pin unpin" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_stress_pin.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Create one page
+    const pid = try pager.allocPage();
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    @memset(raw, 0);
+    const hdr = PageHeader{ .page_type = .leaf, .page_id = pid };
+    hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+    try pager.writePage(pid, raw);
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Pin 100 times
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        _ = try pool.fetchPage(pid);
+    }
+
+    const frame_idx = pool.page_map.get(pid).?;
+    const frame = &pool.frames[frame_idx];
+    try std.testing.expectEqual(@as(u32, 100), frame.pin_count);
+
+    // Unpin 100 times
+    i = 0;
+    while (i < 100) : (i += 1) {
+        pool.unpinPage(pid, false);
+    }
+
+    try std.testing.expectEqual(@as(u32, 0), frame.pin_count);
+}
+
+test "BufferPool large page ids" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_large_ids.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate 10 pages (will have page IDs 2-11)
+    var pids: [10]u32 = undefined;
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    for (&pids) |*pid| {
+        pid.* = try pager.allocPage();
+        @memset(raw, 0);
+        const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
+        hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+        try pager.writePage(pid.*, raw);
+    }
+
+    // Pool with capacity 10
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Fetch all pages into pool
+    for (pids) |pid| {
+        const frame = try pool.fetchPage(pid);
+        try std.testing.expectEqual(pid, frame.page_id);
+    }
+
+    // Verify all are in pool
+    for (pids) |pid| {
+        try std.testing.expect(pool.containsPage(pid));
+    }
+
+    // Unpin all
+    for (pids) |pid| {
+        pool.unpinPage(pid, false);
+    }
+
+    // Verify still in pool (just unpinned)
+    for (pids) |pid| {
+        try std.testing.expect(pool.containsPage(pid));
+    }
+}

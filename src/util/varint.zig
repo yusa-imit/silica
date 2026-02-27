@@ -213,3 +213,72 @@ test "roundtrip boundary values" {
         try std.testing.expectEqual(n, result.bytes_read);
     }
 }
+
+test "decode overflow from all 0x80 bytes" {
+    var buf: [11]u8 = undefined;
+    @memset(&buf, 0x80); // All continuation bits set
+    const result = decode(&buf);
+    try std.testing.expectError(Error.Overflow, result);
+}
+
+test "varint roundtrip random-like values" {
+    var buf: [max_encoded_len]u8 = undefined;
+    for (0..100) |i| {
+        const value: u64 = i * 7919 + 31;
+        const n = try encode(value, &buf);
+        const result = try decode(buf[0..n]);
+        try std.testing.expectEqual(value, result.value);
+        try std.testing.expectEqual(n, result.bytes_read);
+        try std.testing.expectEqual(n, encodedLen(value));
+    }
+}
+
+test "encode/decode values near byte boundaries" {
+    var buf: [max_encoded_len]u8 = undefined;
+    const test_values = [_]u64{
+        0x7E,   // max 1-byte - 1
+        0x7F,   // max 1-byte
+        0x80,   // min 2-byte
+        0x81,   // min 2-byte + 1
+        0x3FFE, // max 2-byte - 1
+        0x3FFF, // max 2-byte
+        0x4000, // min 3-byte
+        0x4001, // min 3-byte + 1
+    };
+    const expected_lengths = [_]usize{ 1, 1, 2, 2, 2, 2, 3, 3 };
+    for (test_values, expected_lengths) |value, expected_len| {
+        const n = try encode(value, &buf);
+        try std.testing.expectEqual(expected_len, n);
+        const result = try decode(buf[0..n]);
+        try std.testing.expectEqual(value, result.value);
+        try std.testing.expectEqual(n, result.bytes_read);
+    }
+}
+
+test "decode ignores trailing bytes" {
+    var buf: [max_encoded_len]u8 = undefined;
+    const n = try encode(42, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    // Append garbage bytes
+    buf[1] = 0xFF;
+    buf[2] = 0xAB;
+    buf[3] = 0xCD;
+    const result = try decode(&buf);
+    try std.testing.expectEqual(@as(u64, 42), result.value);
+    try std.testing.expectEqual(@as(usize, 1), result.bytes_read);
+}
+
+test "encode/decode specific bit patterns" {
+    var buf: [max_encoded_len]u8 = undefined;
+    const test_patterns = [_]u64{
+        0x5555555555555555, // alternating bits
+        0xAAAAAAAAAAAAAAAA, // opposite alternating
+        0x0000FFFFFFFFFFFF, // 48 set bits
+    };
+    for (test_patterns) |value| {
+        const n = try encode(value, &buf);
+        const result = try decode(buf[0..n]);
+        try std.testing.expectEqual(value, result.value);
+        try std.testing.expectEqual(n, result.bytes_read);
+    }
+}
