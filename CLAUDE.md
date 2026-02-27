@@ -399,19 +399,19 @@ gh issue create --repo yusa-imit/sailor \
 - 동일한 이슈가 이미 열려있는지 먼저 확인: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
 - 이슈 발행 후 현재 작업으로 복귀 (sailor 수정을 직접 하지 않음)
 
-### v0.1.0 — arg, color (status: READY)
+### v0.1.0 — arg, color (status: DONE)
 
 sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
 **작업 내용**:
-- [ ] `build.zig.zon`에 sailor 의존성 추가
-- [ ] `build.zig`에 CLI executable 빌드 타겟 추가 (기존 library + 새 CLI)
-- [ ] `src/cli.zig` 생성 — `sailor.arg`로 CLI 진입점 구현
+- [x] `build.zig.zon`에 sailor 의존성 추가
+- [x] `build.zig`에 CLI executable 빌드 타겟 추가 (기존 library + 새 CLI)
+- [x] `src/cli.zig` 생성 — `sailor.arg`로 CLI 진입점 구현
   - `silica <db_path>` — interactive SQL 셸 진입
   - `--help`, `--version`, `--header`, `--csv`, `--json` 플래그
-- [ ] 에러 출력에 `sailor.color` 적용
-- [ ] 기존 테스트 전체 통과 확인
-- [ ] 커밋: `feat: add CLI entry point with sailor v0.1.0`
+- [x] 에러 출력에 `sailor.color` 적용
+- [x] 기존 테스트 전체 통과 확인
+- [x] 커밋: `feat: add CLI entry point with sailor v0.1.0`
 
 ### v0.2.0 — repl (status: PENDING)
 
