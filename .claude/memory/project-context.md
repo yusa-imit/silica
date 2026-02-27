@@ -18,9 +18,9 @@
 ### Milestone 2 — B+Tree & Buffer Pool (Weeks 3-6)
 - [x] LRU buffer pool with dirty page tracking (2A)
 - [x] B+Tree insert, delete, point lookup with leaf/internal splits (2B)
-- [ ] Leaf merges / underflow handling (2C — next priority)
-- [ ] Range scan cursors (forward/backward) (2D)
-- [ ] Overflow pages for large values (2E)
+- [x] Leaf/internal merges, underflow handling, root shrink (2C)
+- [x] Range scan cursors (forward/backward) with seek (2D)
+- [ ] Overflow pages for large values (2E — next priority)
 - [ ] Comprehensive B+Tree fuzz tests (2F)
 
 ## Architecture Layers
@@ -55,10 +55,10 @@
 - `src/util/varint.zig` — LEB128 unsigned varint encode/decode
 - `src/storage/page.zig` — Pager with header, read/write, freelist
 - `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking
-- `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, leaf+internal splits
+- `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, splits, merges, cursor
 
-## Test Summary (95 tests total)
-- `btree.zig`: 25 tests — basic CRUD, splits, sibling chain, reverse inserts, empty keys, boundary deletions
+## Test Summary (109 tests total)
+- `btree.zig`: 39 tests — CRUD, splits, merges, underflow, cursors (forward/backward/seek/range)
 - `buffer_pool.zig`: 16 tests — fetch/unpin, LRU eviction, dirty flush, pool size=1, stress pin cycles
 - `page.zig`: 24 tests — header/alloc/free, checksums, freelist chains, max/min page sizes, persistence
 - `checksum.zig`: 12 tests — known values, incremental hashing, bit flip detection
