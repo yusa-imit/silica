@@ -60,9 +60,13 @@
 - `src/storage/overflow.zig` — Overflow page chain management (write/read/free)
 - `src/storage/fuzz.zig` — Comprehensive B+Tree fuzz tests (12 tests)
 - `src/sql/tokenizer.zig` — Hand-written SQL lexer (keywords, literals, operators, comments)
+- `src/sql/ast.zig` — AST node definitions (Stmt, Expr, SelectStmt, etc.) with arena allocator
+- `src/sql/parser.zig` — Recursive descent parser with Pratt expression precedence
 
-## Test Summary (203 tests total)
+## Test Summary (277 tests total)
+- `parser.zig`: 55 tests — SELECT/INSERT/UPDATE/DELETE, CREATE/DROP TABLE/INDEX, transactions, expressions, precedence, JOIN, subqueries, error handling
 - `tokenizer.zig`: 53 tests — all token types, keywords, operators, literals, comments, SQL statements
+- `ast.zig`: 10 tests — arena allocation, expression trees, statement structs, constraint variants
 - `btree.zig`: 46 tests — CRUD, splits, merges, underflow, cursors, overflow insert/get/delete/cursor
 - `fuzz.zig`: 12 tests — random insert/delete, small pages, overflow mix, reinsert, cursor consistency, seek, multi-page-size, grow-shrink, duplicates
 - `overflow.zig`: 18 tests — chain write/read/free, single/multi-page, prefix, boundaries, min page size
@@ -76,7 +80,7 @@
 
 ### Milestone 3 — Tokenizer & Parser
 - [x] Tokenizer (3A) — hand-written lexer, SQL keyword recognition (53 tests)
-- [ ] Parser (3B) — recursive descent → AST
-- [ ] DDL statements (3C) — CREATE TABLE, DROP TABLE
-- [ ] DML statements (3D) — SELECT, INSERT, UPDATE, DELETE
+- [x] Parser (3B) — recursive descent → AST (55 tests)
+- [x] DDL statements (3C) — CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX (included in 3B)
+- [x] DML statements (3D) — SELECT, INSERT, UPDATE, DELETE (included in 3B)
 - [ ] Parser error recovery (3E)
