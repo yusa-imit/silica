@@ -17,8 +17,8 @@
 
 ### Milestone 2 — B+Tree & Buffer Pool (Weeks 3-6)
 - [x] LRU buffer pool with dirty page tracking (2A)
-- [ ] B+Tree insert, delete, point lookup (2B — next priority)
-- [ ] Leaf page splits and merges (2C)
+- [x] B+Tree insert, delete, point lookup with leaf/internal splits (2B)
+- [ ] Leaf merges / underflow handling (2C — next priority)
 - [ ] Range scan cursors (forward/backward) (2D)
 - [ ] Overflow pages for large values (2E)
 - [ ] Comprehensive B+Tree fuzz tests (2F)
@@ -55,3 +55,4 @@
 - `src/util/varint.zig` — LEB128 unsigned varint encode/decode
 - `src/storage/page.zig` — Pager with header, read/write, freelist
 - `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking
+- `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, leaf+internal splits

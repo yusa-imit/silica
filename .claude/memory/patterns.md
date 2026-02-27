@@ -100,4 +100,38 @@ pool.unpinPage(new_pid, true);
 try pool.flushAll();
 ```
 
+### B+Tree usage — VERIFIED
+```zig
+const btree = @import("storage/btree.zig");
+
+// Create a root leaf page on disk first
+const root_id = try pager.allocPage();
+{
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    btree.initLeafPage(raw, pager.page_size, root_id);
+    try pager.writePage(root_id, raw);
+}
+
+var tree = btree.BTree.init(&pool, root_id);
+try tree.insert("key", "value");
+const val = try tree.get(allocator, "key"); // returns owned slice or null
+if (val) |v| { defer allocator.free(v); }
+try tree.delete("key");
+// NOTE: tree.root_page_id may change after insert (root split)
+```
+
+### B+Tree page layout — VERIFIED
+- Leaf: `[PageHeader 16B][prev_leaf 4B][next_leaf 4B][cell_ptrs...] ... [cells←]`
+- Internal: `[PageHeader 16B][right_child 4B][cell_ptrs...] ... [cells←]`
+- Leaf cell: `[key_len varint][key_data][value_len varint][value_data]`
+- Internal cell: `[left_child u32 LE][key_len varint][key_data]`
+- Cell pointers are u16 offsets, sorted by key order
+- Cells grow from end of page backward (slotted page design)
+
+### @memcpy aliasing — IMPORTANT
+Zig's `@memcpy` panics if src and dst overlap. Use:
+- `std.mem.copyForwards` when dst < src (e.g., deleting/shifting left)
+- `std.mem.copyBackwards` when dst > src (e.g., inserting/shifting right)
+
 <!-- Add new patterns as they are verified through implementation -->
