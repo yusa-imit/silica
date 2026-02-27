@@ -1781,3 +1781,139 @@ test "parse nested function calls" {
     const inner = outer.args[0].function_call;
     try std.testing.expectEqualStrings("ABS", inner.name);
 }
+
+// ── Stabilization: Parser Error & Edge Case Tests ─────────────────────
+
+test "parse error on empty string" {
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var p = try Parser.init(std.testing.allocator, "", &ast_arena);
+    defer p.deinit();
+    const result = try p.parseStatement();
+    try std.testing.expect(result == null);
+}
+
+test "parse error on just semicolons" {
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var p = try Parser.init(std.testing.allocator, ";;;", &ast_arena);
+    defer p.deinit();
+    // Should return null (no statement to parse) or succeed silently
+    const result = try p.parseStatement();
+    try std.testing.expect(result == null);
+}
+
+test "parse error on incomplete SELECT" {
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var p = try Parser.init(std.testing.allocator, "SELECT", &ast_arena);
+    defer p.deinit();
+    const result = p.parseStatement();
+    try std.testing.expect(result == error.ParseFailed);
+    try std.testing.expect(p.errors.items.len > 0);
+}
+
+test "parse error on incomplete INSERT" {
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var p = try Parser.init(std.testing.allocator, "INSERT INTO", &ast_arena);
+    defer p.deinit();
+    const result = p.parseStatement();
+    try std.testing.expect(result == error.ParseFailed);
+    try std.testing.expect(p.errors.items.len > 0);
+}
+
+test "parse error on incomplete CREATE TABLE" {
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var p = try Parser.init(std.testing.allocator, "CREATE TABLE", &ast_arena);
+    defer p.deinit();
+    const result = p.parseStatement();
+    try std.testing.expect(result == error.ParseFailed);
+}
+
+test "parse error on missing closing parenthesis" {
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var p = try Parser.init(std.testing.allocator, "SELECT (1 + 2", &ast_arena);
+    defer p.deinit();
+    const result = p.parseStatement();
+    try std.testing.expect(result == error.ParseFailed);
+}
+
+test "parse deeply nested parentheses" {
+    var r = try testParseWithArena("SELECT ((((1 + 2)))) FROM t");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), r.stmt.select.columns.len);
+}
+
+test "parse SELECT with all clause types combined" {
+    var r = try testParseWithArena(
+        "SELECT DISTINCT a, COUNT(b) FROM t1 INNER JOIN t2 ON t1.id = t2.fk WHERE a > 5 GROUP BY a HAVING COUNT(b) > 1 ORDER BY a DESC LIMIT 10 OFFSET 20",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.distinct);
+    try std.testing.expect(sel.where != null);
+    try std.testing.expect(sel.group_by.len > 0);
+    try std.testing.expect(sel.having != null);
+    try std.testing.expect(sel.order_by.len > 0);
+    try std.testing.expect(sel.limit != null);
+    try std.testing.expect(sel.offset != null);
+    try std.testing.expectEqual(@as(usize, 1), sel.joins.len);
+}
+
+test "parse keyword as table alias" {
+    // Common pattern: using a keyword as an alias
+    var r = try testParseWithArena("SELECT t.name FROM users t");
+    defer r.deinit();
+    try std.testing.expect(r.stmt.select.from.?.table_name.alias != null);
+    try std.testing.expectEqualStrings("t", r.stmt.select.from.?.table_name.alias.?);
+}
+
+test "parse multiple column aliases" {
+    var r = try testParseWithArena("SELECT a AS x, b AS y, c AS z FROM t");
+    defer r.deinit();
+    const cols = r.stmt.select.columns;
+    try std.testing.expectEqual(@as(usize, 3), cols.len);
+    try std.testing.expectEqualStrings("x", cols[0].expr.alias.?);
+    try std.testing.expectEqualStrings("y", cols[1].expr.alias.?);
+    try std.testing.expectEqualStrings("z", cols[2].expr.alias.?);
+}
+
+test "parse CREATE TABLE with multiple constraints" {
+    var r = try testParseWithArena(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY NOT NULL, customer_id INTEGER NOT NULL, amount REAL DEFAULT 0.0, status TEXT DEFAULT 'pending')",
+    );
+    defer r.deinit();
+    const create = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 4), create.columns.len);
+    try std.testing.expectEqualStrings("orders", create.name);
+}
+
+test "parse INSERT with many rows" {
+    var r = try testParseWithArena(
+        "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')",
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 4), r.stmt.insert.values.len);
+}
+
+test "parse UPDATE with multiple SET assignments" {
+    var r = try testParseWithArena(
+        "UPDATE users SET name = 'Alice', age = 30, active = TRUE WHERE id = 1",
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 3), r.stmt.update.assignments.len);
+    try std.testing.expect(r.stmt.update.where != null);
+}
+
+test "parse complex WHERE with mixed operators" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t WHERE (a > 1 AND b < 10) OR (c = 'x' AND d IS NOT NULL)",
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt.select.where != null);
+    // The top-level expression should be an OR
+    try std.testing.expect(r.stmt.select.where.?.binary_op.op == .@"or");
+}

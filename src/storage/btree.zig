@@ -3896,3 +3896,407 @@ test "BTree empty value with overflow encoding" {
     try std.testing.expectEqual(@as(usize, 0), v.?.len);
     allocator.free(v.?);
 }
+
+// ── Stabilization: Additional Edge Case Tests ─────────────────────────
+
+test "BTree delete single key from root leaf" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_delete_root_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    // Insert single key
+    try tree.insert("solo", "value");
+    const v1 = try tree.get(allocator, "solo");
+    try std.testing.expect(v1 != null);
+    try std.testing.expectEqualStrings("value", v1.?);
+    allocator.free(v1.?);
+
+    // Delete it — root leaf with 0 cells, no merge possible
+    try tree.delete("solo");
+
+    const v2 = try tree.get(allocator, "solo");
+    try std.testing.expect(v2 == null);
+
+    // Tree should still be functional — can re-insert
+    try tree.insert("new_solo", "new_value");
+    const v3 = try tree.get(allocator, "new_solo");
+    try std.testing.expect(v3 != null);
+    try std.testing.expectEqualStrings("new_value", v3.?);
+    allocator.free(v3.?);
+}
+
+test "BTree cursor forward scan after partial deletion" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_cursor_after_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+    const N: u32 = 60;
+
+    // Insert N keys
+    for (0..N) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Delete every 3rd key
+    for (0..N) |i| {
+        if (i % 3 == 0) {
+            const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+            try tree.delete(k);
+        }
+    }
+
+    // Cursor scan should produce exactly the remaining keys in order
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekFirst();
+
+    var count: u32 = 0;
+    var prev_key: ?[]u8 = null;
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        // Verify sorted
+        if (prev_key) |pk| {
+            try std.testing.expect(std.mem.order(u8, pk, entry.key) == .lt);
+            allocator.free(pk);
+        }
+        prev_key = try allocator.alloc(u8, entry.key.len);
+        @memcpy(prev_key.?, entry.key);
+        count += 1;
+    }
+    if (prev_key) |pk| allocator.free(pk);
+
+    // N - ceil(N/3) keys should remain
+    const expected = N - (N + 2) / 3;
+    try std.testing.expectEqual(expected, count);
+}
+
+test "BTree persistence across reopen with splits" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_persist_splits.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const N: u32 = 80;
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+
+    // Phase 1: create tree with many keys, close it
+    var final_root_id: u32 = undefined;
+    {
+        const pager = try allocator.create(Pager);
+        pager.* = try Pager.init(allocator, path, .{ .page_size = 512 });
+
+        const init_root = try pager.allocPage();
+        {
+            const raw = try pager.allocPageBuf();
+            defer pager.freePageBuf(raw);
+            initLeafPage(raw, pager.page_size, init_root);
+            try pager.writePage(init_root, raw);
+        }
+
+        const pool = try allocator.create(BufferPool);
+        pool.* = try BufferPool.init(allocator, pager, 200);
+
+        var tree = BTree.init(pool, init_root);
+
+        for (0..N) |i| {
+            const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+            const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+            try tree.insert(k, v);
+        }
+
+        // Save final root (may have changed due to splits)
+        final_root_id = tree.root_page_id;
+
+        try pool.flushAll();
+        pool.deinit();
+        pager.deinit();
+        allocator.destroy(pool);
+        allocator.destroy(pager);
+    }
+
+    // Phase 2: reopen and verify all keys
+    {
+        const pager = try allocator.create(Pager);
+        pager.* = try Pager.init(allocator, path, .{ .page_size = 512 });
+        defer {
+            pager.deinit();
+            allocator.destroy(pager);
+        }
+
+        const pool = try allocator.create(BufferPool);
+        pool.* = try BufferPool.init(allocator, pager, 200);
+        defer {
+            pool.deinit();
+            allocator.destroy(pool);
+        }
+
+        var tree = BTree.init(pool, final_root_id);
+
+        for (0..N) |i| {
+            const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+            const expected = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+            const val = try tree.get(allocator, k);
+            try std.testing.expect(val != null);
+            try std.testing.expectEqualStrings(expected, val.?);
+            allocator.free(val.?);
+        }
+    }
+}
+
+test "BTree delete all then reinsert larger dataset" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_delete_reinsert_larger.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [12]u8 = undefined;
+    var val_buf: [12]u8 = undefined;
+
+    // Insert 40 keys
+    for (0..40) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>8}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>8}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Delete all 40
+    for (0..40) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>8}", .{i}) catch unreachable;
+        try tree.delete(k);
+    }
+
+    // Insert 100 keys (larger than original set)
+    for (0..100) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "n{d:0>8}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "w{d:0>8}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Verify all 100 new keys
+    for (0..100) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "n{d:0>8}", .{i}) catch unreachable;
+        const expected = std.fmt.bufPrint(&val_buf, "w{d:0>8}", .{i}) catch unreachable;
+        const val = try tree.get(allocator, k);
+        try std.testing.expect(val != null);
+        try std.testing.expectEqualStrings(expected, val.?);
+        allocator.free(val.?);
+    }
+
+    // Old keys should not exist
+    for (0..40) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>8}", .{i}) catch unreachable;
+        const val = try tree.get(allocator, k);
+        try std.testing.expect(val == null);
+    }
+}
+
+test "BTree cursor backward scan after heavy deletion" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_cursor_backward_del.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+    const N: u32 = 80;
+
+    for (0..N) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Delete 75% of keys
+    for (0..N) |i| {
+        if (i % 4 != 0) {
+            const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i}) catch unreachable;
+            try tree.delete(k);
+        }
+    }
+
+    // Backward scan should produce remaining keys in reverse order
+    var cursor = Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seekLast();
+
+    var count: u32 = 0;
+    var prev_key: ?[]u8 = null;
+    while (try cursor.prev()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        if (prev_key) |pk| {
+            try std.testing.expect(std.mem.order(u8, entry.key, pk) == .lt);
+            allocator.free(pk);
+        }
+        prev_key = try allocator.alloc(u8, entry.key.len);
+        @memcpy(prev_key.?, entry.key);
+        count += 1;
+    }
+    if (prev_key) |pk| allocator.free(pk);
+
+    try std.testing.expectEqual(N / 4, count);
+}
+
+test "BTree alternating insert-delete stress" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_alt_stress.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+
+    // Alternating: insert 5, delete 3, repeat — stresses split/merge interplay
+    var inserted = std.ArrayList(u32){};
+    defer inserted.deinit(allocator);
+    var next_key: u32 = 0;
+
+    for (0..10) |_| {
+        // Insert 5
+        for (0..5) |_| {
+            const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{next_key}) catch unreachable;
+            const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{next_key}) catch unreachable;
+            try tree.insert(k, v);
+            try inserted.append(allocator, next_key);
+            next_key += 1;
+        }
+        // Delete 3 from front of list
+        for (0..3) |_| {
+            if (inserted.items.len == 0) break;
+            const del_key = inserted.items[0];
+            const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{del_key}) catch unreachable;
+            try tree.delete(k);
+            _ = inserted.orderedRemove(0);
+        }
+    }
+
+    // Verify only remaining keys exist
+    for (inserted.items) |key_num| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{key_num}) catch unreachable;
+        const val = try tree.get(allocator, k);
+        try std.testing.expect(val != null);
+        allocator.free(val.?);
+    }
+}
+
+test "BTree get on non-existent key in multi-level tree" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_get_missing_deep.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [10]u8 = undefined;
+    var val_buf: [10]u8 = undefined;
+
+    // Insert enough to create multiple levels
+    for (0..100) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "k{d:0>6}", .{i * 2}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "v{d:0>6}", .{i * 2}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    // Look up keys that don't exist (odd numbers, before first, after last)
+    for ([_][]const u8{ "k000001", "k000003", "k000099", "k000199", "a000000", "z999999" }) |missing| {
+        const val = try tree.get(allocator, missing);
+        try std.testing.expect(val == null);
+    }
+}
