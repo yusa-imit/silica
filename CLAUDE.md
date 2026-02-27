@@ -413,7 +413,7 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] 기존 테스트 전체 통과 확인
 - [x] 커밋: `feat: add CLI entry point with sailor v0.1.0`
 
-### v0.2.0 — repl (status: PENDING)
+### v0.2.0 — REPL + fmt (status: READY))
 
 **작업 내용**:
 - [ ] `sailor.repl`로 interactive SQL 셸 구현
