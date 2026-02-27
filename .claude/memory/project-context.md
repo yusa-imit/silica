@@ -20,8 +20,8 @@
 - [x] B+Tree insert, delete, point lookup with leaf/internal splits (2B)
 - [x] Leaf/internal merges, underflow handling, root shrink (2C)
 - [x] Range scan cursors (forward/backward) with seek (2D)
-- [ ] Overflow pages for large values (2E — next priority)
-- [ ] Comprehensive B+Tree fuzz tests (2F)
+- [x] Overflow pages for large values (2E)
+- [ ] Comprehensive B+Tree fuzz tests (2F — next priority)
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -55,11 +55,13 @@
 - `src/util/varint.zig` — LEB128 unsigned varint encode/decode
 - `src/storage/page.zig` — Pager with header, read/write, freelist
 - `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking
-- `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, splits, merges, cursor
+- `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, splits, merges, cursor, overflow support
+- `src/storage/overflow.zig` — Overflow page chain management (write/read/free)
 
-## Test Summary (109 tests total)
-- `btree.zig`: 39 tests — CRUD, splits, merges, underflow, cursors (forward/backward/seek/range)
-- `buffer_pool.zig`: 16 tests — fetch/unpin, LRU eviction, dirty flush, pool size=1, stress pin cycles
+## Test Summary (134 tests total)
+- `btree.zig`: 46 tests — CRUD, splits, merges, underflow, cursors, overflow insert/get/delete/cursor
+- `overflow.zig`: 18 tests — chain write/read/free, single/multi-page, prefix, boundaries, min page size
+- `buffer_pool.zig`: 15 tests — fetch/unpin, LRU eviction, dirty flush, pool size=1, stress pin cycles
 - `page.zig`: 24 tests — header/alloc/free, checksums, freelist chains, max/min page sizes, persistence
 - `checksum.zig`: 12 tests — known values, incremental hashing, bit flip detection
 - `varint.zig`: 19 tests — roundtrip all ranges, boundary values, overflow detection, bit patterns
