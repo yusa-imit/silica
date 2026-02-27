@@ -16,6 +16,9 @@ pub const btree = @import("storage/btree.zig");
 pub const overflow = @import("storage/overflow.zig");
 pub const fuzz = @import("storage/fuzz.zig");
 
+// SQL modules
+pub const tokenizer = @import("sql/tokenizer.zig");
+
 test {
     // Pull in tests from all imported modules
     std.testing.refAllDecls(@This());
