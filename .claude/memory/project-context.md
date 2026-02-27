@@ -56,3 +56,10 @@
 - `src/storage/page.zig` — Pager with header, read/write, freelist
 - `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking
 - `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, leaf+internal splits
+
+## Test Summary (95 tests total)
+- `btree.zig`: 25 tests — basic CRUD, splits, sibling chain, reverse inserts, empty keys, boundary deletions
+- `buffer_pool.zig`: 16 tests — fetch/unpin, LRU eviction, dirty flush, pool size=1, stress pin cycles
+- `page.zig`: 24 tests — header/alloc/free, checksums, freelist chains, max/min page sizes, persistence
+- `checksum.zig`: 12 tests — known values, incremental hashing, bit flip detection
+- `varint.zig`: 19 tests — roundtrip all ranges, boundary values, overflow detection, bit patterns
