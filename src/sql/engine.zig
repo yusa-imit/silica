@@ -3036,3 +3036,215 @@ test "WAL mode: large batch insert" {
         try testing.expectEqual(Value{ .integer = 50 }, row.values[0]);
     }
 }
+
+// ── Error Handling Tests ──────────────────────────────────────────────
+
+test "error: parse invalid SQL" {
+    const path = "test_eng_err_parse.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.ParseError, db.execSQL("SELEKT * FROM foo"));
+    try testing.expectError(EngineError.ParseError, db.execSQL("CREATE TABLE"));
+    try testing.expectError(EngineError.ParseError, db.execSQL("INSERT INTO"));
+}
+
+test "error: empty and whitespace SQL" {
+    const path = "test_eng_err_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.ParseError, db.execSQL(""));
+    try testing.expectError(EngineError.ParseError, db.execSQL("   "));
+    try testing.expectError(EngineError.ParseError, db.execSQL(";"));
+}
+
+test "error: SELECT from non-existent table" {
+    const path = "test_eng_err_no_table.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.AnalysisError, db.execSQL("SELECT * FROM nonexistent"));
+}
+
+test "error: INSERT into non-existent table" {
+    const path = "test_eng_err_ins_notbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.AnalysisError, db.execSQL("INSERT INTO nonexistent (id) VALUES (1)"));
+}
+
+test "error: UPDATE non-existent table" {
+    const path = "test_eng_err_upd_notbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.AnalysisError, db.execSQL("UPDATE nonexistent SET x = 1"));
+}
+
+test "error: DELETE from non-existent table" {
+    const path = "test_eng_err_del_notbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.AnalysisError, db.execSQL("DELETE FROM nonexistent"));
+}
+
+test "error: CREATE TABLE that already exists" {
+    const path = "test_eng_err_dup_tbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY)");
+    r1.close(testing.allocator);
+
+    try testing.expectError(EngineError.TableAlreadyExists, db.execSQL("CREATE TABLE users (id INTEGER)"));
+}
+
+test "error: DROP TABLE that does not exist" {
+    const path = "test_eng_err_drop_notbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    try testing.expectError(EngineError.TableNotFound, db.execSQL("DROP TABLE nonexistent"));
+}
+
+test "DROP TABLE IF EXISTS on non-existent table succeeds" {
+    const path = "test_eng_drop_ifex.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    var r = try db.execSQL("DROP TABLE IF EXISTS nonexistent");
+    r.close(testing.allocator);
+    try testing.expect(std.mem.eql(u8, "DROP TABLE", r.message));
+}
+
+test "error: SELECT with non-existent column" {
+    const path = "test_eng_err_nocol.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)");
+    r1.close(testing.allocator);
+
+    try testing.expectError(EngineError.AnalysisError, db.execSQL("SELECT nonexistent FROM items"));
+}
+
+test "error: INSERT column count mismatch" {
+    const path = "test_eng_err_colmis.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)");
+    r1.close(testing.allocator);
+
+    // Too many values
+    try testing.expectError(EngineError.AnalysisError, db.execSQL("INSERT INTO items (id) VALUES (1, 'extra')"));
+}
+
+test "successive exec calls on same database" {
+    const path = "test_eng_multi_exec.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Multiple DDL+DML calls in sequence
+    var r1 = try db.execSQL("CREATE TABLE a (id INTEGER PRIMARY KEY)");
+    r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE TABLE b (id INTEGER PRIMARY KEY, ref INTEGER)");
+    r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO a (id) VALUES (1)");
+    r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO a (id) VALUES (2)");
+    r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("INSERT INTO b (id, ref) VALUES (10, 1)");
+    r5.close(testing.allocator);
+
+    // SELECT from each table
+    var ra = try db.execSQL("SELECT COUNT(*) FROM a");
+    defer ra.close(testing.allocator);
+    while (try ra.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 2 }, row.values[0]);
+    }
+
+    var rb = try db.execSQL("SELECT COUNT(*) FROM b");
+    defer rb.close(testing.allocator);
+    while (try rb.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 1 }, row.values[0]);
+    }
+}
+
+test "transaction statement returns OK" {
+    const path = "test_eng_txn_ok.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+    try testing.expect(std.mem.eql(u8, "OK", r1.message));
+
+    var r2 = try db.execSQL("COMMIT");
+    r2.close(testing.allocator);
+    try testing.expect(std.mem.eql(u8, "OK", r2.message));
+}
+
+test "error: exec after error recovers" {
+    const path = "test_eng_err_recover.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Trigger an error
+    try testing.expectError(EngineError.ParseError, db.execSQL("INVALID SQL"));
+
+    // Should be able to continue using the database
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+    r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t (id) VALUES (42)");
+    r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r2.rows_affected);
+
+    var r3 = try db.execSQL("SELECT id FROM t");
+    defer r3.close(testing.allocator);
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 42 }, row.values[0]);
+    }
+}
