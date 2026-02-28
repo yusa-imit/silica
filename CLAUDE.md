@@ -434,7 +434,7 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] NULL 값 색상 처리
 - [ ] 커밋: `feat: add output modes with sailor.fmt`
 
-### v0.4.0 — tui (status: PENDING)
+### v0.4.0 — tui (status: READY)
 
 **작업 내용**:
 - [ ] `silica --tui <db_path>` 모드 추가
