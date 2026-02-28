@@ -910,6 +910,84 @@ pub const ScanOp = struct {
     }
 };
 
+// ── Index Scan Operator ─────────────────────────────────────────────────
+
+/// Index-based point lookup: uses a secondary index B+Tree to find
+/// matching row keys, then fetches full rows from the data B+Tree.
+/// Returns at most one row for an equality lookup.
+pub const IndexScanOp = struct {
+    allocator: Allocator,
+    pool: *BufferPool,
+    data_root_page_id: u32,
+    index_root_page_id: u32,
+    lookup_key: []const u8,
+    col_names: []const []const u8,
+    exhausted: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        pool: *BufferPool,
+        data_root_page_id: u32,
+        index_root_page_id: u32,
+        lookup_key: []const u8,
+        col_names: []const []const u8,
+    ) IndexScanOp {
+        return .{
+            .allocator = allocator,
+            .pool = pool,
+            .data_root_page_id = data_root_page_id,
+            .index_root_page_id = index_root_page_id,
+            .lookup_key = lookup_key,
+            .col_names = col_names,
+        };
+    }
+
+    pub fn next(self: *IndexScanOp) ExecError!?Row {
+        if (self.exhausted) return null;
+        self.exhausted = true;
+
+        // Look up the index to find the row key
+        var idx_tree = BTree.init(self.pool, self.index_root_page_id);
+        const row_key = idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
+        if (row_key == null) return null; // No matching index entry
+        defer self.allocator.free(row_key.?);
+
+        // Fetch the actual row from the data B+Tree
+        var data_tree = BTree.init(self.pool, self.data_root_page_id);
+        const row_data = data_tree.get(self.allocator, row_key.?) catch return ExecError.StorageError;
+        if (row_data == null) return null; // Orphaned index entry
+        defer self.allocator.free(row_data.?);
+
+        // Deserialize the row
+        const values = deserializeRow(self.allocator, row_data.?) catch return ExecError.InvalidRowData;
+        errdefer {
+            for (values) |v| v.free(self.allocator);
+            self.allocator.free(values);
+        }
+
+        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        for (self.col_names, 0..) |c, i| cols[i] = c;
+
+        return Row{
+            .columns = cols,
+            .values = values,
+            .allocator = self.allocator,
+        };
+    }
+
+    pub fn close(_: *IndexScanOp) void {}
+
+    pub fn iterator(self: *IndexScanOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&IndexScanOp.next),
+                .close = @ptrCast(&IndexScanOp.close),
+            },
+        };
+    }
+};
+
 // ── Filter Operator ─────────────────────────────────────────────────────
 
 /// Applies a predicate to filter rows from its input.

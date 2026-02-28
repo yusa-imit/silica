@@ -57,8 +57,104 @@ const AggregateOp = executor_mod.AggregateOp;
 const NestedLoopJoinOp = executor_mod.NestedLoopJoinOp;
 const ValuesOp = executor_mod.ValuesOp;
 const EmptyOp = executor_mod.EmptyOp;
+const IndexScanOp = executor_mod.IndexScanOp;
 const serializeRow = executor_mod.serializeRow;
 const evalExpr = executor_mod.evalExpr;
+
+// ── Index Key Encoding ───────────────────────────────────────────────
+
+/// Encode a Value as an index key for B+Tree storage.
+/// Integer values use 8-byte big-endian encoding with sign flip for correct
+/// lexicographic ordering. Text values use raw bytes. NULL encodes as empty.
+fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
+    return switch (val) {
+        .integer => |i| {
+            const buf = try allocator.alloc(u8, 8);
+            // Flip the sign bit for correct lexicographic ordering of signed integers:
+            // -3, -2, -1, 0, 1, 2, 3 should sort correctly as byte sequences.
+            const unsigned: u64 = @bitCast(i);
+            const flipped = unsigned ^ (@as(u64, 1) << 63);
+            std.mem.writeInt(u64, buf[0..8], flipped, .big);
+            return buf;
+        },
+        .text => |t| try allocator.dupe(u8, t),
+        .real => |r| {
+            const buf = try allocator.alloc(u8, 8);
+            const bits: u64 = @bitCast(r);
+            // For floats: if positive, flip sign bit; if negative, flip all bits
+            const flipped = if (r >= 0) bits ^ (@as(u64, 1) << 63) else ~bits;
+            std.mem.writeInt(u64, buf[0..8], flipped, .big);
+            return buf;
+        },
+        .boolean => |b| {
+            const buf = try allocator.alloc(u8, 1);
+            buf[0] = if (b) 1 else 0;
+            return buf;
+        },
+        .null_value => try allocator.alloc(u8, 0),
+        .blob => |b| try allocator.dupe(u8, b),
+    };
+}
+
+/// Encode a literal integer as an index key (same encoding as valueToIndexKey).
+fn integerToIndexKey(allocator: Allocator, i: i64) ![]u8 {
+    const buf = try allocator.alloc(u8, 8);
+    const unsigned: u64 = @bitCast(i);
+    const flipped = unsigned ^ (@as(u64, 1) << 63);
+    std.mem.writeInt(u64, buf[0..8], flipped, .big);
+    return buf;
+}
+
+/// Encode a literal string as an index key.
+fn stringToIndexKey(allocator: Allocator, s: []const u8) ![]u8 {
+    return allocator.dupe(u8, s);
+}
+
+// ── Index Selection ──────────────────────────────────────────────────
+
+/// Result of extracting an equality predicate `column = literal`.
+const EqualityPredicate = struct {
+    column_name: []const u8,
+    value_type: union(enum) {
+        integer: i64,
+        text: []const u8,
+    },
+};
+
+/// Extract a simple `column_ref = literal` or `literal = column_ref` pattern
+/// from an expression. Returns null for non-equality or complex predicates.
+fn extractEqualityPredicate(expr: *const ast_mod.Expr) ?EqualityPredicate {
+    if (expr.* != .binary_op) return null;
+    const op = expr.binary_op;
+    if (op.op != .equal) return null;
+
+    // Try: column_ref = literal
+    if (op.left.* == .column_ref and op.right.* != .column_ref) {
+        const col = op.left.column_ref;
+        // Only handle unqualified column refs (no table prefix) for now
+        if (col.prefix != null) return null;
+        if (op.right.* == .integer_literal) {
+            return .{ .column_name = col.name, .value_type = .{ .integer = op.right.integer_literal } };
+        }
+        if (op.right.* == .string_literal) {
+            return .{ .column_name = col.name, .value_type = .{ .text = op.right.string_literal } };
+        }
+    }
+
+    // Try: literal = column_ref
+    if (op.right.* == .column_ref and op.left.* != .column_ref) {
+        const col = op.right.column_ref;
+        if (col.prefix != null) return null;
+        if (op.left.* == .integer_literal) {
+            return .{ .column_name = col.name, .value_type = .{ .integer = op.left.integer_literal } };
+        }
+        if (op.left.* == .string_literal) {
+            return .{ .column_name = col.name, .value_type = .{ .text = op.left.string_literal } };
+        }
+    }
+
+    return null;
+}
 
 // ── Database ─────────────────────────────────────────────────────────
 
@@ -107,6 +203,7 @@ pub const QueryResult = struct {
 /// Holds heap-allocated operator structs to keep them alive during iteration.
 const OperatorChain = struct {
     scan: ?*ScanOp = null,
+    index_scan: ?*IndexScanOp = null,
     filter: ?*FilterOp = null,
     project: ?*ProjectOp = null,
     limit: ?*LimitOp = null,
@@ -133,6 +230,12 @@ const OperatorChain = struct {
         if (self.scan2) |s| {
             freeScanColNames(allocator, s);
             allocator.destroy(s);
+        }
+        if (self.index_scan) |is| {
+            for (is.col_names) |name| allocator.free(@constCast(name));
+            allocator.free(is.col_names);
+            allocator.free(is.lookup_key);
+            allocator.destroy(is);
         }
         if (self.filter) |f| allocator.destroy(f);
         if (self.project) |p| allocator.destroy(p);
@@ -305,11 +408,63 @@ pub const Database = struct {
     }
 
     fn buildFilter(self: *Database, filter: PlanNode.Filter, ops: *OperatorChain) EngineError!RowIterator {
+        // Try index selection: if the predicate is `col = literal` and the
+        // input is a table scan on a table with an index on that column,
+        // use IndexScanOp for a direct B+Tree lookup instead of full scan.
+        if (filter.input.* == .scan) {
+            if (self.tryBuildIndexScan(filter.input.scan, filter.predicate, ops)) |iter| {
+                return iter;
+            }
+        }
+
         const input = try self.buildIterator(filter.input, ops);
         const filter_op = self.allocator.create(FilterOp) catch return EngineError.OutOfMemory;
         filter_op.* = FilterOp.init(self.allocator, input, filter.predicate);
         ops.filter = filter_op;
         return filter_op.iterator();
+    }
+
+    /// Try to use a secondary index for a predicate on a scan.
+    /// Returns a RowIterator if successful, null if index scan is not applicable.
+    fn tryBuildIndexScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
+        // Only handle simple equality predicates: column_ref = literal
+        const eq = extractEqualityPredicate(predicate) orelse return null;
+
+        // Look up the table to find index info
+        var table_info = self.catalog.getTable(scan.table) catch return null;
+        defer table_info.deinit(self.allocator);
+
+        // Check if there's an index on the referenced column
+        const col_name = eq.column_name;
+        const idx_info = table_info.findIndex(col_name) orelse return null;
+
+        // Encode the literal value as an index key
+        const idx_key = switch (eq.value_type) {
+            .integer => |v| integerToIndexKey(self.allocator, v) catch return null,
+            .text => |v| stringToIndexKey(self.allocator, v) catch return null,
+        };
+
+        // Build column names for the scan
+        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        for (table_info.columns, 0..) |col, i| {
+            if (scan.alias) |alias| {
+                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+            } else {
+                col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
+            }
+        }
+
+        const idx_op = self.allocator.create(IndexScanOp) catch return null;
+        idx_op.* = IndexScanOp.init(
+            self.allocator,
+            self.pool,
+            table_info.data_root_page_id,
+            idx_info.root_page_id,
+            idx_key,
+            col_names,
+        );
+        ops.index_scan = idx_op;
+        return idx_op.iterator();
     }
 
     fn buildProject(self: *Database, project: PlanNode.Project, ops: *OperatorChain) EngineError!RowIterator {
@@ -452,6 +607,9 @@ pub const Database = struct {
                 table_info.data_root_page_id = tree.root_page_id;
             }
 
+            // Maintain secondary indexes
+            self.insertIndexEntries(values_node.table, &table_info, vals, &key_buf) catch return EngineError.StorageError;
+
             rows_inserted += 1;
         }
 
@@ -492,10 +650,11 @@ pub const Database = struct {
         var info = try self.catalog.getTable(table_name);
         defer info.deinit(self.allocator);
 
-        const value = try catalog_mod.serializeTable(
+        const value = try catalog_mod.serializeTableFull(
             self.allocator,
             info.columns,
             info.table_constraints,
+            info.indexes,
             new_root,
         );
         defer self.allocator.free(value);
@@ -503,6 +662,66 @@ pub const Database = struct {
         // Delete and re-insert in the schema B+Tree
         self.catalog.tree.delete(table_name) catch return;
         self.catalog.tree.insert(table_name, value) catch return;
+    }
+
+    /// Update an index's root page ID in the catalog after a B+Tree split.
+    fn updateIndexRootPage(self: *Database, table_name: []const u8, col_name: []const u8, new_idx_root: u32) !void {
+        var info = try self.catalog.getTable(table_name);
+        defer info.deinit(self.allocator);
+
+        // Build a mutable copy of indexes with updated root page
+        const new_indexes = try self.allocator.alloc(catalog_mod.IndexInfo, info.indexes.len);
+        defer self.allocator.free(new_indexes);
+        for (info.indexes, 0..) |idx, i| {
+            new_indexes[i] = idx;
+            if (std.ascii.eqlIgnoreCase(idx.column_name, col_name)) {
+                new_indexes[i].root_page_id = new_idx_root;
+            }
+        }
+
+        const value = try catalog_mod.serializeTableFull(
+            self.allocator,
+            info.columns,
+            info.table_constraints,
+            new_indexes,
+            info.data_root_page_id,
+        );
+        defer self.allocator.free(value);
+
+        self.catalog.tree.delete(table_name) catch return;
+        self.catalog.tree.insert(table_name, value) catch return;
+    }
+
+    // ── Index Maintenance ─────────────────────────────────────────────
+
+    /// Insert index entries for all indexed columns of a newly inserted row.
+    fn insertIndexEntries(self: *Database, table_name: []const u8, table_info: *const catalog_mod.TableInfo, vals: []const Value, row_key: []const u8) !void {
+        for (table_info.indexes) |idx| {
+            if (idx.column_index >= vals.len) continue;
+            const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
+            defer self.allocator.free(idx_key);
+            const idx_val = try self.allocator.dupe(u8, row_key);
+            defer self.allocator.free(idx_val);
+
+            var idx_tree = BTree.init(self.pool, idx.root_page_id);
+            idx_tree.insert(idx_key, idx_val) catch {};
+
+            if (idx_tree.root_page_id != idx.root_page_id) {
+                self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+            }
+        }
+    }
+
+    /// Remove index entries for all indexed columns of a row being deleted.
+    fn deleteIndexEntries(self: *Database, table_info: *const catalog_mod.TableInfo, vals: []const Value) void {
+        for (table_info.indexes) |idx| {
+            if (idx.column_index >= vals.len) continue;
+            const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
+            defer self.allocator.free(idx_key);
+
+            var idx_tree = BTree.init(self.pool, idx.root_page_id);
+            idx_tree.delete(idx_key) catch {};
+        }
     }
 
     // ── UPDATE execution ──────────────────────────────────────────────
@@ -560,12 +779,16 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
+        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value };
+
         // Collect key-value pairs to update (can't modify B+Tree while iterating)
-        var updates = std.ArrayListUnmanaged(struct { key: []u8, value: []u8 }){};
+        var updates = std.ArrayListUnmanaged(UpdateEntry){};
         defer {
             for (updates.items) |item| {
                 self.allocator.free(item.key);
                 self.allocator.free(item.value);
+                for (item.old_values) |v| v.free(self.allocator);
+                self.allocator.free(item.old_values);
             }
             updates.deinit(self.allocator);
         }
@@ -601,6 +824,22 @@ pub const Database = struct {
                 }
             }
 
+            // Save old values for index maintenance
+            const old_values = self.allocator.alloc(Value, row.values.len) catch {
+                for (row.values) |v| v.free(self.allocator);
+                self.allocator.free(row.values);
+                return EngineError.OutOfMemory;
+            };
+            for (row.values, 0..) |v, vi| {
+                old_values[vi] = v.dupe(self.allocator) catch {
+                    for (old_values[0..vi]) |ov| ov.free(self.allocator);
+                    self.allocator.free(old_values);
+                    for (row.values) |rv| rv.free(self.allocator);
+                    self.allocator.free(row.values);
+                    return EngineError.OutOfMemory;
+                };
+            }
+
             // Apply assignments
             for (assignments) |assign| {
                 const new_val = evalExpr(self.allocator, assign.expr, &row) catch continue;
@@ -623,6 +862,8 @@ pub const Database = struct {
 
             // Re-serialize
             const new_data = serializeRow(self.allocator, row.values) catch {
+                for (old_values) |ov| ov.free(self.allocator);
+                self.allocator.free(old_values);
                 for (row.values) |v| v.free(self.allocator);
                 self.allocator.free(row.values);
                 return EngineError.OutOfMemory;
@@ -630,14 +871,18 @@ pub const Database = struct {
 
             const key_copy = self.allocator.dupe(u8, entry.key) catch {
                 self.allocator.free(new_data);
+                for (old_values) |ov| ov.free(self.allocator);
+                self.allocator.free(old_values);
                 for (row.values) |v| v.free(self.allocator);
                 self.allocator.free(row.values);
                 return EngineError.OutOfMemory;
             };
 
-            updates.append(self.allocator, .{ .key = key_copy, .value = new_data }) catch {
+            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values }) catch {
                 self.allocator.free(key_copy);
                 self.allocator.free(new_data);
+                for (old_values) |ov| ov.free(self.allocator);
+                self.allocator.free(old_values);
                 for (row.values) |v| v.free(self.allocator);
                 self.allocator.free(row.values);
                 return EngineError.OutOfMemory;
@@ -647,11 +892,22 @@ pub const Database = struct {
             self.allocator.free(row.values);
         }
 
-        // Apply updates (delete + re-insert)
+        // Apply updates (delete + re-insert) and maintain indexes
         const rows_updated = updates.items.len;
         for (updates.items) |item| {
+            // Remove old index entries
+            self.deleteIndexEntries(&table_info, item.old_values);
+
             tree.delete(item.key) catch {};
             tree.insert(item.key, item.value) catch {};
+
+            // Add new index entries: deserialize new row values for index
+            const new_values = executor_mod.deserializeRow(self.allocator, item.value) catch continue;
+            defer {
+                for (new_values) |v| v.free(self.allocator);
+                self.allocator.free(new_values);
+            }
+            self.insertIndexEntries(scan_table, &table_info, new_values, item.key) catch {};
         }
 
         // Update root page if needed
@@ -707,21 +963,29 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
-        // Collect keys to delete
-        var keys_to_delete = std.ArrayListUnmanaged([]u8){};
+        const DeleteEntry = struct { key: []u8, values: []Value };
+
+        // Collect keys to delete (with row values for index maintenance)
+        var deletes = std.ArrayListUnmanaged(DeleteEntry){};
         defer {
-            for (keys_to_delete.items) |k| self.allocator.free(k);
-            keys_to_delete.deinit(self.allocator);
+            for (deletes.items) |d| {
+                self.allocator.free(d.key);
+                for (d.values) |v| v.free(self.allocator);
+                self.allocator.free(d.values);
+            }
+            deletes.deinit(self.allocator);
         }
 
         while (cursor.next() catch null) |entry| {
-            defer self.allocator.free(entry.value);
+            // Deserialize row for predicate check and index maintenance
+            const values = executor_mod.deserializeRow(self.allocator, entry.value) catch {
+                self.allocator.free(entry.value);
+                self.allocator.free(entry.key);
+                continue;
+            };
+            self.allocator.free(entry.value);
 
             if (predicate) |pred| {
-                const values = executor_mod.deserializeRow(self.allocator, entry.value) catch {
-                    self.allocator.free(entry.key);
-                    continue;
-                };
                 var row = Row{
                     .columns = col_names,
                     .values = values,
@@ -729,32 +993,35 @@ pub const Database = struct {
                 };
 
                 const val = evalExpr(self.allocator, pred, &row) catch {
-                    for (row.values) |v| v.free(self.allocator);
-                    self.allocator.free(row.values);
+                    for (values) |v| v.free(self.allocator);
+                    self.allocator.free(values);
                     self.allocator.free(entry.key);
                     continue;
                 };
                 defer val.free(self.allocator);
 
-                for (row.values) |v| v.free(self.allocator);
-                self.allocator.free(row.values);
-
                 if (!val.isTruthy()) {
+                    for (values) |v| v.free(self.allocator);
+                    self.allocator.free(values);
                     self.allocator.free(entry.key);
                     continue;
                 }
             }
 
-            // Mark for deletion
-            keys_to_delete.append(self.allocator, entry.key) catch {
+            // Mark for deletion (keep values for index maintenance)
+            deletes.append(self.allocator, .{ .key = entry.key, .values = values }) catch {
+                for (values) |v| v.free(self.allocator);
+                self.allocator.free(values);
                 self.allocator.free(entry.key);
                 continue;
             };
         }
 
-        const rows_deleted = keys_to_delete.items.len;
-        for (keys_to_delete.items) |key| {
-            tree.delete(key) catch {};
+        const rows_deleted = deletes.items.len;
+        for (deletes.items) |d| {
+            // Remove index entries before deleting the row
+            self.deleteIndexEntries(&table_info, d.values);
+            tree.delete(d.key) catch {};
         }
 
         if (tree.root_page_id != table_info.data_root_page_id) {
@@ -2150,4 +2417,371 @@ test "transaction statements return OK" {
     var r2 = try db.execSQL("COMMIT");
     r2.close(testing.allocator);
     try testing.expectEqualStrings("OK", r2.message);
+}
+
+// ── Index Selection Tests ────────────────────────────────────────────
+
+test "index scan: WHERE on PRIMARY KEY integer column" {
+    const path = "test_eng_idxscan1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);");
+    r0.close(testing.allocator);
+
+    var r1 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice');");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (2, 'Bob');");
+    r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO users (id, name) VALUES (3, 'Charlie');");
+    r3.close(testing.allocator);
+
+    // This WHERE should use index scan on the 'id' PK column
+    var result = try db.execSQL("SELECT * FROM users WHERE id = 2;");
+    defer result.close(testing.allocator);
+
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    var found_bob = false;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        // Check 'name' column is 'Bob'
+        for (row.columns, row.values) |col, val| {
+            if (std.mem.eql(u8, col, "name")) {
+                if (val == .text) {
+                    if (std.mem.eql(u8, val.text, "Bob")) found_bob = true;
+                }
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expect(found_bob);
+}
+
+test "index scan: WHERE PK not found returns empty" {
+    const path = "test_eng_idxscan2.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT);");
+    r0.close(testing.allocator);
+    var r1 = try db.execSQL("INSERT INTO items (id, val) VALUES (10, 'ten');");
+    r1.close(testing.allocator);
+
+    // Lookup a non-existent key
+    var result = try db.execSQL("SELECT * FROM items WHERE id = 999;");
+    defer result.close(testing.allocator);
+
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 0), count);
+}
+
+test "index scan: multiple inserts then PK lookup" {
+    const path = "test_eng_idxscan3.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);");
+    r0.close(testing.allocator);
+
+    // Insert 20 rows
+    var ins_idx: usize = 0;
+    while (ins_idx < 20) : (ins_idx += 1) {
+        const sql = try std.fmt.allocPrint(testing.allocator, "INSERT INTO products (id, name, price) VALUES ({d}, 'product_{d}', {d});", .{ ins_idx + 1, ins_idx + 1, (ins_idx + 1) * 10 });
+        defer testing.allocator.free(sql);
+        var r = try db.execSQL(sql);
+        r.close(testing.allocator);
+    }
+
+    // Look up the 15th product
+    var result = try db.execSQL("SELECT * FROM products WHERE id = 15;");
+    defer result.close(testing.allocator);
+
+    try testing.expect(result.rows != null);
+    const row_ptr = try result.rows.?.next();
+    try testing.expect(row_ptr != null);
+    var row = row_ptr.?;
+    defer row.deinit();
+
+    // Verify price = 150
+    for (row.columns, row.values) |col, val| {
+        if (std.mem.eql(u8, col, "price")) {
+            try testing.expectEqual(@as(i64, 150), val.integer);
+        }
+    }
+
+    // No more rows
+    const next = try result.rows.?.next();
+    try testing.expect(next == null);
+}
+
+test "index scan: DELETE then index lookup returns empty" {
+    const path = "test_eng_idxscan4.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT);");
+    r0.close(testing.allocator);
+    var r1 = try db.execSQL("INSERT INTO items (id, val) VALUES (1, 'one');");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO items (id, val) VALUES (2, 'two');");
+    r2.close(testing.allocator);
+
+    // Delete id=1
+    var rdel = try db.execSQL("DELETE FROM items WHERE id = 1;");
+    rdel.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), rdel.rows_affected);
+
+    // Index lookup for deleted row should return empty
+    var result = try db.execSQL("SELECT * FROM items WHERE id = 1;");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    const row_ptr = try result.rows.?.next();
+    try testing.expect(row_ptr == null);
+
+    // But id=2 should still be found
+    var r3 = try db.execSQL("SELECT * FROM items WHERE id = 2;");
+    defer r3.close(testing.allocator);
+    try testing.expect(r3.rows != null);
+    const row2 = try r3.rows.?.next();
+    try testing.expect(row2 != null);
+    var r2row = row2.?;
+    defer r2row.deinit();
+}
+
+test "index scan: UPDATE then index lookup returns updated value" {
+    const path = "test_eng_idxscan5.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT);");
+    r0.close(testing.allocator);
+    var r1 = try db.execSQL("INSERT INTO items (id, val) VALUES (1, 'old');");
+    r1.close(testing.allocator);
+
+    // Update the value
+    var rup = try db.execSQL("UPDATE items SET val = 'new' WHERE id = 1;");
+    rup.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), rup.rows_affected);
+
+    // Index lookup should return the updated value
+    var result = try db.execSQL("SELECT * FROM items WHERE id = 1;");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    const row_ptr = try result.rows.?.next();
+    try testing.expect(row_ptr != null);
+    var row = row_ptr.?;
+    defer row.deinit();
+
+    for (row.columns, row.values) |col, val| {
+        if (std.mem.eql(u8, col, "val")) {
+            try testing.expect(val == .text);
+            try testing.expectEqualStrings("new", val.text);
+        }
+    }
+}
+
+test "index scan: text PRIMARY KEY lookup" {
+    const path = "test_eng_idxscan6.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);");
+    r0.close(testing.allocator);
+    var r1 = try db.execSQL("INSERT INTO config (key, value) VALUES ('host', 'localhost');");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO config (key, value) VALUES ('port', '8080');");
+    r2.close(testing.allocator);
+
+    // Text PK lookup
+    var result = try db.execSQL("SELECT * FROM config WHERE key = 'port';");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    const row_ptr = try result.rows.?.next();
+    try testing.expect(row_ptr != null);
+    var row = row_ptr.?;
+    defer row.deinit();
+
+    for (row.columns, row.values) |col, val| {
+        if (std.mem.eql(u8, col, "value")) {
+            try testing.expect(val == .text);
+            try testing.expectEqualStrings("8080", val.text);
+        }
+    }
+}
+
+test "index scan: non-PK column falls back to full scan" {
+    const path = "test_eng_idxscan7.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);");
+    r0.close(testing.allocator);
+    var r1 = try db.execSQL("INSERT INTO items (id, name) VALUES (1, 'Alice');");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO items (id, name) VALUES (2, 'Alice');");
+    r2.close(testing.allocator);
+
+    // WHERE on non-indexed column — should fall back to full scan
+    var result = try db.execSQL("SELECT * FROM items WHERE name = 'Alice';");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "index scan: persistence across close/reopen" {
+    const path = "test_eng_idxscan8.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create and populate
+    {
+        var db = try createTestDb(testing.allocator, path);
+        var r0 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT);");
+        r0.close(testing.allocator);
+        var r1 = try db.execSQL("INSERT INTO items (id, val) VALUES (42, 'answer');");
+        r1.close(testing.allocator);
+        db.close();
+    }
+
+    // Reopen and query via index
+    {
+        var db = try Database.open(testing.allocator, path, .{});
+        defer cleanupTestDb(&db, path);
+
+        var result = try db.execSQL("SELECT * FROM items WHERE id = 42;");
+        defer result.close(testing.allocator);
+        try testing.expect(result.rows != null);
+        const row_ptr = try result.rows.?.next();
+        try testing.expect(row_ptr != null);
+        var row = row_ptr.?;
+        defer row.deinit();
+
+        for (row.columns, row.values) |col, val| {
+            if (std.mem.eql(u8, col, "val")) {
+                try testing.expect(val == .text);
+                try testing.expectEqualStrings("answer", val.text);
+            }
+        }
+    }
+}
+
+test "extractEqualityPredicate: column = integer" {
+    const left = ast_mod.Expr{ .column_ref = .{ .name = "id" } };
+    const right = ast_mod.Expr{ .integer_literal = 42 };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &left, .right = &right } };
+    const result = extractEqualityPredicate(&expr);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("id", result.?.column_name);
+    try testing.expectEqual(@as(i64, 42), result.?.value_type.integer);
+}
+
+test "extractEqualityPredicate: integer = column (reversed)" {
+    const left = ast_mod.Expr{ .integer_literal = 7 };
+    const right = ast_mod.Expr{ .column_ref = .{ .name = "age" } };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &left, .right = &right } };
+    const result = extractEqualityPredicate(&expr);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("age", result.?.column_name);
+    try testing.expectEqual(@as(i64, 7), result.?.value_type.integer);
+}
+
+test "extractEqualityPredicate: column = string" {
+    const left = ast_mod.Expr{ .column_ref = .{ .name = "name" } };
+    const right = ast_mod.Expr{ .string_literal = "Alice" };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &left, .right = &right } };
+    const result = extractEqualityPredicate(&expr);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("name", result.?.column_name);
+    try testing.expectEqualStrings("Alice", result.?.value_type.text);
+}
+
+test "extractEqualityPredicate: returns null for non-equality" {
+    const left = ast_mod.Expr{ .column_ref = .{ .name = "id" } };
+    const right = ast_mod.Expr{ .integer_literal = 5 };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .greater_than, .left = &left, .right = &right } };
+    const result = extractEqualityPredicate(&expr);
+    try testing.expect(result == null);
+}
+
+test "extractEqualityPredicate: returns null for qualified column" {
+    const left = ast_mod.Expr{ .column_ref = .{ .name = "id", .prefix = "t" } };
+    const right = ast_mod.Expr{ .integer_literal = 5 };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &left, .right = &right } };
+    const result = extractEqualityPredicate(&expr);
+    try testing.expect(result == null);
+}
+
+test "valueToIndexKey: integer ordering" {
+    // Verify that encoding preserves lexicographic order for integers
+    const k1 = try integerToIndexKey(testing.allocator, -10);
+    defer testing.allocator.free(k1);
+    const k2 = try integerToIndexKey(testing.allocator, 0);
+    defer testing.allocator.free(k2);
+    const k3 = try integerToIndexKey(testing.allocator, 10);
+    defer testing.allocator.free(k3);
+
+    try testing.expect(std.mem.order(u8, k1, k2) == .lt);
+    try testing.expect(std.mem.order(u8, k2, k3) == .lt);
+    try testing.expect(std.mem.order(u8, k1, k3) == .lt);
+}
+
+test "catalog index serialization roundtrip" {
+    const columns = [_]catalog_mod.ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
+    };
+    const indexes = [_]catalog_mod.IndexInfo{
+        .{ .column_name = "id", .column_index = 0, .root_page_id = 42 },
+    };
+
+    const data = try catalog_mod.serializeTableFull(testing.allocator, &columns, &.{}, &indexes, 10);
+    defer testing.allocator.free(data);
+
+    var info = try catalog_mod.deserializeTable(testing.allocator, "test", data);
+    defer info.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 10), info.data_root_page_id);
+    try testing.expectEqual(@as(usize, 2), info.columns.len);
+    try testing.expectEqual(@as(usize, 1), info.indexes.len);
+    try testing.expectEqualStrings("id", info.indexes[0].column_name);
+    try testing.expectEqual(@as(u16, 0), info.indexes[0].column_index);
+    try testing.expectEqual(@as(u32, 42), info.indexes[0].root_page_id);
+}
+
+test "catalog index backward compatibility (no indexes)" {
+    // Serialize without indexes (old format)
+    const columns = [_]catalog_mod.ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    };
+    const data = try catalog_mod.serializeTable(testing.allocator, &columns, &.{}, 5);
+    defer testing.allocator.free(data);
+
+    var info = try catalog_mod.deserializeTable(testing.allocator, "test", data);
+    defer info.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 5), info.data_root_page_id);
+    try testing.expectEqual(@as(usize, 1), info.columns.len);
+    // serializeTable now includes index_count=0, which deserialize reads correctly
+    try testing.expectEqual(@as(usize, 0), info.indexes.len);
 }

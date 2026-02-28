@@ -107,6 +107,16 @@ pub const TableConstraintInfo = union(enum) {
     unique: []const []const u8,
 };
 
+/// Metadata for a secondary index on a table column.
+pub const IndexInfo = struct {
+    /// Name of the indexed column.
+    column_name: []const u8,
+    /// Column index in the table's column list.
+    column_index: u16,
+    /// B+Tree root page ID for this index (maps column_value → row_key).
+    root_page_id: u32,
+};
+
 /// Complete table metadata.
 pub const TableInfo = struct {
     name: []const u8,
@@ -114,9 +124,13 @@ pub const TableInfo = struct {
     table_constraints: []const TableConstraintInfo,
     /// B+Tree root page ID for this table's row data (0 = not yet allocated).
     data_root_page_id: u32 = 0,
+    /// Secondary indexes on this table.
+    indexes: []const IndexInfo = &.{},
 
     /// Free all heap-allocated memory owned by this TableInfo.
     pub fn deinit(self: *const TableInfo, allocator: Allocator) void {
+        for (self.indexes) |idx| allocator.free(idx.column_name);
+        allocator.free(self.indexes);
         for (self.table_constraints) |tc| {
             switch (tc) {
                 .primary_key => |cols| {
@@ -134,13 +148,28 @@ pub const TableInfo = struct {
         allocator.free(self.columns);
         allocator.free(self.name);
     }
+
+    /// Find an index for the given column name. Returns null if no index exists.
+    pub fn findIndex(self: *const TableInfo, column_name: []const u8) ?IndexInfo {
+        for (self.indexes) |idx| {
+            if (std.ascii.eqlIgnoreCase(idx.column_name, column_name)) return idx;
+        }
+        return null;
+    }
 };
 
 // ── Serialization ───────────────────────────────────────────────────────
 
 /// Serialize a table definition into bytes for B+Tree storage.
-/// Format: [data_root_page_id: u32][column_count: u16][columns...][table_constraint_count: u16][constraints...]
+/// Format: [data_root_page_id: u32][column_count: u16][columns...]
+///         [table_constraint_count: u16][constraints...]
+///         [index_count: u16][indexes...]
 pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, data_root_page_id: u32) ![]u8 {
+    return serializeTableFull(allocator, columns, table_constraints, &.{}, data_root_page_id);
+}
+
+/// Serialize a table definition with index information.
+pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, indexes: []const IndexInfo, data_root_page_id: u32) ![]u8 {
     // Calculate total size
     var size: usize = 4 + 2; // data_root_page_id: u32 + column_count: u16
     for (columns) |col| {
@@ -157,6 +186,11 @@ pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_c
                 }
             },
         }
+    }
+    // Index info
+    size += 2; // index_count: u16
+    for (indexes) |idx| {
+        size += 2 + idx.column_name.len + 2 + 4; // name_len + name + col_index + root_page_id
     }
 
     const buf = try allocator.alloc(u8, size);
@@ -215,6 +249,20 @@ pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_c
                 }
             },
         }
+    }
+
+    // Indexes
+    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(indexes.len), .little);
+    pos += 2;
+    for (indexes) |idx| {
+        std.mem.writeInt(u16, buf[pos..][0..2], @intCast(idx.column_name.len), .little);
+        pos += 2;
+        @memcpy(buf[pos..][0..idx.column_name.len], idx.column_name);
+        pos += idx.column_name.len;
+        std.mem.writeInt(u16, buf[pos..][0..2], idx.column_index, .little);
+        pos += 2;
+        std.mem.writeInt(u32, buf[pos..][0..4], idx.root_page_id, .little);
+        pos += 4;
     }
 
     std.debug.assert(pos == size);
@@ -313,6 +361,37 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
         }
     }
 
+    // Indexes (optional — backward compatible with older format)
+    var indexes: []IndexInfo = &.{};
+    if (pos + 2 <= data.len) {
+        const idx_count = std.mem.readInt(u16, data[pos..][0..2], .little);
+        pos += 2;
+
+        if (idx_count > 0) {
+            const idx_list = try allocator.alloc(IndexInfo, idx_count);
+            var idxs_initialized: usize = 0;
+            errdefer {
+                for (idx_list[0..idxs_initialized]) |idx| allocator.free(idx.column_name);
+                allocator.free(idx_list);
+            }
+
+            for (idx_list) |*idx| {
+                if (pos + 2 > data.len) return error.InvalidSchemaData;
+                const cn_len = std.mem.readInt(u16, data[pos..][0..2], .little);
+                pos += 2;
+                if (pos + cn_len + 6 > data.len) return error.InvalidSchemaData;
+                idx.column_name = try allocator.dupe(u8, data[pos..][0..cn_len]);
+                pos += cn_len;
+                idx.column_index = std.mem.readInt(u16, data[pos..][0..2], .little);
+                pos += 2;
+                idx.root_page_id = std.mem.readInt(u32, data[pos..][0..4], .little);
+                pos += 4;
+                idxs_initialized += 1;
+            }
+            indexes = idx_list;
+        }
+    }
+
     const owned_name = try allocator.dupe(u8, name);
 
     return .{
@@ -320,6 +399,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
         .columns = columns,
         .table_constraints = table_constraints,
         .data_root_page_id = data_root_page_id,
+        .indexes = indexes,
     };
 }
 
@@ -368,6 +448,11 @@ pub const Catalog = struct {
     /// Returns error.TableAlreadyExists if a table with the same name exists.
     /// `data_root_page_id` is the B+Tree root page for this table's row data.
     pub fn createTable(self: *Catalog, name: []const u8, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, data_root_page_id: u32) !void {
+        return self.createTableWithIndexes(name, columns, table_constraints, &.{}, data_root_page_id);
+    }
+
+    /// Create a new table in the catalog with secondary indexes.
+    pub fn createTableWithIndexes(self: *Catalog, name: []const u8, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, indexes: []const IndexInfo, data_root_page_id: u32) !void {
         // Check if table already exists
         const existing = try self.tree.get(self.allocator, name);
         if (existing) |v| {
@@ -376,7 +461,7 @@ pub const Catalog = struct {
         }
 
         // Serialize and store
-        const value = try serializeTable(self.allocator, columns, table_constraints, data_root_page_id);
+        const value = try serializeTableFull(self.allocator, columns, table_constraints, indexes, data_root_page_id);
         defer self.allocator.free(value);
 
         self.tree.insert(name, value) catch |err| {
@@ -449,7 +534,28 @@ pub const Catalog = struct {
             try pager.writePage(data_root_id, raw);
         }
 
-        try self.createTable(stmt.name, columns, tc_list.items, data_root_id);
+        // Create secondary index B+Trees for PRIMARY KEY columns
+        var idx_list = std.ArrayListUnmanaged(IndexInfo){};
+        defer idx_list.deinit(self.allocator);
+
+        for (columns, 0..) |col, ci| {
+            if (col.flags.primary_key) {
+                const idx_root_id = try pager.allocPage();
+                {
+                    const raw = try pager.allocPageBuf();
+                    defer pager.freePageBuf(raw);
+                    btree_mod.initLeafPage(raw, pager.page_size, idx_root_id);
+                    try pager.writePage(idx_root_id, raw);
+                }
+                try idx_list.append(self.allocator, .{
+                    .column_name = col.name,
+                    .column_index = @intCast(ci),
+                    .root_page_id = idx_root_id,
+                });
+            }
+        }
+
+        try self.createTableWithIndexes(stmt.name, columns, tc_list.items, idx_list.items, data_root_id);
     }
 
     /// Drop a table from the catalog.
