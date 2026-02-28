@@ -85,7 +85,8 @@ pub fn main() !void {
 
     // Determine initial output mode from flags
     var mode: OutputMode = .table;
-    if (arg_parser.getString("mode")) |mode_str| {
+    const mode_str = arg_parser.getString("mode", "");
+    if (mode_str.len > 0) {
         mode = parseModeString(mode_str) orelse {
             printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
             stderr.flush() catch {};
