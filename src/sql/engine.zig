@@ -2831,3 +2831,242 @@ test "catalog index backward compatibility (no indexes)" {
     // serializeTable now includes index_count=0, which deserialize reads correctly
     try testing.expectEqual(@as(usize, 0), info.indexes.len);
 }
+
+// ── WAL Mode Integration Tests ─────────────────────────────────────────
+
+test "WAL mode: open and close" {
+    const path = "test_eng_wal_open.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_open.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    try testing.expect(db.wal != null);
+    db.close();
+}
+
+test "WAL mode: CREATE TABLE and INSERT" {
+    const path = "test_eng_wal_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_insert.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)");
+    r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO items (id, name) VALUES (1, 'apple')");
+    r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r2.rows_affected);
+
+    var r3 = try db.execSQL("INSERT INTO items (id, name) VALUES (2, 'banana')");
+    r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+
+    // Verify data is readable
+    var r4 = try db.execSQL("SELECT id, name FROM items ORDER BY id");
+    defer r4.close(testing.allocator);
+    var count: usize = 0;
+    while (try r4.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "WAL mode: data persistence across close and reopen" {
+    const path = "test_eng_wal_persist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_persist.db-wal") catch {};
+
+    // Session 1: create table and insert data
+    {
+        var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+        var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+        r1.close(testing.allocator);
+        var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice')");
+        r2.close(testing.allocator);
+        var r3 = try db.execSQL("INSERT INTO users (id, name) VALUES (2, 'Bob')");
+        r3.close(testing.allocator);
+        db.close(); // checkpoints WAL to main DB
+    }
+
+    // Session 2: reopen and verify data persisted
+    {
+        var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+        defer db.close();
+
+        var r = try db.execSQL("SELECT id, name FROM users ORDER BY id");
+        defer r.close(testing.allocator);
+        var count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count += 1;
+        }
+        try testing.expectEqual(@as(usize, 2), count);
+    }
+}
+
+test "WAL mode: UPDATE and DELETE" {
+    const path = "test_eng_wal_upd_del.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_upd_del.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 10)");
+    r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t (id, val) VALUES (2, 20)");
+    r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t (id, val) VALUES (3, 30)");
+    r4.close(testing.allocator);
+
+    // UPDATE
+    var r5 = try db.execSQL("UPDATE t SET val = 99 WHERE id = 2");
+    r5.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r5.rows_affected);
+
+    // DELETE
+    var r6 = try db.execSQL("DELETE FROM t WHERE id = 3");
+    r6.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r6.rows_affected);
+
+    // Verify remaining rows
+    var r7 = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+    defer r7.close(testing.allocator);
+    var count: usize = 0;
+    while (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "WAL mode: aggregates" {
+    const path = "test_eng_wal_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_agg.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE scores (id INTEGER PRIMARY KEY, score INTEGER)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO scores (id, score) VALUES (1, 80)");
+    r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO scores (id, score) VALUES (2, 90)");
+    r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO scores (id, score) VALUES (3, 100)");
+    r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("SELECT COUNT(*), SUM(score) FROM scores");
+    defer r5.close(testing.allocator);
+    var row_count: usize = 0;
+    while (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // COUNT(*) = 3
+        try testing.expectEqual(Value{ .integer = 3 }, row.values[0]);
+        // SUM = 270
+        try testing.expectEqual(Value{ .integer = 270 }, row.values[1]);
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), row_count);
+}
+
+test "WAL mode: multiple tables" {
+    const path = "test_eng_wal_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_multi.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER PRIMARY KEY, name TEXT)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER PRIMARY KEY, val INTEGER)");
+    r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t1 (id, name) VALUES (1, 'hello')");
+    r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 (id, val) VALUES (1, 42)");
+    r4.close(testing.allocator);
+
+    // Verify t1
+    var r5 = try db.execSQL("SELECT name FROM t1");
+    defer r5.close(testing.allocator);
+    var count1: usize = 0;
+    while (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count1 += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count1);
+
+    // Verify t2
+    var r6 = try db.execSQL("SELECT val FROM t2");
+    defer r6.close(testing.allocator);
+    var count2: usize = 0;
+    while (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 42 }, row.values[0]);
+        count2 += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count2);
+}
+
+test "WAL mode: DROP TABLE" {
+    const path = "test_eng_wal_drop.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_drop.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE temp_wal (id INTEGER PRIMARY KEY)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO temp_wal (id) VALUES (1)");
+    r2.close(testing.allocator);
+    var r3 = try db.execSQL("DROP TABLE temp_wal");
+    r3.close(testing.allocator);
+
+    // Attempting to query dropped table should fail
+    const r4 = db.execSQL("SELECT * FROM temp_wal");
+    try testing.expectError(EngineError.AnalysisError, r4);
+}
+
+test "WAL mode: large batch insert" {
+    const path = "test_eng_wal_batch.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_eng_wal_batch.db-wal") catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer db.close();
+
+    var r1 = try db.execSQL("CREATE TABLE nums (id INTEGER PRIMARY KEY, val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert 50 rows
+    var idx: usize = 0;
+    while (idx < 50) : (idx += 1) {
+        var buf: [128]u8 = undefined;
+        const sql = std.fmt.bufPrint(&buf, "INSERT INTO nums (id, val) VALUES ({d}, {d})", .{ idx + 1, (idx + 1) * 10 }) catch unreachable;
+        var r = try db.execSQL(sql);
+        r.close(testing.allocator);
+    }
+
+    var r2 = try db.execSQL("SELECT COUNT(*) FROM nums");
+    defer r2.close(testing.allocator);
+    while (try r2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 50 }, row.values[0]);
+    }
+}
