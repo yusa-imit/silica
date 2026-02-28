@@ -592,6 +592,11 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
 **첫 안정 릴리즈**: 모든 기능 완성, 종합 문서화 포함
 
+**v1.0.1 패치 릴리즈**: 크로스 컴파일 수정 (sailor#7 해결)
+- `renderDiff` std.fmt.format → writer.print 수정
+- x86_64-linux-gnu, x86_64-windows-msvc 크로스 컴파일 정상 동작 확인
+- API 변경 없음 — drop-in replacement
+
 **작업 내용**:
 - [ ] `build.zig.zon`에 sailor v1.0.0 의존성 업데이트
 - [ ] [Getting Started Guide](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/GUIDE.md) 참조하여 모범 사례 적용
