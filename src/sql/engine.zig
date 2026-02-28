@@ -349,8 +349,9 @@ pub const Database = struct {
 
     /// Close the database, flushing all dirty pages.
     pub fn close(self: *Database) void {
-        // Abort any active transaction
+        // Abort any active transaction and release its locks
         if (self.current_txn) |*txn| {
+            self.lock_manager.releaseAllLocks(txn.xid);
             self.tm.abort(txn.xid) catch {};
             txn.deinit();
             self.current_txn = null;
@@ -4486,4 +4487,186 @@ test "MVCC: rollbackTransaction error when no active transaction" {
     defer cleanupTestDb(&db, path);
 
     try testing.expectError(EngineError.NoActiveTransaction, db.rollbackTransaction());
+}
+
+// ── Lock Manager Integration Tests ────────────────────────────────────
+
+test "Lock: INSERT acquires row locks in transaction" {
+    const path = "test_lock_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1, 'a')");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (2, 'b')");
+        r.close(testing.allocator);
+    }
+
+    // Lock manager should have 2 row locks
+    try testing.expect(db.lock_manager.activeRowLockCount() == 2);
+
+    try db.commitTransaction();
+
+    // After commit, all locks should be released
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "Lock: locks released on rollback" {
+    const path = "test_lock_rollback.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1)");
+        r.close(testing.allocator);
+    }
+    try testing.expect(db.lock_manager.activeRowLockCount() > 0);
+
+    try db.rollbackTransaction();
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "Lock: UPDATE acquires row locks" {
+    const path = "test_lock_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1, 'old')");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE items SET name = 'new' WHERE id = 1");
+        r.close(testing.allocator);
+    }
+
+    // Should have acquired at least 1 row lock
+    try testing.expect(db.lock_manager.activeRowLockCount() > 0);
+
+    try db.commitTransaction();
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "Lock: DELETE acquires row locks" {
+    const path = "test_lock_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM items WHERE id = 1");
+        r.close(testing.allocator);
+    }
+
+    try testing.expect(db.lock_manager.activeRowLockCount() > 0);
+
+    try db.commitTransaction();
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "Lock: no locks in auto-commit mode" {
+    const path = "test_lock_autocommit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // In auto-commit mode, no locks should remain
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "Lock: multiple rows same transaction" {
+    const path = "test_lock_multi_row.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1, 'a')");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (2, 'b')");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (3, 'c')");
+        r.close(testing.allocator);
+    }
+
+    try testing.expectEqual(@as(usize, 3), db.lock_manager.activeRowLockCount());
+
+    try db.commitTransaction();
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "Lock: Database.close releases locks from active transaction" {
+    const path = "test_lock_close.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // close should abort the txn and release locks
+    db.close();
+    std.fs.cwd().deleteFile(path) catch {};
 }
