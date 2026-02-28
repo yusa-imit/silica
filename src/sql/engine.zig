@@ -4670,3 +4670,362 @@ test "Lock: Database.close releases locks from active transaction" {
     db.close();
     std.fs.cwd().deleteFile(path) catch {};
 }
+
+test "error recovery: exec succeeds after previous exec error" {
+    const path = "test_err_recovery_exec.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER, name TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // This should fail: too many values
+    _ = db.exec("INSERT INTO t VALUES (1, 'a', 'extra')") catch {
+        // expected error — column count mismatch
+    };
+
+    // Next exec should work fine — engine recovered from the error
+    {
+        var r = try db.exec("INSERT INTO t VALUES (1, 'hello')");
+        r.close(testing.allocator);
+    }
+
+    // Verify the successful insert
+    {
+        var r = try db.exec("SELECT * FROM t");
+        defer r.close(testing.allocator);
+        var count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            row.deinit();
+            count += 1;
+        }
+        try testing.expectEqual(@as(usize, 1), count);
+    }
+}
+
+test "MVCC: transaction commit after successful DML is atomic" {
+    // Verifies that committed DML in a transaction persists,
+    // and can be read in a subsequent auto-commit query.
+    const path = "test_txn_commit_atomic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE accounts (id INTEGER, balance INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert in transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO accounts VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO accounts VALUES (2, 200)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Both rows should be visible after commit
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM accounts");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        }
+    }
+}
+
+test "MVCC: transaction rollback makes DML invisible" {
+    const path = "test_txn_rollback_invisible.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // Insert one row in auto-commit (visible)
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1, 'visible')");
+        r.close(testing.allocator);
+    }
+
+    // Insert in transaction then rollback (should be invisible)
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO items VALUES (2, 'invisible')");
+        r.close(testing.allocator);
+    }
+    try db.rollbackTransaction();
+
+    // In a new explicit transaction, only the auto-committed row should be visible
+    // (auto-commit mode doesn't apply MVCC filtering, so we must check in a txn)
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM items");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        }
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC: UPDATE within transaction is visible" {
+    // Note: UPDATE/DELETE rollback is a known limitation — they physically modify
+    // the B+Tree (delete + re-insert) so rollback doesn't undo the data change.
+    // This will be fixed in Milestone 7 (VACUUM & SSI) with proper MVCC versioning.
+    // For now, we test that UPDATE is visible within the transaction.
+    const path = "test_txn_update_visible.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE data (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO data VALUES (1, 10)");
+        r.close(testing.allocator);
+    }
+
+    // Update within transaction should be visible in same transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE data SET val = 999 WHERE id = 1");
+        r.close(testing.allocator);
+    }
+
+    // Within transaction, should see updated value
+    {
+        var r = try db.exec("SELECT val FROM data WHERE id = 1");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 999), row.values[0].integer);
+        }
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC: DELETE within transaction removes row" {
+    // Tests that DELETE within a transaction correctly removes the row
+    // from visibility within the same transaction.
+    const path = "test_txn_delete_visible.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE things (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO things VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO things VALUES (2)");
+        r.close(testing.allocator);
+    }
+
+    // Delete within transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM things WHERE id = 1");
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 1), r.rows_affected);
+    }
+
+    // Within transaction, only one row should remain
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM things");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        }
+    }
+    try db.commitTransaction();
+}
+
+test "WAL mode: transaction rollback preserves committed data" {
+    const path = "test_wal_txn_rollback.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_txn_rollback.db-wal") catch {};
+    std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    {
+        var r = try db.exec("CREATE TABLE wal_test (id INTEGER, data TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // Auto-commit insert (should persist)
+    {
+        var r = try db.exec("INSERT INTO wal_test VALUES (1, 'persisted')");
+        r.close(testing.allocator);
+    }
+
+    // Transaction insert then rollback
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO wal_test VALUES (2, 'rolled_back')");
+        r.close(testing.allocator);
+    }
+    try db.rollbackTransaction();
+
+    // Only auto-committed row should be visible (check in explicit txn for MVCC filtering)
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM wal_test");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        }
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC: sequential transactions see each other's committed results" {
+    const path = "test_txn_sequential.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE seq (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Transaction 1: insert row
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO seq VALUES (100)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Transaction 2: should see row from tx1
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT * FROM seq WHERE id = 100");
+        defer r.close(testing.allocator);
+        var found = false;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 100), row.values[0].integer);
+            found = true;
+        }
+        try testing.expect(found);
+    }
+
+    // Transaction 2: insert another row and commit
+    {
+        var r = try db.exec("INSERT INTO seq VALUES (200)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Auto-commit query should see both
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM seq");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        }
+    }
+}
+
+test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
+    const path = "test_txn_idu_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE lifecycle (id INTEGER, status TEXT)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    // Insert
+    {
+        var r = try db.exec("INSERT INTO lifecycle VALUES (1, 'created')");
+        r.close(testing.allocator);
+    }
+
+    // Update
+    {
+        var r = try db.exec("UPDATE lifecycle SET status = 'updated' WHERE id = 1");
+        r.close(testing.allocator);
+    }
+
+    // Verify within txn
+    {
+        var r = try db.exec("SELECT status FROM lifecycle WHERE id = 1");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqualStrings("updated", row.values[0].text);
+        }
+    }
+
+    // Delete
+    {
+        var r = try db.exec("DELETE FROM lifecycle WHERE id = 1");
+        r.close(testing.allocator);
+    }
+
+    // Verify deleted within txn
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM lifecycle");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+        }
+    }
+
+    try db.commitTransaction();
+
+    // After commit, row should still be gone
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM lifecycle");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+        }
+    }
+}
