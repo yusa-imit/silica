@@ -413,17 +413,17 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] 기존 테스트 전체 통과 확인
 - [x] 커밋: `feat: add CLI entry point with sailor v0.1.0`
 
-### v0.2.0 — REPL + fmt (status: READY))
+### v0.2.0 — REPL + fmt (status: DONE)
 
 **작업 내용**:
-- [ ] `sailor.repl`로 interactive SQL 셸 구현
+- [x] `sailor.repl`로 interactive SQL 셸 구현
   - 프롬프트: `silica> ` (기본), `   ...> ` (multi-line)
   - 히스토리: `~/.silica_history`
   - 자동완성: SQL 키워드, 테이블명, 컬럼명
   - 하이라이팅: SQL 키워드 색상
   - 멀티라인: `;`로 끝나지 않으면 계속 입력
-- [ ] SQL tokenizer/parser 연결 (silica 자체 모듈)
-- [ ] 커밋: `feat: add interactive SQL shell with sailor.repl`
+- [x] SQL tokenizer/parser 연결 (silica 자체 모듈)
+- [x] 커밋: `feat: add interactive SQL shell with sailor.repl`
 
 ### v0.3.0 — fmt (status: PENDING)
 
