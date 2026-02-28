@@ -1618,3 +1618,536 @@ test "DROP nonexistent table without IF EXISTS" {
     const result = db.execSQL("DROP TABLE nonexistent");
     try testing.expectError(EngineError.TableNotFound, result);
 }
+
+test "INNER JOIN two tables" {
+    const path = "test_eng_join_inner.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create two tables
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE orders (user_id INTEGER, product TEXT)");
+    r2.close(testing.allocator);
+
+    // Insert data
+    var ins1 = try db.execSQL("INSERT INTO users VALUES (1, 'Alice')");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO users VALUES (2, 'Bob')");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO orders VALUES (1, 'Widget')");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO orders VALUES (1, 'Gadget')");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO orders VALUES (2, 'Gizmo')");
+    ins5.close(testing.allocator);
+
+    // Join query
+    var result = try db.execSQL("SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "LEFT JOIN with unmatched rows" {
+    const path = "test_eng_join_left.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE departments (id INTEGER, name TEXT)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE employees (dept_id INTEGER, name TEXT)");
+    r2.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO departments VALUES (1, 'Engineering')");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO departments VALUES (2, 'Marketing')");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO employees VALUES (1, 'Alice')");
+    ins3.close(testing.allocator);
+
+    // LEFT JOIN — Marketing has no employees, should still appear
+    var result = try db.execSQL("SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON d.id = e.dept_id");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var null_found = false;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (row.values.len >= 2 and row.values[1] == .null_value) {
+            null_found = true;
+        }
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expect(null_found);
+}
+
+test "GROUP BY with COUNT" {
+    const path = "test_eng_group_count.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE sales (category TEXT, amount INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO sales VALUES ('A', 10)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO sales VALUES ('A', 20)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO sales VALUES ('B', 30)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO sales VALUES ('A', 40)");
+    ins4.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT category, COUNT(*) FROM sales GROUP BY category");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Two groups: A and B
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "GROUP BY with SUM" {
+    const path = "test_eng_group_sum.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE expenses (dept TEXT, cost INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO expenses VALUES ('eng', 100)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO expenses VALUES ('eng', 200)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO expenses VALUES ('mkt', 50)");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT dept, SUM(cost) FROM expenses GROUP BY dept");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "AVG aggregate" {
+    const path = "test_eng_avg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE scores (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO scores VALUES (10)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO scores VALUES (20)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO scores VALUES (30)");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT AVG(val) FROM scores");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // AVG(10,20,30) = 20.0
+        const avg_val = row.values[0];
+        switch (avg_val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 20.0), r, 0.001),
+            .integer => |i| try testing.expectEqual(@as(i64, 20), i),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "multiple aggregates in one query" {
+    const path = "test_eng_multi_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE items (price INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO items VALUES (5)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO items VALUES (15)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO items VALUES (25)");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT COUNT(*), MIN(price), MAX(price), SUM(price) FROM items");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // Should have 4 values
+        try testing.expectEqual(@as(usize, 4), row.values.len);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "ORDER BY DESC" {
+    const path = "test_eng_order_desc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val DESC");
+    defer result.close(testing.allocator);
+
+    var prev_val: ?i64 = null;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0].toInteger() orelse continue;
+        if (prev_val) |pv| {
+            try testing.expect(val <= pv);
+        }
+        prev_val = val;
+    }
+    try testing.expect(prev_val != null);
+}
+
+test "SELECT with LIKE in WHERE" {
+    const path = "test_eng_like.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE products (name TEXT)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO products VALUES ('Apple Pie')");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO products VALUES ('Banana Split')");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO products VALUES ('Apple Sauce')");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT name FROM products WHERE name LIKE 'Apple%'");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SELECT with BETWEEN in WHERE" {
+    const path = "test_eng_between.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE temps (day INTEGER, temp INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO temps VALUES (1, 15)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO temps VALUES (2, 25)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO temps VALUES (3, 35)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO temps VALUES (4, 20)");
+    ins4.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT day FROM temps WHERE temp BETWEEN 15 AND 25");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // temp 15, 25, 20 match
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SELECT with IN list" {
+    const path = "test_eng_in_list.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE colors (id INTEGER, name TEXT)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO colors VALUES (1, 'red')");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO colors VALUES (2, 'blue')");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO colors VALUES (3, 'green')");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT name FROM colors WHERE name IN ('red', 'green')");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "UPDATE with expression" {
+    const path = "test_eng_upd_expr.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE inventory (item TEXT, qty INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO inventory VALUES ('bolts', 10)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO inventory VALUES ('nuts', 20)");
+    ins2.close(testing.allocator);
+
+    // Update with arithmetic expression
+    var upd = try db.execSQL("UPDATE inventory SET qty = qty + 5 WHERE item = 'bolts'");
+    upd.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), upd.rows_affected);
+
+    // Verify
+    var result = try db.execSQL("SELECT qty FROM inventory WHERE item = 'bolts'");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 15), row.values[0].toInteger().?);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT and DELETE then re-insert" {
+    const path = "test_eng_reinsert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE log (msg TEXT)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO log VALUES ('first')");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO log VALUES ('second')");
+    ins2.close(testing.allocator);
+
+    var del = try db.execSQL("DELETE FROM log");
+    del.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 2), del.rows_affected);
+
+    // Empty now
+    var empty = try db.execSQL("SELECT COUNT(*) FROM log");
+    defer empty.close(testing.allocator);
+    if (try empty.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 0), row.values[0].toInteger().?);
+    }
+
+    // Re-insert should work
+    var ins3 = try db.execSQL("INSERT INTO log VALUES ('third')");
+    ins3.close(testing.allocator);
+
+    var check = try db.execSQL("SELECT COUNT(*) FROM log");
+    defer check.close(testing.allocator);
+    if (try check.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].toInteger().?);
+    }
+}
+
+test "large INSERT batch" {
+    const path = "test_eng_large_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE big (id INTEGER, val TEXT)");
+    r1.close(testing.allocator);
+
+    // Insert 100 rows
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var buf: [128]u8 = undefined;
+        const sql = std.fmt.bufPrint(&buf, "INSERT INTO big VALUES ({d}, 'row_{d}')", .{ i, i }) catch unreachable;
+        var ins = try db.execSQL(sql);
+        ins.close(testing.allocator);
+    }
+
+    // Verify count
+    var result = try db.execSQL("SELECT COUNT(*) FROM big");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 100), row.values[0].toInteger().?);
+    }
+}
+
+test "SELECT with negative value in WHERE" {
+    const path = "test_eng_neg_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE balances (acct TEXT, amount INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO balances VALUES ('a', -50)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO balances VALUES ('b', 100)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO balances VALUES ('c', -10)");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT acct FROM balances WHERE amount < 0");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "empty table aggregate returns zero" {
+    const path = "test_eng_empty_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE empty_t (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT COUNT(*) FROM empty_t");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 0), row.values[0].toInteger().?);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT with NULL explicit and column types" {
+    const path = "test_eng_null_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nullable (a INTEGER, b TEXT, c REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO nullable VALUES (1, NULL, 3.14)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nullable VALUES (NULL, 'hello', NULL)");
+    ins2.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT * FROM nullable");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SELECT with IS NULL filter" {
+    const path = "test_eng_is_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE maybe (id INTEGER, note TEXT)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO maybe VALUES (1, 'present')");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO maybe VALUES (2, NULL)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO maybe VALUES (3, NULL)");
+    ins3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT id FROM maybe WHERE note IS NULL");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "transaction statements return OK" {
+    const path = "test_eng_txn.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+    try testing.expectEqualStrings("OK", r1.message);
+
+    var r2 = try db.execSQL("COMMIT");
+    r2.close(testing.allocator);
+    try testing.expectEqualStrings("OK", r2.message);
+}
