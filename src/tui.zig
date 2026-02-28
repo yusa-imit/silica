@@ -7,6 +7,7 @@ const Database = silica.engine.Database;
 const QueryResult = silica.engine.QueryResult;
 const Value = silica.executor.Value;
 const Row = silica.executor.Row;
+const Catalog = silica.catalog.Catalog;
 
 // ── Focus Pane ───────────────────────────────────────────────────────
 
@@ -21,8 +22,9 @@ const App = struct {
     should_quit: bool = false,
     focus: Pane = .input,
 
-    // Schema tree
-    schema_items: std.ArrayListUnmanaged([]const u8) = .{},
+    // Schema tree (flat list with indented columns)
+    schema_items: std.ArrayListUnmanaged([]const u8) = .{}, // display items (table names + indented columns)
+    schema_table_indices: std.ArrayListUnmanaged(usize) = .{}, // indices into schema_items that are table names
     schema_selected: usize = 0,
     schema_offset: usize = 0,
 
@@ -61,6 +63,8 @@ const App = struct {
         for (self.schema_items.items) |item| self.allocator.free(item);
         self.schema_items.deinit(self.allocator);
         self.schema_items = .{};
+        self.schema_table_indices.deinit(self.allocator);
+        self.schema_table_indices = .{};
     }
 
     fn clearResults(self: *App) void {
@@ -91,11 +95,27 @@ const App = struct {
         defer self.allocator.free(tables);
 
         for (tables) |table_name| {
+            // Record that this index is a table name
+            self.schema_table_indices.append(self.allocator, self.schema_items.items.len) catch continue;
+
             const name = self.allocator.dupe(u8, table_name) catch continue;
             self.schema_items.append(self.allocator, name) catch {
                 self.allocator.free(name);
+                _ = self.schema_table_indices.pop();
                 continue;
             };
+
+            // Add indented column entries
+            const table_info = self.db.catalog.getTable(table_name) catch continue;
+            defer table_info.deinit(self.allocator);
+
+            for (table_info.columns) |col| {
+                const label = formatColumnLabel(self.allocator, col) catch continue;
+                self.schema_items.append(self.allocator, label) catch {
+                    self.allocator.free(label);
+                    continue;
+                };
+            }
         }
     }
 
@@ -182,7 +202,7 @@ const App = struct {
         if (self.status_left.len > 0) self.allocator.free(self.status_left);
         self.status_left = std.fmt.allocPrint(self.allocator, " {s} | {d} table(s)", .{
             self.db_path,
-            self.schema_items.items.len,
+            self.schema_table_indices.items.len,
         }) catch "";
 
         if (self.status_right.len > 0) self.allocator.free(self.status_right);
@@ -248,12 +268,12 @@ const App = struct {
 
     fn handleSchemaKey(self: *App, byte: u8) void {
         if (byte == '\r' or byte == '\n') {
-            // Enter: load SELECT * FROM <table> LIMIT 100 into input
-            if (self.schema_selected < self.schema_items.items.len) {
-                const table = self.schema_items.items[self.schema_selected];
+            // Enter: find which table the selected index belongs to
+            const table = schemaTableForIndex(self.schema_table_indices.items, self.schema_items.items, self.schema_selected);
+            if (table) |table_name| {
                 self.input_text.clearRetainingCapacity();
                 self.input_cursor = 0;
-                const sql = std.fmt.allocPrint(self.allocator, "SELECT * FROM {s} LIMIT 100;", .{table}) catch return;
+                const sql = std.fmt.allocPrint(self.allocator, "SELECT * FROM {s} LIMIT 100;", .{table_name}) catch return;
                 defer self.allocator.free(sql);
                 self.input_text.appendSlice(self.allocator, sql) catch return;
                 self.input_cursor = self.input_text.items.len;
@@ -310,6 +330,70 @@ const App = struct {
         }
     }
 };
+
+// ── Schema Helpers ───────────────────────────────────────────────────
+
+const ColumnInfo = silica.catalog.ColumnInfo;
+const ColumnType = silica.catalog.ColumnType;
+
+/// Find the table name for a given flat-list index.
+/// Uses schema_table_indices to find the nearest table header at or before `idx`.
+fn schemaTableForIndex(table_indices: []const usize, items: []const []const u8, idx: usize) ?[]const u8 {
+    if (table_indices.len == 0 or items.len == 0) return null;
+    if (idx >= items.len) return null;
+
+    // Binary search for the largest table index <= idx
+    var best: ?usize = null;
+    for (table_indices) |ti| {
+        if (ti <= idx) {
+            best = ti;
+        } else {
+            break; // table_indices are in ascending order
+        }
+    }
+
+    if (best) |b| return items[b];
+    return null;
+}
+
+/// Format a column label for display in the schema sidebar.
+/// Example: "  id INTEGER PK" or "  name TEXT NOT NULL"
+fn formatColumnLabel(allocator: std.mem.Allocator, col: ColumnInfo) ![]const u8 {
+    const type_str = switch (col.column_type) {
+        .integer => "INTEGER",
+        .real => "REAL",
+        .text => "TEXT",
+        .blob => "BLOB",
+        .boolean => "BOOLEAN",
+        .untyped => "",
+    };
+
+    // Build suffix for constraints
+    var suffix_buf: [64]u8 = undefined;
+    var suffix_len: usize = 0;
+
+    if (col.flags.primary_key) {
+        const pk = " PK";
+        @memcpy(suffix_buf[suffix_len..][0..pk.len], pk);
+        suffix_len += pk.len;
+    }
+    if (col.flags.not_null) {
+        const nn = " NN";
+        @memcpy(suffix_buf[suffix_len..][0..nn.len], nn);
+        suffix_len += nn.len;
+    }
+    if (col.flags.unique) {
+        const uq = " UQ";
+        @memcpy(suffix_buf[suffix_len..][0..uq.len], uq);
+        suffix_len += uq.len;
+    }
+
+    if (type_str.len > 0) {
+        return std.fmt.allocPrint(allocator, "  {s} {s}{s}", .{ col.name, type_str, suffix_buf[0..suffix_len] });
+    } else {
+        return std.fmt.allocPrint(allocator, "  {s}{s}", .{ col.name, suffix_buf[0..suffix_len] });
+    }
+}
 
 // ── Value Conversion ─────────────────────────────────────────────────
 
@@ -384,6 +468,14 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     renderStatusBar(app, buf, status_area);
 }
 
+fn isTableIndex(table_indices: []const usize, idx: usize) bool {
+    for (table_indices) |ti| {
+        if (ti == idx) return true;
+        if (ti > idx) break;
+    }
+    return false;
+}
+
 fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .schema;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
@@ -393,23 +485,51 @@ fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withTitle("Schema", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
 
+    block.render(buf, area);
+    const inner = block.inner(area);
+    if (inner.width == 0 or inner.height == 0) return;
+
     if (app.schema_items.items.len == 0) {
-        block.render(buf, area);
-        const inner = block.inner(area);
-        if (inner.width > 0 and inner.height > 0) {
-            buf.setString(inner.x, inner.y, "(no tables)", .{ .fg = .bright_black });
-        }
+        buf.setString(inner.x, inner.y, "(no tables)", .{ .fg = .bright_black });
         return;
     }
 
-    const list = tui.widgets.List.init(app.schema_items.items)
-        .withSelected(if (is_focused) @as(?usize, app.schema_selected) else null)
-        .withOffset(app.schema_offset)
-        .withBlock(block)
-        .withSelectedStyle(.{ .fg = .cyan, .bold = true })
-        .withHighlightSymbol("> ");
+    // Adjust offset for scrolling
+    if (app.schema_selected < app.schema_offset) {
+        app.schema_offset = app.schema_selected;
+    } else if (app.schema_selected >= app.schema_offset + inner.height) {
+        app.schema_offset = app.schema_selected - inner.height + 1;
+    }
 
-    list.render(buf, area);
+    // Render visible items manually with different styles for tables vs columns
+    var row: u16 = 0;
+    var idx = app.schema_offset;
+    while (row < inner.height and idx < app.schema_items.items.len) : ({ row += 1; idx += 1; }) {
+        const item = app.schema_items.items[idx];
+        const is_table = isTableIndex(app.schema_table_indices.items, idx);
+        const is_selected = is_focused and idx == app.schema_selected;
+
+        const item_style: tui.Style = if (is_selected)
+            .{ .fg = .cyan, .bold = true, .reverse = true }
+        else if (is_table)
+            .{ .fg = .yellow, .bold = true }
+        else
+            .{ .fg = .bright_black };
+
+        // Clear the row first
+        var cx: u16 = 0;
+        while (cx < inner.width) : (cx += 1) {
+            buf.setChar(inner.x + cx, inner.y + row, ' ', if (is_selected) item_style else .{});
+        }
+
+        // Render the item text
+        var x: u16 = 0;
+        for (item) |c| {
+            if (x >= inner.width) break;
+            buf.setChar(inner.x + x, inner.y + row, c, item_style);
+            x += 1;
+        }
+    }
 }
 
 fn renderResultsTable(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
@@ -1165,4 +1285,54 @@ test "backspace at position 0 does nothing" {
     app.handleKey(127); // Backspace on empty
     try std.testing.expectEqual(@as(usize, 0), app.input_text.items.len);
     try std.testing.expectEqual(@as(usize, 0), app.input_cursor);
+}
+
+test "schemaTableForIndex finds correct table" {
+    // Flat list: [0]="users", [1]="  id INTEGER PK", [2]="  name TEXT", [3]="orders", [4]="  total REAL"
+    const items = [_][]const u8{ "users", "  id INTEGER PK", "  name TEXT", "orders", "  total REAL" };
+    const table_indices = [_]usize{ 0, 3 };
+
+    // Index 0 → "users" (table header itself)
+    try std.testing.expectEqualStrings("users", schemaTableForIndex(&table_indices, &items, 0).?);
+    // Index 1 → "users" (column of users)
+    try std.testing.expectEqualStrings("users", schemaTableForIndex(&table_indices, &items, 1).?);
+    // Index 2 → "users" (column of users)
+    try std.testing.expectEqualStrings("users", schemaTableForIndex(&table_indices, &items, 2).?);
+    // Index 3 → "orders" (table header)
+    try std.testing.expectEqualStrings("orders", schemaTableForIndex(&table_indices, &items, 3).?);
+    // Index 4 → "orders" (column of orders)
+    try std.testing.expectEqualStrings("orders", schemaTableForIndex(&table_indices, &items, 4).?);
+    // Out of bounds
+    try std.testing.expect(schemaTableForIndex(&table_indices, &items, 5) == null);
+    // Empty
+    try std.testing.expect(schemaTableForIndex(&[_]usize{}, &items, 0) == null);
+}
+
+test "formatColumnLabel basic types and constraints" {
+    const allocator = std.testing.allocator;
+
+    {
+        const col = ColumnInfo{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true } };
+        const label = try formatColumnLabel(allocator, col);
+        defer allocator.free(label);
+        try std.testing.expectEqualStrings("  id INTEGER PK", label);
+    }
+    {
+        const col = ColumnInfo{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } };
+        const label = try formatColumnLabel(allocator, col);
+        defer allocator.free(label);
+        try std.testing.expectEqualStrings("  name TEXT NN", label);
+    }
+    {
+        const col = ColumnInfo{ .name = "email", .column_type = .text, .flags = .{ .not_null = true, .unique = true } };
+        const label = try formatColumnLabel(allocator, col);
+        defer allocator.free(label);
+        try std.testing.expectEqualStrings("  email TEXT NN UQ", label);
+    }
+    {
+        const col = ColumnInfo{ .name = "data", .column_type = .untyped, .flags = .{} };
+        const label = try formatColumnLabel(allocator, col);
+        defer allocator.free(label);
+        try std.testing.expectEqualStrings("  data", label);
+    }
 }
