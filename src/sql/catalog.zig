@@ -112,6 +112,8 @@ pub const TableInfo = struct {
     name: []const u8,
     columns: []const ColumnInfo,
     table_constraints: []const TableConstraintInfo,
+    /// B+Tree root page ID for this table's row data (0 = not yet allocated).
+    data_root_page_id: u32 = 0,
 
     /// Free all heap-allocated memory owned by this TableInfo.
     pub fn deinit(self: *const TableInfo, allocator: Allocator) void {
@@ -137,9 +139,10 @@ pub const TableInfo = struct {
 // ── Serialization ───────────────────────────────────────────────────────
 
 /// Serialize a table definition into bytes for B+Tree storage.
-pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo) ![]u8 {
+/// Format: [data_root_page_id: u32][column_count: u16][columns...][table_constraint_count: u16][constraints...]
+pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, data_root_page_id: u32) ![]u8 {
     // Calculate total size
-    var size: usize = 2; // column_count: u16
+    var size: usize = 4 + 2; // data_root_page_id: u32 + column_count: u16
     for (columns) |col| {
         size += 2 + col.name.len + 1 + 1; // name_len + name + type + flags
     }
@@ -160,6 +163,10 @@ pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_c
     errdefer allocator.free(buf);
 
     var pos: usize = 0;
+
+    // Data root page ID
+    std.mem.writeInt(u32, buf[pos..][0..4], data_root_page_id, .little);
+    pos += 4;
 
     // Column count
     std.mem.writeInt(u16, buf[pos..][0..2], @intCast(columns.len), .little);
@@ -216,9 +223,13 @@ pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_c
 
 /// Deserialize a table definition from bytes stored in B+Tree.
 pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8) !TableInfo {
-    if (data.len < 2) return error.InvalidSchemaData;
+    if (data.len < 6) return error.InvalidSchemaData; // 4 (page_id) + 2 (col_count)
 
     var pos: usize = 0;
+
+    // Data root page ID
+    const data_root_page_id = std.mem.readInt(u32, data[pos..][0..4], .little);
+    pos += 4;
 
     // Column count
     const col_count = std.mem.readInt(u16, data[pos..][0..2], .little);
@@ -308,6 +319,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
         .name = owned_name,
         .columns = columns,
         .table_constraints = table_constraints,
+        .data_root_page_id = data_root_page_id,
     };
 }
 
@@ -354,7 +366,8 @@ pub const Catalog = struct {
 
     /// Create a new table in the catalog.
     /// Returns error.TableAlreadyExists if a table with the same name exists.
-    pub fn createTable(self: *Catalog, name: []const u8, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo) !void {
+    /// `data_root_page_id` is the B+Tree root page for this table's row data.
+    pub fn createTable(self: *Catalog, name: []const u8, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, data_root_page_id: u32) !void {
         // Check if table already exists
         const existing = try self.tree.get(self.allocator, name);
         if (existing) |v| {
@@ -363,7 +376,7 @@ pub const Catalog = struct {
         }
 
         // Serialize and store
-        const value = try serializeTable(self.allocator, columns, table_constraints);
+        const value = try serializeTable(self.allocator, columns, table_constraints, data_root_page_id);
         defer self.allocator.free(value);
 
         self.tree.insert(name, value) catch |err| {
@@ -424,7 +437,19 @@ pub const Catalog = struct {
             }
         }
 
-        try self.createTable(stmt.name, columns, tc_list.items);
+        // Allocate a new B+Tree root page for the table's row data.
+        // Write directly via pager (not buffer pool) since newly allocated pages
+        // have zero content which would fail header deserialization.
+        const pager = self.pool.pager;
+        const data_root_id = try pager.allocPage();
+        {
+            const raw = try pager.allocPageBuf();
+            defer pager.freePageBuf(raw);
+            btree_mod.initLeafPage(raw, pager.page_size, data_root_id);
+            try pager.writePage(data_root_id, raw);
+        }
+
+        try self.createTable(stmt.name, columns, tc_list.items, data_root_id);
     }
 
     /// Drop a table from the catalog.
@@ -569,13 +594,14 @@ test "serialize and deserialize table" {
         .{ .unique = &.{ "email", "name" } },
     };
 
-    const data = try serializeTable(allocator, &columns, &tc);
+    const data = try serializeTable(allocator, &columns, &tc, 42);
     defer allocator.free(data);
 
     const table = try deserializeTable(allocator, "users", data);
     defer table.deinit(allocator);
 
     try std.testing.expectEqualStrings("users", table.name);
+    try std.testing.expectEqual(@as(u32, 42), table.data_root_page_id);
     try std.testing.expectEqual(@as(usize, 4), table.columns.len);
     try std.testing.expectEqualStrings("id", table.columns[0].name);
     try std.testing.expectEqual(ColumnType.integer, table.columns[0].column_type);
@@ -598,13 +624,14 @@ test "serialize and deserialize table" {
 test "serialize empty table" {
     const allocator = std.testing.allocator;
 
-    const data = try serializeTable(allocator, &.{}, &.{});
+    const data = try serializeTable(allocator, &.{}, &.{}, 0);
     defer allocator.free(data);
 
     const table = try deserializeTable(allocator, "empty", data);
     defer table.deinit(allocator);
 
     try std.testing.expectEqualStrings("empty", table.name);
+    try std.testing.expectEqual(@as(u32, 0), table.data_root_page_id);
     try std.testing.expectEqual(@as(usize, 0), table.columns.len);
     try std.testing.expectEqual(@as(usize, 0), table.table_constraints.len);
 }
@@ -612,9 +639,9 @@ test "serialize empty table" {
 test "deserialize invalid data" {
     const allocator = std.testing.allocator;
 
-    // Too short
+    // Too short (needs at least 6 bytes: 4 for page_id + 2 for col_count)
     try std.testing.expectError(error.InvalidSchemaData, deserializeTable(allocator, "bad", &.{}));
-    try std.testing.expectError(error.InvalidSchemaData, deserializeTable(allocator, "bad", &.{0}));
+    try std.testing.expectError(error.InvalidSchemaData, deserializeTable(allocator, "bad", &.{ 0, 0, 0, 0, 0 }));
 }
 
 // Helper: create a test Catalog backed by a temp file.
@@ -662,7 +689,7 @@ test "Catalog create and get table" {
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
     };
 
-    try tc.catalog.createTable("users", &columns, &.{});
+    try tc.catalog.createTable("users", &columns, &.{}, 0);
 
     // Retrieve it
     const table = try tc.catalog.getTable("users");
@@ -685,7 +712,7 @@ test "Catalog tableExists" {
 
     try tc.catalog.createTable("users", &.{
         .{ .name = "id", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     try std.testing.expect(try tc.catalog.tableExists("users"));
     try std.testing.expect(!try tc.catalog.tableExists("posts"));
@@ -700,11 +727,11 @@ test "Catalog duplicate table error" {
 
     try tc.catalog.createTable("t1", &.{
         .{ .name = "a", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createTable("t1", &.{
         .{ .name = "b", .column_type = .text, .flags = .{} },
-    }, &.{}));
+    }, &.{}, 0));
 }
 
 test "Catalog drop table" {
@@ -716,7 +743,7 @@ test "Catalog drop table" {
 
     try tc.catalog.createTable("t1", &.{
         .{ .name = "x", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     try std.testing.expect(try tc.catalog.tableExists("t1"));
 
@@ -754,13 +781,13 @@ test "Catalog listTables" {
     // Create some tables (B+Tree stores keys sorted lexicographically)
     try tc.catalog.createTable("alpha", &.{
         .{ .name = "id", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
     try tc.catalog.createTable("beta", &.{
         .{ .name = "id", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
     try tc.catalog.createTable("gamma", &.{
         .{ .name = "id", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     const names = try tc.catalog.listTables(allocator);
     defer {
@@ -861,7 +888,7 @@ test "Catalog findColumn" {
         .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "email", .column_type = .text, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     const result = try tc.catalog.findColumn("users", "name");
     defer allocator.free(result.info.name);
@@ -892,7 +919,7 @@ test "Catalog multiple tables with constraints" {
         .{ .name = "quantity", .column_type = .integer, .flags = .{} },
     }, &.{
         .{ .primary_key = &.{ "user_id", "product_id" } },
-    });
+    }, 0);
 
     // Table with unique constraint
     try tc.catalog.createTable("products", &.{
@@ -901,7 +928,7 @@ test "Catalog multiple tables with constraints" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     }, &.{
         .{ .unique = &.{"sku"} },
-    });
+    }, 0);
 
     // Verify orders
     const orders = try tc.catalog.getTable("orders");
@@ -940,14 +967,14 @@ test "Catalog drop and recreate table" {
     // Create, drop, recreate with different schema
     try tc.catalog.createTable("t1", &.{
         .{ .name = "a", .column_type = .integer, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     try tc.catalog.dropTable("t1", false);
 
     try tc.catalog.createTable("t1", &.{
         .{ .name = "x", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "y", .column_type = .real, .flags = .{} },
-    }, &.{});
+    }, &.{}, 0);
 
     const table = try tc.catalog.getTable("t1");
     defer table.deinit(allocator);
