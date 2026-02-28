@@ -605,14 +605,20 @@ pub const Database = struct {
             for (assignments) |assign| {
                 const new_val = evalExpr(self.allocator, assign.expr, &row) catch continue;
                 // Find column index by alias (= column name)
-                const col_name = assign.alias orelse continue;
+                const col_name = assign.alias orelse {
+                    new_val.free(self.allocator);
+                    continue;
+                };
+                var found = false;
                 for (col_names, 0..) |cn, ci| {
                     if (std.ascii.eqlIgnoreCase(cn, col_name)) {
                         row.values[ci].free(self.allocator);
                         row.values[ci] = new_val;
+                        found = true;
                         break;
                     }
                 }
+                if (!found) new_val.free(self.allocator);
             }
 
             // Re-serialize
