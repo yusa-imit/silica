@@ -43,6 +43,8 @@ const PlanType = planner_mod.PlanType;
 const BTree = btree_mod.BTree;
 const BufferPool = buffer_pool_mod.BufferPool;
 const Pager = page_mod.Pager;
+const wal_mod = @import("../tx/wal.zig");
+const Wal = wal_mod.Wal;
 
 const Value = executor_mod.Value;
 const Row = executor_mod.Row;
@@ -161,6 +163,7 @@ fn extractEqualityPredicate(expr: *const ast_mod.Expr) ?EqualityPredicate {
 pub const OpenOptions = struct {
     page_size: u32 = 4096,
     cache_size: u32 = 2000,
+    wal_mode: bool = false,
 };
 
 pub const EngineError = error{
@@ -258,6 +261,8 @@ pub const Database = struct {
     /// Arena for schema lookups — TableInfo allocated here is freed between
     /// exec calls. Avoids the analyzer needing to manage TableInfo lifetimes.
     schema_arena: std.heap.ArenaAllocator,
+    /// Optional WAL for transaction durability.
+    wal: ?*Wal = null,
 
     /// Open or create a database file.
     pub fn open(allocator: Allocator, path: []const u8, opts: OpenOptions) !Database {
@@ -273,6 +278,16 @@ pub const Database = struct {
         pool.* = try BufferPool.init(allocator, pager, opts.cache_size);
         errdefer pool.deinit();
 
+        // Initialize WAL if requested
+        var wal_ptr: ?*Wal = null;
+        if (opts.wal_mode) {
+            const w = try allocator.create(Wal);
+            errdefer allocator.destroy(w);
+            w.* = try Wal.init(allocator, path, pager.page_size);
+            pool.setWal(w);
+            wal_ptr = w;
+        }
+
         var cat = try Catalog.init(allocator, pool, is_new);
         _ = &cat;
 
@@ -282,12 +297,23 @@ pub const Database = struct {
             .pool = pool,
             .catalog = cat,
             .schema_arena = std.heap.ArenaAllocator.init(allocator),
+            .wal = wal_ptr,
         };
     }
 
     /// Close the database, flushing all dirty pages.
     pub fn close(self: *Database) void {
         self.schema_arena.deinit();
+
+        // Checkpoint WAL before closing — writes committed pages to main DB
+        if (self.wal) |w| {
+            w.checkpoint(self.pager) catch {};
+            w.deinit();
+            self.allocator.destroy(w);
+            // Clear WAL pointer so BufferPool.deinit doesn't try to use it
+            self.pool.wal = null;
+        }
+
         self.pool.deinit();
         self.pager.deinit();
         self.allocator.destroy(self.pool);
@@ -335,7 +361,7 @@ pub const Database = struct {
     }
 
     fn executePlan(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
-        return switch (plan.plan_type) {
+        const result = switch (plan.plan_type) {
             .select_query => self.executeSelect(arena, plan),
             .insert => self.executeInsert(arena, plan),
             .update => self.executeUpdate(arena, plan),
@@ -348,6 +374,24 @@ pub const Database = struct {
                 return .{ .message = "OK" };
             },
         };
+
+        // Commit WAL after successful DML/DDL (SELECT returns rows lazily)
+        if (result) |r| {
+            if (r.rows == null) {
+                // Non-SELECT result (DML/DDL) — commit WAL
+                self.commitWal() catch {};
+            }
+        } else |_| {}
+
+        return result;
+    }
+
+    /// Flush dirty buffer pool pages and commit the WAL transaction.
+    fn commitWal(self: *Database) !void {
+        if (self.wal) |w| {
+            try self.pool.flushAll();
+            try w.commit(self.pager.page_count);
+        }
     }
 
     // ── SELECT execution ──────────────────────────────────────────────
@@ -1094,6 +1138,7 @@ pub const Database = struct {
                 };
                 arena.deinit();
                 self.allocator.destroy(arena);
+                self.commitWal() catch {};
                 return .{ .message = "CREATE TABLE" };
             },
             .drop_table => |dt| {
@@ -1106,6 +1151,7 @@ pub const Database = struct {
                 };
                 arena.deinit();
                 self.allocator.destroy(arena);
+                self.commitWal() catch {};
                 return .{ .message = "DROP TABLE" };
             },
             .transaction => {

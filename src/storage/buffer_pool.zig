@@ -14,6 +14,8 @@ const page_mod = @import("page.zig");
 const Pager = page_mod.Pager;
 const PageHeader = page_mod.PageHeader;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+const wal_mod = @import("../tx/wal.zig");
+const Wal = wal_mod.Wal;
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -72,6 +74,16 @@ pub const BufferPool = struct {
     hits: u64 = 0,
     misses: u64 = 0,
 
+    // Optional WAL for write-ahead logging. When set, dirty page flushes
+    // go through the WAL instead of directly to the Pager.
+    wal: ?*Wal = null,
+
+    /// Set the WAL for write-ahead logging. When set, dirty page writes
+    /// go through the WAL instead of directly to the Pager.
+    pub fn setWal(self: *BufferPool, w: *Wal) void {
+        self.wal = w;
+    }
+
     pub fn init(allocator: std.mem.Allocator, pager: *Pager, capacity: u32) !BufferPool {
         const cap = if (capacity == 0) DEFAULT_POOL_SIZE else capacity;
 
@@ -118,10 +130,15 @@ pub const BufferPool = struct {
             return frame;
         }
 
-        // Miss — need to load from disk
+        // Miss — need to load from disk (or WAL)
         self.misses += 1;
         const frame = try self.getEvictableFrame(page_id);
-        try self.pager.readPage(page_id, frame.data);
+
+        // Check WAL first for the latest version of this page
+        const from_wal = if (self.wal) |w| try w.readPage(page_id, frame.data) else false;
+        if (!from_wal) {
+            try self.pager.readPage(page_id, frame.data);
+        }
         frame.page_id = page_id;
         frame.pin_count = 1;
         frame.is_dirty = false;
@@ -163,7 +180,7 @@ pub const BufferPool = struct {
         const frame_idx = self.page_map.get(page_id) orelse return;
         const frame = &self.frames[frame_idx];
         if (frame.is_dirty) {
-            try self.pager.writePage(page_id, frame.data);
+            try self.writePageOut(page_id, frame.data);
             frame.is_dirty = false;
         }
     }
@@ -172,7 +189,7 @@ pub const BufferPool = struct {
     pub fn flushAll(self: *BufferPool) !void {
         for (self.frames[0..self.frame_count]) |*frame| {
             if (frame.is_dirty) {
-                try self.pager.writePage(frame.page_id, frame.data);
+                try self.writePageOut(frame.page_id, frame.data);
                 frame.is_dirty = false;
             }
         }
@@ -206,7 +223,7 @@ pub const BufferPool = struct {
 
         // Flush if dirty
         if (victim.is_dirty) {
-            try self.pager.writePage(victim.page_id, victim.data);
+            try self.writePageOut(victim.page_id, victim.data);
             victim.is_dirty = false;
         }
 
@@ -214,6 +231,15 @@ pub const BufferPool = struct {
         _ = self.page_map.remove(victim.page_id);
 
         return victim;
+    }
+
+    /// Write a page out — through WAL if available, otherwise directly to pager.
+    fn writePageOut(self: *BufferPool, page_id: u32, data: []u8) !void {
+        if (self.wal) |w| {
+            try w.writeFrame(page_id, data);
+        } else {
+            try self.pager.writePage(page_id, data);
+        }
     }
 
     fn frameIndex(self: *BufferPool, frame: *BufferFrame) u32 {
