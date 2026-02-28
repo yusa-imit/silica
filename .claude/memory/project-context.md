@@ -49,38 +49,69 @@
 
 ## Implemented Files
 - `build.zig` — Build system (Zig 0.15 API, library + CLI targets, sailor dep)
-- `build.zig.zon` — Package metadata (with sailor v0.1.0 dependency)
+- `build.zig.zon` — Package metadata (with sailor dependency)
 - `src/main.zig` — Entry point with module imports
-- `src/cli.zig` — CLI entry point (sailor.arg parsing, sailor.color error styling)
+- `src/cli.zig` — CLI entry point (sailor.arg, color, fmt integration)
+- `src/tui.zig` — TUI database browser (sailor.tui)
 - `src/util/checksum.zig` — CRC32C using std.hash.crc.Crc32Iscsi
 - `src/util/varint.zig` — LEB128 unsigned varint encode/decode
 - `src/storage/page.zig` — Pager with header, read/write, freelist
-- `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking
-- `src/storage/btree.zig` — B+Tree with slotted-page layout, insert/delete/get, splits, merges, cursor, overflow support
-- `src/storage/overflow.zig` — Overflow page chain management (write/read/free)
-- `src/storage/fuzz.zig` — Comprehensive B+Tree fuzz tests (12 tests)
-- `src/sql/tokenizer.zig` — Hand-written SQL lexer (keywords, literals, operators, comments)
-- `src/sql/ast.zig` — AST node definitions (Stmt, Expr, SelectStmt, etc.) with arena allocator
-- `src/sql/parser.zig` — Recursive descent parser with Pratt expression precedence
+- `src/storage/buffer_pool.zig` — LRU buffer pool with pin/unpin, dirty tracking, WAL integration
+- `src/storage/btree.zig` — B+Tree with slotted-page layout, splits, merges, cursor, overflow
+- `src/storage/overflow.zig` — Overflow page chain management
+- `src/storage/fuzz.zig` — B+Tree fuzz tests
+- `src/sql/tokenizer.zig` — Hand-written SQL lexer
+- `src/sql/ast.zig` — AST node definitions with arena allocator
+- `src/sql/parser.zig` — Recursive descent parser with Pratt precedence
+- `src/sql/catalog.zig` — Schema catalog (B+Tree backed)
+- `src/sql/analyzer.zig` — Semantic analysis, name resolution, type checking
+- `src/sql/planner.zig` — AST → logical plan tree
+- `src/sql/optimizer.zig` — Rule-based plan optimization
+- `src/sql/engine.zig` — Database integration layer, full SQL pipeline
+- `src/tx/wal.zig` — Write-Ahead Log (frame writer, commit, checkpoint, recovery)
 
-## Test Summary (277 tests total)
-- `parser.zig`: 55 tests — SELECT/INSERT/UPDATE/DELETE, CREATE/DROP TABLE/INDEX, transactions, expressions, precedence, JOIN, subqueries, error handling
-- `tokenizer.zig`: 53 tests — all token types, keywords, operators, literals, comments, SQL statements
-- `ast.zig`: 10 tests — arena allocation, expression trees, statement structs, constraint variants
-- `btree.zig`: 46 tests — CRUD, splits, merges, underflow, cursors, overflow insert/get/delete/cursor
-- `fuzz.zig`: 12 tests — random insert/delete, small pages, overflow mix, reinsert, cursor consistency, seek, multi-page-size, grow-shrink, duplicates
-- `overflow.zig`: 18 tests — chain write/read/free, single/multi-page, prefix, boundaries, min page size
-- `buffer_pool.zig`: 15 tests — fetch/unpin, LRU eviction, dirty flush, pool size=1, stress pin cycles
-- `page.zig`: 24 tests — header/alloc/free, checksums, freelist chains, max/min page sizes, persistence
-- `checksum.zig`: 12 tests — known values, incremental hashing, bit flip detection
-- `varint.zig`: 19 tests — roundtrip all ranges, boundary values, overflow detection, bit patterns
-- `cli.zig`: 3 tests — usage output, error formatting, version string
+## Test Summary (558 tests total: 509 library + 49 CLI/TUI)
+- `parser.zig`: 78 tests
+- `tokenizer.zig`: 53 tests
+- `ast.zig`: 10 tests
+- `btree.zig`: 53 tests
+- `fuzz.zig`: 12 tests
+- `overflow.zig`: 18 tests
+- `buffer_pool.zig`: 19 tests (incl. 4 WAL integration)
+- `page.zig`: 24 tests
+- `checksum.zig`: 12 tests
+- `varint.zig`: 19 tests
+- `catalog.zig`: 17 tests
+- `analyzer.zig`: 28 tests
+- `planner.zig`: 29 tests
+- `optimizer.zig`: 14 tests
+- `executor.zig`: 35 tests
+- `engine.zig`: 72 tests (incl. 8 WAL mode integration)
+- `wal.zig`: 15 tests
+- `cli.zig`: 31 tests
+- `tui.zig`: 18 tests
 
-## Current Phase: Phase 2 — SQL Layer (Weeks 7-14)
+## Current Phase: Phase 2 — SQL Layer + Phase 3 — Transactions
 
 ### Milestone 3 — Tokenizer & Parser
 - [x] Tokenizer (3A) — hand-written lexer, SQL keyword recognition (53 tests)
-- [x] Parser (3B) — recursive descent → AST (55 tests)
-- [x] DDL statements (3C) — CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX (included in 3B)
-- [x] DML statements (3D) — SELECT, INSERT, UPDATE, DELETE (included in 3B)
+- [x] Parser (3B) — recursive descent → AST (78 tests)
+- [x] DDL statements (3C) — included in 3B
+- [x] DML statements (3D) — included in 3B
 - [ ] Parser error recovery (3E)
+
+### Milestone 4 — Semantic Analysis & Execution
+- [x] Schema catalog (4A) — B+Tree backed, serialization
+- [x] Semantic analyzer (4B) — name resolution, type checking
+- [x] Query planner + optimizer (5A) — logical plan, predicate pushdown
+- [x] Volcano-model executor (5B) — all operators, expression eval
+- [x] Database engine (5C) — full SQL pipeline, Database.open/exec/close
+- [x] WHERE with index selection (4E) — secondary B+Tree indexes for PK columns
+- [ ] JOIN execution (4F)
+
+### Milestone 5 — WAL & Transactions (Phase 3)
+- [x] WAL module (5A) — frame writer, commit, rollback, checkpoint, recovery
+- [x] WAL integration with buffer pool and engine
+- [ ] Read-path WAL deeper integration (5B)
+- [ ] Checkpoint process (5C)
+- [ ] Crash recovery tests (5D)
