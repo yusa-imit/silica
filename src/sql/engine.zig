@@ -1279,3 +1279,336 @@ test "SELECT with expression" {
         return error.TestExpectedRow;
     }
 }
+
+test "SELECT with LIMIT and OFFSET" {
+    const path = "test_eng_limit_off.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert 5 rows individually
+    var ins1 = try db.execSQL("INSERT INTO t (id) VALUES (1)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO t (id) VALUES (2)");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO t (id) VALUES (3)");
+    defer ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO t (id) VALUES (4)");
+    defer ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO t (id) VALUES (5)");
+    defer ins5.close(testing.allocator);
+
+    // LIMIT 2 OFFSET 2 should skip first 2, return next 2
+    var r3 = try db.execSQL("SELECT id FROM t LIMIT 2 OFFSET 2");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "DELETE all rows (no WHERE)" {
+    const path = "test_eng_del_all.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t (id) VALUES (1)");
+    defer r2.close(testing.allocator);
+    var r2b = try db.execSQL("INSERT INTO t (id) VALUES (2)");
+    defer r2b.close(testing.allocator);
+    var r2c = try db.execSQL("INSERT INTO t (id) VALUES (3)");
+    defer r2c.close(testing.allocator);
+
+    // DELETE without WHERE should delete all
+    var r3 = try db.execSQL("DELETE FROM t");
+    defer r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 3), r3.rows_affected);
+
+    // Verify empty
+    var r4 = try db.execSQL("SELECT id FROM t");
+    defer r4.close(testing.allocator);
+    const row = try r4.rows.?.next();
+    try testing.expect(row == null);
+}
+
+test "UPDATE all rows (no WHERE)" {
+    const path = "test_eng_upd_all.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 10)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO t (id, val) VALUES (2, 20)");
+    defer ins2.close(testing.allocator);
+
+    // UPDATE without WHERE should update all rows
+    var r3 = try db.execSQL("UPDATE t SET val = 0");
+    defer r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 2), r3.rows_affected);
+
+    // Verify all values are 0
+    var r4 = try db.execSQL("SELECT id, val FROM t");
+    defer r4.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r4.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 0), row.getColumn("val").?.integer);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SUM aggregate" {
+    const path = "test_eng_sum.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO t (val) VALUES (10)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO t (val) VALUES (20)");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO t (val) VALUES (30)");
+    defer ins3.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT SUM(val) FROM t");
+    defer r3.close(testing.allocator);
+
+    try testing.expect(r3.rows != null);
+    const row = (try r3.rows.?.next()) orelse return error.ExpectedRow;
+    var row_mut = row;
+    defer row_mut.deinit();
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 60), row.values[0].integer);
+}
+
+test "MIN and MAX aggregates" {
+    const path = "test_eng_minmax.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO t (val) VALUES (5)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO t (val) VALUES (15)");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO t (val) VALUES (10)");
+    defer ins3.close(testing.allocator);
+
+    var r_min = try db.execSQL("SELECT MIN(val) FROM t");
+    defer r_min.close(testing.allocator);
+    const min_row = (try r_min.rows.?.next()) orelse return error.ExpectedRow;
+    var min_mut = min_row;
+    defer min_mut.deinit();
+    try testing.expectEqual(@as(i64, 5), min_row.values[0].integer);
+
+    var r_max = try db.execSQL("SELECT MAX(val) FROM t");
+    defer r_max.close(testing.allocator);
+    const max_row = (try r_max.rows.?.next()) orelse return error.ExpectedRow;
+    var max_mut = max_row;
+    defer max_mut.deinit();
+    try testing.expectEqual(@as(i64, 15), max_row.values[0].integer);
+}
+
+test "SELECT with compound WHERE (AND)" {
+    const path = "test_eng_and.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, status TEXT, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO t (id, status, val) VALUES (1, 'active', 10)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO t (id, status, val) VALUES (2, 'active', 20)");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO t (id, status, val) VALUES (3, 'inactive', 30)");
+    defer ins3.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT id FROM t WHERE status = 'active' AND val > 15");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "SELECT with OR in WHERE" {
+    const path = "test_eng_or.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 10)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO t (id, val) VALUES (2, 20)");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO t (id, val) VALUES (3, 30)");
+    defer ins3.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT id FROM t WHERE val = 10 OR val = 30");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "NULL value insertion and retrieval" {
+    const path = "test_eng_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t (id, name) VALUES (1, NULL)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT id, name FROM t");
+    defer r3.close(testing.allocator);
+
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expect(row.values[1] == .null_value);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "data persistence across close and reopen" {
+    const path = "test_eng_persist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Write data and close
+    {
+        var db = try createTestDb(testing.allocator, path);
+        var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, name TEXT)");
+        r1.close(testing.allocator);
+        var r2 = try db.execSQL("INSERT INTO t (id, name) VALUES (1, 'hello')");
+        r2.close(testing.allocator);
+        var r3 = try db.execSQL("INSERT INTO t (id, name) VALUES (2, 'world')");
+        r3.close(testing.allocator);
+        db.close();
+    }
+
+    // Reopen and verify
+    {
+        var db = try Database.open(testing.allocator, path, .{});
+        defer cleanupTestDb(&db, path);
+
+        // Table should still exist
+        try testing.expect(try db.catalog.tableExists("t"));
+
+        // Rows should still be there
+        var r4 = try db.execSQL("SELECT id, name FROM t");
+        defer r4.close(testing.allocator);
+
+        var count: usize = 0;
+        while (try r4.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count += 1;
+        }
+        try testing.expectEqual(@as(usize, 2), count);
+    }
+}
+
+test "multiple tables in same database" {
+    const path = "test_eng_multi_tbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)");
+    defer r2.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO orders (id, user_id, amount) VALUES (1, 1, 100)");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO orders (id, user_id, amount) VALUES (2, 1, 200)");
+    defer ins3.close(testing.allocator);
+
+    // Query each table independently
+    var r_users = try db.execSQL("SELECT name FROM users");
+    defer r_users.close(testing.allocator);
+    var u_count: usize = 0;
+    while (try r_users.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        u_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), u_count);
+
+    var r_orders = try db.execSQL("SELECT amount FROM orders");
+    defer r_orders.close(testing.allocator);
+    var o_count: usize = 0;
+    while (try r_orders.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        o_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), o_count);
+}
+
+test "parse error returns ParseError" {
+    const path = "test_eng_parse_err.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const result = db.execSQL("SELEKT * FORM users");
+    try testing.expectError(EngineError.ParseError, result);
+}
+
+test "DROP nonexistent table without IF EXISTS" {
+    const path = "test_eng_drop_noex.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const result = db.execSQL("DROP TABLE nonexistent");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
