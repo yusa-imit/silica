@@ -453,13 +453,16 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] 커밋: `feat: add TUI database browser with sailor.tui`
 - **Note**: sailor v0.4.0의 Input/StatusBar 위젯에 API 불일치 버그 발견 → https://github.com/yusa-imit/sailor/issues/4
 
-### v0.5.0 — advanced widgets (status: READY)
+### v0.5.0 — advanced widgets (status: PARTIAL)
 
 **작업 내용**:
-- [ ] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
-- [ ] 쿼리 플랜 시각화: `Tree` 위젯으로 EXPLAIN 결과 계층 표시
-- [ ] SQL 편집기: `TextArea` 위젯으로 멀티라인 쿼리 에디터 교체
-- [ ] 성능 차트: `LineChart`로 쿼리 실행 시간 추이 그래프
-- [ ] 위험 쿼리 확인: `Dialog` 위젯으로 `DROP TABLE` 등 확인 프롬프트
-- [ ] 결과 알림: `Notification`으로 쿼리 성공/실패 메시지
-- [ ] 커밋: `feat: enhance TUI with advanced widgets from sailor v0.5.0`
+- [x] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
+- [x] 스키마 사이드바 개선: 테이블+컬럼 계층 표시 (List 기반, 타입/제약조건 표시)
+- [ ] ~~쿼리 플랜 시각화: `Tree` 위젯으로 EXPLAIN 결과 계층 표시~~ — BLOCKED (sailor#6: Tree widget broken on Zig 0.15)
+- [ ] ~~SQL 편집기: `TextArea` 위젯으로 멀티라인 쿼리 에디터 교체~~ — BLOCKED (sailor#6: TextArea broken on Zig 0.15)
+- [ ] ~~성능 차트: `LineChart`로 쿼리 실행 시간 추이 그래프~~ — BLOCKED (sailor#6: LineChart uses broken Tree internally)
+- [ ] ~~위험 쿼리 확인: `Dialog` 위젯으로 `DROP TABLE` 등 확인 프롬프트~~ — BLOCKED (sailor#6: Dialog broken on Zig 0.15)
+- [ ] ~~결과 알림: `Notification`으로 쿼리 성공/실패 메시지~~ — BLOCKED (sailor#6: Notification broken on Zig 0.15)
+- [x] 커밋: `feat: enhance TUI schema sidebar with hierarchical table+column view`
+- **Note**: sailor v0.5.0의 모든 Phase 5 위젯(Tree, TextArea, Dialog, Notification, LineChart 등)이 Zig 0.15.2에서 컴파일 불가 → https://github.com/yusa-imit/sailor/issues/6
+- **Note**: sailor v0.5.0의 `renderDiff`도 `adaptToNewApi` 버그 → localRenderDiff 워크어라운드 적용 (sailor#5)
