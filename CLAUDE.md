@@ -425,7 +425,7 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] SQL tokenizer/parser 연결 (silica 자체 모듈)
 - [x] 커밋: `feat: add interactive SQL shell with sailor.repl`
 
-### v0.3.0 — fmt (status: PENDING)
+### v0.3.0 — fmt (status: READY)
 
 **작업 내용**:
 - [ ] 쿼리 결과 포매팅에 `sailor.fmt` 적용
