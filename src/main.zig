@@ -29,6 +29,7 @@ pub const engine = @import("sql/engine.zig");
 
 // Transaction modules
 pub const wal = @import("tx/wal.zig");
+pub const mvcc = @import("tx/mvcc.zig");
 
 test {
     // Pull in tests from all imported modules
