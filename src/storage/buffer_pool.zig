@@ -900,3 +900,178 @@ test "BufferPool large page ids" {
         try std.testing.expect(pool.containsPage(pid));
     }
 }
+
+test "BufferPool setWal routes dirty flushes through WAL" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_wal_route.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_bp_wal_route.db-wal") catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Attach a WAL
+    var wal = try Wal.init(allocator, path, pager.page_size);
+    defer wal.deinit();
+    pool.setWal(&wal);
+
+    // Create a page, modify it, and flush (should go through WAL)
+    const pid = try pager.allocPage();
+    const frame = try pool.fetchNewPage(pid);
+    const hdr = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 99 };
+    hdr.serialize(frame.data[0..PAGE_HEADER_SIZE]);
+    const marker = "WAL_ROUTED";
+    @memcpy(frame.data[PAGE_HEADER_SIZE..][0..marker.len], marker);
+    pool.unpinPage(pid, true);
+
+    // Flush — should write to WAL, not directly to pager
+    try pool.flushPage(pid);
+    try std.testing.expect(!frame.is_dirty);
+
+    // WAL should have the page
+    try std.testing.expectEqual(@as(u32, 1), wal.total_frame_count);
+    try std.testing.expect(wal.pending_index.get(pid) != null);
+
+    // Verify page is readable from WAL
+    var read_buf: [4096]u8 = undefined;
+    const found = try wal.readPage(pid, &read_buf);
+    try std.testing.expect(found);
+    try std.testing.expectEqualStrings(marker, read_buf[PAGE_HEADER_SIZE..][0..marker.len]);
+}
+
+test "BufferPool WAL fetch reads from WAL before disk" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_wal_fetch.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_bp_wal_fetch.db-wal") catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Write a page to disk with "DISK_VERSION"
+    const pid = try pager.allocPage();
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    @memset(raw, 0);
+    const hdr = PageHeader{ .page_type = .leaf, .page_id = pid };
+    hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+    const disk_marker = "DISK_VERSION";
+    @memcpy(raw[PAGE_HEADER_SIZE..][0..disk_marker.len], disk_marker);
+    try pager.writePage(pid, raw);
+
+    // Write a different version to WAL
+    var wal = try Wal.init(allocator, path, pager.page_size);
+    defer wal.deinit();
+
+    var wal_page: [4096]u8 = undefined;
+    @memset(&wal_page, 0);
+    hdr.serialize(wal_page[0..PAGE_HEADER_SIZE]);
+    const wal_marker = "WAL_VERSION_";
+    @memcpy(wal_page[PAGE_HEADER_SIZE..][0..wal_marker.len], wal_marker);
+    try wal.writeFrame(pid, &wal_page);
+    try wal.commit(pager.page_count);
+
+    // Create buffer pool with WAL
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+    pool.setWal(&wal);
+
+    // Fetch the page — should get WAL version, not disk version
+    const frame = try pool.fetchPage(pid);
+    const data_slice = frame.data[PAGE_HEADER_SIZE..][0..wal_marker.len];
+    try std.testing.expectEqualStrings(wal_marker, data_slice);
+    pool.unpinPage(pid, false);
+}
+
+test "BufferPool flushAll with WAL routes all dirty pages" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_wal_flushall.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_bp_wal_flushall.db-wal") catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    var wal = try Wal.init(allocator, path, pager.page_size);
+    defer wal.deinit();
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+    pool.setWal(&wal);
+
+    // Create and dirty 3 pages
+    var pids: [3]u32 = undefined;
+    for (&pids) |*pid| {
+        pid.* = try pager.allocPage();
+        const frame = try pool.fetchNewPage(pid.*);
+        const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
+        hdr.serialize(frame.data[0..PAGE_HEADER_SIZE]);
+        pool.unpinPage(pid.*, true);
+    }
+
+    // flushAll should write all 3 pages to WAL
+    try pool.flushAll();
+    try std.testing.expectEqual(@as(u32, 3), wal.total_frame_count);
+
+    // All 3 pages should be readable from WAL
+    var buf: [4096]u8 = undefined;
+    for (pids) |pid| {
+        const found = try wal.readPage(pid, &buf);
+        try std.testing.expect(found);
+    }
+}
+
+test "BufferPool eviction with WAL flushes dirty to WAL" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_wal_evict.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_bp_wal_evict.db-wal") catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    var wal = try Wal.init(allocator, path, pager.page_size);
+    defer wal.deinit();
+
+    // Pool with capacity 2
+    var pool = try BufferPool.init(allocator, &pager, 2);
+    defer pool.deinit();
+    pool.setWal(&wal);
+
+    // Create 3 pages
+    var pids: [3]u32 = undefined;
+    for (&pids) |*pid| {
+        pid.* = try pager.allocPage();
+    }
+
+    // Fetch page 0, modify, unpin as dirty
+    const f0 = try pool.fetchNewPage(pids[0]);
+    const hdr0 = PageHeader{ .page_type = .leaf, .page_id = pids[0] };
+    hdr0.serialize(f0.data[0..PAGE_HEADER_SIZE]);
+    f0.data[PAGE_HEADER_SIZE] = 0xEE;
+    pool.unpinPage(pids[0], true);
+
+    // Fetch page 1, unpin
+    const f1 = try pool.fetchNewPage(pids[1]);
+    const hdr1 = PageHeader{ .page_type = .leaf, .page_id = pids[1] };
+    hdr1.serialize(f1.data[0..PAGE_HEADER_SIZE]);
+    pool.unpinPage(pids[1], false);
+
+    // Fetch page 2 — evicts page 0 (dirty, should flush to WAL)
+    const f2 = try pool.fetchNewPage(pids[2]);
+    const hdr2 = PageHeader{ .page_type = .leaf, .page_id = pids[2] };
+    hdr2.serialize(f2.data[0..PAGE_HEADER_SIZE]);
+    pool.unpinPage(pids[2], false);
+
+    // Verify page 0 was written to WAL (not directly to pager)
+    try std.testing.expect(wal.pending_index.get(pids[0]) != null);
+
+    // Read from WAL and verify data
+    var buf: [4096]u8 = undefined;
+    const found = try wal.readPage(pids[0], &buf);
+    try std.testing.expect(found);
+    try std.testing.expectEqual(@as(u8, 0xEE), buf[PAGE_HEADER_SIZE]);
+}
