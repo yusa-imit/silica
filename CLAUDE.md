@@ -444,3 +444,14 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
   - 우측 하단: SQL 입력 (Input 위젯)
   - 하단: StatusBar (행 수, 쿼리 시간, DB 크기)
 - [ ] 커밋: `feat: add TUI database browser with sailor.tui`
+
+### v0.5.0 — advanced widgets (status: READY)
+
+**작업 내용**:
+- [ ] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
+- [ ] 쿼리 플랜 시각화: `Tree` 위젯으로 EXPLAIN 결과 계층 표시
+- [ ] SQL 편집기: `TextArea` 위젯으로 멀티라인 쿼리 에디터 교체
+- [ ] 성능 차트: `LineChart`로 쿼리 실행 시간 추이 그래프
+- [ ] 위험 쿼리 확인: `Dialog` 위젯으로 `DROP TABLE` 등 확인 프롬프트
+- [ ] 결과 알림: `Notification`으로 쿼리 성공/실패 메시지
+- [ ] 커밋: `feat: enhance TUI with advanced widgets from sailor v0.5.0`
