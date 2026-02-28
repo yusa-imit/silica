@@ -65,89 +65,77 @@ pub fn main() !void {
 
     const db_path = arg_parser.positional.items[0];
 
-    // Build history file path: ~/.silica_history
-    const history_path = buildHistoryPath(allocator);
-    defer if (history_path) |p| allocator.free(p);
-
-    // Initialize REPL
-    var repl = sailor.repl.Repl.init(allocator, .{
-        .prompt = "silica> ",
-        .continuation_prompt = "   ...> ",
-        .history_file = history_path,
-        .history_size = 1000,
-        .highlighter = sqlHighlighter,
-        .validator = sqlValidator,
-        .completer = sqlCompleter,
-    }) catch {
-        printError(stderr, "Failed to initialize REPL.");
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
-    defer repl.deinit();
-
     // Print banner
     stdout.print("Silica v{s} — interactive SQL shell\n", .{version}) catch {};
     stdout.print("Database: {s}\n", .{db_path}) catch {};
     stdout.writeAll("Type .help for usage hints, .quit to exit.\n\n") catch {};
     stdout.flush() catch {};
 
-    // REPL loop
+    // Simple stdin-based REPL loop
+    // NOTE: sailor.repl has Zig 0.15 compat bugs (https://github.com/yusa-imit/sailor/issues/1)
+    // Using plain stdin until sailor.repl is fixed, then we can upgrade.
+    const stdin = std.fs.File.stdin();
+    var stdin_buf: [8192]u8 = undefined;
+    var reader = stdin.reader(&stdin_buf);
+
     var input_buf = std.ArrayListUnmanaged(u8){};
     defer input_buf.deinit(allocator);
 
+    var is_continuation = false;
+
     while (true) {
-        const line = repl.readLine(stdout) catch |err| switch (err) {
-            error.EndOfStream => {
-                stdout.writeAll("\nBye!\n") catch {};
-                stdout.flush() catch {};
-                break;
-            },
-            else => {
-                printError(stderr, "Failed to read input.");
-                stderr.flush() catch {};
-                continue;
-            },
+        // Print prompt
+        const prompt = if (is_continuation) "   ...> " else "silica> ";
+        stdout.writeAll(prompt) catch {};
+        stdout.flush() catch {};
+
+        // Read a line from stdin (takeDelimiter excludes the '\n')
+        const line = reader.interface.takeDelimiter('\n') catch {
+            printError(stderr, "Failed to read input.");
+            stderr.flush() catch {};
+            continue;
         };
 
-        if (line) |input| {
-            defer allocator.free(input);
-
-            const trimmed = std.mem.trim(u8, input, " \t\r\n");
-            if (trimmed.len == 0) continue;
-
-            // Handle dot-commands
-            if (trimmed[0] == '.') {
-                const result = handleDotCommand(trimmed, stdout, stderr);
-                stdout.flush() catch {};
-                stderr.flush() catch {};
-                if (result == .quit) break;
-                continue;
-            }
-
-            // Accumulate multi-line input
-            if (input_buf.items.len > 0) {
-                input_buf.append(allocator, '\n') catch continue;
-            }
-            input_buf.appendSlice(allocator, trimmed) catch continue;
-
-            // Check if statement is complete (ends with ';')
-            const accumulated = std.mem.trimRight(u8, input_buf.items, " \t\r\n");
-            if (accumulated.len == 0) continue;
-
-            if (accumulated[accumulated.len - 1] != ';') {
-                continue;
-            }
-
-            // Parse and display
-            processSQL(allocator, input_buf.items, stdout, stderr);
-            stdout.flush() catch {};
-            stderr.flush() catch {};
-            input_buf.clearRetainingCapacity();
-        } else {
+        if (line == null) {
+            // End of stream
             stdout.writeAll("\nBye!\n") catch {};
             stdout.flush() catch {};
             break;
         }
+
+        const trimmed = std.mem.trim(u8, line.?, " \t\r\n");
+        if (trimmed.len == 0) continue;
+
+        // Handle dot-commands (only on first line, not continuation)
+        if (!is_continuation and trimmed[0] == '.') {
+            const result = handleDotCommand(trimmed, stdout, stderr);
+            stdout.flush() catch {};
+            stderr.flush() catch {};
+            if (result == .quit) break;
+            continue;
+        }
+
+        // Accumulate multi-line input
+        if (input_buf.items.len > 0) {
+            input_buf.append(allocator, '\n') catch continue;
+        }
+        input_buf.appendSlice(allocator, trimmed) catch continue;
+
+        // Check if statement is complete (ends with ';')
+        const accumulated = std.mem.trimRight(u8, input_buf.items, " \t\r\n");
+        if (accumulated.len == 0) continue;
+
+        if (accumulated[accumulated.len - 1] != ';') {
+            is_continuation = true;
+            continue;
+        }
+
+        // Parse and display
+        processSQL(allocator, input_buf.items, stdout, stderr);
+        stdout.flush() catch {};
+        stderr.flush() catch {};
+        input_buf.clearRetainingCapacity();
+        is_continuation = false;
     }
 }
 
@@ -328,8 +316,11 @@ fn sqlHighlighter(buf: []const u8, writer: std.io.AnyWriter) anyerror!void {
     }
 }
 
+/// Validation state for SQL input (local enum replacing sailor.repl.Validation).
+const Validation = enum { complete, incomplete };
+
 /// SQL input validator for multi-line support.
-fn sqlValidator(buf: []const u8) sailor.repl.Validation {
+fn sqlValidator(buf: []const u8) Validation {
     const trimmed = std.mem.trimRight(u8, buf, " \t\r\n");
     if (trimmed.len == 0) return .complete;
     if (trimmed[trimmed.len - 1] == ';') return .complete;
@@ -445,23 +436,23 @@ test "version string is set" {
 }
 
 test "sqlValidator complete with semicolon" {
-    try std.testing.expectEqual(sailor.repl.Validation.complete, sqlValidator("SELECT 1;"));
-    try std.testing.expectEqual(sailor.repl.Validation.complete, sqlValidator("SELECT * FROM t;  "));
+    try std.testing.expectEqual(Validation.complete, sqlValidator("SELECT 1;"));
+    try std.testing.expectEqual(Validation.complete, sqlValidator("SELECT * FROM t;  "));
 }
 
 test "sqlValidator incomplete without semicolon" {
-    try std.testing.expectEqual(sailor.repl.Validation.incomplete, sqlValidator("SELECT 1"));
-    try std.testing.expectEqual(sailor.repl.Validation.incomplete, sqlValidator("SELECT *"));
+    try std.testing.expectEqual(Validation.incomplete, sqlValidator("SELECT 1"));
+    try std.testing.expectEqual(Validation.incomplete, sqlValidator("SELECT *"));
 }
 
 test "sqlValidator complete for dot-commands" {
-    try std.testing.expectEqual(sailor.repl.Validation.complete, sqlValidator(".help"));
-    try std.testing.expectEqual(sailor.repl.Validation.complete, sqlValidator(".quit"));
+    try std.testing.expectEqual(Validation.complete, sqlValidator(".help"));
+    try std.testing.expectEqual(Validation.complete, sqlValidator(".quit"));
 }
 
 test "sqlValidator empty input is complete" {
-    try std.testing.expectEqual(sailor.repl.Validation.complete, sqlValidator(""));
-    try std.testing.expectEqual(sailor.repl.Validation.complete, sqlValidator("   "));
+    try std.testing.expectEqual(Validation.complete, sqlValidator(""));
+    try std.testing.expectEqual(Validation.complete, sqlValidator("   "));
 }
 
 test "sqlHighlighter does not error on valid SQL" {
