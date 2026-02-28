@@ -1030,6 +1030,15 @@ pub const Parser = struct {
                 return self.arena.create(ast.Expr, .{ .column_ref = .{ .name = "*" } }) catch return error.OutOfMemory;
             },
             else => {
+                // Allow SQL keywords to be used as column names / identifiers
+                // (e.g., "temp", "name", "type", "key", "value" are common column names
+                // that happen to be SQL keywords).
+                if (t.type.isKeyword()) {
+                    if (self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .left_paren) {
+                        return self.parseFunctionCall();
+                    }
+                    return self.parseColumnRef();
+                }
                 try self.addError(t, "expected expression");
                 return error.ParseFailed;
             },
