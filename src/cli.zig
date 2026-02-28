@@ -2,7 +2,24 @@ const std = @import("std");
 const sailor = @import("sailor");
 const silica = @import("silica");
 
-const version = "0.2.0";
+const version = "0.3.0";
+
+const Value = silica.executor.Value;
+const Row = silica.executor.Row;
+const Database = silica.engine.Database;
+const QueryResult = silica.engine.QueryResult;
+
+// ── Output Mode ───────────────────────────────────────────────────────
+
+pub const OutputMode = enum {
+    table,
+    csv,
+    json,
+    jsonl,
+    plain,
+};
+
+// ── CLI Flags ──────────────────────────────────────────────────────────
 
 const CliFlags = [_]sailor.arg.FlagDef{
     .{ .name = "help", .short = 'h', .type = .bool, .help = "Show this help message" },
@@ -10,6 +27,7 @@ const CliFlags = [_]sailor.arg.FlagDef{
     .{ .name = "header", .type = .bool, .help = "Show column headers in output", .default = "true" },
     .{ .name = "csv", .type = .bool, .help = "Output in CSV format" },
     .{ .name = "json", .type = .bool, .help = "Output in JSON format" },
+    .{ .name = "mode", .short = 'm', .type = .string, .help = "Output mode: table, csv, json, jsonl, plain" },
 };
 
 pub fn main() !void {
@@ -65,6 +83,28 @@ pub fn main() !void {
 
     const db_path = arg_parser.positional.items[0];
 
+    // Determine initial output mode from flags
+    var mode: OutputMode = .table;
+    if (arg_parser.getString("mode")) |mode_str| {
+        mode = parseModeString(mode_str) orelse {
+            printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+    } else if (arg_parser.getBool("csv", false)) {
+        mode = .csv;
+    } else if (arg_parser.getBool("json", false)) {
+        mode = .json;
+    }
+
+    // Open database
+    var db = Database.open(allocator, db_path, .{}) catch {
+        printError(stderr, "Failed to open database.");
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
     // Print banner
     stdout.print("Silica v{s} — interactive SQL shell\n", .{version}) catch {};
     stdout.print("Database: {s}\n", .{db_path}) catch {};
@@ -73,7 +113,6 @@ pub fn main() !void {
 
     // Simple stdin-based REPL loop
     // NOTE: sailor.repl has Zig 0.15 compat bugs (https://github.com/yusa-imit/sailor/issues/1)
-    // Using plain stdin until sailor.repl is fixed, then we can upgrade.
     const stdin = std.fs.File.stdin();
     var stdin_buf: [8192]u8 = undefined;
     var reader = stdin.reader(&stdin_buf);
@@ -84,12 +123,10 @@ pub fn main() !void {
     var is_continuation = false;
 
     while (true) {
-        // Print prompt
         const prompt = if (is_continuation) "   ...> " else "silica> ";
         stdout.writeAll(prompt) catch {};
         stdout.flush() catch {};
 
-        // Read a line from stdin (takeDelimiter excludes the '\n')
         const line = reader.interface.takeDelimiter('\n') catch {
             printError(stderr, "Failed to read input.");
             stderr.flush() catch {};
@@ -97,7 +134,6 @@ pub fn main() !void {
         };
 
         if (line == null) {
-            // End of stream
             stdout.writeAll("\nBye!\n") catch {};
             stdout.flush() catch {};
             break;
@@ -108,7 +144,7 @@ pub fn main() !void {
 
         // Handle dot-commands (only on first line, not continuation)
         if (!is_continuation and trimmed[0] == '.') {
-            const result = handleDotCommand(trimmed, stdout, stderr);
+            const result = handleDotCommand(trimmed, &mode, stdout, stderr);
             stdout.flush() catch {};
             stderr.flush() catch {};
             if (result == .quit) break;
@@ -130,8 +166,8 @@ pub fn main() !void {
             continue;
         }
 
-        // Parse and display
-        processSQL(allocator, input_buf.items, stdout, stderr);
+        // Execute SQL via engine
+        execAndDisplay(allocator, &db, input_buf.items, mode, stdout, stderr);
         stdout.flush() catch {};
         stderr.flush() catch {};
         input_buf.clearRetainingCapacity();
@@ -139,7 +175,267 @@ pub fn main() !void {
     }
 }
 
-/// Process SQL input: parse and display result.
+// ── SQL Execution ──────────────────────────────────────────────────────
+
+/// Execute SQL via the Database engine and display results.
+fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, stdout: anytype, stderr: anytype) void {
+    var result = db.exec(sql) catch |err| {
+        const msg = switch (err) {
+            error.ParseError => "SQL parse error.",
+            error.AnalysisError => "Semantic analysis error.",
+            error.PlanError => "Query planning error.",
+            error.ExecutionError => "Execution error.",
+            error.TableNotFound => "Table not found.",
+            error.TableAlreadyExists => "Table already exists.",
+            error.InvalidData => "Invalid data.",
+            else => "Database error.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer result.close(allocator);
+
+    if (result.rows != null) {
+        // SELECT — format rows
+        displayRows(allocator, &result, mode, stdout, stderr);
+    } else if (result.message.len > 0) {
+        stdout.writeAll(result.message) catch {};
+        stdout.writeByte('\n') catch {};
+    }
+
+    if (result.rows_affected > 0) {
+        stdout.print("Rows affected: {d}\n", .{result.rows_affected}) catch {};
+    }
+}
+
+/// Drain all rows from a QueryResult and display them in the given output mode.
+fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputMode, stdout: anytype, stderr: anytype) void {
+    _ = stderr;
+
+    // Collect all rows (we need them all for table mode column widths)
+    var all_rows = std.ArrayListUnmanaged(Row){};
+    defer {
+        for (all_rows.items) |*row| row.deinit();
+        all_rows.deinit(allocator);
+    }
+
+    var col_names: ?[]const []const u8 = null;
+    var row_count: usize = 0;
+
+    while (true) {
+        const maybe_row = result.rows.?.next() catch break;
+        if (maybe_row) |row| {
+            if (col_names == null and row.columns.len > 0) {
+                // Copy column names from first row
+                const names = allocator.alloc([]const u8, row.columns.len) catch break;
+                for (row.columns, 0..) |col, i| {
+                    names[i] = allocator.dupe(u8, col) catch break;
+                }
+                col_names = names;
+            }
+            all_rows.append(allocator, row) catch break;
+            row_count += 1;
+        } else break;
+    }
+
+    defer {
+        if (col_names) |names| {
+            for (names) |n| allocator.free(n);
+            allocator.free(names);
+        }
+    }
+
+    if (col_names == null) return;
+    const headers = col_names.?;
+
+    switch (mode) {
+        .table => formatTable(allocator, headers, all_rows.items, stdout),
+        .csv => formatCsv(headers, all_rows.items, allocator, stdout),
+        .json => formatJson(headers, all_rows.items, allocator, stdout),
+        .jsonl => formatJsonl(headers, all_rows.items, allocator, stdout),
+        .plain => formatPlain(headers, all_rows.items, allocator, stdout),
+    }
+}
+
+// ── Value Formatting ───────────────────────────────────────────────────
+
+/// Convert a Value to its display string. Caller owns returned memory.
+fn valueToText(allocator: std.mem.Allocator, val: Value) ?[]const u8 {
+    return switch (val) {
+        .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch null,
+        .real => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch null,
+        .text => |v| allocator.dupe(u8, v) catch null,
+        .blob => |v| blk: {
+            // Format blob as hex string
+            const hex_len = 2 + v.len * 2 + 1; // X' + hex + '
+            const hex_buf = allocator.alloc(u8, hex_len) catch break :blk null;
+            hex_buf[0] = 'X';
+            hex_buf[1] = '\'';
+            for (v, 0..) |byte, i| {
+                const digits = "0123456789abcdef";
+                hex_buf[2 + i * 2] = digits[byte >> 4];
+                hex_buf[2 + i * 2 + 1] = digits[byte & 0x0f];
+            }
+            hex_buf[hex_len - 1] = '\'';
+            break :blk hex_buf;
+        },
+        .boolean => |v| allocator.dupe(u8, if (v) "TRUE" else "FALSE") catch null,
+        .null_value => allocator.dupe(u8, "NULL") catch null,
+    };
+}
+
+// ── Table Format ───────────────────────────────────────────────────────
+
+fn formatTable(allocator: std.mem.Allocator, headers: []const []const u8, rows: []Row, writer: anytype) void {
+    var table = sailor.fmt.Table.init(allocator, headers, .{}) catch return;
+    defer table.deinit();
+
+    // Convert all rows to string slices
+    var str_rows = std.ArrayListUnmanaged([]const []const u8){};
+    defer {
+        for (str_rows.items) |row| {
+            for (row) |cell| allocator.free(cell);
+            allocator.free(row);
+        }
+        str_rows.deinit(allocator);
+    }
+
+    for (rows) |row| {
+        const cells = allocator.alloc([]const u8, row.values.len) catch continue;
+        var valid = true;
+        for (row.values, 0..) |val, i| {
+            cells[i] = valueToText(allocator, val) orelse {
+                valid = false;
+                // Free already allocated cells
+                for (cells[0..i]) |c| allocator.free(c);
+                break;
+            };
+        }
+        if (!valid) {
+            allocator.free(cells);
+            continue;
+        }
+        table.addRow(cells) catch {
+            for (cells) |c| allocator.free(c);
+            allocator.free(cells);
+            continue;
+        };
+        str_rows.append(allocator, cells) catch {
+            for (cells) |c| allocator.free(c);
+            allocator.free(cells);
+            continue;
+        };
+    }
+
+    table.render(writer) catch {};
+}
+
+// ── CSV Format ────────────────────────────────────────────────────────
+
+fn formatCsv(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+    const WriterType = @TypeOf(writer);
+    var csv = sailor.fmt.Csv(WriterType).init(writer, .{});
+
+    // Write headers
+    for (headers) |h| {
+        csv.writeField(h) catch return;
+    }
+    csv.endRow() catch return;
+
+    // Write rows
+    for (rows) |row| {
+        for (row.values) |val| {
+            const text = valueToText(allocator, val) orelse "NULL";
+            defer if (text.ptr != "NULL".ptr) allocator.free(text);
+            csv.writeField(text) catch return;
+        }
+        csv.endRow() catch return;
+    }
+}
+
+// ── JSON Format ────────────────────────────────────────────────────────
+
+fn formatJson(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+    const WriterType = @TypeOf(writer);
+    var arr = sailor.fmt.JsonArray(WriterType).init(writer) catch return;
+
+    for (rows) |row| {
+        var obj = arr.beginObject() catch return;
+        for (headers, 0..) |h, i| {
+            if (i < row.values.len) {
+                writeJsonValue(&obj, h, row.values[i], allocator);
+            }
+        }
+        obj.end() catch return;
+    }
+
+    arr.end() catch return;
+    writer.writeByte('\n') catch {};
+}
+
+fn formatJsonl(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+    const WriterType = @TypeOf(writer);
+    for (rows) |row| {
+        var obj = sailor.fmt.JsonObject(WriterType).init(writer) catch return;
+        for (headers, 0..) |h, i| {
+            if (i < row.values.len) {
+                writeJsonValue(&obj, h, row.values[i], allocator);
+            }
+        }
+        obj.end() catch return;
+        writer.writeByte('\n') catch {};
+    }
+}
+
+fn writeJsonValue(obj: anytype, key: []const u8, val: Value, allocator: std.mem.Allocator) void {
+    switch (val) {
+        .integer => |v| obj.addNumber(key, v) catch {},
+        .real => |v| obj.addNumber(key, v) catch {},
+        .text => |v| obj.addString(key, v) catch {},
+        .boolean => |v| obj.addBool(key, v) catch {},
+        .null_value => obj.addNull(key) catch {},
+        .blob => |v| {
+            // Format blob as hex string
+            const hex = allocator.alloc(u8, v.len * 2) catch return;
+            defer allocator.free(hex);
+            const digits = "0123456789abcdef";
+            for (v, 0..) |byte, i| {
+                hex[i * 2] = digits[byte >> 4];
+                hex[i * 2 + 1] = digits[byte & 0x0f];
+            }
+            obj.addString(key, hex) catch {};
+        },
+    }
+}
+
+// ── Plain Format ──────────────────────────────────────────────────────
+
+fn formatPlain(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+    for (rows) |row| {
+        for (headers, 0..) |h, i| {
+            if (i < row.values.len) {
+                const text = valueToText(allocator, row.values[i]) orelse "NULL";
+                defer if (text.ptr != "NULL".ptr) allocator.free(text);
+                writer.print("{s} = {s}\n", .{ h, text }) catch {};
+            }
+        }
+        if (rows.len > 1) writer.writeByte('\n') catch {};
+    }
+}
+
+// ── Parse Mode String ──────────────────────────────────────────────────
+
+fn parseModeString(s: []const u8) ?OutputMode {
+    if (std.mem.eql(u8, s, "table")) return .table;
+    if (std.mem.eql(u8, s, "csv")) return .csv;
+    if (std.mem.eql(u8, s, "json")) return .json;
+    if (std.mem.eql(u8, s, "jsonl")) return .jsonl;
+    if (std.mem.eql(u8, s, "plain")) return .plain;
+    return null;
+}
+
+// ── Process SQL (parse-only, for testing without a DB) ──────────────
+
 fn processSQL(allocator: std.mem.Allocator, sql: []const u8, stdout: anytype, stderr: anytype) void {
     var arena = silica.ast.AstArena.init(allocator);
     defer arena.deinit();
@@ -170,7 +466,7 @@ fn processSQL(allocator: std.mem.Allocator, sql: []const u8, stdout: anytype, st
     }
 }
 
-/// Print info about a parsed statement (temporary — until executor is ready).
+/// Print info about a parsed statement.
 fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
     switch (stmt) {
         .select => |s| {
@@ -217,7 +513,8 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
     }
 }
 
-/// Print a SQL parse error with context.
+// ── Error Formatting ───────────────────────────────────────────────────
+
 fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError) void {
     var line_num: usize = 1;
     var col_num: usize = 1;
@@ -252,31 +549,49 @@ fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError
     }
 }
 
-/// Handle dot-commands like .help, .quit, .tables
+// ── Dot Commands ───────────────────────────────────────────────────────
+
 const DotCommandResult = enum { ok, quit };
 
-fn handleDotCommand(cmd: []const u8, stdout: anytype, stderr: anytype) DotCommandResult {
+fn handleDotCommand(cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr: anytype) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
     } else if (std.mem.eql(u8, cmd, ".help")) {
         stdout.writeAll(
-            \\.help       Show this help
-            \\.quit       Exit the shell
-            \\.exit       Exit the shell
-            \\.tables     List tables (not yet implemented)
-            \\.schema     Show schema (not yet implemented)
+            \\.help               Show this help
+            \\.quit               Exit the shell
+            \\.exit               Exit the shell
+            \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
+            \\.mode               Show current output mode
+            \\.tables             List tables (not yet implemented)
+            \\.schema             Show schema (not yet implemented)
             \\
         ) catch {};
+    } else if (std.mem.startsWith(u8, cmd, ".mode")) {
+        const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
+        if (rest.len == 0) {
+            // Show current mode
+            const mode_name = @tagName(mode.*);
+            stdout.print("Current mode: {s}\n", .{mode_name}) catch {};
+        } else {
+            if (parseModeString(rest)) |new_mode| {
+                mode.* = new_mode;
+                stdout.print("Output mode set to: {s}\n", .{@tagName(new_mode)}) catch {};
+            } else {
+                printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
+            }
+        }
     } else if (std.mem.eql(u8, cmd, ".tables") or std.mem.eql(u8, cmd, ".schema")) {
-        stdout.writeAll("Not yet implemented (requires query executor).\n") catch {};
+        stdout.writeAll("Not yet implemented.\n") catch {};
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
     return .ok;
 }
 
-/// SQL syntax highlighting callback for the REPL.
+// ── Utility Functions ──────────────────────────────────────────────────
+
 fn sqlHighlighter(buf: []const u8, writer: std.io.AnyWriter) anyerror!void {
     var tok = silica.tokenizer.Tokenizer.init(buf);
     var last_end: usize = 0;
@@ -316,10 +631,8 @@ fn sqlHighlighter(buf: []const u8, writer: std.io.AnyWriter) anyerror!void {
     }
 }
 
-/// Validation state for SQL input (local enum replacing sailor.repl.Validation).
 const Validation = enum { complete, incomplete };
 
-/// SQL input validator for multi-line support.
 fn sqlValidator(buf: []const u8) Validation {
     const trimmed = std.mem.trimRight(u8, buf, " \t\r\n");
     if (trimmed.len == 0) return .complete;
@@ -328,7 +641,6 @@ fn sqlValidator(buf: []const u8) Validation {
     return .incomplete;
 }
 
-/// SQL keyword completion callback.
 fn sqlCompleter(buf: []const u8, allocator: std.mem.Allocator) anyerror![]const []const u8 {
     const trimmed = std.mem.trimRight(u8, buf, " \t");
     if (trimmed.len == 0) return &.{};
@@ -377,6 +689,7 @@ fn printUsage(writer: anytype) void {
         \\Examples:
         \\  silica mydb.db              Open database in interactive mode
         \\  silica --csv mydb.db        Open with CSV output format
+        \\  silica -m json mydb.db      Open with JSON output format
         \\
     ) catch {};
 }
@@ -432,7 +745,7 @@ test "printError formats error message" {
 }
 
 test "version string is set" {
-    try std.testing.expectEqualStrings("0.2.0", version);
+    try std.testing.expectEqualStrings("0.3.0", version);
 }
 
 test "sqlValidator complete with semicolon" {
@@ -497,17 +810,19 @@ test "sqlCompleter empty input" {
 }
 
 test "handleDotCommand help" {
-    var buf: [1024]u8 = undefined;
+    var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
     var ebuf: [256]u8 = undefined;
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
-    const result = handleDotCommand(".help", &w, &ew);
+    var mode: OutputMode = .table;
+    const result = handleDotCommand(".help", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".quit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".mode") != null);
 }
 
 test "handleDotCommand quit" {
@@ -517,7 +832,8 @@ test "handleDotCommand quit" {
     var ebuf: [256]u8 = undefined;
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
-    const result = handleDotCommand(".quit", &w, &ew);
+    var mode: OutputMode = .table;
+    const result = handleDotCommand(".quit", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
@@ -530,10 +846,52 @@ test "handleDotCommand unknown" {
     var ebuf: [256]u8 = undefined;
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
-    const result = handleDotCommand(".foobar", &w, &ew);
+    var mode: OutputMode = .table;
+    const result = handleDotCommand(".foobar", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Unknown command") != null);
+}
+
+test "handleDotCommand mode set" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    _ = handleDotCommand(".mode csv", &mode, &w, &ew);
+    try std.testing.expectEqual(OutputMode.csv, mode);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "csv") != null);
+}
+
+test "handleDotCommand mode show" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .json;
+    _ = handleDotCommand(".mode", &mode, &w, &ew);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "json") != null);
+}
+
+test "handleDotCommand mode invalid" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    _ = handleDotCommand(".mode foobar", &mode, &w, &ew);
+    try std.testing.expectEqual(OutputMode.table, mode); // unchanged
+    const eoutput = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, eoutput, "Invalid mode") != null);
 }
 
 test "processSQL parses valid SQL" {
@@ -579,7 +937,6 @@ test "isWordChar" {
 }
 
 test "printStmtInfo formats statement types" {
-    // Test SELECT
     {
         var buf: [256]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
@@ -588,8 +945,6 @@ test "printStmtInfo formats statement types" {
         const output = fbs.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, output, "SELECT") != null);
     }
-
-    // Test INSERT
     {
         var buf: [256]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
@@ -598,8 +953,6 @@ test "printStmtInfo formats statement types" {
         const output = fbs.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO users") != null);
     }
-
-    // Test CREATE TABLE
     {
         var buf: [256]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
@@ -608,8 +961,6 @@ test "printStmtInfo formats statement types" {
         const output = fbs.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE test") != null);
     }
-
-    // Test DROP TABLE
     {
         var buf: [256]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
@@ -618,8 +969,6 @@ test "printStmtInfo formats statement types" {
         const output = fbs.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, output, "DROP TABLE test") != null);
     }
-
-    // Test BEGIN
     {
         var buf: [256]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
@@ -628,4 +977,203 @@ test "printStmtInfo formats statement types" {
         const output = fbs.getWritten();
         try std.testing.expect(std.mem.indexOf(u8, output, "BEGIN") != null);
     }
+}
+
+test "valueToText converts all types" {
+    const allocator = std.testing.allocator;
+
+    // Integer
+    {
+        const text = valueToText(allocator, .{ .integer = 42 }).?;
+        defer allocator.free(text);
+        try std.testing.expectEqualStrings("42", text);
+    }
+    // Real
+    {
+        const text = valueToText(allocator, .{ .real = 3.14 }).?;
+        defer allocator.free(text);
+        // Just check it starts with "3.14"
+        try std.testing.expect(std.mem.startsWith(u8, text, "3.14"));
+    }
+    // Text
+    {
+        const text = valueToText(allocator, .{ .text = "hello" }).?;
+        defer allocator.free(text);
+        try std.testing.expectEqualStrings("hello", text);
+    }
+    // Boolean
+    {
+        const t = valueToText(allocator, .{ .boolean = true }).?;
+        defer allocator.free(t);
+        try std.testing.expectEqualStrings("TRUE", t);
+        const f = valueToText(allocator, .{ .boolean = false }).?;
+        defer allocator.free(f);
+        try std.testing.expectEqualStrings("FALSE", f);
+    }
+    // Null
+    {
+        const text = valueToText(allocator, .null_value).?;
+        defer allocator.free(text);
+        try std.testing.expectEqualStrings("NULL", text);
+    }
+}
+
+test "parseModeString" {
+    try std.testing.expectEqual(OutputMode.table, parseModeString("table").?);
+    try std.testing.expectEqual(OutputMode.csv, parseModeString("csv").?);
+    try std.testing.expectEqual(OutputMode.json, parseModeString("json").?);
+    try std.testing.expectEqual(OutputMode.jsonl, parseModeString("jsonl").?);
+    try std.testing.expectEqual(OutputMode.plain, parseModeString("plain").?);
+    try std.testing.expect(parseModeString("bogus") == null);
+}
+
+test "formatTable renders bordered table" {
+    const allocator = std.testing.allocator;
+
+    const headers = &[_][]const u8{ "id", "name" };
+
+    // Create mock rows manually
+    var rows: [2]Row = undefined;
+    const vals1 = try allocator.alloc(Value, 2);
+    defer allocator.free(vals1);
+    vals1[0] = .{ .integer = 1 };
+    vals1[1] = .{ .text = "Alice" };
+    const cols1 = try allocator.alloc([]const u8, 2);
+    defer allocator.free(cols1);
+    cols1[0] = "id";
+    cols1[1] = "name";
+    rows[0] = .{ .columns = cols1, .values = vals1, .allocator = allocator };
+
+    const vals2 = try allocator.alloc(Value, 2);
+    defer allocator.free(vals2);
+    vals2[0] = .{ .integer = 2 };
+    vals2[1] = .{ .text = "Bob" };
+    const cols2 = try allocator.alloc([]const u8, 2);
+    defer allocator.free(cols2);
+    cols2[0] = "id";
+    cols2[1] = "name";
+    rows[1] = .{ .columns = cols2, .values = vals2, .allocator = allocator };
+
+    var out_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var w = fbs.writer();
+    formatTable(allocator, headers, &rows, &w);
+    const output = fbs.getWritten();
+
+    try std.testing.expect(output.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Alice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Bob") != null);
+    // Should have table borders
+    try std.testing.expect(std.mem.indexOf(u8, output, "│") != null or std.mem.indexOf(u8, output, "|") != null);
+}
+
+test "formatCsv renders CSV output" {
+    const allocator = std.testing.allocator;
+
+    const headers = &[_][]const u8{ "id", "name" };
+
+    var rows: [1]Row = undefined;
+    const vals = try allocator.alloc(Value, 2);
+    defer allocator.free(vals);
+    vals[0] = .{ .integer = 1 };
+    vals[1] = .{ .text = "Alice" };
+    const cols = try allocator.alloc([]const u8, 2);
+    defer allocator.free(cols);
+    cols[0] = "id";
+    cols[1] = "name";
+    rows[0] = .{ .columns = cols, .values = vals, .allocator = allocator };
+
+    var out_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var w = fbs.writer();
+    formatCsv(headers, &rows, allocator, &w);
+    const output = fbs.getWritten();
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "id,name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1,Alice") != null);
+}
+
+test "formatJson renders JSON array" {
+    const allocator = std.testing.allocator;
+
+    const headers = &[_][]const u8{ "id", "name" };
+
+    var rows: [1]Row = undefined;
+    const vals = try allocator.alloc(Value, 2);
+    defer allocator.free(vals);
+    vals[0] = .{ .integer = 1 };
+    vals[1] = .{ .text = "Alice" };
+    const cols = try allocator.alloc([]const u8, 2);
+    defer allocator.free(cols);
+    cols[0] = "id";
+    cols[1] = "name";
+    rows[0] = .{ .columns = cols, .values = vals, .allocator = allocator };
+
+    var out_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var w = fbs.writer();
+    formatJson(headers, &rows, allocator, &w);
+    const output = fbs.getWritten();
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"name\":\"Alice\"") != null);
+}
+
+test "formatJsonl renders JSONL output" {
+    const allocator = std.testing.allocator;
+
+    const headers = &[_][]const u8{"val"};
+
+    var rows: [2]Row = undefined;
+    const vals1 = try allocator.alloc(Value, 1);
+    defer allocator.free(vals1);
+    vals1[0] = .null_value;
+    const cols1 = try allocator.alloc([]const u8, 1);
+    defer allocator.free(cols1);
+    cols1[0] = "val";
+    rows[0] = .{ .columns = cols1, .values = vals1, .allocator = allocator };
+
+    const vals2 = try allocator.alloc(Value, 1);
+    defer allocator.free(vals2);
+    vals2[0] = .{ .boolean = true };
+    const cols2 = try allocator.alloc([]const u8, 1);
+    defer allocator.free(cols2);
+    cols2[0] = "val";
+    rows[1] = .{ .columns = cols2, .values = vals2, .allocator = allocator };
+
+    var out_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var w = fbs.writer();
+    formatJsonl(headers, &rows, allocator, &w);
+    const output = fbs.getWritten();
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"val\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"val\":true") != null);
+}
+
+test "formatPlain renders key-value pairs" {
+    const allocator = std.testing.allocator;
+
+    const headers = &[_][]const u8{ "id", "name" };
+
+    var rows: [1]Row = undefined;
+    const vals = try allocator.alloc(Value, 2);
+    defer allocator.free(vals);
+    vals[0] = .{ .integer = 42 };
+    vals[1] = .{ .text = "World" };
+    const cols = try allocator.alloc([]const u8, 2);
+    defer allocator.free(cols);
+    cols[0] = "id";
+    cols[1] = "name";
+    rows[0] = .{ .columns = cols, .values = vals, .allocator = allocator };
+
+    var out_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var w = fbs.writer();
+    formatPlain(headers, &rows, allocator, &w);
+    const output = fbs.getWritten();
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "id = 42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "name = World") != null);
 }
