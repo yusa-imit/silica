@@ -800,28 +800,36 @@ pub const RowIterator = struct {
 /// Full table scan via B+Tree cursor.
 pub const ScanOp = struct {
     allocator: Allocator,
-    cursor: Cursor,
+    tree: BTree,
+    cursor: ?Cursor = null,
     col_names: []const []const u8,
     opened: bool = false,
 
+    /// Create a ScanOp. After placement on the heap, call initCursor() to
+    /// set up the cursor with a stable pointer to the tree.
     pub fn init(allocator: Allocator, pool: *BufferPool, data_root_page_id: u32, col_names: []const []const u8) ScanOp {
-        var tree = BTree.init(pool, data_root_page_id);
         return .{
             .allocator = allocator,
-            .cursor = Cursor.init(allocator, &tree),
+            .tree = BTree.init(pool, data_root_page_id),
             .col_names = col_names,
         };
     }
 
+    /// Must be called after the ScanOp is at its final heap location.
+    pub fn initCursor(self: *ScanOp) void {
+        self.cursor = Cursor.init(self.allocator, &self.tree);
+    }
+
     pub fn open(self: *ScanOp) ExecError!void {
-        self.cursor.seekFirst() catch return ExecError.StorageError;
+        if (self.cursor == null) self.initCursor();
+        self.cursor.?.seekFirst() catch return ExecError.StorageError;
         self.opened = true;
     }
 
     pub fn next(self: *ScanOp) ExecError!?Row {
         if (!self.opened) try self.open();
 
-        const entry = self.cursor.next() catch return ExecError.StorageError;
+        const entry = self.cursor.?.next() catch return ExecError.StorageError;
         if (entry == null) return null;
 
         defer self.allocator.free(entry.?.key);
@@ -846,7 +854,7 @@ pub const ScanOp = struct {
     }
 
     pub fn close(self: *ScanOp) void {
-        self.cursor.deinit();
+        if (self.cursor) |*c| c.deinit();
     }
 
     pub fn iterator(self: *ScanOp) RowIterator {
