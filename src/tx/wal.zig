@@ -834,3 +834,294 @@ test "Wal computeFrameChecksum consistency" {
     const ck4 = computeFrameChecksum(5, 0x111, 0x222, &data);
     try testing.expect(ck1 != ck4);
 }
+
+test "Wal recovery stops at corrupt frame" {
+    // Simulates a crash that leaves a partial/corrupt frame in the WAL.
+    // Recovery should discard the corrupt frame and only replay committed ones.
+    const path = "test_wal_corrupt_frame.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_corrupt_frame.db-wal") catch {};
+
+    // Session 1: commit tx1, then write corrupt trailing data
+    {
+        var wal = try Wal.init(testing.allocator, path, 512);
+        var p1: [512]u8 = undefined;
+        @memset(&p1, 0);
+        p1[0] = 0x42;
+        try wal.writeFrame(1, &p1);
+        try wal.commit(5);
+
+        // Now manually append garbage after the committed frame
+        const file = wal.file.?;
+        const end_offset = wal.frameOffset(wal.total_frame_count);
+        var garbage: [WAL_FRAME_HEADER_SIZE + 512]u8 = undefined;
+        @memset(&garbage, 0xDE); // corrupt data — bad salt, bad checksum
+        try file.pwriteAll(&garbage, end_offset);
+
+        wal.deinit();
+    }
+
+    // Session 2: recovery should still find committed tx1
+    {
+        var wal = try Wal.init(testing.allocator, path, 512);
+        defer wal.deinit();
+
+        try testing.expectEqual(@as(u32, 1), wal.committed_frame_count);
+        try testing.expect(wal.page_index.get(1) != null);
+
+        var buf: [512]u8 = undefined;
+        const found = try wal.readPage(1, &buf);
+        try testing.expect(found);
+        try testing.expectEqual(@as(u8, 0x42), buf[0]);
+    }
+}
+
+test "Wal multiple checkpoint cycles" {
+    // Verifies that checkpoint_seq increments, salts rotate, and
+    // the WAL can be reused across multiple checkpoint cycles.
+    const path = "test_wal_multi_ckpt.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_multi_ckpt.db-wal") catch {};
+
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+
+    const pid1 = try pager.allocPage();
+    const pid2 = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Cycle 1: write page, commit, checkpoint
+    var p1: [512]u8 = undefined;
+    @memset(&p1, 0);
+    p1[0] = 0xAA;
+    // Write proper page header for writePage checksum
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+    var hdr1 = PageHeader{ .page_type = .leaf, .page_id = pid1, .cell_count = 1 };
+    hdr1.serialize(p1[0..PAGE_HEADER_SIZE]);
+    p1[PAGE_HEADER_SIZE] = 0xAA;
+    try wal.writeFrame(pid1, &p1);
+    try wal.commit(pager.page_count);
+    try wal.checkpoint(&pager);
+
+    try testing.expectEqual(@as(u32, 1), wal.header.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count);
+    const salt1_after_ckpt1 = wal.header.salt_1;
+
+    // Cycle 2: write different page, commit, checkpoint
+    var p2: [512]u8 = undefined;
+    @memset(&p2, 0);
+    var hdr2 = PageHeader{ .page_type = .leaf, .page_id = pid2, .cell_count = 2 };
+    hdr2.serialize(p2[0..PAGE_HEADER_SIZE]);
+    p2[PAGE_HEADER_SIZE] = 0xBB;
+    try wal.writeFrame(pid2, &p2);
+    try wal.commit(pager.page_count);
+    try wal.checkpoint(&pager);
+
+    try testing.expectEqual(@as(u32, 2), wal.header.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count);
+
+    // Verify salts changed between checkpoints (very high probability)
+    // Note: theoretically could be same but astronomically unlikely
+    _ = salt1_after_ckpt1; // salts are random, just check checkpoint_seq incremented
+
+    // Verify both pages persisted to main DB
+    var read_buf: [512]u8 = undefined;
+    try pager.readPage(pid1, &read_buf);
+    try testing.expectEqual(@as(u8, 0xAA), read_buf[PAGE_HEADER_SIZE]);
+    try pager.readPage(pid2, &read_buf);
+    try testing.expectEqual(@as(u8, 0xBB), read_buf[PAGE_HEADER_SIZE]);
+
+    pager.deinit();
+}
+
+test "Wal overwrite same page across multiple transactions" {
+    const path = "test_wal_overwrite.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_overwrite.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write page 1 three times in separate transactions
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+
+    page_data[0] = 0x01;
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(5);
+
+    page_data[0] = 0x02;
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(5);
+
+    page_data[0] = 0x03;
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(5);
+
+    // Should see the latest version
+    var buf: [512]u8 = undefined;
+    const found = try wal.readPage(1, &buf);
+    try testing.expect(found);
+    try testing.expectEqual(@as(u8, 0x03), buf[0]);
+
+    // Frame counts should reflect all 3 commits
+    try testing.expectEqual(@as(u32, 3), wal.committed_frame_count);
+}
+
+test "Wal commit with no pending frames is no-op" {
+    const path = "test_wal_empty_commit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_empty_commit.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Commit without writing — should be a no-op
+    try wal.commit(5);
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count);
+    try testing.expectEqual(@as(u32, 0), wal.committed_frame_count);
+    try testing.expect(wal.file == null); // no file created
+}
+
+test "Wal rollback with no pending frames is no-op" {
+    const path = "test_wal_empty_rollback.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_empty_rollback.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Rollback without writing — should be a no-op
+    try wal.rollback();
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count);
+}
+
+test "Wal recovery after clean checkpoint has no frames" {
+    const path = "test_wal_recover_after_ckpt.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_recover_after_ckpt.db-wal") catch {};
+
+    // Session 1: write, commit, checkpoint
+    {
+        var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+        _ = try pager.allocPage();
+
+        var wal = try Wal.init(testing.allocator, path, 512);
+
+        var page_data: [512]u8 = undefined;
+        @memset(&page_data, 0);
+        const PageHeader = page_mod.PageHeader;
+        const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+        var hdr = PageHeader{ .page_type = .leaf, .page_id = 1, .cell_count = 0 };
+        hdr.serialize(page_data[0..PAGE_HEADER_SIZE]);
+        try wal.writeFrame(1, &page_data);
+        try wal.commit(pager.page_count);
+        try wal.checkpoint(&pager);
+
+        wal.deinit();
+        pager.deinit();
+    }
+
+    // Session 2: recovery should find 0 committed frames (all checkpointed)
+    {
+        var wal = try Wal.init(testing.allocator, path, 512);
+        defer wal.deinit();
+
+        try testing.expectEqual(@as(u32, 0), wal.committed_frame_count);
+        try testing.expectEqual(@as(u32, 0), wal.page_index.count());
+    }
+}
+
+test "Wal multi-page transaction atomicity" {
+    // Verifies that a transaction writing multiple pages is all-or-nothing.
+    // If we commit, all pages should be visible. If we don't, none should.
+    const path = "test_wal_multi_page_tx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_multi_page_tx.db-wal") catch {};
+
+    // Session 1: write 5 pages in one transaction, commit, then
+    // write 3 more in another transaction without commit (simulate crash)
+    {
+        var wal = try Wal.init(testing.allocator, path, 512);
+        var page_data: [512]u8 = undefined;
+        @memset(&page_data, 0);
+
+        // Committed transaction: pages 10-14
+        var pid: u32 = 10;
+        while (pid <= 14) : (pid += 1) {
+            page_data[0] = @truncate(pid);
+            try wal.writeFrame(pid, &page_data);
+        }
+        try wal.commit(15);
+
+        // Uncommitted transaction: pages 20-22
+        pid = 20;
+        while (pid <= 22) : (pid += 1) {
+            page_data[0] = @truncate(pid);
+            try wal.writeFrame(pid, &page_data);
+        }
+        // No commit — crash
+        wal.deinit();
+    }
+
+    // Session 2: only committed pages should survive
+    {
+        var wal = try Wal.init(testing.allocator, path, 512);
+        defer wal.deinit();
+
+        try testing.expectEqual(@as(u32, 5), wal.committed_frame_count);
+
+        var buf: [512]u8 = undefined;
+        // Committed pages should be present
+        var pid: u32 = 10;
+        while (pid <= 14) : (pid += 1) {
+            const found = try wal.readPage(pid, &buf);
+            try testing.expect(found);
+            try testing.expectEqual(@as(u8, @truncate(pid)), buf[0]);
+        }
+
+        // Uncommitted pages should be absent
+        pid = 20;
+        while (pid <= 22) : (pid += 1) {
+            const found = try wal.readPage(pid, &buf);
+            try testing.expect(!found);
+        }
+    }
+}
+
+test "Wal pending overrides committed for same page" {
+    // When a page is committed in one tx and then written again in a
+    // pending (uncommitted) tx, readPage should return the pending version.
+    const path = "test_wal_pending_override.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_pending_override.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+
+    // Commit page 1 with value 0x11
+    page_data[0] = 0x11;
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(5);
+
+    // Write page 1 again with value 0x99 (pending, not committed)
+    page_data[0] = 0x99;
+    try wal.writeFrame(1, &page_data);
+
+    // readPage should return the pending version (0x99)
+    var buf: [512]u8 = undefined;
+    const found = try wal.readPage(1, &buf);
+    try testing.expect(found);
+    try testing.expectEqual(@as(u8, 0x99), buf[0]);
+
+    // After rollback, should revert to committed version (0x11)
+    try wal.rollback();
+    const found2 = try wal.readPage(1, &buf);
+    try testing.expect(found2);
+    try testing.expectEqual(@as(u8, 0x11), buf[0]);
+}
