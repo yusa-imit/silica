@@ -288,7 +288,7 @@ pub const TransactionManager = struct {
 
     /// Begin a new transaction. Returns the assigned XID.
     pub fn begin(self: *TransactionManager, isolation: IsolationLevel) !u32 {
-        if (self.next_xid >= MAX_XID) return error.TransactionIdWraparound;
+        if (self.next_xid > MAX_XID) return error.TransactionIdWraparound;
 
         const xid = self.next_xid;
         self.next_xid += 1;
@@ -366,6 +366,7 @@ pub const TransactionManager = struct {
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
         const cid = info.current_cid;
+        if (cid == std.math.maxInt(u16)) return error.CommandIdOverflow;
         info.current_cid += 1;
         return cid;
     }
@@ -1072,4 +1073,491 @@ test "multiple concurrent transactions with visibility" {
     }
 
     try tm.commit(xid_c);
+}
+
+// ── Stabilization: Edge Case Tests ──────────────────────────────────
+
+test "isTupleVisible — same-txn insert then delete" {
+    const snap = Snapshot.EMPTY;
+
+    // Same transaction inserts (cid=0) then deletes (cid=1). Current command is cid=2.
+    // xmin visible (cid 0 < 2), xmax visible (cid 1 < 2) → invisible (deleted)
+    {
+        const h = TupleHeader{
+            .xmin = 5,
+            .xmax = 5,
+            .cid = 1, // delete cid
+            .flags = .{},
+        };
+        // Simulate: insert at cid=0, delete at cid=1, now at cid=2
+        // xmin=5, current_xid=5, cid_header=? — but header only stores one cid.
+        // In practice, the insert header has cid=0 and the delete header has cid=1.
+        // Since both xmin and xmax are current_xid, we check cid for both.
+        // xmin check: header.cid(1) >= current_cid(2)? No → xmin visible
+        // xmax check: header.cid(1) < current_cid(2)? Yes → xmax visible → tuple invisible
+        try std.testing.expect(!isTupleVisible(h, snap, 5, 2));
+    }
+
+    // Same txn: delete hasn't happened yet from current command's perspective
+    // Insert cid=0, delete cid=2, current at cid=1
+    {
+        const h = TupleHeader{
+            .xmin = 5,
+            .xmax = 5,
+            .cid = 2, // delete cid (future relative to current)
+            .flags = .{},
+        };
+        // xmin: own txn, cid(2) >= current_cid(1)? Yes → xmin NOT visible? No...
+        // Wait — the header stores ONE cid, which is the latest operation's cid.
+        // For insert, cid is insert cid. For delete, cid is overwritten to delete cid.
+        // So when xmax is set, cid = delete cid. xmin check uses same cid field.
+        // This means for same-txn insert+delete, the original insert cid is lost.
+        // This is a known PostgreSQL behavior: the tuple header's cid is the last operation's cid.
+        // PostgreSQL handles this with combo CIDs for same-transaction insert+delete.
+        // For now, our simplified model: cid=2 for both checks.
+        // xmin check: cid(2) >= current_cid(1)? Yes → xmin NOT visible → tuple invisible
+        try std.testing.expect(!isTupleVisible(h, snap, 5, 1));
+    }
+}
+
+test "isTupleVisible — cid boundary exactly equal" {
+    const snap = Snapshot.EMPTY;
+
+    // xmin = current_xid, cid == current_cid → invisible (not yet created from this cmd's view)
+    {
+        const h = TupleHeader{
+            .xmin = 5,
+            .xmax = INVALID_XID,
+            .cid = 3,
+            .flags = .{},
+        };
+        try std.testing.expect(!isTupleVisible(h, snap, 5, 3));
+    }
+
+    // xmin = current_xid, cid = current_cid - 1 → visible
+    {
+        const h = TupleHeader{
+            .xmin = 5,
+            .xmax = INVALID_XID,
+            .cid = 2,
+            .flags = .{},
+        };
+        try std.testing.expect(isTupleVisible(h, snap, 5, 3));
+    }
+}
+
+test "isTupleVisible — frozen tuple with committed xmax" {
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    // Frozen xmin, committed xmax → invisible (deleted)
+    {
+        const h = TupleHeader{
+            .xmin = FROZEN_XID,
+            .xmax = 3, // committed (< snap.xmin)
+            .cid = 0,
+            .flags = .{},
+        };
+        try std.testing.expect(!isTupleVisible(h, snap, 8, 0));
+    }
+
+    // Frozen xmin, active xmax → visible (delete in progress)
+    {
+        const active_xids = [_]u32{6};
+        const snap2 = Snapshot{
+            .xmin = 5,
+            .xmax = 10,
+            .active_xids = &active_xids,
+            .allocator = null,
+        };
+        const h = TupleHeader{
+            .xmin = FROZEN_XID,
+            .xmax = 6, // active
+            .cid = 0,
+            .flags = .{},
+        };
+        try std.testing.expect(isTupleVisible(h, snap2, 8, 0));
+    }
+}
+
+test "isTupleVisible — contradictory hint flags" {
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    // Both xmin_committed and xmin_aborted set (data corruption) → aborted takes priority
+    {
+        const h = TupleHeader{
+            .xmin = 6,
+            .xmax = INVALID_XID,
+            .cid = 0,
+            .flags = .{ .xmin_committed = true, .xmin_aborted = true },
+        };
+        // aborted is checked first in the code → invisible
+        try std.testing.expect(!isTupleVisible(h, snap, 8, 0));
+    }
+
+    // Both xmax_committed and xmax_aborted set → aborted takes priority → visible
+    {
+        const h = TupleHeader{
+            .xmin = 6,
+            .xmax = 7,
+            .cid = 0,
+            .flags = .{ .xmin_committed = true, .xmax_committed = true, .xmax_aborted = true },
+        };
+        // xmax aborted checked first → xmax not visible → tuple IS visible
+        try std.testing.expect(isTupleVisible(h, snap, 8, 0));
+    }
+}
+
+test "Snapshot.isActive — boundary values" {
+    const active_xids = [_]u32{ 5, 9 };
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &active_xids,
+        .allocator = null,
+    };
+
+    // xid == xmin AND in active list → active
+    try std.testing.expect(snap.isActive(5));
+
+    // xid == xmax - 1 AND in active list → active
+    try std.testing.expect(snap.isActive(9));
+
+    // xid == xmax → active (future)
+    try std.testing.expect(snap.isActive(10));
+
+    // xid == xmin - 1 → not active
+    try std.testing.expect(!snap.isActive(4));
+
+    // xid in [xmin, xmax) but NOT in active list → not active (committed)
+    try std.testing.expect(!snap.isActive(6));
+    try std.testing.expect(!snap.isActive(7));
+    try std.testing.expect(!snap.isActive(8));
+}
+
+test "TransactionManager — XID boundary at MAX_XID" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Set next_xid near the maximum
+    tm.next_xid = MAX_XID;
+
+    // Should succeed: MAX_XID is assignable
+    const xid = try tm.begin(.read_committed);
+    try std.testing.expectEqual(MAX_XID, xid);
+    try tm.commit(xid);
+
+    // Now next_xid = MAX_XID + 1, should fail
+    try std.testing.expectError(error.TransactionIdWraparound, tm.begin(.read_committed));
+}
+
+test "TransactionManager — CID overflow" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid = try tm.begin(.read_committed);
+
+    // Set CID near max via direct manipulation (skip 65534 calls)
+    const info = tm.active_txns.getPtr(xid).?;
+    info.current_cid = std.math.maxInt(u16);
+
+    // Should return the max CID value but then error on next call
+    // Actually, advanceCid returns current and increments, so at maxInt it should error
+    try std.testing.expectError(error.CommandIdOverflow, tm.advanceCid(xid));
+
+    // Verify it didn't wrap
+    try std.testing.expectEqual(std.math.maxInt(u16), info.current_cid);
+
+    try tm.commit(xid);
+}
+
+test "TransactionManager — takeSnapshot with no active transactions" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Begin and immediately commit a transaction
+    const xid = try tm.begin(.read_committed);
+    try tm.commit(xid);
+
+    // Begin another just to take a snapshot from
+    const xid2 = try tm.begin(.read_committed);
+    try tm.commit(xid2);
+
+    // All committed, take raw snapshot (only xid1 and xid2 are in map, both committed)
+    // Only getSnapshot checks active state, takeSnapshot just scans
+    var snap = try tm.takeSnapshot();
+    defer snap.deinit();
+
+    // No active txns: active_xids should be empty
+    try std.testing.expectEqual(@as(usize, 0), snap.active_xids.len);
+    // xmin should be next_xid (no active txns to lower it)
+    try std.testing.expectEqual(tm.next_xid, snap.xmin);
+    try std.testing.expectEqual(tm.next_xid, snap.xmax);
+}
+
+test "TransactionManager — isCommitted special XIDs" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // FROZEN_XID and BOOTSTRAP_XID are always committed
+    try std.testing.expect(tm.isCommitted(FROZEN_XID));
+    try std.testing.expect(tm.isCommitted(BOOTSTRAP_XID));
+
+    // Unknown XID (pruned) is considered committed
+    try std.testing.expect(tm.isCommitted(999));
+
+    // Active transaction is NOT committed
+    const xid = try tm.begin(.read_committed);
+    try std.testing.expect(!tm.isCommitted(xid));
+
+    // After commit, it IS committed
+    try tm.commit(xid);
+    try std.testing.expect(tm.isCommitted(xid));
+}
+
+test "TransactionManager — isAborted edge cases" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Unknown XID → not aborted
+    try std.testing.expect(!tm.isAborted(999));
+
+    // Active → not aborted
+    const xid = try tm.begin(.read_committed);
+    try std.testing.expect(!tm.isAborted(xid));
+
+    // Committed → not aborted
+    try tm.commit(xid);
+    try std.testing.expect(!tm.isAborted(xid));
+
+    // Aborted → aborted
+    const xid2 = try tm.begin(.read_committed);
+    try tm.abort(xid2);
+    try std.testing.expect(tm.isAborted(xid2));
+}
+
+test "TransactionManager — pruneCompleted with nothing to prune" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+
+    // All active — prune should do nothing
+    tm.pruneCompleted();
+
+    try std.testing.expectEqual(TransactionState.active, tm.getState(xid1).?);
+    try std.testing.expectEqual(TransactionState.active, tm.getState(xid2).?);
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+}
+
+test "TransactionManager — all transactions aborted vacuum horizon" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+
+    try tm.abort(xid1);
+    try tm.abort(xid2);
+
+    // No active transactions — vacuum horizon should be next_xid
+    try std.testing.expectEqual(tm.next_xid, tm.getVacuumHorizon());
+}
+
+test "TransactionManager — SERIALIZABLE isolation snapshot lifecycle" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.serializable);
+
+    // Serializable gets snapshot at begin (same as repeatable_read)
+    const snap = try tm.getSnapshot(xid2);
+    try std.testing.expect(snap.isActive(xid1));
+    try std.testing.expect(snap.isActive(xid2));
+
+    // Commit xid1 — serializable snapshot should NOT change
+    try tm.commit(xid1);
+    const snap_after = try tm.getSnapshot(xid2);
+    try std.testing.expect(snap_after.isActive(xid1)); // Still sees xid1 as active
+
+    try tm.commit(xid2);
+}
+
+test "serializeVersionedRow — empty values" {
+    const allocator = std.testing.allocator;
+
+    const header = TupleHeader.forInsert(10, 0);
+    const empty_values = [_]Value{};
+
+    const data = try serializeVersionedRow(allocator, header, &empty_values);
+    defer allocator.free(data);
+
+    // Should be TUPLE_HEADER_SIZE + 2 bytes (col_count=0)
+    try std.testing.expectEqual(TUPLE_HEADER_SIZE + 2, data.len);
+
+    const result = try deserializeVersionedRow(allocator, data);
+    defer allocator.free(result.values);
+
+    try std.testing.expectEqual(@as(u32, 10), result.header.xmin);
+    try std.testing.expectEqual(@as(usize, 0), result.values.len);
+}
+
+test "serializeVersionedRow — null values" {
+    const allocator = std.testing.allocator;
+
+    const header = TupleHeader.forInsert(7, 0);
+    const values = [_]Value{
+        .null_value,
+        .{ .integer = 42 },
+        .null_value,
+    };
+
+    const data = try serializeVersionedRow(allocator, header, &values);
+    defer allocator.free(data);
+
+    const result = try deserializeVersionedRow(allocator, data);
+    defer {
+        for (result.values) |v| v.free(allocator);
+        allocator.free(result.values);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), result.values.len);
+    try std.testing.expectEqual(Value.null_value, result.values[0]);
+    try std.testing.expectEqual(@as(i64, 42), result.values[1].integer);
+    try std.testing.expectEqual(Value.null_value, result.values[2]);
+}
+
+test "deserializeVersionedRow — data too short" {
+    const allocator = std.testing.allocator;
+
+    // Less than TUPLE_HEADER_SIZE + 2 bytes
+    const short_data = [_]u8{0} ** (TUPLE_HEADER_SIZE + 1);
+    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &short_data));
+
+    // Exactly TUPLE_HEADER_SIZE + 0 bytes
+    const exact_header = [_]u8{0} ** TUPLE_HEADER_SIZE;
+    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &exact_header));
+
+    // Empty data
+    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &[_]u8{}));
+}
+
+test "isVersionedRow — length checks" {
+    // Too short
+    try std.testing.expect(!isVersionedRow(&[_]u8{0} ** (TUPLE_HEADER_SIZE + 1)));
+    try std.testing.expect(!isVersionedRow(&[_]u8{}));
+    try std.testing.expect(!isVersionedRow(&[_]u8{0} ** TUPLE_HEADER_SIZE));
+
+    // Exactly minimum valid length
+    try std.testing.expect(isVersionedRow(&[_]u8{0} ** (TUPLE_HEADER_SIZE + 2)));
+
+    // Larger than minimum
+    try std.testing.expect(isVersionedRow(&[_]u8{0} ** (TUPLE_HEADER_SIZE + 100)));
+}
+
+test "TupleFlags — all combinations" {
+    // All flags set
+    const all_set = TupleFlags{
+        .xmin_committed = true,
+        .xmin_aborted = true,
+        .xmax_committed = true,
+        .xmax_aborted = true,
+        .updated = true,
+    };
+    const byte: u8 = @bitCast(all_set);
+    try std.testing.expect(byte != 0);
+    const back: TupleFlags = @bitCast(byte);
+    try std.testing.expect(back.xmin_committed);
+    try std.testing.expect(back.xmin_aborted);
+    try std.testing.expect(back.xmax_committed);
+    try std.testing.expect(back.xmax_aborted);
+    try std.testing.expect(back.updated);
+
+    // No flags set
+    const none = TupleFlags{};
+    const zero: u8 = @bitCast(none);
+    try std.testing.expectEqual(@as(u8, 0), zero);
+}
+
+test "TupleHeader serialize/deserialize — all fields max values" {
+    const header = TupleHeader{
+        .xmin = MAX_XID,
+        .xmax = MAX_XID,
+        .cid = std.math.maxInt(u16),
+        .flags = .{
+            .xmin_committed = true,
+            .xmin_aborted = true,
+            .xmax_committed = true,
+            .xmax_aborted = true,
+            .updated = true,
+        },
+    };
+
+    var buf: [TUPLE_HEADER_SIZE]u8 = undefined;
+    header.serialize(&buf);
+
+    const restored = TupleHeader.deserialize(&buf);
+    try std.testing.expectEqual(MAX_XID, restored.xmin);
+    try std.testing.expectEqual(MAX_XID, restored.xmax);
+    try std.testing.expectEqual(std.math.maxInt(u16), restored.cid);
+    try std.testing.expect(restored.flags.xmin_committed);
+    try std.testing.expect(restored.flags.updated);
+}
+
+test "TransactionManager — getSnapshot errors for non-active transaction" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid = try tm.begin(.read_committed);
+    try tm.commit(xid);
+
+    // getSnapshot on committed transaction should fail
+    try std.testing.expectError(error.TransactionNotActive, tm.getSnapshot(xid));
+
+    // getSnapshot on unknown transaction should fail
+    try std.testing.expectError(error.TransactionNotFound, tm.getSnapshot(999));
+}
+
+test "TransactionManager — advanceCid errors" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Unknown transaction
+    try std.testing.expectError(error.TransactionNotFound, tm.advanceCid(999));
+
+    // Committed transaction
+    const xid = try tm.begin(.read_committed);
+    try tm.commit(xid);
+    try std.testing.expectError(error.TransactionNotActive, tm.advanceCid(xid));
+}
+
+test "TransactionManager — getCurrentCid errors" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    try std.testing.expectError(error.TransactionNotFound, tm.getCurrentCid(999));
 }
