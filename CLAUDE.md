@@ -1,14 +1,14 @@
 # Silica — Claude Code Orchestrator
 
-> **Silica**: Zig로 작성된 프로덕션 등급 임베디드 관계형 데이터베이스 엔진
-> Current Phase: **Phase 1 — Storage Foundation**
+> **Silica**: Zig로 작성된 프로덕션 등급 풀 RDBMS — 듀얼 모드 (임베디드 + 클라이언트-서버), MVCC, Full SQL:2016, 스트리밍 복제
+> Current Phase: **Phase 4 — MVCC & Full Transactions**
 
 ---
 
 ## Project Overview
 
-- **Language**: Zig 0.14.x (stable)
-- **Type**: Embedded relational database (SQLite-like)
+- **Language**: Zig 0.15.x (stable)
+- **Type**: Full-featured relational database — dual-mode (embedded + client-server)
 - **Build**: `zig build` / `zig build test`
 - **PRD**: `docs/PRD.md` (전체 요구사항 참조)
 - **Branch Strategy**: `main` (development)
@@ -36,33 +36,56 @@ silica/
 │   └── release.yml              #   Release pipeline
 └── src/                         # Source code
     ├── main.zig                 #   엔트리포인트
+    ├── cli.zig                  #   CLI (sailor arg/color/fmt integration)
+    ├── tui.zig                  #   TUI database browser (sailor.tui)
     ├── storage/                 #   Storage Engine
     │   ├── page.zig             #     Page Manager (Pager)
     │   ├── btree.zig            #     B+Tree implementation
     │   ├── buffer_pool.zig      #     Buffer Pool (LRU cache)
-    │   └── overflow.zig         #     Overflow page handling
-    ├── sql/                     #   SQL Frontend
+    │   ├── overflow.zig         #     Overflow page handling
+    │   └── fuzz.zig             #     B+Tree fuzz tests
+    ├── sql/                     #   SQL Frontend & Engine
     │   ├── tokenizer.zig        #     Tokenizer (Lexer)
     │   ├── parser.zig           #     Recursive descent parser → AST
     │   ├── ast.zig              #     AST node definitions
-    │   └── analyzer.zig         #     Semantic analysis
-    ├── query/                   #   Query Engine
+    │   ├── analyzer.zig         #     Semantic analysis
+    │   ├── catalog.zig          #     Schema catalog (B+Tree backed)
     │   ├── planner.zig          #     Query planner (logical plan)
     │   ├── optimizer.zig        #     Rule-based optimizer
-    │   └── executor.zig         #     Volcano-model executor
+    │   ├── executor.zig         #     Volcano-model executor
+    │   └── engine.zig           #     Database integration layer
     ├── tx/                      #   Transaction Manager
     │   ├── wal.zig              #     Write-Ahead Log
-    │   ├── lock.zig             #     Lock Manager
-    │   └── checkpoint.zig       #     WAL checkpoint
-    ├── server/                  #   Client-Server Mode
-    │   ├── wire.zig             #     Wire protocol
-    │   └── connection.zig       #     Connection handling
+    │   ├── mvcc.zig             #     MVCC visibility & snapshots (planned)
+    │   ├── lock.zig             #     Lock Manager (planned)
+    │   └── vacuum.zig           #     Dead tuple reclamation (planned)
+    ├── catalog/                 #   Extended Catalog (planned)
+    │   ├── views.zig            #     View definitions & expansion
+    │   ├── functions.zig        #     Stored function registry
+    │   ├── triggers.zig         #     Trigger definitions & execution
+    │   └── sequences.zig        #     Sequence generators
+    ├── types/                   #   Extended Type System (planned)
+    │   ├── datetime.zig         #     DATE, TIME, TIMESTAMP, INTERVAL
+    │   ├── numeric.zig          #     NUMERIC/DECIMAL fixed-point
+    │   ├── json.zig             #     JSON/JSONB storage & operators
+    │   ├── array.zig            #     ARRAY type
+    │   ├── uuid.zig             #     UUID type
+    │   └── fts.zig              #     TSVECTOR/TSQUERY full-text search
+    ├── server/                  #   Client-Server Mode (planned)
+    │   ├── wire.zig             #     PostgreSQL wire protocol v3
+    │   ├── connection.zig       #     Connection handling & session state
+    │   ├── auth.zig             #     Authentication (SCRAM-SHA-256)
+    │   └── server.zig           #     TCP server & event loop
+    ├── replication/             #   Streaming Replication (planned)
+    │   ├── sender.zig           #     WAL sender (primary)
+    │   ├── receiver.zig         #     WAL receiver (replica)
+    │   └── slot.zig             #     Replication slot management
     └── util/                    #   Utilities
         ├── checksum.zig         #     CRC32C checksums
         └── varint.zig           #     Variable-length integer encoding
 ```
 
-> **Note**: `src/`, `build.zig`는 Phase 1 구현 시 생성됨. 현재는 문서·설정·CI만 존재.
+> **Note**: 파일 구조는 참고안. `(planned)`로 표기된 파일은 아직 존재하지 않으며 해당 Phase 구현 시 생성됨. 실제 소스 코드가 기준.
 
 ---
 
@@ -133,7 +156,7 @@ Leader (orchestrator)
 - `build.zig`가 없으면 프로젝트 부트스트랩부터 시작
 - 이전 세션의 미커밋 변경사항이 있으면: 테스트 통과 시 커밋+푸시, 실패 시 폐기
 - 테스트 실패 중이면 새 기능 추가 전에 수정
-- 의존성 순서 준수: Storage → SQL → Query → Transaction → Server
+- 의존성 순서 준수: Storage → SQL → Transaction(MVCC) → Catalog(Views/Triggers) → Server → Replication
 - 사이클당 하나의 집중 작업만 수행
 - 이전 세션의 미완료 작업이 있으면 먼저 완료
 
@@ -212,7 +235,13 @@ User-facing errors must follow this pattern:
 - **B+Tree invariants**: After every operation, verify: sorted keys, valid child pointers, balanced depth.
 - **Buffer Pool**: Pin/unpin must be balanced. Use `defer pool.unpin(page)` pattern.
 - **WAL**: Never modify main DB file directly — always through WAL first.
-- **Allocator discipline**: Storage engine uses arena per-transaction; buffer pool uses page-aligned allocator.
+- **MVCC**: Every row version must carry `(xmin, xmax)` transaction IDs. Visibility checks are mandatory before returning any tuple.
+- **Isolation correctness**: Never weaken an isolation level's guarantees. READ COMMITTED = per-statement snapshot. REPEATABLE READ = per-transaction snapshot. SERIALIZABLE = SSI with rw-antidependency tracking.
+- **Locking discipline**: Acquire locks in a consistent order to prevent deadlocks. Row locks before index locks. Always release locks on transaction end (commit or rollback).
+- **Concurrency safety**: All shared data structures (buffer pool, lock table, transaction table) must be protected by appropriate synchronization primitives.
+- **Wire protocol**: Follow PostgreSQL wire protocol v3 exactly — byte-level compatibility is required for client library interop.
+- **Replication**: WAL records must be self-describing (contain enough info to replay without the original query). LSN ordering must be strictly monotonic.
+- **Allocator discipline**: Storage engine uses arena per-transaction; buffer pool uses page-aligned allocator. Server mode: arena per-connection for session state.
 
 ---
 
@@ -273,52 +302,89 @@ Types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `ci`
 
 ---
 
-## Phase 1 Implementation Roadmap
+## Implementation Roadmap
 
-현재 Phase 1 (Storage Foundation) 구현 중. 우선순위:
+전체 12 Phase, 25 Milestone. 자세한 체크리스트는 `docs/PRD.md` Section 11 참조.
 
-1. **Page Manager & File Format** — `src/storage/page.zig`
-   - Database file header (Page 0) — Magic: "SLCA"
-   - Page read/write with CRC32C checksums
-   - Freelist management
-   - 기본 테스트: DB 생성, 페이지 쓰기, 재오픈 후 검증
+### Phase 1: Storage Foundation ✅
+- Page Manager, B+Tree, Buffer Pool, Overflow, CRC32C, Varint
+- 릴리즈: v0.1.0
 
-2. **B+Tree** — `src/storage/btree.zig`
-   - Insert, delete, point lookup
-   - Leaf page splits/merges
-   - Range scan cursors (forward/backward)
-   - Overflow pages for large values
+### Phase 2: SQL Core ✅
+- Tokenizer, Parser (Pratt precedence), AST, Semantic Analyzer
+- Schema Catalog (B+Tree backed), Query Planner, Rule-based Optimizer
+- Volcano-model Executor, Database Engine integration
+- Secondary indexes, WHERE with index selection
 
-3. **Buffer Pool** — `src/storage/buffer_pool.zig`
-   - LRU page cache (default: 2000 pages ≈ 8 MB)
-   - Dirty page tracking
-   - Pin/unpin semantics
+### Phase 3: WAL & Basic Transactions ✅
+- WAL frame writer, commit, rollback, checkpoint, recovery
+- Buffer pool WAL routing, Engine WAL mode integration
 
-4. **Utilities** — `src/util/`
-   - CRC32C checksum
-   - Varint encoding/decoding
+### Phase 4: MVCC & Full Transactions ← **CURRENT**
+- **Milestone 6**: MVCC Core — tuple versioning `(xmin, xmax)`, transaction ID management, snapshot isolation, visibility rules, READ COMMITTED / REPEATABLE READ, row-level locking, concurrent writer conflict detection
+- **Milestone 7**: VACUUM & SSI — dead tuple reclamation, auto-vacuum, free space map, SERIALIZABLE via SSI (rw-antidependency tracking), deadlock detection, savepoints
+
+### Phase 5: Advanced SQL
+- **Milestone 8**: Views (regular, materialized, updatable), CTEs (`WITH`, `WITH RECURSIVE`), set operations (UNION/INTERSECT/EXCEPT), `DISTINCT ON`
+- **Milestone 9**: Window functions — `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, frame specs (ROWS/RANGE/GROUPS), WindowAgg operator
+- **Milestone 10**: Advanced data types — DATE/TIME/TIMESTAMP/INTERVAL, NUMERIC/DECIMAL, UUID, SERIAL, ARRAY, ENUM, domain types, type coercion matrix
+
+### Phase 6: JSON & Full-Text Search
+- **Milestone 11**: JSON/JSONB — binary storage, operators (`->`, `->>`, `@>`, `?`), functions, GIN index, SQL/JSON path
+- **Milestone 12**: Full-text search — TSVECTOR/TSQUERY, `@@` operator, ranking, GIN index, text search configs
+
+### Phase 7: Stored Functions & Triggers
+- **Milestone 13**: Stored functions — SFL (Silica Function Language), scalar & set-returning, volatility categories
+- **Milestone 14**: Triggers — row/statement-level, BEFORE/AFTER/INSTEAD OF, OLD/NEW references, WHEN conditions
+
+### Phase 8: Client-Server & Wire Protocol
+- **Milestone 15**: PostgreSQL wire protocol v3 — simple & extended query protocol, prepared statements, COPY, TLS
+- **Milestone 16**: Server & connection management — async I/O event loop, session state, authentication (SCRAM-SHA-256), `silica server` CLI
+- **Milestone 17**: Authorization (RBAC) — roles, GRANT/REVOKE, row-level security, `information_schema`
+
+### Phase 9: Streaming Replication
+- **Milestone 18**: WAL sender/receiver — replication slots, hot standby, replication protocol
+- **Milestone 19**: Replication operations — synchronous mode, replica promotion, cascading replication, base backup, monitoring
+
+### Phase 10: Cost-Based Optimizer
+- **Milestone 20**: Statistics & cost model — `ANALYZE`, histograms, selectivity estimation, I/O + CPU cost model
+- **Milestone 21**: Advanced optimization — DP join ordering, hash/merge join selection, subquery decorrelation, index-only scans, `EXPLAIN ANALYZE`
+
+### Phase 11: Additional Index Types
+- **Milestone 22**: Hash, GiST, GIN indexes — `CREATE INDEX CONCURRENTLY`, bitmap index scans
+
+### Phase 12: Production Readiness
+- **Milestone 23**: Operational tools — `EXPLAIN ANALYZE`, `VACUUM`, monitoring views, config system
+- **Milestone 24**: Testing & certification — TPC-C/TPC-H benchmarks, jepsen-style testing, fuzz campaign, SQL conformance
+- **Milestone 25**: Documentation & packaging — API reference, ops guide, SQL reference, system packages
 
 ---
 
 ## Quick Reference
 
 ```bash
-# Build (src/ 생성 후)
+# Build
 zig build
 
 # Test
 zig build test
 
-# Run (embedded library — test harness)
-zig build run
+# Run embedded shell
+zig build run -- mydb.db
 
-# Cross-compile (example)
+# Run TUI browser
+zig build run -- --tui mydb.db
+
+# Run server (Phase 8+)
+zig build run -- server --data-dir /var/lib/silica --port 5433
+
+# Cross-compile
 zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
 
 # Clean
 rm -rf zig-out .zig-cache
 
-# Benchmark (Phase 2+)
+# Benchmark
 zig build bench
 ```
 
@@ -340,6 +406,9 @@ zig build bench
 12. **Never force push** — 파괴적 git 명령어 금지, `main` 브랜치 직접 수정 금지
 13. **Database correctness first** — 성능보다 정확성 우선. 데이터 무결성 검증 테스트 필수
 14. **Page-level atomicity** — 모든 페이지 쓰기는 원자적이어야 함. 부분 쓰기 = 데이터 손상
+15. **MVCC visibility is sacred** — 가시성 규칙 위반은 데이터 무결성 위반과 동일. 모든 튜플 반환 전 visibility check 필수
+16. **Wire protocol byte-compatibility** — PostgreSQL 클라이언트 라이브러리와의 호환성은 바이트 레벨에서 보장. 프로토콜 편의를 위한 deviations 금지
+17. **Isolation level guarantees are non-negotiable** — 각 격리 수준이 보장하는 속성을 절대로 약화시키지 않음. 의심스러우면 더 강한 격리 적용
 
 ---
 
@@ -426,7 +495,7 @@ gh issue create --repo yusa-imit/sailor \
 
 ## 환경
 - sailor 버전: <version>
-- Zig 버전: 0.14.x
+- Zig 버전: 0.15.x
 - OS: <os>"
 ```
 
