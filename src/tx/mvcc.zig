@@ -208,6 +208,21 @@ pub fn isTupleVisible(
     current_xid: u32,
     current_cid: u16,
 ) bool {
+    return isTupleVisibleWithTm(header, snapshot, current_xid, current_cid, null);
+}
+
+/// Determine tuple visibility, optionally consulting TransactionManager for
+/// commit/abort status when hint flags are not set. Without a TM reference,
+/// non-hinted transactions that are not in the active snapshot are assumed
+/// committed (the original behavior). With a TM reference, aborted
+/// transactions are correctly identified as invisible.
+pub fn isTupleVisibleWithTm(
+    header: TupleHeader,
+    snapshot: Snapshot,
+    current_xid: u32,
+    current_cid: u16,
+    tm: ?*TransactionManager,
+) bool {
     // Rule 1: Is the creating transaction visible?
     const xmin_visible = blk: {
         if (header.xmin == FROZEN_XID) break :blk true;
@@ -219,6 +234,11 @@ pub fn isTupleVisible(
         // Check hint flags first
         if (header.flags.xmin_aborted) break :blk false;
         if (header.flags.xmin_committed) break :blk true;
+        // Consult TransactionManager if available (correct aborted detection)
+        if (tm) |t| {
+            if (t.isAborted(header.xmin)) break :blk false;
+            if (t.isCommitted(header.xmin)) break :blk true;
+        }
         // Fall back to snapshot
         break :blk snapshot.isVisible(header.xmin);
     };
@@ -237,6 +257,11 @@ pub fn isTupleVisible(
         // Check hint flags first
         if (header.flags.xmax_aborted) break :blk false;
         if (header.flags.xmax_committed) break :blk true;
+        // Consult TransactionManager if available
+        if (tm) |t| {
+            if (t.isAborted(header.xmax)) break :blk false;
+            if (t.isCommitted(header.xmax)) break :blk true;
+        }
         // Fall back to snapshot
         break :blk snapshot.isVisible(header.xmax);
     };

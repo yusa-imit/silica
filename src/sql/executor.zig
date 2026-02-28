@@ -50,6 +50,9 @@ pub const MvccContext = struct {
     current_cid: u16,
     /// When true, rows carry MVCC headers and need visibility checks.
     enabled: bool = true,
+    /// Optional reference to TransactionManager for commit/abort status lookup.
+    /// Enables correct visibility for tuples without hint flags (e.g., aborted txns).
+    tm: ?*mvcc_mod.TransactionManager = null,
 };
 
 // ── Value Type ──────────────────────────────────────────────────────────
@@ -899,7 +902,7 @@ pub const ScanOp = struct {
             if (self.mvcc_ctx) |ctx| {
                 if (ctx.enabled and mvcc_mod.isVersionedRow(entry.?.value)) {
                     const header = TupleHeader.deserialize(entry.?.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisible(header, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                    if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
                         // Tuple not visible — skip it
                         self.allocator.free(entry.?.value);
                         continue;
