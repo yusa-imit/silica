@@ -24,6 +24,7 @@ pub const catalog = @import("sql/catalog.zig");
 pub const analyzer = @import("sql/analyzer.zig");
 pub const planner = @import("sql/planner.zig");
 pub const optimizer = @import("sql/optimizer.zig");
+pub const executor = @import("sql/executor.zig");
 
 test {
     // Pull in tests from all imported modules
