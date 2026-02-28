@@ -27,6 +27,9 @@ pub const optimizer = @import("sql/optimizer.zig");
 pub const executor = @import("sql/executor.zig");
 pub const engine = @import("sql/engine.zig");
 
+// Transaction modules
+pub const wal = @import("tx/wal.zig");
+
 test {
     // Pull in tests from all imported modules
     std.testing.refAllDecls(@This());

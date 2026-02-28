@@ -311,6 +311,10 @@ pub const Pager = struct {
 
     // ── Internal helpers ────────────────────────────────────────────────
 
+    pub fn flushHeader(self: *Pager) !void {
+        try self.writeHeaderPage();
+    }
+
     fn writeHeaderPage(self: *Pager) !void {
         const buf = try self.allocPageBuf();
         defer self.freePageBuf(buf);
