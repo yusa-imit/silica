@@ -134,4 +134,40 @@ Zig's `@memcpy` panics if src and dst overlap. Use:
 - `std.mem.copyForwards` when dst < src (e.g., deleting/shifting left)
 - `std.mem.copyBackwards` when dst > src (e.g., inserting/shifting right)
 
+### Lock Manager usage — VERIFIED
+```zig
+const lock_mod = @import("tx/lock.zig");
+const LockManager = lock_mod.LockManager;
+const LockTarget = lock_mod.LockTarget;
+const LockMode = lock_mod.LockMode;
+const TableLockMode = lock_mod.TableLockMode;
+
+var lm = LockManager.init(allocator);
+defer lm.deinit();
+
+// Row-level lock
+const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+try lm.acquireRowLock(xid, target, .exclusive);
+defer lm.releaseRowLock(xid, target);
+
+// Table-level lock (implicit on DML)
+try lm.acquireTableLock(xid, table_page_id, .row_exclusive);
+
+// Release all locks on transaction end
+lm.releaseAllLocks(xid);
+
+// Check for conflicts before acquiring
+if (lm.hasConflict(xid, target, .exclusive)) {
+    return error.LockConflict;
+}
+```
+
+### Lock Manager conflict resolution — VERIFIED
+- Shared locks: multiple holders allowed, compatible with each other
+- Exclusive locks: single holder only, conflicts with all modes
+- Lock upgrade: shared→exclusive only if sole holder, otherwise conflict
+- Table locks: follow PostgreSQL 7-mode conflict matrix
+- releaseAllLocks: iterates both row_locks and table_locks hash maps
+- Custom hash map context for LockTarget (table_page_id + row_key composite key)
+
 <!-- Add new patterns as they are verified through implementation -->
