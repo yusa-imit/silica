@@ -23,6 +23,8 @@ const btree_mod = @import("../storage/btree.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const page_mod = @import("../storage/page.zig");
 
+const mvcc_mod = @import("../tx/mvcc.zig");
+
 const BTree = btree_mod.BTree;
 const Cursor = btree_mod.Cursor;
 const BufferPool = buffer_pool_mod.BufferPool;
@@ -35,6 +37,20 @@ const PlanNode = planner_mod.PlanNode;
 const LogicalPlan = planner_mod.LogicalPlan;
 const PlanType = planner_mod.PlanType;
 const AggFunc = planner_mod.AggFunc;
+const TupleHeader = mvcc_mod.TupleHeader;
+const Snapshot = mvcc_mod.Snapshot;
+
+// ── MVCC Context ──────────────────────────────────────────────────────────
+
+/// MVCC context passed to scan operators for visibility filtering.
+/// When null/disabled, all rows are visible (legacy/auto-commit mode).
+pub const MvccContext = struct {
+    snapshot: Snapshot,
+    current_xid: u32,
+    current_cid: u16,
+    /// When true, rows carry MVCC headers and need visibility checks.
+    enabled: bool = true,
+};
 
 // ── Value Type ──────────────────────────────────────────────────────────
 
@@ -846,6 +862,8 @@ pub const ScanOp = struct {
     cursor: ?Cursor = null,
     col_names: []const []const u8,
     opened: bool = false,
+    /// MVCC context for visibility filtering (null = all rows visible).
+    mvcc_ctx: ?MvccContext = null,
 
     /// Create a ScanOp. After placement on the heap, call initCursor() to
     /// set up the cursor with a stable pointer to the tree.
@@ -871,28 +889,62 @@ pub const ScanOp = struct {
     pub fn next(self: *ScanOp) ExecError!?Row {
         if (!self.opened) try self.open();
 
-        const entry = self.cursor.?.next() catch return ExecError.StorageError;
-        if (entry == null) return null;
+        while (true) {
+            const entry = self.cursor.?.next() catch return ExecError.StorageError;
+            if (entry == null) return null;
 
-        defer self.allocator.free(entry.?.key);
-        defer self.allocator.free(entry.?.value);
+            defer self.allocator.free(entry.?.key);
 
-        // Deserialize the row value
-        const values = deserializeRow(self.allocator, entry.?.value) catch return ExecError.InvalidRowData;
-        errdefer {
-            for (values) |v| v.free(self.allocator);
-            self.allocator.free(values);
+            // MVCC visibility check: deserialize header and filter invisible tuples
+            if (self.mvcc_ctx) |ctx| {
+                if (ctx.enabled and mvcc_mod.isVersionedRow(entry.?.value)) {
+                    const header = TupleHeader.deserialize(entry.?.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisible(header, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                        // Tuple not visible — skip it
+                        self.allocator.free(entry.?.value);
+                        continue;
+                    }
+                    // Visible: deserialize column data (skip MVCC header)
+                    const values = deserializeRow(self.allocator, entry.?.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                        self.allocator.free(entry.?.value);
+                        return ExecError.InvalidRowData;
+                    };
+                    self.allocator.free(entry.?.value);
+                    errdefer {
+                        for (values) |v| v.free(self.allocator);
+                        self.allocator.free(values);
+                    }
+
+                    const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+                    for (self.col_names, 0..) |c, i| cols[i] = c;
+                    return Row{ .columns = cols, .values = values, .allocator = self.allocator };
+                }
+            }
+
+            defer self.allocator.free(entry.?.value);
+
+            // No MVCC context or legacy row: return all rows.
+            // Still need to detect MVCC format and skip the overhead for committed rows.
+            const row_bytes = if (mvcc_mod.isVersionedRow(entry.?.value))
+                entry.?.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+            else
+                entry.?.value;
+            const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+            errdefer {
+                for (values) |v| v.free(self.allocator);
+                self.allocator.free(values);
+            }
+
+            // Build column names
+            const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+            for (self.col_names, 0..) |c, i| cols[i] = c;
+
+            return Row{
+                .columns = cols,
+                .values = values,
+                .allocator = self.allocator,
+            };
         }
-
-        // Build column names
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
-        for (self.col_names, 0..) |c, i| cols[i] = c;
-
-        return Row{
-            .columns = cols,
-            .values = values,
-            .allocator = self.allocator,
-        };
     }
 
     pub fn close(self: *ScanOp) void {
@@ -923,6 +975,8 @@ pub const IndexScanOp = struct {
     lookup_key: []const u8,
     col_names: []const []const u8,
     exhausted: bool = false,
+    /// MVCC context for visibility filtering (null = all rows visible).
+    mvcc_ctx: ?MvccContext = null,
 
     pub fn init(
         allocator: Allocator,
@@ -958,8 +1012,31 @@ pub const IndexScanOp = struct {
         if (row_data == null) return null; // Orphaned index entry
         defer self.allocator.free(row_data.?);
 
-        // Deserialize the row
-        const values = deserializeRow(self.allocator, row_data.?) catch return ExecError.InvalidRowData;
+        // MVCC visibility check
+        if (self.mvcc_ctx) |ctx| {
+            if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
+                const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                if (!mvcc_mod.isTupleVisible(header, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                    return null; // Tuple not visible
+                }
+                // Visible: deserialize column data (skip MVCC header)
+                const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                errdefer {
+                    for (values) |v| v.free(self.allocator);
+                    self.allocator.free(values);
+                }
+                const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+                for (self.col_names, 0..) |c, i| cols[i] = c;
+                return Row{ .columns = cols, .values = values, .allocator = self.allocator };
+            }
+        }
+
+        // No MVCC context or legacy row — still detect MVCC format and skip overhead
+        const row_bytes = if (mvcc_mod.isVersionedRow(row_data.?))
+            row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
+        else
+            row_data.?;
+        const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
         errdefer {
             for (values) |v| v.free(self.allocator);
             self.allocator.free(values);

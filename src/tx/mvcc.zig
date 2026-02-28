@@ -466,8 +466,8 @@ pub const TransactionManager = struct {
 
 // ── Versioned Row Serialization ────────────────────────────────────────
 
-/// Serialize a versioned row: MVCC header + column data.
-/// Format: [TupleHeader 12B][col_count:2][columns...]
+/// Serialize a versioned row: version byte + MVCC header + column data.
+/// Format: [0xAA][TupleHeader 12B][col_count:2][columns...]
 pub fn serializeVersionedRow(
     allocator: Allocator,
     header: TupleHeader,
@@ -477,44 +477,47 @@ pub fn serializeVersionedRow(
     const col_data = try executor_mod.serializeRow(allocator, values);
     defer allocator.free(col_data);
 
-    // Prepend MVCC header
-    const buf = try allocator.alloc(u8, TUPLE_HEADER_SIZE + col_data.len);
+    // Prepend version byte + MVCC header
+    const buf = try allocator.alloc(u8, MVCC_ROW_OVERHEAD + col_data.len);
     errdefer allocator.free(buf);
 
-    header.serialize(buf[0..TUPLE_HEADER_SIZE]);
-    @memcpy(buf[TUPLE_HEADER_SIZE..], col_data);
+    buf[0] = ROW_VERSION_MVCC;
+    header.serialize(buf[1..][0..TUPLE_HEADER_SIZE]);
+    @memcpy(buf[MVCC_ROW_OVERHEAD..], col_data);
 
     return buf;
 }
 
 /// Deserialize a versioned row into MVCC header + column values.
+/// Expects format: [0xAA][TupleHeader 12B][col_count:2][columns...]
 pub fn deserializeVersionedRow(
     allocator: Allocator,
     data: []const u8,
 ) !struct { header: TupleHeader, values: []Value } {
-    if (data.len < TUPLE_HEADER_SIZE + 2) return error.InvalidRowData;
+    if (data.len < MVCC_ROW_OVERHEAD + 2) return error.InvalidRowData;
+    if (data[0] != ROW_VERSION_MVCC) return error.InvalidRowData;
 
-    const header = TupleHeader.deserialize(data[0..TUPLE_HEADER_SIZE]);
+    const header = TupleHeader.deserialize(data[1..][0..TUPLE_HEADER_SIZE]);
 
-    const values = try executor_mod.deserializeRow(allocator, data[TUPLE_HEADER_SIZE..]);
+    const values = try executor_mod.deserializeRow(allocator, data[MVCC_ROW_OVERHEAD..]);
 
     return .{ .header = header, .values = values };
 }
 
-/// Check if raw row data has an MVCC header (for backward compatibility).
-/// MVCC rows start with the tuple header pattern; legacy rows start with col_count.
-/// We distinguish by checking: if the first 4 bytes (xmin) represent a valid XID
-/// (>= FIRST_NORMAL_XID) and the row data is long enough for a header.
-/// Legacy rows have col_count in bytes [0..2] which is typically small.
-///
-/// To avoid ambiguity, we use a format version byte check: MVCC rows have
-/// bytes [10] (flags) with specific patterns, while legacy col_count u16
-/// is always < 256 in practice.
-///
-/// For a clean cutover: the engine sets a flag in the database header indicating
-/// MVCC is enabled. When set, ALL rows are MVCC-formatted.
+/// Row format version prefix byte.
+/// Legacy rows have no prefix (start directly with col_count u16).
+/// MVCC rows start with this magic byte, followed by the TupleHeader.
+pub const ROW_VERSION_MVCC: u8 = 0xAA;
+
+/// Total overhead for MVCC row format: 1 (version byte) + 12 (TupleHeader).
+pub const MVCC_ROW_OVERHEAD: usize = 1 + TUPLE_HEADER_SIZE;
+
+/// Detect whether raw row data has an MVCC tuple header.
+/// MVCC rows: [0xAA][TupleHeader 12B][col_count:2][columns...]
+/// Legacy rows: [col_count:2][type_tag:1][...]
 pub fn isVersionedRow(data: []const u8) bool {
-    return data.len >= TUPLE_HEADER_SIZE + 2;
+    if (data.len < MVCC_ROW_OVERHEAD + 2) return false;
+    return data[0] == ROW_VERSION_MVCC;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -1413,8 +1416,8 @@ test "serializeVersionedRow — empty values" {
     const data = try serializeVersionedRow(allocator, header, &empty_values);
     defer allocator.free(data);
 
-    // Should be TUPLE_HEADER_SIZE + 2 bytes (col_count=0)
-    try std.testing.expectEqual(TUPLE_HEADER_SIZE + 2, data.len);
+    // Should be MVCC_ROW_OVERHEAD + 2 bytes (magic byte + header + col_count=0)
+    try std.testing.expectEqual(MVCC_ROW_OVERHEAD + 2, data.len);
 
     const result = try deserializeVersionedRow(allocator, data);
     defer allocator.free(result.values);
@@ -1451,29 +1454,63 @@ test "serializeVersionedRow — null values" {
 test "deserializeVersionedRow — data too short" {
     const allocator = std.testing.allocator;
 
-    // Less than TUPLE_HEADER_SIZE + 2 bytes
-    const short_data = [_]u8{0} ** (TUPLE_HEADER_SIZE + 1);
+    // Less than MVCC_ROW_OVERHEAD + 2 bytes
+    const short_data = [_]u8{ROW_VERSION_MVCC} ++ [_]u8{0} ** TUPLE_HEADER_SIZE;
     try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &short_data));
 
-    // Exactly TUPLE_HEADER_SIZE + 0 bytes
-    const exact_header = [_]u8{0} ** TUPLE_HEADER_SIZE;
-    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &exact_header));
+    // Too short even for magic byte check
+    const very_short = [_]u8{ROW_VERSION_MVCC} ++ [_]u8{0} ** 5;
+    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &very_short));
 
     // Empty data
     try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &[_]u8{}));
+
+    // Wrong magic byte
+    var wrong_magic: [MVCC_ROW_OVERHEAD + 2]u8 = undefined;
+    wrong_magic[0] = 0x00; // not ROW_VERSION_MVCC
+    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &wrong_magic));
 }
 
-test "isVersionedRow — length checks" {
-    // Too short
-    try std.testing.expect(!isVersionedRow(&[_]u8{0} ** (TUPLE_HEADER_SIZE + 1)));
+test "isVersionedRow — detection" {
+    // Too short — always false
+    try std.testing.expect(!isVersionedRow(&[_]u8{ROW_VERSION_MVCC} ** 5));
     try std.testing.expect(!isVersionedRow(&[_]u8{}));
-    try std.testing.expect(!isVersionedRow(&[_]u8{0} ** TUPLE_HEADER_SIZE));
+    try std.testing.expect(!isVersionedRow(&[_]u8{ROW_VERSION_MVCC}));
+    // Exactly MVCC_ROW_OVERHEAD + 1 (need +2 for col_count) — false
+    var almost: [MVCC_ROW_OVERHEAD + 1]u8 = undefined;
+    almost[0] = ROW_VERSION_MVCC;
+    try std.testing.expect(!isVersionedRow(&almost));
 
-    // Exactly minimum valid length
-    try std.testing.expect(isVersionedRow(&[_]u8{0} ** (TUPLE_HEADER_SIZE + 2)));
+    // All zeros — no magic byte → false (legacy row)
+    try std.testing.expect(!isVersionedRow(&[_]u8{0} ** 20));
 
-    // Larger than minimum
-    try std.testing.expect(isVersionedRow(&[_]u8{0} ** (TUPLE_HEADER_SIZE + 100)));
+    // Valid MVCC row with magic byte
+    var valid_mvcc: [MVCC_ROW_OVERHEAD + 4]u8 = undefined;
+    valid_mvcc[0] = ROW_VERSION_MVCC;
+    const hdr = TupleHeader.forInsert(FIRST_NORMAL_XID, 0);
+    hdr.serialize(valid_mvcc[1..][0..TUPLE_HEADER_SIZE]);
+    std.mem.writeInt(u16, valid_mvcc[MVCC_ROW_OVERHEAD..][0..2], 1, .little);
+    valid_mvcc[MVCC_ROW_OVERHEAD + 2] = 0;
+    valid_mvcc[MVCC_ROW_OVERHEAD + 3] = 0;
+    try std.testing.expect(isVersionedRow(&valid_mvcc));
+
+    // Legacy row without magic byte — false
+    var legacy: [20]u8 = undefined;
+    std.mem.writeInt(u16, legacy[0..2], 2, .little);
+    legacy[2] = 0x01; // type tag (integer)
+    try std.testing.expect(!isVersionedRow(&legacy));
+
+    // Wrong first byte (not 0xAA) — false
+    var wrong_byte = valid_mvcc;
+    wrong_byte[0] = 0xBB;
+    try std.testing.expect(!isVersionedRow(&wrong_byte));
+
+    // Verify roundtrip: serialize a real versioned row and detect it
+    const values = &[_]Value{Value{ .integer = 42 }};
+    const versioned = try serializeVersionedRow(std.testing.allocator, hdr, values);
+    defer std.testing.allocator.free(versioned);
+    try std.testing.expect(isVersionedRow(versioned));
+    try std.testing.expectEqual(ROW_VERSION_MVCC, versioned[0]);
 }
 
 test "TupleFlags — all combinations" {

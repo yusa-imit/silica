@@ -45,6 +45,11 @@ const BufferPool = buffer_pool_mod.BufferPool;
 const Pager = page_mod.Pager;
 const wal_mod = @import("../tx/wal.zig");
 const Wal = wal_mod.Wal;
+const mvcc_mod = @import("../tx/mvcc.zig");
+const TransactionManager = mvcc_mod.TransactionManager;
+const TupleHeader = mvcc_mod.TupleHeader;
+const Snapshot = mvcc_mod.Snapshot;
+const IsolationLevel = mvcc_mod.IsolationLevel;
 
 const Value = executor_mod.Value;
 const Row = executor_mod.Row;
@@ -60,8 +65,17 @@ const NestedLoopJoinOp = executor_mod.NestedLoopJoinOp;
 const ValuesOp = executor_mod.ValuesOp;
 const EmptyOp = executor_mod.EmptyOp;
 const IndexScanOp = executor_mod.IndexScanOp;
+const MvccContext = executor_mod.MvccContext;
 const serializeRow = executor_mod.serializeRow;
 const evalExpr = executor_mod.evalExpr;
+
+// ── MVCC Row Detection ──────────────────────────────────────────────
+
+/// Detect whether raw row data has an MVCC tuple header.
+/// Delegates to mvcc_mod.isVersionedRow for consistent detection.
+fn isVersionedRowData(data: []const u8) bool {
+    return mvcc_mod.isVersionedRow(data);
+}
 
 // ── Index Key Encoding ───────────────────────────────────────────────
 
@@ -176,6 +190,21 @@ pub const EngineError = error{
     TableNotFound,
     TableAlreadyExists,
     InvalidData,
+    TransactionError,
+    NoActiveTransaction,
+};
+
+/// Active transaction context for the current session.
+pub const TransactionContext = struct {
+    xid: u32,
+    isolation: IsolationLevel,
+    /// For REPEATABLE READ / SERIALIZABLE: snapshot taken at BEGIN.
+    /// For READ COMMITTED: null (fresh snapshot per statement).
+    snapshot: ?Snapshot = null,
+
+    pub fn deinit(self: *TransactionContext) void {
+        if (self.snapshot) |*snap| snap.deinit();
+    }
 };
 
 /// Result of executing a SQL statement.
@@ -217,6 +246,8 @@ const OperatorChain = struct {
     empty: ?*EmptyOp = null,
     // For joins, we may need a second scan
     scan2: ?*ScanOp = null,
+    /// Per-statement RC snapshot that needs cleanup (owned by this chain).
+    rc_snapshot: ?Snapshot = null,
 
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
@@ -224,6 +255,8 @@ const OperatorChain = struct {
     }
 
     fn deinit(self: *OperatorChain, allocator: Allocator) void {
+        // Free per-statement RC snapshot if allocated
+        if (self.rc_snapshot) |*snap| snap.deinit();
         // Operators are closed via RowIterator.close() already.
         // We just free the heap-allocated structs.
         if (self.scan) |s| {
@@ -263,6 +296,10 @@ pub const Database = struct {
     schema_arena: std.heap.ArenaAllocator,
     /// Optional WAL for transaction durability.
     wal: ?*Wal = null,
+    /// Transaction manager for MVCC.
+    tm: TransactionManager,
+    /// Currently active transaction (null = auto-commit mode).
+    current_txn: ?TransactionContext = null,
 
     /// Open or create a database file.
     pub fn open(allocator: Allocator, path: []const u8, opts: OpenOptions) !Database {
@@ -298,11 +335,20 @@ pub const Database = struct {
             .catalog = cat,
             .schema_arena = std.heap.ArenaAllocator.init(allocator),
             .wal = wal_ptr,
+            .tm = TransactionManager.init(allocator),
         };
     }
 
     /// Close the database, flushing all dirty pages.
     pub fn close(self: *Database) void {
+        // Abort any active transaction
+        if (self.current_txn) |*txn| {
+            self.tm.abort(txn.xid) catch {};
+            txn.deinit();
+            self.current_txn = null;
+        }
+
+        self.tm.deinit();
         self.schema_arena.deinit();
 
         // Checkpoint WAL before closing — writes committed pages to main DB
@@ -320,6 +366,94 @@ pub const Database = struct {
         self.allocator.destroy(self.pager);
     }
 
+    // ── Transaction Management ────────────────────────────────────────
+
+    /// Begin an explicit transaction with the given isolation level.
+    pub fn beginTransaction(self: *Database, isolation: IsolationLevel) EngineError!void {
+        if (self.current_txn != null) return EngineError.TransactionError; // Already in a transaction
+
+        const xid = self.tm.begin(isolation) catch return EngineError.TransactionError;
+        self.current_txn = .{
+            .xid = xid,
+            .isolation = isolation,
+        };
+
+        // For REPEATABLE READ / SERIALIZABLE, take snapshot at BEGIN time
+        if (isolation != .read_committed) {
+            const snap = self.tm.getSnapshot(xid) catch return EngineError.TransactionError;
+            self.current_txn.?.snapshot = snap;
+        }
+    }
+
+    /// Commit the current transaction.
+    pub fn commitTransaction(self: *Database) EngineError!void {
+        const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
+        self.tm.commit(txn.xid) catch return EngineError.TransactionError;
+        self.commitWal() catch {};
+        var ctx = self.current_txn.?;
+        ctx.deinit();
+        self.current_txn = null;
+    }
+
+    /// Rollback the current transaction.
+    pub fn rollbackTransaction(self: *Database) EngineError!void {
+        const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
+        self.tm.abort(txn.xid) catch return EngineError.TransactionError;
+        if (self.wal) |w| {
+            w.rollback() catch {};
+        }
+        var ctx = self.current_txn.?;
+        ctx.deinit();
+        self.current_txn = null;
+    }
+
+    /// Get MVCC context for the current statement.
+    /// If `ops` is provided, RC snapshots are stored in `ops.rc_snapshot` for cleanup.
+    /// If `ops` is null (UPDATE/DELETE), the caller must free the snapshot.
+    fn getMvccContext(self: *Database) EngineError!?MvccContext {
+        return self.getMvccContextWithOps(null);
+    }
+
+    /// Get MVCC context, optionally storing RC snapshot in OperatorChain.
+    fn getMvccContextWithOps(self: *Database, ops: ?*OperatorChain) EngineError!?MvccContext {
+        if (self.current_txn) |txn| {
+            const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+
+            // For READ COMMITTED: fresh snapshot per statement
+            if (txn.isolation == .read_committed) {
+                const snap = self.tm.getSnapshot(txn.xid) catch return EngineError.TransactionError;
+                // If we have an OperatorChain, store the snapshot there for cleanup
+                if (ops) |o| {
+                    o.rc_snapshot = snap;
+                }
+                return MvccContext{
+                    .snapshot = snap,
+                    .current_xid = txn.xid,
+                    .current_cid = cid,
+                };
+            }
+            // REPEATABLE READ / SERIALIZABLE: use stored snapshot (not owned by us)
+            if (txn.snapshot) |snap| {
+                return MvccContext{
+                    .snapshot = snap,
+                    .current_xid = txn.xid,
+                    .current_cid = cid,
+                };
+            }
+        }
+        // No explicit transaction — return null (auto-commit, no MVCC filtering needed)
+        return null;
+    }
+
+    /// Advance the command ID for the current transaction.
+    /// Returns the CID to use for this statement's writes.
+    fn advanceStatementCid(self: *Database) EngineError!u16 {
+        if (self.current_txn) |txn| {
+            return self.tm.advanceCid(txn.xid) catch return EngineError.TransactionError;
+        }
+        return 0; // Auto-commit: CID doesn't matter
+    }
+
     /// Execute a SQL statement and return results.
     pub fn exec(self: *Database, sql: []const u8) EngineError!QueryResult {
         // Delegate to execSQL which handles both DDL and DML correctly
@@ -327,6 +461,11 @@ pub const Database = struct {
     }
 
     fn executePlan(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
+        // Advance CID in explicit transactions (one CID per statement)
+        if (self.current_txn != null) {
+            _ = self.advanceStatementCid() catch {};
+        }
+
         const result = switch (plan.plan_type) {
             .select_query => self.executeSelect(arena, plan),
             .insert => self.executeInsert(arena, plan),
@@ -341,13 +480,15 @@ pub const Database = struct {
             },
         };
 
-        // Commit WAL after successful DML/DDL (SELECT returns rows lazily)
-        if (result) |r| {
-            if (r.rows == null) {
-                // Non-SELECT result (DML/DDL) — commit WAL
-                self.commitWal() catch {};
-            }
-        } else |_| {}
+        // Commit WAL after successful DML/DDL in auto-commit mode only.
+        // In explicit transactions, WAL is committed at COMMIT time.
+        if (self.current_txn == null) {
+            if (result) |r| {
+                if (r.rows == null) {
+                    self.commitWal() catch {};
+                }
+            } else |_| {}
+        }
 
         return result;
     }
@@ -407,6 +548,8 @@ pub const Database = struct {
 
         const scan_op = self.allocator.create(ScanOp) catch return EngineError.OutOfMemory;
         scan_op.* = ScanOp.init(self.allocator, self.pool, table_info.data_root_page_id, col_names);
+        // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
+        scan_op.mvcc_ctx = try self.getMvccContextWithOps(ops);
         scan_op.initCursor(); // Must be called after heap placement
 
         if (ops.scan == null) {
@@ -473,6 +616,8 @@ pub const Database = struct {
             idx_key,
             col_names,
         );
+        // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
+        idx_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
         ops.index_scan = idx_op;
         return idx_op.iterator();
     }
@@ -597,8 +742,12 @@ pub const Database = struct {
                 inited += 1;
             }
 
-            // Serialize the row
-            const row_data = serializeRow(self.allocator, vals) catch return EngineError.OutOfMemory;
+            // Serialize the row (with MVCC header if in a transaction)
+            const row_data = if (self.current_txn) |txn| blk: {
+                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                const header = TupleHeader.forInsert(txn.xid, cid);
+                break :blk mvcc_mod.serializeVersionedRow(self.allocator, header, vals) catch return EngineError.OutOfMemory;
+            } else serializeRow(self.allocator, vals) catch return EngineError.OutOfMemory;
             defer self.allocator.free(row_data);
 
             // Generate key: 8-byte big-endian u64 for lexicographic ordering
@@ -803,14 +952,38 @@ pub const Database = struct {
             updates.deinit(self.allocator);
         }
 
+        // Get MVCC context for visibility filtering (owned snapshot for RC)
+        var mvcc_ctx = try self.getMvccContext();
+        defer if (mvcc_ctx) |*ctx| {
+            if (self.current_txn != null and self.current_txn.?.isolation == .read_committed) {
+                ctx.snapshot.deinit();
+            }
+        };
+
         while (cursor.next() catch null) |entry| {
             defer self.allocator.free(entry.key);
 
-            // Deserialize row
-            const values = executor_mod.deserializeRow(self.allocator, entry.value) catch {
-                self.allocator.free(entry.value);
-                continue;
-            };
+            // Deserialize row (handle MVCC header if present)
+            var values: []Value = undefined;
+            if (isVersionedRowData(entry.value)) {
+                // MVCC row: check visibility first
+                if (mvcc_ctx) |ctx| {
+                    const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisible(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                        self.allocator.free(entry.value);
+                        continue;
+                    }
+                }
+                values = executor_mod.deserializeRow(self.allocator, entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                    self.allocator.free(entry.value);
+                    continue;
+                };
+            } else {
+                values = executor_mod.deserializeRow(self.allocator, entry.value) catch {
+                    self.allocator.free(entry.value);
+                    continue;
+                };
+            }
             self.allocator.free(entry.value);
 
             var row = Row{
@@ -870,8 +1043,24 @@ pub const Database = struct {
                 if (!found) new_val.free(self.allocator);
             }
 
-            // Re-serialize
-            const new_data = serializeRow(self.allocator, row.values) catch {
+            // Re-serialize (with MVCC header if in a transaction)
+            const new_data = if (self.current_txn) |txn| blk: {
+                const cid = self.tm.getCurrentCid(txn.xid) catch {
+                    for (old_values) |ov| ov.free(self.allocator);
+                    self.allocator.free(old_values);
+                    for (row.values) |v| v.free(self.allocator);
+                    self.allocator.free(row.values);
+                    return EngineError.TransactionError;
+                };
+                const header = TupleHeader.forInsert(txn.xid, cid);
+                break :blk mvcc_mod.serializeVersionedRow(self.allocator, header, row.values) catch {
+                    for (old_values) |ov| ov.free(self.allocator);
+                    self.allocator.free(old_values);
+                    for (row.values) |v| v.free(self.allocator);
+                    self.allocator.free(row.values);
+                    return EngineError.OutOfMemory;
+                };
+            } else serializeRow(self.allocator, row.values) catch {
                 for (old_values) |ov| ov.free(self.allocator);
                 self.allocator.free(old_values);
                 for (row.values) |v| v.free(self.allocator);
@@ -912,7 +1101,11 @@ pub const Database = struct {
             tree.insert(item.key, item.value) catch {};
 
             // Add new index entries: deserialize new row values for index
-            const new_values = executor_mod.deserializeRow(self.allocator, item.value) catch continue;
+            const idx_data = if (isVersionedRowData(item.value))
+                item.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+            else
+                item.value;
+            const new_values = executor_mod.deserializeRow(self.allocator, idx_data) catch continue;
             defer {
                 for (new_values) |v| v.free(self.allocator);
                 self.allocator.free(new_values);
@@ -986,13 +1179,39 @@ pub const Database = struct {
             deletes.deinit(self.allocator);
         }
 
+        // Get MVCC context for visibility filtering (owned snapshot for RC)
+        var mvcc_ctx_del = try self.getMvccContext();
+        defer if (mvcc_ctx_del) |*ctx| {
+            if (self.current_txn != null and self.current_txn.?.isolation == .read_committed) {
+                ctx.snapshot.deinit();
+            }
+        };
+
         while (cursor.next() catch null) |entry| {
             // Deserialize row for predicate check and index maintenance
-            const values = executor_mod.deserializeRow(self.allocator, entry.value) catch {
-                self.allocator.free(entry.value);
-                self.allocator.free(entry.key);
-                continue;
-            };
+            var values: []Value = undefined;
+            if (isVersionedRowData(entry.value)) {
+                // MVCC row: check visibility first
+                if (mvcc_ctx_del) |ctx| {
+                    const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisible(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                        self.allocator.free(entry.value);
+                        self.allocator.free(entry.key);
+                        continue;
+                    }
+                }
+                values = executor_mod.deserializeRow(self.allocator, entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                    self.allocator.free(entry.value);
+                    self.allocator.free(entry.key);
+                    continue;
+                };
+            } else {
+                values = executor_mod.deserializeRow(self.allocator, entry.value) catch {
+                    self.allocator.free(entry.value);
+                    self.allocator.free(entry.key);
+                    continue;
+                };
+            }
             self.allocator.free(entry.value);
 
             if (predicate) |pred| {
@@ -1120,10 +1339,30 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "DROP TABLE" };
             },
-            .transaction => {
+            .transaction => |txn| {
                 arena.deinit();
                 self.allocator.destroy(arena);
-                return .{ .message = "OK" };
+                switch (txn) {
+                    .begin => {
+                        self.beginTransaction(.read_committed) catch {
+                            return .{ .message = "ERROR: already in a transaction" };
+                        };
+                        return .{ .message = "BEGIN" };
+                    },
+                    .commit => {
+                        self.commitTransaction() catch {
+                            return .{ .message = "WARNING: there is no transaction in progress" };
+                        };
+                        return .{ .message = "COMMIT" };
+                    },
+                    .rollback => {
+                        self.rollbackTransaction() catch {
+                            return .{ .message = "WARNING: there is no transaction in progress" };
+                        };
+                        return .{ .message = "ROLLBACK" };
+                    },
+                    .savepoint, .release => return .{ .message = "OK" },
+                }
             },
             else => {},
         }
@@ -2424,11 +2663,11 @@ test "transaction statements return OK" {
 
     var r1 = try db.execSQL("BEGIN");
     r1.close(testing.allocator);
-    try testing.expectEqualStrings("OK", r1.message);
+    try testing.expectEqualStrings("BEGIN", r1.message);
 
     var r2 = try db.execSQL("COMMIT");
     r2.close(testing.allocator);
-    try testing.expectEqualStrings("OK", r2.message);
+    try testing.expectEqualStrings("COMMIT", r2.message);
 }
 
 // ── Index Selection Tests ────────────────────────────────────────────
@@ -3215,11 +3454,11 @@ test "transaction statement returns OK" {
 
     var r1 = try db.execSQL("BEGIN");
     r1.close(testing.allocator);
-    try testing.expect(std.mem.eql(u8, "OK", r1.message));
+    try testing.expect(std.mem.eql(u8, "BEGIN", r1.message));
 
     var r2 = try db.execSQL("COMMIT");
     r2.close(testing.allocator);
-    try testing.expect(std.mem.eql(u8, "OK", r2.message));
+    try testing.expect(std.mem.eql(u8, "COMMIT", r2.message));
 }
 
 test "error: exec after error recovers" {
@@ -3247,4 +3486,314 @@ test "error: exec after error recovers" {
         defer row.deinit();
         try testing.expectEqual(Value{ .integer = 42 }, row.values[0]);
     }
+}
+
+// ── MVCC Integration Tests ──────────────────────────────────────────
+
+test "MVCC: BEGIN starts a transaction" {
+    const path = "test_mvcc_begin.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try testing.expect(db.current_txn == null);
+
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+    try testing.expectEqualStrings("BEGIN", r1.message);
+    try testing.expect(db.current_txn != null);
+
+    var r2 = try db.execSQL("COMMIT");
+    r2.close(testing.allocator);
+    try testing.expectEqualStrings("COMMIT", r2.message);
+    try testing.expect(db.current_txn == null);
+}
+
+test "MVCC: ROLLBACK aborts a transaction" {
+    const path = "test_mvcc_rollback.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+    try testing.expect(db.current_txn != null);
+
+    var r2 = try db.execSQL("ROLLBACK");
+    r2.close(testing.allocator);
+    try testing.expectEqualStrings("ROLLBACK", r2.message);
+    try testing.expect(db.current_txn == null);
+}
+
+test "MVCC: double BEGIN returns error message" {
+    const path = "test_mvcc_dbl_begin.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+
+    // Second BEGIN should return error message, not crash
+    var r2 = try db.execSQL("BEGIN");
+    r2.close(testing.allocator);
+    try testing.expect(std.mem.startsWith(u8, r2.message, "ERROR"));
+
+    // Transaction still active — clean up
+    var r3 = try db.execSQL("COMMIT");
+    r3.close(testing.allocator);
+}
+
+test "MVCC: COMMIT without BEGIN returns warning" {
+    const path = "test_mvcc_no_begin_commit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("COMMIT");
+    r1.close(testing.allocator);
+    try testing.expect(std.mem.startsWith(u8, r1.message, "WARNING"));
+}
+
+test "MVCC: INSERT in transaction writes versioned rows" {
+    const path = "test_mvcc_insert_ver.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+    r0.close(testing.allocator);
+
+    // Start transaction and insert
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO items (id, name) VALUES (1, 'Alpha')");
+    r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r2.rows_affected);
+
+    // SELECT within same transaction should see the row
+    var r3 = try db.execSQL("SELECT id, name FROM items");
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 1 }, row.values[0]);
+        try testing.expectEqualStrings("Alpha", row.values[1].text);
+        count += 1;
+    }
+    r3.close(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), count);
+
+    var r4 = try db.execSQL("COMMIT");
+    r4.close(testing.allocator);
+}
+
+test "MVCC: multiple inserts in transaction" {
+    const path = "test_mvcc_multi_ins.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE nums (id INTEGER, val INTEGER)");
+    r0.close(testing.allocator);
+
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO nums (id, val) VALUES (1, 100)");
+    r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO nums (id, val) VALUES (2, 200)");
+    r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO nums (id, val) VALUES (3, 300)");
+    r4.close(testing.allocator);
+
+    // All three rows visible within transaction
+    var r5 = try db.execSQL("SELECT id, val FROM nums");
+    var count: usize = 0;
+    while (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    r5.close(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), count);
+
+    var r6 = try db.execSQL("COMMIT");
+    r6.close(testing.allocator);
+
+    // Should still be visible after commit
+    var r7 = try db.execSQL("SELECT id FROM nums");
+    count = 0;
+    while (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    r7.close(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "MVCC: UPDATE in transaction writes versioned rows" {
+    const path = "test_mvcc_update_ver.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+    r0.close(testing.allocator);
+
+    // Insert outside transaction (auto-commit)
+    var r1 = try db.execSQL("INSERT INTO items (id, name) VALUES (1, 'before')");
+    r1.close(testing.allocator);
+
+    // Start transaction and update
+    var r2 = try db.execSQL("BEGIN");
+    r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("UPDATE items SET name = 'after' WHERE id = 1");
+    r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+
+    // SELECT within transaction should see the updated value
+    var r4 = try db.execSQL("SELECT id, name FROM items");
+    var found = false;
+    while (try r4.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("after", row.values[1].text);
+        found = true;
+    }
+    r4.close(testing.allocator);
+    try testing.expect(found);
+
+    var r5 = try db.execSQL("COMMIT");
+    r5.close(testing.allocator);
+}
+
+test "MVCC: DELETE in transaction writes versioned rows" {
+    const path = "test_mvcc_delete_ver.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+    r0.close(testing.allocator);
+
+    // Insert outside transaction (auto-commit)
+    var r1 = try db.execSQL("INSERT INTO items (id, name) VALUES (1, 'a'), (2, 'b')");
+    r1.close(testing.allocator);
+
+    // Start transaction and delete
+    var r2 = try db.execSQL("BEGIN");
+    r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("DELETE FROM items WHERE id = 1");
+    r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+
+    var r4 = try db.execSQL("COMMIT");
+    r4.close(testing.allocator);
+}
+
+test "MVCC: auto-commit mode still works" {
+    const path = "test_mvcc_autocommit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r0 = try db.execSQL("CREATE TABLE t (id INTEGER, val TEXT)");
+    r0.close(testing.allocator);
+
+    // Without BEGIN — auto-commit (no MVCC headers, plain row format)
+    var r1 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 'hello')");
+    r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("SELECT id, val FROM t");
+    var count: usize = 0;
+    while (try r2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(Value{ .integer = 1 }, row.values[0]);
+        try testing.expectEqualStrings("hello", row.values[1].text);
+        count += 1;
+    }
+    r2.close(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "MVCC: transaction manager XID assignment" {
+    const path = "test_mvcc_xid.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // First transaction should get XID 2 (FIRST_NORMAL_XID)
+    try db.beginTransaction(.read_committed);
+    try testing.expectEqual(@as(u32, mvcc_mod.FIRST_NORMAL_XID), db.current_txn.?.xid);
+    try db.commitTransaction();
+
+    // Second transaction should get XID 3
+    try db.beginTransaction(.read_committed);
+    try testing.expectEqual(@as(u32, mvcc_mod.FIRST_NORMAL_XID + 1), db.current_txn.?.xid);
+    try db.commitTransaction();
+}
+
+test "MVCC: transaction context cleanup on close" {
+    const path = "test_mvcc_cleanup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+
+    // Start transaction but don't commit — close should abort it
+    var r1 = try db.execSQL("BEGIN");
+    r1.close(testing.allocator);
+    try testing.expect(db.current_txn != null);
+
+    // close() should abort the transaction cleanly (no leaks)
+    cleanupTestDb(&db, path);
+}
+
+test "MVCC: mixed auto-commit and explicit transaction" {
+    const path = "test_mvcc_mixed.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Auto-commit insert
+    var r0 = try db.execSQL("CREATE TABLE t (id INTEGER, val TEXT)");
+    r0.close(testing.allocator);
+    var r1 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 'auto')");
+    r1.close(testing.allocator);
+
+    // Explicit transaction insert
+    var r2 = try db.execSQL("BEGIN");
+    r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t (id, val) VALUES (2, 'explicit')");
+    r3.close(testing.allocator);
+    var r4 = try db.execSQL("COMMIT");
+    r4.close(testing.allocator);
+
+    // Both rows should be visible
+    var r5 = try db.execSQL("SELECT id FROM t");
+    var count: usize = 0;
+    while (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    r5.close(testing.allocator);
+    // The auto-commit row is in legacy format and the txn row is in MVCC format.
+    // Both should be readable (backward-compatible).
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "MVCC: ROLLBACK with no BEGIN returns warning" {
+    const path = "test_mvcc_rollback_warn.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("ROLLBACK");
+    r1.close(testing.allocator);
+    try testing.expect(std.mem.startsWith(u8, r1.message, "WARNING"));
 }
