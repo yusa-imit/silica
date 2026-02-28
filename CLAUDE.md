@@ -577,6 +577,7 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
 **작업 내용**:
 - [x] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
+- [x] `build.zig.zon`에 sailor v0.5.1 패치 업데이트 (sailor#3, #4, #5, #6 수정)
 - [x] 스키마 사이드바 개선: 테이블+컬럼 계층 표시 (List 기반, 타입/제약조건 표시)
 - [ ] 쿼리 플랜 시각화: `Tree` 위젯으로 EXPLAIN 결과 계층 표시
 - [ ] SQL 편집기: `TextArea` 위젯으로 멀티라인 쿼리 에디터 교체
@@ -584,9 +585,8 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] 위험 쿼리 확인: `Dialog` 위젯으로 `DROP TABLE` 등 확인 프롬프트
 - [ ] 결과 알림: `Notification`으로 쿼리 성공/실패 메시지
 - [x] 커밋: `feat: enhance TUI schema sidebar with hierarchical table+column view`
-- **v0.5.1 패치**: sailor#3, #4, #5, #6 모두 수정됨 — `zig fetch --save`로 v0.5.1 업데이트 후 BLOCKED 항목 구현 가능
-- ~~**Note**: sailor v0.5.0의 모든 Phase 5 위젯이 Zig 0.15.2에서 컴파일 불가 → v0.5.1에서 수정됨~~
-- ~~**Note**: sailor v0.5.0의 `renderDiff`도 `adaptToNewApi` 버그 → v0.5.1에서 수정됨~~
+- **Note**: sailor#7 filed — `renderDiff` still uses `std.fmt.format` (cross-compile fails). `localRenderDiff` workaround kept until fixed.
+- **Note**: Phase 5 위젯 (Tree, TextArea, Dialog, Notification) now compile with v0.5.1 — ready for FEATURE mode integration
 
 ### v1.0.0 — production ready (status: READY)
 
