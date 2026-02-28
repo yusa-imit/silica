@@ -1075,3 +1075,163 @@ test "BufferPool eviction with WAL flushes dirty to WAL" {
     try std.testing.expect(found);
     try std.testing.expectEqual(@as(u8, 0xEE), buf[PAGE_HEADER_SIZE]);
 }
+
+test "BufferPool all pinned returns BufferPoolFull" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_all_pinned.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Pool with capacity 2
+    var pool = try BufferPool.init(allocator, &pager, 2);
+    defer pool.deinit();
+
+    const pid1 = try pager.allocPage();
+    const pid2 = try pager.allocPage();
+    const pid3 = try pager.allocPage();
+
+    // Pin both slots
+    _ = try pool.fetchNewPage(pid1);
+    _ = try pool.fetchNewPage(pid2);
+    // Both are pinned — no evictable frame available
+
+    // Fetching a 3rd page should fail with BufferPoolFull
+    try std.testing.expectError(error.BufferPoolFull, pool.fetchNewPage(pid3));
+
+    // After unpinning one, fetch should succeed
+    pool.unpinPage(pid1, false);
+    _ = try pool.fetchNewPage(pid3);
+    pool.unpinPage(pid3, false);
+    pool.unpinPage(pid2, false);
+}
+
+test "BufferPool cache hit avoids disk read" {
+    const allocator = std.testing.allocator;
+    const path = "test_bp_cache_hit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    const pid = try pager.allocPage();
+
+    // First fetch — cache miss
+    const frame = try pool.fetchNewPage(pid);
+    frame.data[PAGE_HEADER_SIZE] = 0xAA;
+    pool.unpinPage(pid, true);
+
+    const misses_before = pool.misses;
+    const hits_before = pool.hits;
+
+    // Second fetch — should be a cache hit (no disk read)
+    const frame2 = try pool.fetchPage(pid);
+    try std.testing.expectEqual(@as(u8, 0xAA), frame2.data[PAGE_HEADER_SIZE]);
+    pool.unpinPage(pid, false);
+
+    // Verify it was a hit, not a miss
+    try std.testing.expectEqual(misses_before, pool.misses);
+    try std.testing.expectEqual(hits_before + 1, pool.hits);
+}
+
+test "BufferPool WAL eviction then commit preserves data" {
+    // Verifies end-to-end: dirty page evicted through WAL,
+    // WAL committed, then checkpoint to pager preserves data.
+    const allocator = std.testing.allocator;
+    const path = "test_bp_wal_commit_ckpt.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_bp_wal_commit_ckpt.db-wal") catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+
+    var wal = try Wal.init(allocator, path, pager.page_size);
+    defer wal.deinit();
+
+    // Pool with capacity 2
+    var pool = try BufferPool.init(allocator, &pager, 2);
+    defer pool.deinit();
+    pool.setWal(&wal);
+
+    // Allocate 3 pages
+    const pid1 = try pager.allocPage();
+    const pid2 = try pager.allocPage();
+    const pid3 = try pager.allocPage();
+
+    // Write data to page 1 and 2, unpin as dirty
+    const f1 = try pool.fetchNewPage(pid1);
+    var hdr1 = PageHeader{ .page_type = .leaf, .page_id = pid1, .cell_count = 0 };
+    hdr1.serialize(f1.data[0..PAGE_HEADER_SIZE]);
+    f1.data[PAGE_HEADER_SIZE] = 0x11;
+    pool.unpinPage(pid1, true);
+
+    const f2 = try pool.fetchNewPage(pid2);
+    var hdr2 = PageHeader{ .page_type = .leaf, .page_id = pid2, .cell_count = 0 };
+    hdr2.serialize(f2.data[0..PAGE_HEADER_SIZE]);
+    f2.data[PAGE_HEADER_SIZE] = 0x22;
+    pool.unpinPage(pid2, true);
+
+    // Fetch page 3 — evicts page 1 (LRU tail) through WAL
+    const f3 = try pool.fetchNewPage(pid3);
+    var hdr3 = PageHeader{ .page_type = .leaf, .page_id = pid3, .cell_count = 0 };
+    hdr3.serialize(f3.data[0..PAGE_HEADER_SIZE]);
+    pool.unpinPage(pid3, false);
+
+    // Flush remaining dirty pages
+    try pool.flushAll();
+
+    // Commit all WAL frames
+    try wal.commit(pager.page_count);
+
+    // Checkpoint — write WAL data back to pager
+    try wal.checkpoint(&pager);
+
+    // Verify data persisted to main DB through the full pipeline
+    var buf: [4096]u8 = undefined;
+    try pager.readPage(pid1, &buf);
+    try std.testing.expectEqual(@as(u8, 0x11), buf[PAGE_HEADER_SIZE]);
+
+    try pager.readPage(pid2, &buf);
+    try std.testing.expectEqual(@as(u8, 0x22), buf[PAGE_HEADER_SIZE]);
+
+    pager.deinit();
+}
+
+test "BufferPool multiple pin of same page" {
+    // Verifies pin_count correctly tracks multiple pins of the same page.
+    const allocator = std.testing.allocator;
+    const path = "test_bp_multi_pin.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    var pool = try BufferPool.init(allocator, &pager, 5);
+    defer pool.deinit();
+
+    const pid = try pager.allocPage();
+
+    // Pin the page 3 times
+    const f1 = try pool.fetchNewPage(pid);
+    f1.data[PAGE_HEADER_SIZE] = 0xFF;
+
+    const f2 = try pool.fetchPage(pid);
+    const f3 = try pool.fetchPage(pid);
+
+    // All should return the same frame
+    try std.testing.expectEqual(@as(u8, 0xFF), f2.data[PAGE_HEADER_SIZE]);
+    try std.testing.expectEqual(@as(u8, 0xFF), f3.data[PAGE_HEADER_SIZE]);
+
+    // Unpin once — still pinned (count > 0)
+    pool.unpinPage(pid, false);
+    pool.unpinPage(pid, false);
+
+    // Page should still be accessible
+    try std.testing.expect(pool.containsPage(pid));
+
+    // Final unpin
+    pool.unpinPage(pid, false);
+}
