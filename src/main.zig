@@ -21,6 +21,7 @@ pub const tokenizer = @import("sql/tokenizer.zig");
 pub const ast = @import("sql/ast.zig");
 pub const parser = @import("sql/parser.zig");
 pub const catalog = @import("sql/catalog.zig");
+pub const analyzer = @import("sql/analyzer.zig");
 
 test {
     // Pull in tests from all imported modules
