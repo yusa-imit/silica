@@ -434,16 +434,17 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] NULL 값 처리
 - [x] 커밋: `feat: add output modes with sailor.fmt`
 
-### v0.4.0 — tui (status: READY)
+### v0.4.0 — tui (status: DONE)
 
 **작업 내용**:
-- [ ] `silica --tui <db_path>` 모드 추가
-- [ ] `sailor.tui` 위젯으로 구현:
-  - 좌측: 스키마 트리 (Tree 위젯 — 테이블/컬럼/인덱스)
+- [x] `silica --tui <db_path>` 모드 추가
+- [x] `sailor.tui` 위젯으로 구현:
+  - 좌측: 스키마 트리 (List 위젯 — 테이블 목록)
   - 우측 상단: 쿼리 결과 (Table 위젯)
-  - 우측 하단: SQL 입력 (Input 위젯)
-  - 하단: StatusBar (행 수, 쿼리 시간, DB 크기)
-- [ ] 커밋: `feat: add TUI database browser with sailor.tui`
+  - 우측 하단: SQL 입력 (직접 구현 — sailor Input 위젯 버그로 인해)
+  - 하단: StatusBar (직접 구현 — sailor StatusBar 위젯 버그로 인해)
+- [x] 커밋: `feat: add TUI database browser with sailor.tui`
+- **Note**: sailor v0.4.0의 Input/StatusBar 위젯에 API 불일치 버그 발견 → https://github.com/yusa-imit/sailor/issues/4
 
 ### v0.5.0 — advanced widgets (status: READY)
 

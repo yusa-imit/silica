@@ -2,7 +2,9 @@ const std = @import("std");
 const sailor = @import("sailor");
 const silica = @import("silica");
 
-const version = "0.3.0";
+const tui_mod = @import("tui.zig");
+
+const version = "0.4.0";
 
 const Value = silica.executor.Value;
 const Row = silica.executor.Row;
@@ -28,6 +30,7 @@ const CliFlags = [_]sailor.arg.FlagDef{
     .{ .name = "csv", .type = .bool, .help = "Output in CSV format" },
     .{ .name = "json", .type = .bool, .help = "Output in JSON format" },
     .{ .name = "mode", .short = 'm', .type = .string, .help = "Output mode: table, csv, json, jsonl, plain" },
+    .{ .name = "tui", .short = 't', .type = .bool, .help = "Launch TUI database browser" },
 };
 
 pub fn main() !void {
@@ -105,6 +108,20 @@ pub fn main() !void {
         std.process.exit(1);
     };
     defer db.close();
+
+    // Launch TUI mode if --tui flag is set
+    if (arg_parser.getBool("tui", false)) {
+        tui_mod.run(allocator, &db, db_path) catch |err| {
+            printError(stderr, switch (err) {
+                error.NotATty => "TUI mode requires a terminal.",
+                error.TerminalSizeUnavailable => "Cannot determine terminal size.",
+                else => "TUI initialization failed.",
+            });
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        return;
+    }
 
     // Print banner
     stdout.print("Silica v{s} — interactive SQL shell\n", .{version}) catch {};
@@ -689,6 +706,7 @@ fn printUsage(writer: anytype) void {
         \\
         \\Examples:
         \\  silica mydb.db              Open database in interactive mode
+        \\  silica --tui mydb.db        Open TUI database browser
         \\  silica --csv mydb.db        Open with CSV output format
         \\  silica -m json mydb.db      Open with JSON output format
         \\
@@ -725,6 +743,10 @@ const sql_keywords = [_][]const u8{
 
 // ── Tests ────────────────────────────────────────────────────
 
+test {
+    _ = tui_mod;
+}
+
 test "printUsage does not error" {
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -746,7 +768,7 @@ test "printError formats error message" {
 }
 
 test "version string is set" {
-    try std.testing.expectEqualStrings("0.3.0", version);
+    try std.testing.expectEqualStrings("0.4.0", version);
 }
 
 test "sqlValidator complete with semicolon" {
