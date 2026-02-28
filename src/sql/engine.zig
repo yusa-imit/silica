@@ -50,6 +50,10 @@ const TransactionManager = mvcc_mod.TransactionManager;
 const TupleHeader = mvcc_mod.TupleHeader;
 const Snapshot = mvcc_mod.Snapshot;
 const IsolationLevel = mvcc_mod.IsolationLevel;
+const lock_mod = @import("../tx/lock.zig");
+const LockManager = lock_mod.LockManager;
+const LockTarget = lock_mod.LockTarget;
+const LockMode = lock_mod.LockMode;
 
 const Value = executor_mod.Value;
 const Row = executor_mod.Row;
@@ -192,6 +196,7 @@ pub const EngineError = error{
     InvalidData,
     TransactionError,
     NoActiveTransaction,
+    LockConflict,
 };
 
 /// Active transaction context for the current session.
@@ -298,6 +303,8 @@ pub const Database = struct {
     wal: ?*Wal = null,
     /// Transaction manager for MVCC.
     tm: TransactionManager,
+    /// Lock manager for row-level and table-level locking.
+    lock_manager: LockManager,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -336,6 +343,7 @@ pub const Database = struct {
             .schema_arena = std.heap.ArenaAllocator.init(allocator),
             .wal = wal_ptr,
             .tm = TransactionManager.init(allocator),
+            .lock_manager = LockManager.init(allocator),
         };
     }
 
@@ -348,6 +356,7 @@ pub const Database = struct {
             self.current_txn = null;
         }
 
+        self.lock_manager.deinit();
         self.tm.deinit();
         self.schema_arena.deinit();
 
@@ -388,6 +397,8 @@ pub const Database = struct {
     /// Commit the current transaction.
     pub fn commitTransaction(self: *Database) EngineError!void {
         const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
+        // Release all locks held by this transaction
+        self.lock_manager.releaseAllLocks(txn.xid);
         // For RR/SERIALIZABLE: tm.commit() frees the snapshot in TransactionManager,
         // so clear our copy first to prevent double-free in ctx.deinit().
         if (txn.isolation != .read_committed) {
@@ -401,6 +412,8 @@ pub const Database = struct {
     /// Rollback the current transaction.
     pub fn rollbackTransaction(self: *Database) EngineError!void {
         const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
+        // Release all locks held by this transaction
+        self.lock_manager.releaseAllLocks(txn.xid);
         // For RR/SERIALIZABLE: tm.abort() frees the snapshot in TransactionManager,
         // so clear our copy first to prevent double-free in ctx.deinit().
         if (txn.isolation != .read_committed) {
@@ -765,6 +778,16 @@ pub const Database = struct {
             defer self.allocator.free(key);
             next_key += 1;
 
+            // Acquire exclusive row lock for the new row
+            if (self.current_txn) |txn| {
+                const lock_target = LockTarget{
+                    .table_page_id = table_info.data_root_page_id,
+                    .row_key = next_key - 1,
+                };
+                self.lock_manager.acquireRowLock(txn.xid, lock_target, .exclusive) catch
+                    return EngineError.LockConflict;
+            }
+
             // Insert into B+Tree
             tree.insert(key, row_data) catch return EngineError.StorageError;
 
@@ -981,6 +1004,16 @@ pub const Database = struct {
                         self.allocator.free(entry.value);
                         continue;
                     }
+                    // Conflict detection: if row has xmax set by another active txn,
+                    // that means a concurrent writer is modifying this row.
+                    if (hdr.xmax != mvcc_mod.INVALID_XID and hdr.xmax != ctx.current_xid) {
+                        if (self.tm.getState(hdr.xmax)) |state| {
+                            if (state == .active) {
+                                self.allocator.free(entry.value);
+                                return EngineError.LockConflict;
+                            }
+                        }
+                    }
                 }
                 values = executor_mod.deserializeRow(self.allocator, entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
                     self.allocator.free(entry.value);
@@ -1013,6 +1046,23 @@ pub const Database = struct {
                     self.allocator.free(row.values);
                     continue;
                 }
+            }
+
+            // Acquire exclusive row lock for the row we're about to update
+            if (self.current_txn) |txn| {
+                const row_key = if (entry.key.len == 8)
+                    std.mem.readInt(u64, entry.key[0..8], .big)
+                else
+                    0;
+                const lock_target = LockTarget{
+                    .table_page_id = table_info.data_root_page_id,
+                    .row_key = row_key,
+                };
+                self.lock_manager.acquireRowLock(txn.xid, lock_target, .exclusive) catch {
+                    for (row.values) |v| v.free(self.allocator);
+                    self.allocator.free(row.values);
+                    return EngineError.LockConflict;
+                };
             }
 
             // Save old values for index maintenance
@@ -1207,6 +1257,17 @@ pub const Database = struct {
                         self.allocator.free(entry.key);
                         continue;
                     }
+                    // Conflict detection: if row has xmax set by another active txn,
+                    // that means a concurrent writer is modifying this row.
+                    if (hdr.xmax != mvcc_mod.INVALID_XID and hdr.xmax != ctx.current_xid) {
+                        if (self.tm.getState(hdr.xmax)) |state| {
+                            if (state == .active) {
+                                self.allocator.free(entry.value);
+                                self.allocator.free(entry.key);
+                                return EngineError.LockConflict;
+                            }
+                        }
+                    }
                 }
                 values = executor_mod.deserializeRow(self.allocator, entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
                     self.allocator.free(entry.value);
@@ -1243,6 +1304,24 @@ pub const Database = struct {
                     self.allocator.free(entry.key);
                     continue;
                 }
+            }
+
+            // Acquire exclusive row lock for the row we're about to delete
+            if (self.current_txn) |txn| {
+                const row_key = if (entry.key.len == 8)
+                    std.mem.readInt(u64, entry.key[0..8], .big)
+                else
+                    0;
+                const lock_target = LockTarget{
+                    .table_page_id = table_info.data_root_page_id,
+                    .row_key = row_key,
+                };
+                self.lock_manager.acquireRowLock(txn.xid, lock_target, .exclusive) catch {
+                    for (values) |v| v.free(self.allocator);
+                    self.allocator.free(values);
+                    self.allocator.free(entry.key);
+                    return EngineError.LockConflict;
+                };
             }
 
             // Mark for deletion (keep values for index maintenance)

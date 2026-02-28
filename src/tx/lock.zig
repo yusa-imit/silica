@@ -389,7 +389,8 @@ pub const LockManager = struct {
 
         for (table_ids_to_clean.items) |table_id| {
             if (self.table_locks.fetchRemove(table_id)) |kv| {
-                kv.value.deinit(self.allocator);
+                var list_copy = kv.value;
+                list_copy.deinit(self.allocator);
             }
         }
     }
@@ -643,7 +644,7 @@ test "LockManager — release all locks for transaction" {
 
     // t1 should be gone, t2 should still exist (held by 2), t3 still exists
     try std.testing.expectEqual(@as(usize, 2), lm.activeRowLockCount());
-    try std.testing.expectEqual(@as(?u32, null), lm.row_locks.get(t1));
+    try std.testing.expect(lm.row_locks.get(t1) == null);
     try std.testing.expectEqual(@as(?u32, 2), lm.getRowLockHolder(t2));
     try std.testing.expectEqual(@as(?u32, 2), lm.getRowLockHolder(t3));
 
