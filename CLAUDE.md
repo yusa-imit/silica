@@ -518,3 +518,17 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - **v0.5.1 패치**: sailor#3, #4, #5, #6 모두 수정됨 — `zig fetch --save`로 v0.5.1 업데이트 후 BLOCKED 항목 구현 가능
 - ~~**Note**: sailor v0.5.0의 모든 Phase 5 위젯이 Zig 0.15.2에서 컴파일 불가 → v0.5.1에서 수정됨~~
 - ~~**Note**: sailor v0.5.0의 `renderDiff`도 `adaptToNewApi` 버그 → v0.5.1에서 수정됨~~
+
+### v1.0.0 — production ready (status: READY)
+
+**첫 안정 릴리즈**: 모든 기능 완성, 종합 문서화 포함
+
+**작업 내용**:
+- [ ] `build.zig.zon`에 sailor v1.0.0 의존성 업데이트
+- [ ] [Getting Started Guide](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/GUIDE.md) 참조하여 모범 사례 적용
+- [ ] [API Reference](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/API.md) 기반으로 기존 코드 리팩토링
+- [ ] 테마 시스템 활용: SQL TUI에 다크/라이트 모드 또는 SQL 신택스 하이라이팅 테마
+- [ ] 애니메이션 효과 추가 (선택사항): 쿼리 실행 프로그레스, 결과 로딩
+- [ ] 성능 최적화: sailor 벤치마크 기반으로 렌더링 성능 개선
+- [ ] 기존 테스트 전체 통과 확인
+- [ ] 커밋: `feat: upgrade to sailor v1.0.0 with theming and polish`
