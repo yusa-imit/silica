@@ -322,42 +322,8 @@ pub const Database = struct {
 
     /// Execute a SQL statement and return results.
     pub fn exec(self: *Database, sql: []const u8) EngineError!QueryResult {
-        // 1. Parse
-        var arena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
-        arena.* = AstArena.init(self.allocator);
-        errdefer {
-            arena.deinit();
-            self.allocator.destroy(arena);
-        }
-
-        var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
-        defer infra_alloc.deinit();
-
-        var p = Parser.init(infra_alloc.allocator(), sql, arena) catch return EngineError.ParseError;
-        defer p.deinit();
-
-        const maybe_stmt = p.parseStatement() catch return EngineError.ParseError;
-        const stmt = maybe_stmt orelse return EngineError.ParseError;
-
-        // 2. Build SchemaProvider from Catalog
-        const provider = self.schemaProvider();
-
-        // 3. Analyze
-        var an = Analyzer.init(self.allocator, provider);
-        defer an.deinit();
-        an.analyze(stmt);
-        if (an.hasErrors()) return EngineError.AnalysisError;
-
-        // 4. Plan
-        var plnr = Planner.init(arena, provider);
-        const plan = plnr.plan(stmt) catch return EngineError.PlanError;
-
-        // 5. Optimize
-        var opt = Optimizer.init(arena);
-        const optimized = opt.optimize(plan) catch return EngineError.PlanError;
-
-        // 6. Execute based on plan type
-        return self.executePlan(arena, optimized);
+        // Delegate to execSQL which handles both DDL and DML correctly
+        return self.execSQL(sql);
     }
 
     fn executePlan(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
