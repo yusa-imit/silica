@@ -70,8 +70,9 @@
 - `src/sql/engine.zig` — Database integration layer, full SQL pipeline
 - `src/tx/wal.zig` — Write-Ahead Log (frame writer, commit, checkpoint, recovery)
 - `src/tx/mvcc.zig` — MVCC visibility, snapshots, TransactionManager
+- `src/tx/lock.zig` — Lock manager (row-level + table-level locks, conflict detection)
 
-## Test Summary (647 tests total: 598 library + 49 CLI/TUI)
+## Test Summary (679 tests total: 630 library + 49 CLI/TUI)
 - `parser.zig`: 78 tests
 - `tokenizer.zig`: 53 tests
 - `ast.zig`: 10 tests
@@ -87,7 +88,8 @@
 - `planner.zig`: 29 tests
 - `optimizer.zig`: 14 tests
 - `executor.zig`: 35 tests
-- `engine.zig`: 116 tests (incl. 8 WAL + 14 error handling + 31 MVCC)
+- `engine.zig`: 124 tests (incl. 8 WAL + 14 error handling + 31 MVCC + 8 lock integration)
+- `lock.zig`: 24 tests
 - `wal.zig`: 15 tests
 - `mvcc.zig`: 44 tests
 - `cli.zig`: 31 tests
@@ -126,5 +128,5 @@
 - [x] Engine integration — transaction-aware exec, BEGIN/COMMIT/ROLLBACK
 - [x] Aborted txn visibility fix — TM-based commit/abort status lookup
 - [x] RR/SERIALIZABLE snapshot ownership fix — no double-free
-- [ ] Lock manager — row-level locking, conflict detection
-- [ ] Concurrent writer conflict detection
+- [x] Lock manager — row-level locking (shared/exclusive), table-level locks (7 modes), conflict detection
+- [x] Lock-engine integration — DML acquires exclusive row locks, conflict via xmax check, released on commit/rollback
