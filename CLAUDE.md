@@ -425,14 +425,14 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] SQL tokenizer/parser 연결 (silica 자체 모듈)
 - [x] 커밋: `feat: add interactive SQL shell with sailor.repl`
 
-### v0.3.0 — fmt (status: READY)
+### v0.3.0 — fmt (status: DONE)
 
 **작업 내용**:
-- [ ] 쿼리 결과 포매팅에 `sailor.fmt` 적용
-- [ ] `.mode` 명령어 구현: table, csv, json, jsonl, plain
-- [ ] `SELECT` 결과를 정렬된 테이블로 표시
-- [ ] NULL 값 색상 처리
-- [ ] 커밋: `feat: add output modes with sailor.fmt`
+- [x] 쿼리 결과 포매팅에 `sailor.fmt` 적용
+- [x] `.mode` 명령어 구현: table, csv, json, jsonl, plain
+- [x] `SELECT` 결과를 정렬된 테이블로 표시
+- [x] NULL 값 처리
+- [x] 커밋: `feat: add output modes with sailor.fmt`
 
 ### v0.4.0 — tui (status: READY)
 
