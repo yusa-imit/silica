@@ -111,12 +111,8 @@ pub fn main() !void {
 
     // Launch TUI mode if --tui flag is set
     if (arg_parser.getBool("tui", false)) {
-        tui_mod.run(allocator, &db, db_path) catch |err| {
-            printError(stderr, switch (err) {
-                error.NotATty => "TUI mode requires a terminal.",
-                error.TerminalSizeUnavailable => "Cannot determine terminal size.",
-                else => "TUI initialization failed.",
-            });
+        tui_mod.run(allocator, &db, db_path) catch {
+            printError(stderr, "TUI initialization failed.");
             stderr.flush() catch {};
             std.process.exit(1);
         };

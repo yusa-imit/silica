@@ -854,6 +854,11 @@ fn localRenderDiff(diff_ops: []const tui.buffer.DiffOp, writer: anytype) !void {
 // ── Public Entry Point ───────────────────────────────────────────────
 
 pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !void {
+    const builtin = @import("builtin");
+    if (comptime builtin.os.tag == .windows) {
+        return error.NotATty;
+    }
+
     // Initialize terminal
     var term = try tui.Terminal.init(allocator);
     defer term.deinit();
