@@ -68,7 +68,10 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_unit_tests = b.addRunArtifact(cli_unit_tests);
 
+    // CLI tests must run AFTER library tests (not in parallel) because both
+    // include library test blocks that create test DB files in the working directory.
+    run_cli_unit_tests.step.dependOn(&run_lib_unit_tests.step);
+
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_cli_unit_tests.step);
 }
