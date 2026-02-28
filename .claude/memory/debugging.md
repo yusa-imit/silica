@@ -5,6 +5,18 @@
 ## Known Issues
 - (none currently)
 
+## Recently Fixed Bugs
+
+### MVCC Aborted Transaction Visibility (c42d358)
+- **Symptom**: Rows from aborted transactions visible in subsequent READ COMMITTED transactions
+- **Cause**: `isTupleVisible` fell back to `snapshot.isVisible()` when hint flags absent. Snapshot cannot distinguish committed from aborted — both look "not active"
+- **Fix**: Added `isTupleVisibleWithTm()` that consults `TransactionManager.isAborted()` when hint flags are not set. MvccContext now carries `tm: ?*TransactionManager`
+
+### MVCC REPEATABLE READ Double-Free Segfault (c42d358)
+- **Symptom**: Segfault in `Snapshot.deinit()` when committing a REPEATABLE READ transaction
+- **Cause**: `TransactionManager.commit()` frees the snapshot's `active_xids`. Then `TransactionContext.deinit()` tries to free the same allocation via its copy of the Snapshot struct
+- **Fix**: `commitTransaction`/`rollbackTransaction` sets `self.current_txn.?.snapshot = null` BEFORE calling `tm.commit()`/`tm.abort()` to prevent double-free
+
 ## Solved Problems
 
 ### Zig 0.15 Build API Change

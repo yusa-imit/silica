@@ -69,8 +69,9 @@
 - `src/sql/optimizer.zig` — Rule-based plan optimization
 - `src/sql/engine.zig` — Database integration layer, full SQL pipeline
 - `src/tx/wal.zig` — Write-Ahead Log (frame writer, commit, checkpoint, recovery)
+- `src/tx/mvcc.zig` — MVCC visibility, snapshots, TransactionManager
 
-## Test Summary (558 tests total: 509 library + 49 CLI/TUI)
+## Test Summary (647 tests total: 598 library + 49 CLI/TUI)
 - `parser.zig`: 78 tests
 - `tokenizer.zig`: 53 tests
 - `ast.zig`: 10 tests
@@ -86,8 +87,9 @@
 - `planner.zig`: 29 tests
 - `optimizer.zig`: 14 tests
 - `executor.zig`: 35 tests
-- `engine.zig`: 72 tests (incl. 8 WAL mode integration)
+- `engine.zig`: 116 tests (incl. 8 WAL + 14 error handling + 31 MVCC)
 - `wal.zig`: 15 tests
+- `mvcc.zig`: 44 tests
 - `cli.zig`: 31 tests
 - `tui.zig`: 18 tests
 
@@ -115,3 +117,14 @@
 - [ ] Read-path WAL deeper integration (5B)
 - [ ] Checkpoint process (5C)
 - [ ] Crash recovery tests (5D)
+
+### Milestone 6 — MVCC Core (Phase 4)
+- [x] TupleHeader, TupleFlags, Snapshot — core data structures
+- [x] TransactionManager — begin/commit/abort, snapshot, CID management
+- [x] isTupleVisible / isTupleVisibleWithTm — visibility rules
+- [x] Versioned row format (0xAA prefix) — serialize/deserialize
+- [x] Engine integration — transaction-aware exec, BEGIN/COMMIT/ROLLBACK
+- [x] Aborted txn visibility fix — TM-based commit/abort status lookup
+- [x] RR/SERIALIZABLE snapshot ownership fix — no double-free
+- [ ] Lock manager — row-level locking, conflict detection
+- [ ] Concurrent writer conflict detection
