@@ -653,6 +653,21 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
 }
 
 fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalError!Value {
+    // Aggregate functions: look up result by column name from the aggregate output row.
+    // When an Aggregate operator has already computed COUNT/SUM/etc., the result is
+    // stored as a named column. The Project operator just needs to retrieve it.
+    if (isAggregateFuncName(fc.name)) {
+        // Build the expected column name for this aggregate
+        const col_name = aggResultColName(fc);
+        for (row.columns, 0..) |c, i| {
+            if (std.ascii.eqlIgnoreCase(c, col_name)) {
+                return row.values[i].dupe(allocator) catch return EvalError.OutOfMemory;
+            }
+        }
+        // If not found by exact name, the aggregate wasn't computed — fall through
+        return EvalError.UnsupportedExpression;
+    }
+
     // Built-in scalar functions
     if (std.ascii.eqlIgnoreCase(fc.name, "abs")) {
         if (fc.args.len != 1) return EvalError.TypeError;
@@ -723,6 +738,33 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };
     }
     return EvalError.UnsupportedExpression;
+}
+
+/// Check if a function name is an aggregate function.
+fn isAggregateFuncName(name: []const u8) bool {
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max" };
+    for (agg_names) |n| {
+        if (std.ascii.eqlIgnoreCase(name, n)) return true;
+    }
+    return false;
+}
+
+/// Build the column name that the AggregateOp would use for this function call.
+fn aggResultColName(fc: anytype) []const u8 {
+    // COUNT(*) → "count(*)", COUNT(x) → "count", SUM(x) → "sum", etc.
+    if (std.ascii.eqlIgnoreCase(fc.name, "count")) {
+        if (fc.args.len > 0 and fc.args[0].* == .column_ref and
+            std.mem.eql(u8, fc.args[0].column_ref.name, "*"))
+        {
+            return "count(*)";
+        }
+        return "count";
+    }
+    if (std.ascii.eqlIgnoreCase(fc.name, "sum")) return "sum";
+    if (std.ascii.eqlIgnoreCase(fc.name, "avg")) return "avg";
+    if (std.ascii.eqlIgnoreCase(fc.name, "min")) return "min";
+    if (std.ascii.eqlIgnoreCase(fc.name, "max")) return "max";
+    return fc.name;
 }
 
 /// SQL LIKE pattern matching (% = any string, _ = any char).

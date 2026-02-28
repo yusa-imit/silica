@@ -455,7 +455,11 @@ pub const Analyzer = struct {
                 self.analyzeExpr(b.right);
             },
             .function_call => |f| {
-                for (f.args) |arg| self.analyzeExpr(arg);
+                for (f.args) |arg| {
+                    // Skip resolution for * in aggregate functions like COUNT(*)
+                    if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*")) continue;
+                    self.analyzeExpr(arg);
+                }
             },
             .between => |b| {
                 self.analyzeExpr(b.expr);

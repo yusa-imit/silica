@@ -239,9 +239,9 @@ pub const Planner = struct {
             } });
         }
 
-        // 4. GROUP BY → Aggregate
-        if (stmt.group_by.len > 0) {
-            const aggs = try self.extractAggregates(stmt.columns);
+        // 4. GROUP BY → Aggregate (also add aggregate node when select contains aggregate functions)
+        const aggs = try self.extractAggregates(stmt.columns);
+        if (stmt.group_by.len > 0 or aggs.len > 0) {
             node = try self.createNode(.{ .aggregate = .{
                 .input = node,
                 .group_by = stmt.group_by,
@@ -379,10 +379,16 @@ pub const Planner = struct {
     fn exprToAggregate(_: *Planner, expr: *const ast.Expr, alias: ?[]const u8) ?PlanNode.AggregateExpr {
         return switch (expr.*) {
             .function_call => |fc| {
-                const func = aggFuncFromName(fc.name) orelse return null;
+                var func = aggFuncFromName(fc.name) orelse return null;
+                // Distinguish COUNT(*) from COUNT(expr)
+                if (func == .count and fc.args.len > 0 and
+                    fc.args[0].* == .column_ref and std.mem.eql(u8, fc.args[0].column_ref.name, "*"))
+                {
+                    func = .count_star;
+                }
                 return .{
                     .func = func,
-                    .arg = if (fc.args.len > 0) fc.args[0] else null,
+                    .arg = if (func == .count_star) null else if (fc.args.len > 0) fc.args[0] else null,
                     .alias = alias,
                     .distinct = fc.distinct,
                 };

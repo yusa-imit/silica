@@ -1092,8 +1092,36 @@ test "SELECT with LIMIT" {
     try testing.expectEqual(@as(usize, 3), count);
 }
 
-// TODO: fix SELECT COUNT(*) — currently fails with stack overflow
-// test "SELECT COUNT(*) aggregate" { ... }
+test "SELECT COUNT(*) aggregate" {
+    const path = "test_eng_count.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO items (id, name) VALUES (1, 'a')");
+    defer r2.close(testing.allocator);
+
+    var r2b = try db.execSQL("INSERT INTO items (id, name) VALUES (2, 'b')");
+    defer r2b.close(testing.allocator);
+
+    var r2c = try db.execSQL("INSERT INTO items (id, name) VALUES (3, 'c')");
+    defer r2c.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM items");
+    defer r3.close(testing.allocator);
+
+    try testing.expect(r3.rows != null);
+    const row = (try r3.rows.?.next()) orelse return error.ExpectedRow;
+    var row_mut = row;
+    defer row_mut.deinit();
+
+    try testing.expectEqual(@as(usize, 1), row.values.len);
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+}
 
 test "DELETE with WHERE" {
     const path = "test_eng_delete.db";
