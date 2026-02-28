@@ -1357,7 +1357,10 @@ pub const AggregateOp = struct {
                     }
                 }
                 if (min_val) |v| {
-                    // Dupe since we return owned values
+                    defer {
+                        var mv = v;
+                        mv.free(self.allocator);
+                    }
                     return v.dupe(self.allocator) catch .null_value;
                 }
                 return .null_value;
@@ -1384,6 +1387,10 @@ pub const AggregateOp = struct {
                     }
                 }
                 if (max_val) |v| {
+                    defer {
+                        var mv = v;
+                        mv.free(self.allocator);
+                    }
                     return v.dupe(self.allocator) catch .null_value;
                 }
                 return .null_value;
