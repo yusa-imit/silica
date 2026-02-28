@@ -556,6 +556,181 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     }
 }
 
+// ── Local renderDiff (workaround for sailor#5: adaptToNewApi bug) ────
+
+fn writeU16(writer: anytype, val: u16) !void {
+    var buf: [5]u8 = undefined; // max 5 digits for u16
+    var n = val;
+    var len: usize = 0;
+    if (n == 0) {
+        buf[0] = '0';
+        len = 1;
+    } else {
+        while (n > 0) : (len += 1) {
+            buf[len] = @intCast('0' + (n % 10));
+            n /= 10;
+        }
+        // Reverse
+        var i: usize = 0;
+        var j: usize = len - 1;
+        while (i < j) {
+            const tmp = buf[i];
+            buf[i] = buf[j];
+            buf[j] = tmp;
+            i += 1;
+            j -= 1;
+        }
+    }
+    try writer.writeAll(buf[0..len]);
+}
+
+fn writeColorFg(writer: anytype, color: tui.Color) !void {
+    switch (color) {
+        .reset => try writer.writeAll("\x1b[39m"),
+        .black => try writer.writeAll("\x1b[30m"),
+        .red => try writer.writeAll("\x1b[31m"),
+        .green => try writer.writeAll("\x1b[32m"),
+        .yellow => try writer.writeAll("\x1b[33m"),
+        .blue => try writer.writeAll("\x1b[34m"),
+        .magenta => try writer.writeAll("\x1b[35m"),
+        .cyan => try writer.writeAll("\x1b[36m"),
+        .white => try writer.writeAll("\x1b[37m"),
+        .bright_black => try writer.writeAll("\x1b[90m"),
+        .bright_red => try writer.writeAll("\x1b[91m"),
+        .bright_green => try writer.writeAll("\x1b[92m"),
+        .bright_yellow => try writer.writeAll("\x1b[93m"),
+        .bright_blue => try writer.writeAll("\x1b[94m"),
+        .bright_magenta => try writer.writeAll("\x1b[95m"),
+        .bright_cyan => try writer.writeAll("\x1b[96m"),
+        .bright_white => try writer.writeAll("\x1b[97m"),
+        .indexed => |idx| {
+            try writer.writeAll("\x1b[38;5;");
+            try writeU16(writer, @intCast(idx));
+            try writer.writeAll("m");
+        },
+        .rgb => |c| {
+            try writer.writeAll("\x1b[38;2;");
+            try writeU16(writer, @intCast(c.r));
+            try writer.writeByte(';');
+            try writeU16(writer, @intCast(c.g));
+            try writer.writeByte(';');
+            try writeU16(writer, @intCast(c.b));
+            try writer.writeAll("m");
+        },
+    }
+}
+
+fn writeColorBg(writer: anytype, color: tui.Color) !void {
+    switch (color) {
+        .reset => try writer.writeAll("\x1b[49m"),
+        .black => try writer.writeAll("\x1b[40m"),
+        .red => try writer.writeAll("\x1b[41m"),
+        .green => try writer.writeAll("\x1b[42m"),
+        .yellow => try writer.writeAll("\x1b[43m"),
+        .blue => try writer.writeAll("\x1b[44m"),
+        .magenta => try writer.writeAll("\x1b[45m"),
+        .cyan => try writer.writeAll("\x1b[46m"),
+        .white => try writer.writeAll("\x1b[47m"),
+        .bright_black => try writer.writeAll("\x1b[100m"),
+        .bright_red => try writer.writeAll("\x1b[101m"),
+        .bright_green => try writer.writeAll("\x1b[102m"),
+        .bright_yellow => try writer.writeAll("\x1b[103m"),
+        .bright_blue => try writer.writeAll("\x1b[104m"),
+        .bright_magenta => try writer.writeAll("\x1b[105m"),
+        .bright_cyan => try writer.writeAll("\x1b[106m"),
+        .bright_white => try writer.writeAll("\x1b[107m"),
+        .indexed => |idx| {
+            try writer.writeAll("\x1b[48;5;");
+            try writeU16(writer, @intCast(idx));
+            try writer.writeAll("m");
+        },
+        .rgb => |c| {
+            try writer.writeAll("\x1b[48;2;");
+            try writeU16(writer, @intCast(c.r));
+            try writer.writeByte(';');
+            try writeU16(writer, @intCast(c.g));
+            try writer.writeByte(';');
+            try writeU16(writer, @intCast(c.b));
+            try writer.writeAll("m");
+        },
+    }
+}
+
+fn applyStyle(writer: anytype, style: tui.Style) !void {
+    if (style.fg) |fg| try writeColorFg(writer, fg);
+    if (style.bg) |bg| try writeColorBg(writer, bg);
+    if (style.bold) try writer.writeAll("\x1b[1m");
+    if (style.dim) try writer.writeAll("\x1b[2m");
+    if (style.italic) try writer.writeAll("\x1b[3m");
+    if (style.underline) try writer.writeAll("\x1b[4m");
+    if (style.blink) try writer.writeAll("\x1b[5m");
+    if (style.reverse) try writer.writeAll("\x1b[7m");
+    if (style.strikethrough) try writer.writeAll("\x1b[9m");
+}
+
+/// Local renderDiff that avoids std.fmt.format (sailor#5 workaround)
+fn localRenderDiff(diff_ops: []const tui.buffer.DiffOp, writer: anytype) !void {
+    var current_style: ?tui.Style = null;
+    var current_x: ?u16 = null;
+    var current_y: ?u16 = null;
+
+    for (diff_ops) |op| {
+        // Move cursor if needed
+        if (current_x == null or current_y == null or
+            current_x.? != op.x or current_y.? != op.y)
+        {
+            // ANSI cursor position (1-indexed): ESC[row;colH
+            try writer.writeAll("\x1b[");
+            try writeU16(writer, op.y + 1);
+            try writer.writeByte(';');
+            try writeU16(writer, op.x + 1);
+            try writer.writeByte('H');
+            current_x = op.x;
+            current_y = op.y;
+        }
+
+        // Apply style if changed
+        const has_style = op.cell.style.fg != null or
+            op.cell.style.bg != null or
+            op.cell.style.bold or
+            op.cell.style.dim or
+            op.cell.style.italic or
+            op.cell.style.underline or
+            op.cell.style.blink or
+            op.cell.style.reverse or
+            op.cell.style.strikethrough;
+
+        if (has_style) {
+            if (current_style == null or !std.meta.eql(current_style.?, op.cell.style)) {
+                try writer.writeAll("\x1b[0m"); // reset
+                try applyStyle(writer, op.cell.style);
+                current_style = op.cell.style;
+            }
+        } else {
+            if (current_style != null) {
+                try writer.writeAll("\x1b[0m"); // reset
+                current_style = null;
+            }
+        }
+
+        // Write character
+        var char_buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(op.cell.char, &char_buf) catch 1;
+        if (len == 1 and op.cell.char < 128) {
+            try writer.writeByte(@intCast(op.cell.char));
+        } else {
+            try writer.writeAll(char_buf[0..len]);
+        }
+
+        current_x = op.x + 1; // Advance cursor position
+    }
+
+    // Reset style at end
+    if (current_style != null) {
+        try writer.writeAll("\x1b[0m");
+    }
+}
+
 // ── Public Entry Point ───────────────────────────────────────────────
 
 pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !void {
@@ -602,7 +777,7 @@ pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !vo
         defer allocator.free(diff_ops);
 
         var render_writer = stdout.writer(&stdout_buf);
-        try tui.buffer.renderDiff(diff_ops, &render_writer);
+        try localRenderDiff(diff_ops, &render_writer.interface);
         render_writer.interface.flush() catch {};
 
         // Swap buffers
