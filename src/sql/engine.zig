@@ -356,6 +356,8 @@ const OperatorChain = struct {
     empty: ?*EmptyOp = null,
     materialized: ?*MaterializedOp = null,
     set_op: ?*SetOpOp = null,
+    /// Operator chains for set operation sub-queries (need cleanup).
+    set_op_chains: std.ArrayListUnmanaged(*OperatorChain) = .{},
     /// Materialized CTE results: name → MaterializedOp*.
     cte_materialized: ?std.StringHashMapUnmanaged(*MaterializedOp) = null,
     /// Operator chains for CTE sub-queries (need cleanup).
@@ -399,6 +401,12 @@ const OperatorChain = struct {
         if (self.empty) |e| allocator.destroy(e);
         if (self.materialized) |m| allocator.destroy(m);
         if (self.set_op) |s| allocator.destroy(s);
+        // Clean up set operation sub-query chains.
+        for (self.set_op_chains.items) |chain| {
+            chain.cte_materialized = null;
+            chain.deinit(allocator);
+        }
+        self.set_op_chains.deinit(allocator);
         // Clean up CTE sub-query chains first (clear their cte_materialized
         // references to avoid double-free — the parent owns the map).
         for (self.cte_ops.items) |cte_chain| {
@@ -1251,8 +1259,21 @@ pub const Database = struct {
     }
 
     fn buildSetOp(self: *Database, set_op: PlanNode.SetOp, ops: *OperatorChain) EngineError!RowIterator {
-        const left = try self.buildIterator(set_op.left, ops);
-        const right = try self.buildIterator(set_op.right, ops);
+        // Each side of a set operation needs its own OperatorChain because
+        // both sides produce independent operator trees (scan, project, etc.)
+        // that would otherwise overwrite each other in a single chain.
+        const left_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+        left_ops.* = .{};
+        left_ops.cte_materialized = ops.cte_materialized;
+        ops.set_op_chains.append(self.allocator, left_ops) catch return EngineError.OutOfMemory;
+
+        const right_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+        right_ops.* = .{};
+        right_ops.cte_materialized = ops.cte_materialized;
+        ops.set_op_chains.append(self.allocator, right_ops) catch return EngineError.OutOfMemory;
+
+        const left = try self.buildIterator(set_op.left, left_ops);
+        const right = try self.buildIterator(set_op.right, right_ops);
         const set_op_op = self.allocator.create(SetOpOp) catch return EngineError.OutOfMemory;
         set_op_op.* = SetOpOp.init(self.allocator, left, right, set_op.op);
         ops.set_op = set_op_op;
@@ -7930,4 +7951,276 @@ test "CTE: empty CTE result" {
     try testing.expect(r2.rows != null);
     const row = try r2.rows.?.next();
     try testing.expect(row == null);
+}
+
+// ── Set Operation Tests ──────────────────────────────────────────────
+
+test "UNION ALL returns all rows from both queries" {
+    const path = "test_eng_union_all.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER, label TEXT)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1, 'a'), (2, 'b')");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (2, 'b'), (3, 'c')");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("SELECT id, name FROM t1 UNION ALL SELECT id, label FROM t2");
+    defer r5.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r5.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // t1 has 2 rows, t2 has 2 rows → 4 total (no dedup)
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "UNION removes duplicate rows" {
+    const path = "test_eng_union.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER, label TEXT)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1, 'a'), (2, 'b')");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (2, 'b'), (3, 'c')");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("SELECT id, name FROM t1 UNION SELECT id, label FROM t2");
+    defer r5.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r5.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // (1,'a'), (2,'b'), (3,'c') — duplicate (2,'b') removed
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "INTERSECT returns only common rows" {
+    const path = "test_eng_intersect.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER, label TEXT)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (2, 'b'), (3, 'c'), (4, 'd')");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("SELECT id, name FROM t1 INTERSECT SELECT id, label FROM t2");
+    defer r5.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r5.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Common rows: (2,'b'), (3,'c')
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "EXCEPT removes rows present in second query" {
+    const path = "test_eng_except.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER, label TEXT)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (2, 'b'), (3, 'c'), (4, 'd')");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("SELECT id, name FROM t1 EXCEPT SELECT id, label FROM t2");
+    defer r5.close(testing.allocator);
+
+    var count: usize = 0;
+    var found_a = false;
+    while (try r5.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        if (row.values[1] == .text and std.mem.eql(u8, row.values[1].text, "a")) found_a = true;
+    }
+    // Only (1,'a') is in t1 but not t2
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expect(found_a);
+}
+
+test "UNION ALL with ORDER BY and LIMIT" {
+    const path = "test_eng_setop_ordlim.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT)");
+        r1.close(testing.allocator);
+    }
+    {
+        var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER, label TEXT)");
+        r2.close(testing.allocator);
+    }
+    {
+        var r3 = try db.execSQL("INSERT INTO t1 VALUES (3, 'c'), (1, 'a')");
+        r3.close(testing.allocator);
+    }
+    {
+        var r4 = try db.execSQL("INSERT INTO t2 VALUES (4, 'd'), (2, 'b')");
+        r4.close(testing.allocator);
+    }
+
+    var r5 = try db.execSQL("SELECT id, name FROM t1 UNION ALL SELECT id, label FROM t2 ORDER BY id LIMIT 3");
+    defer r5.close(testing.allocator);
+
+    var ids = std.ArrayListUnmanaged(i64){};
+    defer ids.deinit(testing.allocator);
+    while (try r5.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        ids.append(testing.allocator, row.values[0].integer) catch unreachable;
+    }
+    // Sorted by id and limited to 3: [1, 2, 3]
+    try testing.expectEqual(@as(usize, 3), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 2), ids.items[1]);
+    try testing.expectEqual(@as(i64, 3), ids.items[2]);
+}
+
+test "UNION with empty table" {
+    const path = "test_eng_union_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1), (2)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("SELECT id FROM t1 UNION ALL SELECT id FROM t2");
+    defer r4.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r4.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "INTERSECT with no common rows returns empty" {
+    const path = "test_eng_intersect_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1), (2)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (3), (4)");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("SELECT id FROM t1 INTERSECT SELECT id FROM t2");
+    defer r5.close(testing.allocator);
+
+    const row = try r5.rows.?.next();
+    try testing.expect(row == null);
+}
+
+test "UNION with CTE" {
+    const path = "test_eng_union_cte.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (2), (3)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL(
+        "WITH low AS (SELECT id FROM t1 WHERE id <= 2) SELECT id FROM low UNION ALL SELECT id FROM t1 WHERE id >= 2",
+    );
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // low: [1,2], right: [2,3] → UNION ALL: [1,2,2,3] = 4 rows
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "EXCEPT with identical tables returns empty" {
+    const path = "test_eng_except_identical.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (2), (3)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT id FROM t1 EXCEPT SELECT id FROM t1");
+    defer r3.close(testing.allocator);
+
+    const row = try r3.rows.?.next();
+    try testing.expect(row == null);
+}
+
+test "UNION deduplicates within same table" {
+    const path = "test_eng_union_self.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (1), (2)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT id FROM t1 UNION SELECT id FROM t1");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Deduplicated: [1, 2]
+    try testing.expectEqual(@as(usize, 2), count);
 }

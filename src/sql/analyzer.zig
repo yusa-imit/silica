@@ -247,8 +247,7 @@ pub const Analyzer = struct {
         if (stmt.set_operation) |set_op| {
             const left_count = self.countResultColumns(stmt);
 
-            // Save and clear scope for the right side
-            const saved_scope = self.scope_tables.items.len;
+            // Clear scope for the right side analysis
             self.scope_tables.shrinkRetainingCapacity(0);
 
             // Re-register CTEs for right side (they share the WITH scope)
@@ -269,12 +268,11 @@ pub const Analyzer = struct {
                 self.analyzeSetOpChain(set_op.right, left_count);
             }
 
-            // Restore scope for outer ORDER BY / LIMIT analysis
-            self.scope_tables.shrinkRetainingCapacity(saved_scope);
-            // Re-analyze left body to rebuild scope for ORDER BY references
-            if (stmt.order_by.len > 0) {
-                self.analyzeSelectBody(stmt);
-            }
+            // Restore scope for outer ORDER BY / LIMIT analysis.
+            // Clear scope completely (right side polluted positions 0..saved_scope),
+            // then re-analyze the left body to rebuild the correct scope.
+            self.scope_tables.shrinkRetainingCapacity(0);
+            self.analyzeSelectBody(stmt);
         }
 
         // ORDER BY — applies to the compound result
