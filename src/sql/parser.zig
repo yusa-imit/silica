@@ -209,18 +209,85 @@ pub const Parser = struct {
         var stmt = ast.SelectStmt{};
         const a = self.alloc();
 
-        // Parse optional WITH clause (CTEs)
+        // Parse optional WITH clause (CTEs) — applies to the whole compound select
+        var ctes: []const ast.CteDefinition = &.{};
+        var recursive = false;
         if (self.match(.kw_with)) {
             if (self.match(.kw_recursive)) {
-                stmt.recursive = true;
+                recursive = true;
             }
-            var ctes = std.ArrayListUnmanaged(ast.CteDefinition){};
+            var cte_list = std.ArrayListUnmanaged(ast.CteDefinition){};
             while (true) {
-                ctes.append(a, try self.parseCteDefinition()) catch return error.OutOfMemory;
+                cte_list.append(a, try self.parseCteDefinition()) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
-            stmt.ctes = ctes.toOwnedSlice(a) catch return error.OutOfMemory;
+            ctes = cte_list.toOwnedSlice(a) catch return error.OutOfMemory;
         }
+
+        stmt.ctes = ctes;
+        stmt.recursive = recursive;
+
+        // Parse the core SELECT body (without ORDER BY / LIMIT for compound queries)
+        stmt = try self.parseSelectBody(stmt);
+
+        // Check for set operations: UNION [ALL], INTERSECT, EXCEPT
+        if (self.peekIsSetOpKeyword()) {
+            const set_op_type = try self.parseSetOpKeyword();
+            // Parse the right-hand SELECT body (no CTEs, no ORDER BY / LIMIT)
+            var right_stmt = ast.SelectStmt{};
+            right_stmt = try self.parseSelectBody(right_stmt);
+
+            // Chain further set operations on the right side
+            while (self.peekIsSetOpKeyword()) {
+                const next_op = try self.parseSetOpKeyword();
+                var next_stmt = ast.SelectStmt{};
+                next_stmt = try self.parseSelectBody(next_stmt);
+                const next_right = self.arena.create(ast.SelectStmt, next_stmt) catch return error.OutOfMemory;
+                right_stmt.set_operation = self.arena.create(ast.SetOperation, .{
+                    .op = next_op,
+                    .right = next_right,
+                }) catch return error.OutOfMemory;
+            }
+
+            const right_ptr = self.arena.create(ast.SelectStmt, right_stmt) catch return error.OutOfMemory;
+            stmt.set_operation = self.arena.create(ast.SetOperation, .{
+                .op = set_op_type,
+                .right = right_ptr,
+            }) catch return error.OutOfMemory;
+        }
+
+        // ORDER BY and LIMIT/OFFSET apply to the entire compound query
+        if (self.match(.kw_order)) {
+            _ = try self.expect(.kw_by);
+            var items = std.ArrayListUnmanaged(ast.OrderByItem){};
+            while (true) {
+                const expr = try self.parseExpr(0);
+                var dir: ast.OrderDirection = .asc;
+                if (self.match(.kw_desc)) {
+                    dir = .desc;
+                } else {
+                    _ = self.match(.kw_asc);
+                }
+                items.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            stmt.order_by = items.toOwnedSlice(a) catch return error.OutOfMemory;
+        }
+
+        if (self.match(.kw_limit)) {
+            stmt.limit = try self.parseExpr(0);
+            if (self.match(.kw_offset)) {
+                stmt.offset = try self.parseExpr(0);
+            }
+        }
+
+        return stmt;
+    }
+
+    /// Parse the body of a SELECT (without CTEs, ORDER BY, LIMIT).
+    fn parseSelectBody(self: *Parser, base: ast.SelectStmt) Error!ast.SelectStmt {
+        var stmt = base;
+        const a = self.alloc();
 
         _ = try self.expect(.kw_select);
 
@@ -262,31 +329,25 @@ pub const Parser = struct {
             }
         }
 
-        if (self.match(.kw_order)) {
-            _ = try self.expect(.kw_by);
-            var items = std.ArrayListUnmanaged(ast.OrderByItem){};
-            while (true) {
-                const expr = try self.parseExpr(0);
-                var dir: ast.OrderDirection = .asc;
-                if (self.match(.kw_desc)) {
-                    dir = .desc;
-                } else {
-                    _ = self.match(.kw_asc);
-                }
-                items.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
-                if (!self.match(.comma)) break;
-            }
-            stmt.order_by = items.toOwnedSlice(a) catch return error.OutOfMemory;
-        }
-
-        if (self.match(.kw_limit)) {
-            stmt.limit = try self.parseExpr(0);
-            if (self.match(.kw_offset)) {
-                stmt.offset = try self.parseExpr(0);
-            }
-        }
-
         return stmt;
+    }
+
+    /// Check if the next token is a set operation keyword.
+    fn peekIsSetOpKeyword(self: *Parser) bool {
+        const t = self.peek().type;
+        return t == .kw_union or t == .kw_intersect or t == .kw_except;
+    }
+
+    /// Consume and return the set operation type.
+    fn parseSetOpKeyword(self: *Parser) Error!ast.SetOpType {
+        if (self.match(.kw_union)) {
+            if (self.match(.kw_all)) return .union_all;
+            return .@"union";
+        }
+        if (self.match(.kw_intersect)) return .intersect;
+        if (self.match(.kw_except)) return .except;
+        try self.addError(self.peek(), "expected UNION, INTERSECT, or EXCEPT");
+        return error.ParseFailed;
     }
 
     /// Parse a single CTE definition: name [(col1, col2, ...)] AS (SELECT ...)
@@ -2128,4 +2189,98 @@ test "parse CTE without FROM" {
     try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
     // CTE inner select has no FROM
     try std.testing.expect(sel.ctes[0].select.from == null);
+}
+
+// ── Set operation tests ──────────────────────────────────────
+
+test "parse UNION" {
+    var r = try testParseWithArena(
+        "SELECT id FROM users UNION SELECT id FROM orders",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqualStrings("users", sel.from.?.table_name.name);
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.@"union", sel.set_operation.?.op);
+    try std.testing.expectEqualStrings("orders", sel.set_operation.?.right.from.?.table_name.name);
+}
+
+test "parse UNION ALL" {
+    var r = try testParseWithArena(
+        "SELECT id FROM t1 UNION ALL SELECT id FROM t2",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.union_all, sel.set_operation.?.op);
+}
+
+test "parse INTERSECT" {
+    var r = try testParseWithArena(
+        "SELECT id FROM t1 INTERSECT SELECT id FROM t2",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.intersect, sel.set_operation.?.op);
+}
+
+test "parse EXCEPT" {
+    var r = try testParseWithArena(
+        "SELECT id FROM t1 EXCEPT SELECT id FROM t2",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.except, sel.set_operation.?.op);
+}
+
+test "parse chained set operations" {
+    var r = try testParseWithArena(
+        "SELECT id FROM t1 UNION SELECT id FROM t2 INTERSECT SELECT id FROM t3",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    // First op: UNION
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.@"union", sel.set_operation.?.op);
+    // The right side of UNION has an INTERSECT chain
+    const right = sel.set_operation.?.right;
+    try std.testing.expect(right.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.intersect, right.set_operation.?.op);
+    try std.testing.expectEqualStrings("t3", right.set_operation.?.right.from.?.table_name.name);
+}
+
+test "parse set operation with ORDER BY and LIMIT" {
+    var r = try testParseWithArena(
+        "SELECT id FROM t1 UNION ALL SELECT id FROM t2 ORDER BY id LIMIT 10",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expectEqual(ast.SetOpType.union_all, sel.set_operation.?.op);
+    // ORDER BY and LIMIT belong to the outer (left) statement
+    try std.testing.expectEqual(@as(usize, 1), sel.order_by.len);
+    try std.testing.expect(sel.limit != null);
+}
+
+test "parse set operation with WHERE on both sides" {
+    var r = try testParseWithArena(
+        "SELECT id FROM t1 WHERE id > 5 UNION SELECT id FROM t2 WHERE id < 10",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.where != null);
+    try std.testing.expect(sel.set_operation != null);
+    try std.testing.expect(sel.set_operation.?.right.where != null);
+}
+
+test "parse set operation with CTE" {
+    var r = try testParseWithArena(
+        "WITH cte AS (SELECT 1) SELECT * FROM cte UNION SELECT * FROM cte",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    try std.testing.expect(sel.set_operation != null);
 }

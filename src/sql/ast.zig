@@ -254,6 +254,20 @@ pub const CteDefinition = struct {
     column_names: []const []const u8 = &.{},
 };
 
+/// Set operation type for UNION, INTERSECT, EXCEPT.
+pub const SetOpType = enum {
+    @"union",
+    union_all,
+    intersect,
+    except,
+};
+
+/// A chained set operation: current SELECT <op> next SELECT.
+pub const SetOperation = struct {
+    op: SetOpType,
+    right: *const SelectStmt,
+};
+
 /// SELECT statement.
 pub const SelectStmt = struct {
     /// Common Table Expressions (WITH ... AS clauses)
@@ -270,6 +284,8 @@ pub const SelectStmt = struct {
     order_by: []const OrderByItem = &.{},
     limit: ?*const Expr = null,
     offset: ?*const Expr = null,
+    /// Optional set operation chaining (UNION, INTERSECT, EXCEPT)
+    set_operation: ?*const SetOperation = null,
 };
 
 /// INSERT statement.
@@ -550,6 +566,27 @@ test "DataType enum" {
 test "BinaryOp covers all arithmetic" {
     const ops = [_]BinaryOp{ .add, .subtract, .multiply, .divide, .modulo };
     try std.testing.expectEqual(@as(usize, 5), ops.len);
+}
+
+test "SetOpType enum and SetOperation struct" {
+    var ast_arena = AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+
+    const right_select = try ast_arena.create(SelectStmt, .{});
+    const set_op = try ast_arena.create(SetOperation, .{
+        .op = .@"union",
+        .right = right_select,
+    });
+
+    const stmt = SelectStmt{
+        .set_operation = set_op,
+    };
+    try std.testing.expect(stmt.set_operation != null);
+    try std.testing.expectEqual(SetOpType.@"union", stmt.set_operation.?.op);
+
+    // Test all set op types
+    try std.testing.expect(SetOpType.union_all != SetOpType.@"union");
+    try std.testing.expect(SetOpType.intersect != SetOpType.except);
 }
 
 test "ColumnConstraint variants" {
