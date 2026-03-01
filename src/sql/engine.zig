@@ -50,6 +50,7 @@ const TransactionManager = mvcc_mod.TransactionManager;
 const TupleHeader = mvcc_mod.TupleHeader;
 const Snapshot = mvcc_mod.Snapshot;
 const IsolationLevel = mvcc_mod.IsolationLevel;
+const SsiTracker = mvcc_mod.SsiTracker;
 const lock_mod = @import("../tx/lock.zig");
 const vacuum_mod = @import("../tx/vacuum.zig");
 const fsm_mod = @import("../storage/fsm.zig");
@@ -201,6 +202,7 @@ pub const EngineError = error{
     NoActiveTransaction,
     LockConflict,
     SavepointNotFound,
+    SerializationFailure,
 };
 
 /// A named savepoint within a transaction.
@@ -325,6 +327,8 @@ pub const Database = struct {
     lock_manager: LockManager,
     /// Free space map for tracking available space per page.
     fsm: FreeSpaceMap,
+    /// SSI tracker for SERIALIZABLE isolation conflict detection.
+    ssi_tracker: SsiTracker,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -365,6 +369,7 @@ pub const Database = struct {
             .tm = TransactionManager.init(allocator),
             .lock_manager = LockManager.init(allocator),
             .fsm = FreeSpaceMap.init(allocator, pager.page_size),
+            .ssi_tracker = SsiTracker.init(allocator),
         };
     }
 
@@ -373,11 +378,13 @@ pub const Database = struct {
         // Abort any active transaction and release its locks
         if (self.current_txn) |*txn| {
             self.lock_manager.releaseAllLocks(txn.xid);
+            self.ssi_tracker.finishTransaction(txn.xid);
             self.tm.abort(txn.xid) catch {};
             txn.deinit();
             self.current_txn = null;
         }
 
+        self.ssi_tracker.deinit();
         self.lock_manager.deinit();
         self.fsm.deinit();
         self.tm.deinit();
@@ -421,8 +428,26 @@ pub const Database = struct {
     /// Commit the current transaction.
     pub fn commitTransaction(self: *Database) EngineError!void {
         const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
+
+        // SSI check: detect serialization anomalies before committing
+        if (txn.isolation == .serializable) {
+            self.ssi_tracker.checkCommit(txn.xid) catch {
+                // Serialization failure — abort instead of commit
+                self.lock_manager.releaseAllLocks(txn.xid);
+                self.ssi_tracker.finishTransaction(txn.xid);
+                self.current_txn.?.snapshot = null;
+                // abort() should not fail here since txn is known active
+                self.tm.abort(txn.xid) catch return EngineError.TransactionError;
+                self.current_txn.?.deinit();
+                self.current_txn = null;
+                return EngineError.SerializationFailure;
+            };
+        }
+
         // Release all locks held by this transaction
         self.lock_manager.releaseAllLocks(txn.xid);
+        // Clean up SSI state for this transaction
+        self.ssi_tracker.finishTransaction(txn.xid);
         // For RR/SERIALIZABLE: tm.commit() frees the snapshot in TransactionManager,
         // so clear our copy first to prevent double-free in ctx.deinit().
         if (txn.isolation != .read_committed) {
@@ -440,6 +465,8 @@ pub const Database = struct {
         const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
         // Release all locks held by this transaction
         self.lock_manager.releaseAllLocks(txn.xid);
+        // Clean up SSI state for this transaction
+        self.ssi_tracker.finishTransaction(txn.xid);
         // For RR/SERIALIZABLE: tm.abort() frees the snapshot in TransactionManager,
         // so clear our copy first to prevent double-free in ctx.deinit().
         if (txn.isolation != .read_committed) {
@@ -564,6 +591,24 @@ pub const Database = struct {
         return null;
     }
 
+    /// Register a table read for SSI tracking (SERIALIZABLE transactions only).
+    fn ssiRegisterRead(self: *Database, table_page_id: u32) EngineError!void {
+        if (self.current_txn) |txn| {
+            if (txn.isolation == .serializable) {
+                self.ssi_tracker.registerRead(txn.xid, table_page_id, &self.tm) catch return EngineError.OutOfMemory;
+            }
+        }
+    }
+
+    /// Register a table write for SSI tracking (SERIALIZABLE transactions only).
+    fn ssiRegisterWrite(self: *Database, table_page_id: u32) EngineError!void {
+        if (self.current_txn) |txn| {
+            if (txn.isolation == .serializable) {
+                self.ssi_tracker.registerWrite(txn.xid, table_page_id, &self.tm) catch return EngineError.OutOfMemory;
+            }
+        }
+    }
+
     /// Advance the command ID for the current transaction.
     /// Returns the CID to use for this statement's writes.
     fn advanceStatementCid(self: *Database) EngineError!u16 {
@@ -655,6 +700,9 @@ pub const Database = struct {
         var table_info = self.catalog.getTable(scan.table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
 
+        // Register SSI read for SERIALIZABLE transactions
+        try self.ssiRegisterRead(table_info.data_root_page_id);
+
         // Build column names for the scan
         const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
         for (table_info.columns, 0..) |col, i| {
@@ -705,6 +753,10 @@ pub const Database = struct {
         // Look up the table to find index info
         var table_info = self.catalog.getTable(scan.table) catch return null;
         defer table_info.deinit(self.allocator);
+
+        // Register SSI read for SERIALIZABLE transactions
+        // OOM here falls through to full table scan which also registers read
+        self.ssiRegisterRead(table_info.data_root_page_id) catch return null;
 
         // Check if there's an index on the referenced column
         const col_name = eq.column_name;
@@ -839,6 +891,9 @@ pub const Database = struct {
         // Look up table to get data root page ID and column info
         var table_info = self.catalog.getTable(values_node.table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
+
+        // Register SSI write for SERIALIZABLE transactions
+        try self.ssiRegisterWrite(table_info.data_root_page_id);
 
         var tree = BTree.init(self.pool, table_info.data_root_page_id);
         const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
@@ -1052,6 +1107,10 @@ pub const Database = struct {
         // Look up table
         var table_info = self.catalog.getTable(scan_table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
+
+        // Register SSI read+write for SERIALIZABLE transactions (UPDATE reads then writes)
+        try self.ssiRegisterRead(table_info.data_root_page_id);
+        try self.ssiRegisterWrite(table_info.data_root_page_id);
 
         var tree = BTree.init(self.pool, table_info.data_root_page_id);
 
@@ -1309,6 +1368,10 @@ pub const Database = struct {
 
         var table_info = self.catalog.getTable(scan_table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
+
+        // Register SSI read+write for SERIALIZABLE transactions (DELETE reads then writes)
+        try self.ssiRegisterRead(table_info.data_root_page_id);
+        try self.ssiRegisterWrite(table_info.data_root_page_id);
 
         var tree = BTree.init(self.pool, table_info.data_root_page_id);
 
@@ -6018,5 +6081,353 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
         r.close(testing.allocator);
         try testing.expectEqual(@as(i64, 3), count);
     }
+    try db.commitTransaction();
+}
+
+// ── SSI (Serializable Snapshot Isolation) Tests ──────────────────────
+
+test "SSI: single serializable transaction commits successfully" {
+    const path = "test_ssi_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE accounts (id INTEGER, balance INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("INSERT INTO accounts (id, balance) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SELECT * FROM accounts");
+        var count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count += 1;
+        }
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(usize, 1), count);
+    }
+    try db.commitTransaction();
+}
+
+test "SSI: non-conflicting serializable transactions both commit" {
+    const path = "test_ssi_noconflict.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // T1: reads/writes t1 only
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    // T2: reads/writes t2 only — no overlap with T1
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction(); // T2 should commit fine
+
+    // Restore T1 and commit — no conflict
+    db.current_txn = saved_txn1;
+    try db.commitTransaction();
+}
+
+test "SSI: write skew detection (classic)" {
+    const path = "test_ssi_write_skew.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup: two tables representing accounts
+    {
+        var r = try db.exec("CREATE TABLE acct_a (id INTEGER, balance INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("CREATE TABLE acct_b (id INTEGER, balance INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO acct_a (id, balance) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO acct_b (id, balance) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+
+    // T1 begins: reads acct_a (check balance), will write acct_b
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM acct_a");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    // T2 begins: reads acct_b (check balance), writes acct_a
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM acct_b");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    // T2 writes to acct_a (T1 read acct_a → rw-edge: T1 →rw→ T2)
+    {
+        var r = try db.exec("UPDATE acct_a SET balance = 50 WHERE id = 1");
+        r.close(testing.allocator);
+    }
+    const saved_txn2 = db.current_txn;
+    db.current_txn = null;
+
+    // T1 writes to acct_b (T2 read acct_b → rw-edge: T2 →rw→ T1)
+    db.current_txn = saved_txn1;
+    {
+        var r = try db.exec("UPDATE acct_b SET balance = 50 WHERE id = 1");
+        r.close(testing.allocator);
+    }
+
+    // Now T1 is a pivot (has both rw-in and rw-out) → commit should fail
+    try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
+
+    // T1 was auto-aborted, restore T2 and commit
+    db.current_txn = saved_txn2;
+    try db.commitTransaction();
+}
+
+test "SSI: one-way dependency allows both commits" {
+    const path = "test_ssi_oneway.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // T1 reads t1
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    // T2 writes t1 (creates T1 →rw→ T2, but no reverse edge)
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction(); // T2: rw-in only, no rw-out → safe
+
+    // T1: rw-out only, no rw-in → safe
+    db.current_txn = saved_txn1;
+    try db.commitTransaction();
+}
+
+test "SSI: serialization failure auto-aborts transaction" {
+    const path = "test_ssi_autoabort.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // Create write skew
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t2");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    const saved_txn2 = db.current_txn;
+    db.current_txn = null;
+
+    db.current_txn = saved_txn1;
+    {
+        var r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+
+    // T1 commit fails with SerializationFailure
+    try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
+    // After failure, current_txn should be null (auto-aborted)
+    try testing.expect(db.current_txn == null);
+
+    // Can start a new transaction successfully
+    db.current_txn = saved_txn2;
+    try db.commitTransaction();
+}
+
+test "SSI: read-committed transactions are not tracked by SSI" {
+    const path = "test_ssi_rc_ignored.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // RC transaction: should not be tracked by SSI
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    // SSI tracker should have no tracked transactions
+    try testing.expectEqual(@as(usize, 0), db.ssi_tracker.trackedTxnCount());
+    try db.commitTransaction();
+}
+
+test "SSI: DELETE creates write dependency" {
+    const path = "test_ssi_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // T1: reads t1, will delete from t2
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    // T2: reads t2, deletes from t1
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t2");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("DELETE FROM t1 WHERE id = 1");
+        r.close(testing.allocator);
+    }
+    const saved_txn2 = db.current_txn;
+    db.current_txn = null;
+
+    // T1: deletes from t2 (creates reverse rw-edge → write skew)
+    db.current_txn = saved_txn1;
+    {
+        var r = try db.exec("DELETE FROM t2 WHERE id = 1");
+        r.close(testing.allocator);
+    }
+    try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
+
+    // T2 can commit
+    db.current_txn = saved_txn2;
     try db.commitTransaction();
 }

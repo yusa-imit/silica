@@ -496,6 +496,197 @@ pub const TransactionManager = struct {
     }
 };
 
+// ── SSI Tracker ──────────────────────────────────────────────────────
+
+/// Serializable Snapshot Isolation (SSI) tracker.
+///
+/// Tracks rw-antidependencies between SERIALIZABLE transactions to detect
+/// serialization anomalies. Uses table-level read/write set tracking.
+///
+/// An rw-antidependency T_reader →rw→ T_writer arises when:
+///   - T_writer writes to a table that T_reader previously read
+///   - T_writer's changes are not visible in T_reader's snapshot
+///
+/// A "dangerous structure" (pivot) is detected when a transaction has both
+/// rw-in AND rw-out edges. Aborting such a pivot transaction is sufficient
+/// to prevent all serialization anomalies.
+pub const SsiTracker = struct {
+    allocator: Allocator,
+    /// Read set per SERIALIZABLE transaction: xid → set of table root page IDs.
+    read_sets: std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+    /// Write set per SERIALIZABLE transaction: xid → set of table root page IDs.
+    write_sets: std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+    /// rw-in edges: xid → set of xids that have an rw-dependency INTO this txn.
+    /// Meaning: this txn wrote something that another txn (the key in the set) had read.
+    rw_in: std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+    /// rw-out edges: xid → set of xids that this txn has an rw-dependency TO.
+    /// Meaning: this txn read something that another txn (the key in the set) later wrote.
+    rw_out: std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+
+    pub fn init(allocator: Allocator) SsiTracker {
+        return .{
+            .allocator = allocator,
+            .read_sets = .{},
+            .write_sets = .{},
+            .rw_in = .{},
+            .rw_out = .{},
+        };
+    }
+
+    pub fn deinit(self: *SsiTracker) void {
+        self.deinitMap(&self.read_sets);
+        self.deinitMap(&self.write_sets);
+        self.deinitMap(&self.rw_in);
+        self.deinitMap(&self.rw_out);
+    }
+
+    fn deinitMap(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void))) void {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        map.deinit(self.allocator);
+    }
+
+    /// Register a read by a SERIALIZABLE transaction on a table.
+    /// Also checks if any concurrent SERIALIZABLE transaction has already
+    /// written to this table — if so, records the rw-antidependency.
+    pub fn registerRead(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+        // Add to read set
+        try self.addToSet(&self.read_sets, xid, table_page_id);
+
+        // Check all other txns' write sets for this table
+        var it = self.write_sets.iterator();
+        while (it.next()) |entry| {
+            const writer_xid = entry.key_ptr.*;
+            if (writer_xid == xid) continue;
+            if (entry.value_ptr.get(table_page_id) != null) {
+                // writer_xid wrote to a table that xid is now reading.
+                // Check if writer_xid's writes are NOT visible in xid's snapshot.
+                // If so, rw-antidependency: xid →rw→ writer_xid
+                if (self.isNotVisibleIn(writer_xid, xid, tm)) {
+                    try self.addRwEdge(xid, writer_xid);
+                }
+            }
+        }
+    }
+
+    /// Register a write by a SERIALIZABLE transaction on a table.
+    /// Also checks if any concurrent SERIALIZABLE transaction has already
+    /// read from this table — if so, records the rw-antidependency.
+    pub fn registerWrite(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+        // Add to write set
+        try self.addToSet(&self.write_sets, xid, table_page_id);
+
+        // Check all other txns' read sets for this table
+        var it = self.read_sets.iterator();
+        while (it.next()) |entry| {
+            const reader_xid = entry.key_ptr.*;
+            if (reader_xid == xid) continue;
+            if (entry.value_ptr.get(table_page_id) != null) {
+                // reader_xid read a table that xid is now writing.
+                // Check if xid's writes are NOT visible in reader_xid's snapshot.
+                // If so, rw-antidependency: reader_xid →rw→ xid
+                if (self.isNotVisibleIn(xid, reader_xid, tm)) {
+                    try self.addRwEdge(reader_xid, xid);
+                }
+            }
+        }
+    }
+
+    /// Check if committing this transaction would create a dangerous structure.
+    /// A dangerous structure exists when the committing transaction is a "pivot":
+    /// it has both rw-in edges (someone depends on it) AND rw-out edges
+    /// (it depends on someone else). Aborting the pivot breaks any potential cycle.
+    pub fn checkCommit(self: *SsiTracker, xid: u32) error{SerializationFailure}!void {
+        const has_in = if (self.rw_in.get(xid)) |set| set.count() > 0 else false;
+        const has_out = if (self.rw_out.get(xid)) |set| set.count() > 0 else false;
+
+        if (has_in and has_out) {
+            return error.SerializationFailure;
+        }
+    }
+
+    /// Clean up all SSI state for a finished transaction.
+    pub fn finishTransaction(self: *SsiTracker, xid: u32) void {
+        self.removeFromMap(&self.read_sets, xid);
+        self.removeFromMap(&self.write_sets, xid);
+        self.removeFromMap(&self.rw_in, xid);
+        self.removeFromMap(&self.rw_out, xid);
+
+        // Also remove this xid from other txns' in/out edge sets
+        self.removeFromAllSets(&self.rw_in, xid);
+        self.removeFromAllSets(&self.rw_out, xid);
+    }
+
+    /// Check whether writer_xid's writes are NOT visible in reader_xid's snapshot.
+    /// This is true when writer_xid was active in reader_xid's snapshot (concurrent).
+    fn isNotVisibleIn(self: *SsiTracker, writer_xid: u32, reader_xid: u32, tm: *TransactionManager) bool {
+        _ = self;
+        // Get reader's snapshot
+        const reader_info = tm.active_txns.get(reader_xid) orelse return false;
+        const snap = reader_info.snapshot orelse return false;
+        // Writer is not visible if it was active when reader took its snapshot
+        return snap.isActive(writer_xid);
+    }
+
+    fn addToSet(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32, value: u32) !void {
+        const gop = try map.getOrPut(self.allocator, xid);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+        try gop.value_ptr.put(self.allocator, value, {});
+    }
+
+    fn addRwEdge(self: *SsiTracker, reader_xid: u32, writer_xid: u32) !void {
+        // reader_xid →rw→ writer_xid
+        // reader has an rw-out to writer
+        try self.addToSet(&self.rw_out, reader_xid, writer_xid);
+        // writer has an rw-in from reader
+        try self.addToSet(&self.rw_in, writer_xid, reader_xid);
+    }
+
+    fn removeFromMap(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32) void {
+        if (map.fetchRemove(xid)) |kv| {
+            var set = kv.value;
+            set.deinit(self.allocator);
+        }
+    }
+
+    fn removeFromAllSets(_: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32) void {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            _ = entry.value_ptr.remove(xid);
+        }
+    }
+
+    /// Get the number of rw-in edges for a transaction.
+    pub fn rwInCount(self: *SsiTracker, xid: u32) usize {
+        return if (self.rw_in.get(xid)) |set| set.count() else 0;
+    }
+
+    /// Get the number of rw-out edges for a transaction.
+    pub fn rwOutCount(self: *SsiTracker, xid: u32) usize {
+        return if (self.rw_out.get(xid)) |set| set.count() else 0;
+    }
+
+    /// Get tracked transaction count (for diagnostics).
+    pub fn trackedTxnCount(self: *SsiTracker) usize {
+        // Count unique xids across read and write sets
+        var seen = std.AutoHashMapUnmanaged(u32, void){};
+        defer seen.deinit(self.allocator);
+        var it_r = self.read_sets.iterator();
+        while (it_r.next()) |entry| {
+            seen.put(self.allocator, entry.key_ptr.*, {}) catch {};
+        }
+        var it_w = self.write_sets.iterator();
+        while (it_w.next()) |entry| {
+            seen.put(self.allocator, entry.key_ptr.*, {}) catch {};
+        }
+        return seen.count();
+    }
+};
+
 // ── Versioned Row Serialization ────────────────────────────────────────
 
 /// Serialize a versioned row: version byte + MVCC header + column data.
@@ -1915,4 +2106,338 @@ test "Snapshot.EMPTY — sees nothing as active" {
     try std.testing.expect(!snap.isActive(1));
     try std.testing.expect(snap.isActive(FIRST_NORMAL_XID)); // >= xmax
     try std.testing.expect(snap.isActive(100));
+}
+
+// ── SSI Tracker Tests ────────────────────────────────────────────────
+
+test "SsiTracker — init and deinit" {
+    const allocator = std.testing.allocator;
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), tracker.trackedTxnCount());
+}
+
+test "SsiTracker — registerRead tracks read set" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid = try tm.begin(.serializable);
+    try tracker.registerRead(xid, 100, &tm);
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.trackedTxnCount());
+
+    // Read set should contain table 100
+    const read_set = tracker.read_sets.get(xid).?;
+    try std.testing.expect(read_set.get(100) != null);
+
+    try tm.commit(xid);
+}
+
+test "SsiTracker — registerWrite tracks write set" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid = try tm.begin(.serializable);
+    try tracker.registerWrite(xid, 200, &tm);
+
+    const write_set = tracker.write_sets.get(xid).?;
+    try std.testing.expect(write_set.get(200) != null);
+
+    try tm.commit(xid);
+}
+
+test "SsiTracker — no conflict with single transaction" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid = try tm.begin(.serializable);
+    try tracker.registerRead(xid, 100, &tm);
+    try tracker.registerWrite(xid, 100, &tm);
+
+    // Single transaction: no rw-edges to other txns
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid));
+
+    // Should commit successfully
+    try tracker.checkCommit(xid);
+    try tm.commit(xid);
+}
+
+test "SsiTracker — rw-antidependency: T1 reads, T2 writes same table" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    // T1 begins and reads table 100
+    const xid1 = try tm.begin(.serializable);
+    try tracker.registerRead(xid1, 100, &tm);
+
+    // T2 begins (concurrent with T1) and writes to table 100
+    const xid2 = try tm.begin(.serializable);
+    try tracker.registerWrite(xid2, 100, &tm);
+
+    // rw-antidependency: T1 →rw→ T2 (T1 read, T2 wrote)
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwOutCount(xid1));
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwInCount(xid2));
+
+    // T1 has rw-out but no rw-in → can commit
+    try tracker.checkCommit(xid1);
+
+    // T2 has rw-in but no rw-out → can commit
+    try tracker.checkCommit(xid2);
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+    tracker.finishTransaction(xid1);
+    tracker.finishTransaction(xid2);
+}
+
+test "SsiTracker — dangerous structure: T1 reads A writes B, T2 reads B writes A" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    // Classic write skew: T1 reads A, writes B; T2 reads B, writes A
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+
+    // T1 reads A
+    try tracker.registerRead(xid1, 100, &tm);
+    // T2 reads B
+    try tracker.registerRead(xid2, 200, &tm);
+    // T1 writes B (creates rw-edge: T2 →rw→ T1, because T2 read B)
+    try tracker.registerWrite(xid1, 200, &tm);
+    // T2 writes A (creates rw-edge: T1 →rw→ T2, because T1 read A)
+    try tracker.registerWrite(xid2, 100, &tm);
+
+    // T1 has rw-in (from T2 writing A that T1 read) AND rw-out (T2 read B that T1 wrote)
+    // → T1 is a pivot → dangerous structure
+    try std.testing.expect(tracker.rwInCount(xid1) > 0);
+    try std.testing.expect(tracker.rwOutCount(xid1) > 0);
+    try std.testing.expectError(error.SerializationFailure, tracker.checkCommit(xid1));
+
+    // T2 also has both rw-in and rw-out → also a pivot
+    try std.testing.expect(tracker.rwInCount(xid2) > 0);
+    try std.testing.expect(tracker.rwOutCount(xid2) > 0);
+    try std.testing.expectError(error.SerializationFailure, tracker.checkCommit(xid2));
+
+    // Abort T1, clean up
+    try tm.abort(xid1);
+    tracker.finishTransaction(xid1);
+
+    // After T1 is gone, T2 should no longer be a pivot
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid2));
+    try tracker.checkCommit(xid2);
+
+    try tm.commit(xid2);
+    tracker.finishTransaction(xid2);
+}
+
+test "SsiTracker — no conflict when accessing different tables" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+
+    // T1 reads/writes table A
+    try tracker.registerRead(xid1, 100, &tm);
+    try tracker.registerWrite(xid1, 100, &tm);
+
+    // T2 reads/writes table B (completely different)
+    try tracker.registerRead(xid2, 200, &tm);
+    try tracker.registerWrite(xid2, 200, &tm);
+
+    // No rw-antidependencies — they don't conflict
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid1));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid1));
+    try tracker.checkCommit(xid1);
+    try tracker.checkCommit(xid2);
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+}
+
+test "SsiTracker — one-way dependency is safe" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+
+    // T1 reads A, T2 writes A → T1 →rw→ T2
+    try tracker.registerRead(xid1, 100, &tm);
+    try tracker.registerWrite(xid2, 100, &tm);
+
+    // T1 has rw-out only → safe to commit
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwOutCount(xid1));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid1));
+    try tracker.checkCommit(xid1);
+
+    // T2 has rw-in only → safe to commit
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid2));
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwInCount(xid2));
+    try tracker.checkCommit(xid2);
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+}
+
+test "SsiTracker — finishTransaction cleans up all state" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+
+    try tracker.registerRead(xid1, 100, &tm);
+    try tracker.registerWrite(xid2, 100, &tm);
+
+    // T1 →rw→ T2 edge exists
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwOutCount(xid1));
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwInCount(xid2));
+
+    // Finish T1
+    try tm.commit(xid1);
+    tracker.finishTransaction(xid1);
+
+    // All T1 state should be gone
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid1));
+    // T2's rw-in from T1 should also be cleaned up
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid2));
+
+    try tm.commit(xid2);
+    tracker.finishTransaction(xid2);
+    try std.testing.expectEqual(@as(usize, 0), tracker.trackedTxnCount());
+}
+
+test "SsiTracker — three-way cycle detection" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+    const xid3 = try tm.begin(.serializable);
+
+    // T1 reads A, T2 writes A → T1 →rw→ T2
+    try tracker.registerRead(xid1, 100, &tm);
+    try tracker.registerWrite(xid2, 100, &tm);
+
+    // T2 reads B, T3 writes B → T2 →rw→ T3
+    try tracker.registerRead(xid2, 200, &tm);
+    try tracker.registerWrite(xid3, 200, &tm);
+
+    // T3 reads C, T1 writes C → T3 →rw→ T1
+    try tracker.registerRead(xid3, 300, &tm);
+    try tracker.registerWrite(xid1, 300, &tm);
+
+    // All three are pivots: T1 (out to T2, in from T3),
+    // T2 (out to T3, in from T1), T3 (out to T1, in from T2)
+    try std.testing.expectError(error.SerializationFailure, tracker.checkCommit(xid1));
+    try std.testing.expectError(error.SerializationFailure, tracker.checkCommit(xid2));
+    try std.testing.expectError(error.SerializationFailure, tracker.checkCommit(xid3));
+
+    // Abort T1 breaks the cycle
+    try tm.abort(xid1);
+    tracker.finishTransaction(xid1);
+
+    // T2: had rw-out to T3 and rw-in from T1, T1 is gone → only rw-out
+    try tracker.checkCommit(xid2);
+    try tm.commit(xid2);
+    tracker.finishTransaction(xid2);
+
+    try tracker.checkCommit(xid3);
+    try tm.commit(xid3);
+    tracker.finishTransaction(xid3);
+}
+
+test "SsiTracker — write then read by another txn" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+
+    // T1 writes first, T2 reads the same table
+    try tracker.registerWrite(xid1, 100, &tm);
+    try tracker.registerRead(xid2, 100, &tm);
+
+    // T2 →rw→ T1 (T2 read, T1 already wrote — T1's write not visible to T2)
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwOutCount(xid2));
+    try std.testing.expectEqual(@as(usize, 1), tracker.rwInCount(xid1));
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+}
+
+test "SsiTracker — committed txn not visible does not create spurious edges" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    // T1 starts and commits before T2 starts
+    const xid1 = try tm.begin(.serializable);
+    try tracker.registerWrite(xid1, 100, &tm);
+    try tm.commit(xid1);
+    tracker.finishTransaction(xid1);
+
+    // T2 starts — T1 is already committed, T2's snapshot sees T1 as committed
+    const xid2 = try tm.begin(.serializable);
+    try tracker.registerRead(xid2, 100, &tm);
+
+    // No rw-edge because T1's write IS visible to T2 (T1 committed before T2 started)
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid2));
+    try tracker.checkCommit(xid2);
+
+    try tm.commit(xid2);
+}
+
+test "SsiTracker — multiple reads on same table are deduplicated" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid = try tm.begin(.serializable);
+    try tracker.registerRead(xid, 100, &tm);
+    try tracker.registerRead(xid, 100, &tm);
+    try tracker.registerRead(xid, 100, &tm);
+
+    // Read set should have only one entry for table 100
+    const read_set = tracker.read_sets.get(xid).?;
+    try std.testing.expectEqual(@as(usize, 1), read_set.count());
+
+    try tm.commit(xid);
 }
