@@ -672,18 +672,20 @@ pub const SsiTracker = struct {
 
     /// Get tracked transaction count (for diagnostics).
     pub fn trackedTxnCount(self: *SsiTracker) usize {
-        // Count unique xids across read and write sets
-        var seen = std.AutoHashMapUnmanaged(u32, void){};
-        defer seen.deinit(self.allocator);
+        // Count unique xids across read and write sets (allocation-free)
+        var count: usize = 0;
         var it_r = self.read_sets.iterator();
-        while (it_r.next()) |entry| {
-            seen.put(self.allocator, entry.key_ptr.*, {}) catch {};
+        while (it_r.next()) |_| {
+            count += 1;
         }
+        // Add write-only xids (not already counted in read_sets)
         var it_w = self.write_sets.iterator();
         while (it_w.next()) |entry| {
-            seen.put(self.allocator, entry.key_ptr.*, {}) catch {};
+            if (self.read_sets.get(entry.key_ptr.*) == null) {
+                count += 1;
+            }
         }
-        return seen.count();
+        return count;
     }
 };
 
