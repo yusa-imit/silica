@@ -1293,3 +1293,220 @@ test "Catalog drop and recreate table" {
     try std.testing.expectEqualStrings("y", table.columns[1].name);
     try std.testing.expectEqual(ColumnType.real, table.columns[1].column_type);
 }
+
+// ── View Catalog Tests ──────────────────────────────────────────────────
+
+test "Catalog createView and getView" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_create.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createView("v1", "SELECT * FROM t1", false, false, &.{ "a", "b" });
+
+    const info = try tc.catalog.getView("v1");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("v1", info.name);
+    try std.testing.expectEqualStrings("SELECT * FROM t1", info.sql);
+    try std.testing.expectEqual(@as(usize, 2), info.column_names.len);
+    try std.testing.expectEqualStrings("a", info.column_names[0]);
+    try std.testing.expectEqualStrings("b", info.column_names[1]);
+}
+
+test "Catalog createView with no column names" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_nocols.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+
+    const info = try tc.catalog.getView("v1");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), info.column_names.len);
+    try std.testing.expectEqualStrings("SELECT 1", info.sql);
+}
+
+test "Catalog createView duplicate error" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_dup.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try std.testing.expectError(CatalogError.ViewAlreadyExists, tc.catalog.createView("v1", "SELECT 2", false, false, &.{}));
+}
+
+test "Catalog createView OR REPLACE overwrites" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_replace.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 2", true, false, &.{});
+
+    const info = try tc.catalog.getView("v1");
+    defer info.deinit();
+    try std.testing.expectEqualStrings("SELECT 2", info.sql);
+}
+
+test "Catalog createView IF NOT EXISTS skips existing" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_ifne.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 2", false, true, &.{});
+
+    const info = try tc.catalog.getView("v1");
+    defer info.deinit();
+    try std.testing.expectEqualStrings("SELECT 1", info.sql); // original preserved
+}
+
+test "Catalog createView name collision with table" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_collision.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    }, &.{}, 0);
+
+    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createView("t1", "SELECT 1", false, false, &.{}));
+}
+
+test "Catalog dropView" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_drop.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try std.testing.expect(try tc.catalog.viewExists("v1"));
+
+    try tc.catalog.dropView("v1", false);
+    try std.testing.expect(!try tc.catalog.viewExists("v1"));
+}
+
+test "Catalog dropView nonexistent error" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_drop_ne.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expectError(CatalogError.ViewNotFound, tc.catalog.dropView("ghost", false));
+    try tc.catalog.dropView("ghost", true); // IF EXISTS — no error
+}
+
+test "Catalog viewExists" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expect(!try tc.catalog.viewExists("v1"));
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try std.testing.expect(try tc.catalog.viewExists("v1"));
+}
+
+test "Catalog getView not found" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_get_nf.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expectError(CatalogError.ViewNotFound, tc.catalog.getView("ghost"));
+}
+
+test "Catalog listViews" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_list.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // No views initially
+    const empty = try tc.catalog.listViews(allocator);
+    defer allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+
+    // Create views
+    try tc.catalog.createView("alpha_view", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("beta_view", "SELECT 2", false, false, &.{});
+
+    const views = try tc.catalog.listViews(allocator);
+    defer {
+        for (views) |v| allocator.free(v);
+        allocator.free(views);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), views.len);
+}
+
+test "Catalog listViews does not include tables" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_list_notbl.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    }, &.{}, 0);
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+
+    const views = try tc.catalog.listViews(allocator);
+    defer {
+        for (views) |v| allocator.free(v);
+        allocator.free(views);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), views.len);
+    try std.testing.expectEqualStrings("v1", views[0]);
+
+    // Tables list should not include views
+    const tables = try tc.catalog.listTables(allocator);
+    defer {
+        for (tables) |t| allocator.free(t);
+        allocator.free(tables);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), tables.len);
+    try std.testing.expectEqualStrings("t1", tables[0]);
+}
+
+test "Catalog view serialization roundtrip with many columns" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_view_serial.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const col_names = [_][]const u8{ "col_a", "col_b", "col_c", "col_d", "col_e" };
+    const sql = "SELECT col_a, col_b, col_c, col_d, col_e FROM wide_table";
+    try tc.catalog.createView("wide_view", sql, false, false, &col_names);
+
+    const info = try tc.catalog.getView("wide_view");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), info.column_names.len);
+    for (col_names, 0..) |expected, i| {
+        try std.testing.expectEqualStrings(expected, info.column_names[i]);
+    }
+    try std.testing.expectEqualStrings(sql, info.sql);
+}

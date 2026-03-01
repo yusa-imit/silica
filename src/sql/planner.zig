@@ -1217,6 +1217,26 @@ test "ValueType.fromColumnType" {
     try testing.expectEqual(ValueType.text, ValueType.fromColumnType(.untyped));
 }
 
+test "ValueType.toColumnType" {
+    try testing.expectEqual(ColumnType.integer, ValueType.integer.toColumnType());
+    try testing.expectEqual(ColumnType.real, ValueType.real.toColumnType());
+    try testing.expectEqual(ColumnType.text, ValueType.text.toColumnType());
+    try testing.expectEqual(ColumnType.blob, ValueType.blob.toColumnType());
+    try testing.expectEqual(ColumnType.boolean, ValueType.boolean.toColumnType());
+    try testing.expectEqual(ColumnType.untyped, ValueType.null_type.toColumnType());
+}
+
+test "ValueType fromColumnType and toColumnType roundtrip" {
+    // integer -> ValueType.integer -> ColumnType.integer
+    try testing.expectEqual(ColumnType.integer, ValueType.fromColumnType(.integer).toColumnType());
+    try testing.expectEqual(ColumnType.real, ValueType.fromColumnType(.real).toColumnType());
+    try testing.expectEqual(ColumnType.text, ValueType.fromColumnType(.text).toColumnType());
+    try testing.expectEqual(ColumnType.blob, ValueType.fromColumnType(.blob).toColumnType());
+    try testing.expectEqual(ColumnType.boolean, ValueType.fromColumnType(.boolean).toColumnType());
+    // untyped -> text -> text (not a round-trip back to untyped, by design)
+    try testing.expectEqual(ColumnType.text, ValueType.fromColumnType(.untyped).toColumnType());
+}
+
 test "aggFuncFromName" {
     try testing.expectEqual(AggFunc.count, aggFuncFromName("COUNT").?);
     try testing.expectEqual(AggFunc.sum, aggFuncFromName("SUM").?);

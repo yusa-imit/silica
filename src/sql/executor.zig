@@ -2742,3 +2742,133 @@ const InMemorySource = struct {
         };
     }
 };
+
+// ── MaterializedOp Tests ────────────────────────────────────────────────
+
+test "MaterializedOp with multiple rows" {
+    const allocator = std.testing.allocator;
+
+    // Build col_names (owned by MaterializedOp — freed in close)
+    const col_names = try allocator.alloc([]const u8, 2);
+    col_names[0] = try allocator.dupe(u8, "id");
+    col_names[1] = try allocator.dupe(u8, "name");
+
+    // Build rows (owned by MaterializedOp — freed in close)
+    const rows = try allocator.alloc([]Value, 2);
+    rows[0] = try allocator.alloc(Value, 2);
+    rows[0][0] = Value{ .integer = 1 };
+    rows[0][1] = Value{ .text = try allocator.dupe(u8, "alice") };
+    rows[1] = try allocator.alloc(Value, 2);
+    rows[1][0] = Value{ .integer = 2 };
+    rows[1][1] = Value{ .text = try allocator.dupe(u8, "bob") };
+
+    var op = MaterializedOp.init(allocator, col_names, rows);
+
+    // Row 1
+    var r1 = (try op.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.values[0].integer);
+    try std.testing.expectEqualStrings("alice", r1.values[1].text);
+    try std.testing.expectEqualStrings("id", r1.columns[0]);
+    try std.testing.expectEqualStrings("name", r1.columns[1]);
+
+    // Row 2
+    var r2 = (try op.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 2), r2.values[0].integer);
+    try std.testing.expectEqualStrings("bob", r2.values[1].text);
+
+    // No more rows
+    try std.testing.expect(try op.next() == null);
+
+    op.close();
+}
+
+test "MaterializedOp with empty rows" {
+    const allocator = std.testing.allocator;
+
+    const col_names = try allocator.alloc([]const u8, 1);
+    col_names[0] = try allocator.dupe(u8, "x");
+
+    const rows = try allocator.alloc([]Value, 0);
+
+    var op = MaterializedOp.init(allocator, col_names, rows);
+
+    try std.testing.expect(try op.next() == null);
+
+    op.close();
+}
+
+test "MaterializedOp single row with null value" {
+    const allocator = std.testing.allocator;
+
+    const col_names = try allocator.alloc([]const u8, 2);
+    col_names[0] = try allocator.dupe(u8, "a");
+    col_names[1] = try allocator.dupe(u8, "b");
+
+    const rows = try allocator.alloc([]Value, 1);
+    rows[0] = try allocator.alloc(Value, 2);
+    rows[0][0] = Value{ .integer = 42 };
+    rows[0][1] = .null_value;
+
+    var op = MaterializedOp.init(allocator, col_names, rows);
+
+    var r = (try op.next()).?;
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i64, 42), r.values[0].integer);
+    try std.testing.expect(r.values[1] == .null_value);
+
+    try std.testing.expect(try op.next() == null);
+
+    op.close();
+}
+
+test "MaterializedOp iterator interface" {
+    const allocator = std.testing.allocator;
+
+    const col_names = try allocator.alloc([]const u8, 1);
+    col_names[0] = try allocator.dupe(u8, "val");
+
+    const rows = try allocator.alloc([]Value, 2);
+    rows[0] = try allocator.alloc(Value, 1);
+    rows[0][0] = Value{ .integer = 10 };
+    rows[1] = try allocator.alloc(Value, 1);
+    rows[1][0] = Value{ .integer = 20 };
+
+    var op = MaterializedOp.init(allocator, col_names, rows);
+    var iter = op.iterator();
+
+    var r1 = (try iter.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 10), r1.values[0].integer);
+
+    var r2 = (try iter.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 20), r2.values[0].integer);
+
+    try std.testing.expect(try iter.next() == null);
+
+    iter.close();
+}
+
+test "MaterializedOp with text values duplicates correctly" {
+    const allocator = std.testing.allocator;
+
+    const col_names = try allocator.alloc([]const u8, 1);
+    col_names[0] = try allocator.dupe(u8, "name");
+
+    const rows = try allocator.alloc([]Value, 1);
+    rows[0] = try allocator.alloc(Value, 1);
+    rows[0][0] = Value{ .text = try allocator.dupe(u8, "hello") };
+
+    var op = MaterializedOp.init(allocator, col_names, rows);
+
+    var r = (try op.next()).?;
+    // The returned row has a duplicated text value (independent memory)
+    try std.testing.expectEqualStrings("hello", r.values[0].text);
+    r.deinit();
+
+    // After consuming all rows, close frees the source data
+    try std.testing.expect(try op.next() == null);
+    op.close();
+}
