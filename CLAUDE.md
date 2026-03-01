@@ -131,16 +131,18 @@ Leader (orchestrator)
 4. `.claude/memory/debugging.md` — 알려진 이슈와 해결법
 5. `.claude/memory/patterns.md` — 검증된 코드 패턴
 
-**8단계 실행 사이클**:
+**실행 사이클**:
 
 | Phase | 내용 | 비고 |
 |-------|------|------|
 | 1. 상태 파악 | `/status` 실행, git log·빌드·테스트 상태 점검 | 체크리스트에서 다음 미완료 항목 식별 |
+| 1.5. 이슈 확인 | `gh issue list --state open --limit 10` | 아래 이슈 우선순위 프로토콜 참조 |
 | 2. 계획 | 구현 전략을 내부적으로 수립 (텍스트 출력) | `EnterPlanMode`/`ExitPlanMode` 사용 금지 — 비대화형 세션에서 블로킹됨 |
 | 3. 구현 → 검증 → 커밋 (반복) | 아래 **구현 루프** 참조 | 단위별로 즉시 커밋+푸시 |
 | 4. 코드 리뷰 | `/review` — PRD 준수·메모리 안전성·테스트 커버리지 확인 | 이슈 발견 시 수정 후 재커밋 |
-| 5. 메모리 갱신 | `.claude/memory/` 파일 업데이트 | 별도 커밋: `chore: update session memory` → push |
-| 6. 세션 요약 | 구조화된 요약 출력 | 아래 템플릿 참조 |
+| 5. 릴리즈 판단 | 릴리즈 조건 충족 시 자동 릴리즈 | 아래 Release & Patch Policy 참조 |
+| 6. 메모리 갱신 | `.claude/memory/` 파일 업데이트 | 별도 커밋: `chore: update session memory` → push |
+| 7. 세션 요약 | 구조화된 요약 출력 | 아래 템플릿 참조 |
 
 **구현 루프** (Phase 3 상세):
 
@@ -151,6 +153,24 @@ Leader (orchestrator)
 - 미커밋 변경사항을 여러 파일에 걸쳐 누적하지 않는다
 - 한 사이클 내에 완료할 수 없는 작업은 동작하는 중간 상태로 커밋+푸시한다
 - `git add -A` 금지 — 변경된 파일을 명시적으로 지정
+
+**이슈 우선순위 프로토콜** (Phase 1.5):
+
+세션 시작 시 GitHub Issues를 확인하고 우선순위를 결정한다:
+
+```bash
+gh issue list --state open --limit 10 --json number,title,labels,createdAt
+```
+
+| 우선순위 | 조건 | 행동 |
+|---------|------|------|
+| 1 (최우선) | `bug` 라벨 | 다른 작업보다 항상 우선 처리 |
+| 2 (높음) | `from:*` 라벨 (소비자 프로젝트 요청) | 현재 작업보다 우선 |
+| 3 (보통) | `feature-request` + 현재 phase 범위 내 | 현재 작업과 병행 |
+| 4 (낮음) | `feature-request` + 미래 phase | 적어두고 넘어감 |
+
+- 이슈 처리 후: `gh issue close <number> --comment "Fixed in <commit-hash>"`
+- 진행 상황 공유: `gh issue comment <number> --body "Working on this"`
 
 **작업 선택 규칙**:
 - `build.zig`가 없으면 프로젝트 부트스트랩부터 시작
@@ -414,6 +434,8 @@ zig build bench
 
 ## Release & Patch Policy
 
+세션 사이클의 **Step 5 (릴리즈 판단)** 에서 아래 조건을 확인하고, 충족 시 자율적으로 릴리즈를 수행한다.
+
 ### 마이너 릴리즈 (v0.X.0)
 
 phase의 모든 모듈이 완성되었을 때 자율적으로 릴리즈를 수행한다.
@@ -423,6 +445,13 @@ phase의 모든 모듈이 완성되었을 때 자율적으로 릴리즈를 수�
 2. `zig build test` — 전체 통과, 0 failures
 3. 크로스 컴파일 타겟 빌드 성공
 4. `bug` 라벨 이슈가 **0개** (open)
+
+**릴리즈 조건 확인 방법**:
+```bash
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+git log ${LAST_TAG}..HEAD --oneline
+gh issue list --state open --label bug --limit 5
+```
 
 **릴리즈 절차**:
 1. `build.zig.zon`의 version 업데이트
