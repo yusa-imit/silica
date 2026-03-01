@@ -91,6 +91,8 @@ pub const Analyzer = struct {
     scope_tables: std.ArrayListUnmanaged(ScopeTable),
     /// Arena for strings produced during analysis.
     arena: std.heap.ArenaAllocator,
+    /// CTE names in scope (name → column info from CTE definition).
+    cte_columns: std.StringHashMapUnmanaged([]const ColumnInfo),
 
     pub fn init(allocator: Allocator, schema: SchemaProvider) Analyzer {
         return .{
@@ -99,12 +101,14 @@ pub const Analyzer = struct {
             .errors = .{},
             .scope_tables = .{},
             .arena = std.heap.ArenaAllocator.init(allocator),
+            .cte_columns = .{},
         };
     }
 
     pub fn deinit(self: *Analyzer) void {
         self.errors.deinit(self.allocator);
         self.scope_tables.deinit(self.allocator);
+        self.cte_columns.deinit(self.allocator);
         self.arena.deinit();
     }
 
@@ -115,6 +119,7 @@ pub const Analyzer = struct {
 
     fn clearScope(self: *Analyzer) void {
         self.scope_tables.clearRetainingCapacity();
+        self.cte_columns.clearRetainingCapacity();
     }
 
     /// Add a table to the current scope. Returns false if alias conflicts.
@@ -127,6 +132,16 @@ pub const Analyzer = struct {
                 self.addError(.duplicate_alias, "duplicate table alias: '{s}'", .{visible_name});
                 return false;
             }
+        }
+
+        // Check CTE scope first
+        if (self.cte_columns.get(table_name)) |cte_cols| {
+            self.scope_tables.append(self.allocator, .{
+                .alias = visible_name,
+                .table_name = table_name,
+                .columns = cte_cols,
+            }) catch {};
+            return true;
         }
 
         // Look up table in catalog
@@ -218,6 +233,13 @@ pub const Analyzer = struct {
     }
 
     fn analyzeSelect(self: *Analyzer, stmt: *const ast.SelectStmt) void {
+        // Process CTEs — register each CTE as a virtual table in scope
+        for (stmt.ctes) |cte| {
+            // Infer column info from the CTE's inner SELECT
+            const cte_cols = self.inferCteColumns(&cte);
+            self.cte_columns.put(self.allocator, cte.name, cte_cols) catch {};
+        }
+
         // Resolve FROM clause first (builds scope)
         if (stmt.from) |from| {
             self.resolveTableRef(from);
@@ -427,6 +449,50 @@ pub const Analyzer = struct {
         for (stmt.columns) |col| {
             self.analyzeExpr(col.expr);
         }
+    }
+
+    // ── CTE Column Inference ────────────────────────────────────────
+
+    /// Infer column metadata from a CTE definition.
+    /// Uses explicit column names if provided, otherwise derives from SELECT result columns.
+    fn inferCteColumns(self: *Analyzer, cte: *const ast.CteDefinition) []const ColumnInfo {
+        const a = self.arena.allocator();
+
+        // If explicit column names are provided, use them
+        if (cte.column_names.len > 0) {
+            var cols = std.ArrayListUnmanaged(ColumnInfo){};
+            for (cte.column_names) |col_name| {
+                cols.append(a, .{
+                    .name = col_name,
+                    .column_type = .blob, // type unknown at analysis time
+                    .flags = .{},
+                }) catch {};
+            }
+            return cols.toOwnedSlice(a) catch return &.{};
+        }
+
+        // Derive column names from result columns
+        var cols = std.ArrayListUnmanaged(ColumnInfo){};
+        for (cte.select.columns, 0..) |col, i| {
+            const col_name: []const u8 = switch (col) {
+                .all_columns => "*",
+                .table_all_columns => |t| t,
+                .expr => |e| blk: {
+                    // Use alias if present
+                    if (e.alias) |alias_name| break :blk alias_name;
+                    // Try to extract a name from column_ref
+                    if (e.value.* == .column_ref) break :blk e.value.column_ref.name;
+                    // For expressions/literals, generate a generic name
+                    break :blk std.fmt.allocPrint(a, "column{d}", .{i}) catch "?column?";
+                },
+            };
+            cols.append(a, .{
+                .name = col_name,
+                .column_type = .blob,
+                .flags = .{},
+            }) catch {};
+        }
+        return cols.toOwnedSlice(a) catch return &.{};
     }
 
     // ── Table Reference Resolution ──────────────────────────────────
@@ -1028,6 +1094,79 @@ test "table.* with invalid alias" {
     });
 
     var analyzer = try parseAndAnalyze(allocator, "SELECT x.* FROM users;", schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    try std.testing.expectEqual(ErrorKind.table_not_found, analyzer.errors.items[0].kind);
+}
+
+// ── CTE Analysis Tests ──────────────────────────────────────────────
+
+test "CTE: simple CTE passes analysis" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH vals AS (SELECT 1) SELECT * FROM vals;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CTE: CTE with column aliases" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH cte(x, y) AS (SELECT 1, 2) SELECT x, y FROM cte;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CTE: multiple CTEs" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CTE: CTE referencing real table" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("users", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH active AS (SELECT id, name FROM users) SELECT * FROM active;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CTE: non-existent CTE reference fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH a AS (SELECT 1) SELECT * FROM nonexistent;",
+        schema.provider());
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
