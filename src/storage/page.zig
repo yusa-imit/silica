@@ -35,6 +35,8 @@ pub const PageType = enum(u8) {
     overflow = 0x04,
     /// Free page (part of freelist)
     free = 0x05,
+    /// Free Space Map page
+    fsm = 0x06,
 };
 
 // ── Page Header ────────────────────────────────────────────────────────
