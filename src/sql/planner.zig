@@ -164,10 +164,19 @@ pub const PlanNode = union(enum) {
 
 // ── Logical Plan ──────────────────────────────────────────────────────
 
+/// A planned CTE: name + its logical plan + optional explicit column names.
+pub const CtePlan = struct {
+    name: []const u8,
+    plan: *const PlanNode,
+    column_names: []const []const u8 = &.{},
+};
+
 /// The complete logical plan for a SQL statement.
 pub const LogicalPlan = struct {
     root: *const PlanNode,
     plan_type: PlanType,
+    /// Planned CTEs (in definition order; each may reference earlier ones).
+    ctes: []const CtePlan = &.{},
 };
 
 pub const PlanType = enum {
@@ -195,6 +204,8 @@ pub const PlanError = error{
 pub const Planner = struct {
     arena: *ast.AstArena,
     schema: SchemaProvider,
+    /// CTE names currently in scope (for planTableRef to recognize CTE references).
+    cte_names: std.StringHashMapUnmanaged(void) = .{},
 
     pub fn init(arena: *ast.AstArena, schema: SchemaProvider) Planner {
         return .{
@@ -226,7 +237,22 @@ pub const Planner = struct {
 
     fn planSelect(self: *Planner, stmt: ast.SelectStmt) PlanError!LogicalPlan {
         // Build up the plan bottom-up:
-        // Scan → Join → Filter → Aggregate → Having → Project → Sort → Limit
+        // CTEs → Scan → Join → Filter → Aggregate → Having → Project → Sort → Limit
+
+        // 0. Plan CTEs (in definition order)
+        const alloc = self.arena.allocator();
+        var cte_plans = std.ArrayListUnmanaged(CtePlan){};
+        for (stmt.ctes) |cte| {
+            // Plan each CTE's inner SELECT
+            const cte_inner = try self.planSelect(cte.select.*);
+            cte_plans.append(alloc, .{
+                .name = cte.name,
+                .plan = cte_inner.root,
+                .column_names = cte.column_names,
+            }) catch return error.OutOfMemory;
+            // Register CTE name so planTableRef recognizes it
+            self.cte_names.put(alloc, cte.name, {}) catch return error.OutOfMemory;
+        }
 
         // 1. FROM clause → base scan or joins
         var node: *const PlanNode = if (stmt.from) |from|
@@ -295,7 +321,14 @@ pub const Planner = struct {
             } });
         }
 
-        return .{ .root = node, .plan_type = .select_query };
+        return .{
+            .root = node,
+            .plan_type = .select_query,
+            .ctes = if (cte_plans.items.len > 0)
+                cte_plans.toOwnedSlice(alloc) catch return error.OutOfMemory
+            else
+                &.{},
+        };
     }
 
     fn planTableRef(self: *Planner, ref: *const ast.TableRef) PlanError!*const PlanNode {
@@ -303,6 +336,15 @@ pub const Planner = struct {
             .table_name => |tn| {
                 var columns: []const ColumnRef = &.{};
                 const alloc = self.arena.allocator();
+
+                // Check CTE scope first — CTE columns are resolved at execution time
+                if (self.cte_names.contains(tn.name)) {
+                    return self.createNode(.{ .scan = .{
+                        .table = tn.name,
+                        .alias = tn.alias,
+                        .columns = &.{}, // columns resolved at execution time
+                    } });
+                }
 
                 // Resolve column metadata from schema
                 if (self.schema.getTable(alloc, tn.name)) |info| {
@@ -1264,6 +1306,93 @@ test "Scan with schema columns" {
                     try testing.expectEqual(ValueType.integer, s.columns[0].col_type);
                     try testing.expectEqual(ValueType.text, s.columns[1].col_type);
                 },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+// ── CTE Planning Tests ──────────────────────────────────────────────
+
+test "plan simple CTE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "WITH cte AS (SELECT 1) SELECT * FROM cte;",
+        &arena, &schema);
+
+    // Plan should have one CTE
+    try testing.expectEqual(@as(usize, 1), plan.ctes.len);
+    try testing.expectEqualStrings("cte", plan.ctes[0].name);
+
+    // Main query scans the CTE (no schema columns — resolved at execution)
+    switch (plan.root.*) {
+        .project => |p| {
+            switch (p.input.*) {
+                .scan => |s| {
+                    try testing.expectEqualStrings("cte", s.table);
+                    try testing.expectEqual(@as(usize, 0), s.columns.len);
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan multiple CTEs" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a;",
+        &arena, &schema);
+
+    try testing.expectEqual(@as(usize, 2), plan.ctes.len);
+    try testing.expectEqualStrings("a", plan.ctes[0].name);
+    try testing.expectEqualStrings("b", plan.ctes[1].name);
+}
+
+test "plan CTE with column aliases" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "WITH cte(x, y) AS (SELECT 1, 2) SELECT * FROM cte;",
+        &arena, &schema);
+
+    try testing.expectEqual(@as(usize, 1), plan.ctes.len);
+    try testing.expectEqual(@as(usize, 2), plan.ctes[0].column_names.len);
+    try testing.expectEqualStrings("x", plan.ctes[0].column_names[0]);
+    try testing.expectEqualStrings("y", plan.ctes[0].column_names[1]);
+}
+
+test "plan CTE referencing real table" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "WITH active_users AS (SELECT id, name FROM users) SELECT * FROM active_users;",
+        &arena, &schema);
+
+    try testing.expectEqual(@as(usize, 1), plan.ctes.len);
+    try testing.expectEqualStrings("active_users", plan.ctes[0].name);
+
+    // CTE inner plan should scan the real table
+    switch (plan.ctes[0].plan.*) {
+        .project => |p| {
+            switch (p.input.*) {
+                .scan => |s| try testing.expectEqualStrings("users", s.table),
                 else => return error.InvalidPlan,
             }
         },
