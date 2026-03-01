@@ -726,3 +726,55 @@ test "optimize preserves INSERT plan" {
         else => return error.InvalidPlan,
     }
 }
+
+test "optimize recursively optimizes set operation children" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    // UNION with a trivial filter (1=1) on left side that should be eliminated
+    const plan = try planAndOptimize(
+        testing.allocator,
+        "SELECT id FROM users WHERE 1=1 UNION SELECT id FROM orders;",
+        &arena,
+        &schema,
+    );
+
+    try testing.expectEqual(planner_mod.PlanType.select_query, plan.plan_type);
+    // Root should be a set_op
+    switch (plan.root.*) {
+        .set_op => |s| {
+            try testing.expectEqual(ast.SetOpType.@"union", s.op);
+            // Left side: the 1=1 filter should be eliminated by optimizer
+            // (left should be a project over scan, not a filter)
+            switch (s.left.*) {
+                .project => {},
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "optimize preserves set operation type through optimization" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try planAndOptimize(
+        testing.allocator,
+        "SELECT id, name FROM users EXCEPT SELECT id, name FROM users WHERE age > 30;",
+        &arena,
+        &schema,
+    );
+
+    try testing.expectEqual(planner_mod.PlanType.select_query, plan.plan_type);
+    switch (plan.root.*) {
+        .set_op => |s| {
+            try testing.expectEqual(ast.SetOpType.except, s.op);
+        },
+        else => return error.InvalidPlan,
+    }
+}

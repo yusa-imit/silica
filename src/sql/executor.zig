@@ -3098,3 +3098,194 @@ test "MaterializedOp with text values duplicates correctly" {
     try std.testing.expect(try op.next() == null);
     op.close();
 }
+
+// ── SetOpOp Unit Tests ───────────────────────────────────────────────
+
+test "SetOpOp UNION ALL concatenates both sides" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    try right.addRow(&.{Value{ .integer = 3 }});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .union_all);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), count);
+}
+
+test "SetOpOp UNION deduplicates rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    try right.addRow(&.{Value{ .integer = 3 }});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .@"union");
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // 1, 2, 3 — duplicate 2 removed
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SetOpOp INTERSECT returns common rows only" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{ "id", "name" });
+    try left.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "a" } });
+    try left.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "b" } });
+    try left.addRow(&.{ Value{ .integer = 3 }, Value{ .text = "c" } });
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{ "id", "name" });
+    try right.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "b" } });
+    try right.addRow(&.{ Value{ .integer = 3 }, Value{ .text = "c" } });
+    try right.addRow(&.{ Value{ .integer = 4 }, Value{ .text = "d" } });
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .intersect);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Common: (2,'b'), (3,'c')
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SetOpOp EXCEPT returns left-only rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    try left.addRow(&.{Value{ .integer = 3 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    try right.addRow(&.{Value{ .integer = 3 }});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .except);
+    defer op.close();
+
+    var row = (try op.next()).?;
+    defer row.deinit();
+    try std.testing.expectEqual(@as(i64, 1), row.values[0].integer);
+
+    // No more rows
+    try std.testing.expect(try op.next() == null);
+}
+
+test "SetOpOp UNION with empty left side" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .@"union");
+    defer op.close();
+
+    var row = (try op.next()).?;
+    defer row.deinit();
+    try std.testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    try std.testing.expect(try op.next() == null);
+}
+
+test "SetOpOp INTERSECT with empty right returns empty" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .intersect);
+    defer op.close();
+
+    try std.testing.expect(try op.next() == null);
+}
+
+test "SetOpOp EXCEPT with empty right returns all left rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .except);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SetOpOp UNION deduplicates within same side" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .@"union");
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Deduplicated: [1, 2]
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
