@@ -646,3 +646,25 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] 기존 테스트 전체 통과 확인
 
 **Note**: This is an optional upgrade. Tree widget fix doesn't affect silica's current functionality.
+
+### v1.1.0 — Accessibility & Internationalization (status: READY)
+
+**sailor v1.1.0 released** (2026-03-02) — Accessibility and i18n features
+
+- **New features**:
+  - Accessibility module (screen reader hints, semantic labels)
+  - Focus management system (tab order, focus ring)
+  - Keyboard navigation protocol (custom key bindings)
+  - Unicode width calculation (CJK, emoji proper sizing)
+  - Bidirectional text support (RTL rendering for Arabic/Hebrew)
+- **Impact on silica**: High priority — critical for SQL shell internationalization
+  - Unicode width fixes essential for proper CJK/emoji data display
+  - RTL support enables Arabic/Hebrew text in query results
+  - Keyboard navigation improves SQL shell interactivity
+  - Accessibility features enhance screen reader support for database tools
+- [ ] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트
+- [ ] 기존 테스트 전체 통과 확인
+- [ ] Consider keyboard bindings for SQL history navigation (Ctrl+R)
+- [ ] Test Unicode width with CJK column data
+
+**Note**: Non-breaking upgrade. Unicode/RTL improvements automatically benefit international database content display.
