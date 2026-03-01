@@ -240,6 +240,49 @@ pub const Analyzer = struct {
             self.cte_columns.put(self.allocator, cte.name, cte_cols) catch {};
         }
 
+        // Analyze the left (primary) SELECT body
+        self.analyzeSelectBody(stmt);
+
+        // Analyze set operation if present
+        if (stmt.set_operation) |set_op| {
+            const left_count = self.countResultColumns(stmt);
+
+            // Save and clear scope for the right side
+            const saved_scope = self.scope_tables.items.len;
+            self.scope_tables.shrinkRetainingCapacity(0);
+
+            // Re-register CTEs for right side (they share the WITH scope)
+            // CTE columns are already in cte_columns hashmap
+
+            self.analyzeSelectBody(set_op.right);
+
+            const right_count = self.countResultColumns(set_op.right);
+
+            // Validate column counts match
+            if (left_count != right_count and left_count > 0 and right_count > 0) {
+                self.addError(.column_count_mismatch, "set operation requires equal column counts: left has {d}, right has {d}", .{ left_count, right_count });
+            }
+
+            // Recursively analyze chained set operations on the right side
+            if (set_op.right.set_operation != null) {
+                // The right side's body was already analyzed above; now analyze its chain
+                self.analyzeSetOpChain(set_op.right, left_count);
+            }
+
+            // Restore scope for outer ORDER BY / LIMIT analysis
+            self.scope_tables.shrinkRetainingCapacity(saved_scope);
+            // Re-analyze left body to rebuild scope for ORDER BY references
+            if (stmt.order_by.len > 0) {
+                self.analyzeSelectBody(stmt);
+            }
+        }
+
+        // ORDER BY — applies to the compound result
+        for (stmt.order_by) |o| self.analyzeExpr(o.expr);
+    }
+
+    /// Analyze the body of a SELECT (FROM, JOINs, columns, WHERE, GROUP BY, HAVING).
+    fn analyzeSelectBody(self: *Analyzer, stmt: *const ast.SelectStmt) void {
         // Resolve FROM clause first (builds scope)
         if (stmt.from) |from| {
             self.resolveTableRef(from);
@@ -289,9 +332,53 @@ pub const Analyzer = struct {
 
         // HAVING
         if (stmt.having) |h| self.analyzeExpr(h);
+    }
 
-        // ORDER BY
-        for (stmt.order_by) |o| self.analyzeExpr(o.expr);
+    /// Recursively analyze chained set operations, validating column counts.
+    fn analyzeSetOpChain(self: *Analyzer, stmt: *const ast.SelectStmt, expected_count: usize) void {
+        if (stmt.set_operation) |set_op| {
+            const right_count = self.countResultColumns(set_op.right);
+            if (expected_count != right_count and expected_count > 0 and right_count > 0) {
+                self.addError(.column_count_mismatch, "set operation requires equal column counts: expected {d}, got {d}", .{ expected_count, right_count });
+            }
+
+            // Clear scope and analyze the chained right side body
+            self.scope_tables.shrinkRetainingCapacity(0);
+            self.analyzeSelectBody(set_op.right);
+
+            // Continue chain
+            if (set_op.right.set_operation != null) {
+                self.analyzeSetOpChain(set_op.right, expected_count);
+            }
+        }
+    }
+
+    /// Count the number of result columns in a SELECT statement.
+    /// Returns 0 for SELECT * (unknown at analysis time without full expansion).
+    fn countResultColumns(self: *Analyzer, stmt: *const ast.SelectStmt) usize {
+        var count: usize = 0;
+        for (stmt.columns) |col| {
+            switch (col) {
+                .all_columns => {
+                    // * expands to all columns in scope — count from scope tables
+                    for (self.scope_tables.items) |st| {
+                        count += st.columns.len;
+                    }
+                },
+                .table_all_columns => |tbl| {
+                    for (self.scope_tables.items) |st| {
+                        if (std.ascii.eqlIgnoreCase(st.alias, tbl)) {
+                            count += st.columns.len;
+                            break;
+                        }
+                    }
+                },
+                .expr => {
+                    count += 1;
+                },
+            }
+        }
+        return count;
     }
 
     fn analyzeInsert(self: *Analyzer, stmt: *const ast.InsertStmt) void {
@@ -1171,4 +1258,127 @@ test "CTE: non-existent CTE reference fails" {
 
     try std.testing.expect(analyzer.hasErrors());
     try std.testing.expectEqual(ErrorKind.table_not_found, analyzer.errors.items[0].kind);
+}
+
+// ── Set Operation Analysis Tests ─────────────────────────────────────
+
+test "set op: UNION with matching column count passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "label", .column_type = .text, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id, name FROM t1 UNION SELECT id, label FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: UNION ALL passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t1", &.{
+        .{ .name = "a", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "b", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT a FROM t1 UNION ALL SELECT b FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: INTERSECT passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id FROM t1 INTERSECT SELECT id FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: EXCEPT passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id FROM t1 EXCEPT SELECT id FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: mismatched column count fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id, name FROM t1 UNION SELECT id FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_mismatch = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_count_mismatch) found_mismatch = true;
+    }
+    try std.testing.expect(found_mismatch);
+}
+
+test "set op: with CTE passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH cte AS (SELECT 1 AS x) SELECT x FROM cte UNION SELECT x FROM cte;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
 }
