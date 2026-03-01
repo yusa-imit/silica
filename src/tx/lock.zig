@@ -858,3 +858,185 @@ test "LockManager — hasConflict upgrade scenario with multiple holders" {
     lm.releaseAllLocks(1);
     lm.releaseAllLocks(2);
 }
+
+test "TableLockMode conflictsWith — SHARE mode" {
+    const s = TableLockMode.share;
+    try std.testing.expect(!s.conflictsWith(.access_share));
+    try std.testing.expect(!s.conflictsWith(.row_share));
+    try std.testing.expect(s.conflictsWith(.row_exclusive));
+    try std.testing.expect(!s.conflictsWith(.share)); // SHARE × SHARE compatible
+    try std.testing.expect(s.conflictsWith(.share_row_exclusive));
+    try std.testing.expect(s.conflictsWith(.exclusive));
+    try std.testing.expect(s.conflictsWith(.access_exclusive));
+}
+
+test "TableLockMode conflictsWith — EXCLUSIVE mode" {
+    const e = TableLockMode.exclusive;
+    try std.testing.expect(!e.conflictsWith(.access_share));
+    try std.testing.expect(e.conflictsWith(.row_share));
+    try std.testing.expect(e.conflictsWith(.row_exclusive));
+    try std.testing.expect(e.conflictsWith(.share));
+    try std.testing.expect(e.conflictsWith(.share_row_exclusive));
+    try std.testing.expect(e.conflictsWith(.exclusive));
+    try std.testing.expect(e.conflictsWith(.access_exclusive));
+}
+
+test "TableLockMode conflictsWith — ROW SHARE mode" {
+    const rs = TableLockMode.row_share;
+    try std.testing.expect(!rs.conflictsWith(.access_share));
+    try std.testing.expect(!rs.conflictsWith(.row_share));
+    try std.testing.expect(!rs.conflictsWith(.row_exclusive));
+    try std.testing.expect(!rs.conflictsWith(.share));
+    try std.testing.expect(!rs.conflictsWith(.share_row_exclusive));
+    try std.testing.expect(rs.conflictsWith(.exclusive));
+    try std.testing.expect(rs.conflictsWith(.access_exclusive));
+}
+
+test "TableLockMode conflictsWith — SHARE ROW EXCLUSIVE mode" {
+    const sre = TableLockMode.share_row_exclusive;
+    try std.testing.expect(!sre.conflictsWith(.access_share));
+    try std.testing.expect(!sre.conflictsWith(.row_share));
+    try std.testing.expect(sre.conflictsWith(.row_exclusive));
+    try std.testing.expect(sre.conflictsWith(.share));
+    try std.testing.expect(sre.conflictsWith(.share_row_exclusive));
+    try std.testing.expect(sre.conflictsWith(.exclusive));
+    try std.testing.expect(sre.conflictsWith(.access_exclusive));
+}
+
+test "LockManager — release non-existent lock is no-op" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+
+    // Release row lock that doesn't exist — should not crash
+    lm.releaseRowLock(1, target);
+    try std.testing.expectEqual(@as(usize, 0), lm.activeRowLockCount());
+
+    // Release table lock that doesn't exist — should not crash
+    lm.releaseTableLock(1, 5);
+    try std.testing.expectEqual(@as(usize, 0), lm.activeTableLockCount());
+}
+
+test "LockManager — releaseAllLocks for non-existent txn is no-op" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    // Lock some rows with txn 1
+    const t1 = LockTarget{ .table_page_id = 5, .row_key = 100 };
+    try lm.acquireRowLock(1, t1, .exclusive);
+
+    // Release all locks for txn 99 (doesn't hold any locks)
+    lm.releaseAllLocks(99);
+
+    // Txn 1's lock should still be intact
+    try std.testing.expectEqual(@as(usize, 1), lm.activeRowLockCount());
+    try std.testing.expectEqual(@as(?u32, 1), lm.getRowLockHolder(t1));
+
+    lm.releaseAllLocks(1);
+}
+
+test "LockManager — exclusive then re-acquire same mode is idempotent" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+
+    try lm.acquireRowLock(1, target, .exclusive);
+    // Re-acquire exclusive — should be a no-op (already holding)
+    try lm.acquireRowLock(1, target, .exclusive);
+
+    const info = lm.row_locks.get(target).?;
+    try std.testing.expectEqual(LockMode.exclusive, info.mode);
+    try std.testing.expectEqual(@as(usize, 1), info.holders.items.len);
+
+    lm.releaseRowLock(1, target);
+    try std.testing.expectEqual(@as(usize, 0), lm.activeRowLockCount());
+}
+
+test "LockManager — release exclusive allows other txn to acquire" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+
+    // Txn 1 acquires exclusive
+    try lm.acquireRowLock(1, target, .exclusive);
+
+    // Txn 2 cannot acquire shared
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(2, target, .shared));
+
+    // Release txn 1's lock
+    lm.releaseRowLock(1, target);
+
+    // Now txn 2 can acquire exclusive
+    try lm.acquireRowLock(2, target, .exclusive);
+    try std.testing.expectEqual(@as(?u32, 2), lm.getRowLockHolder(target));
+
+    lm.releaseRowLock(2, target);
+}
+
+test "LockManager — table lock ACCESS EXCLUSIVE blocks everything" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    try lm.acquireTableLock(1, 5, .access_exclusive);
+
+    // Every other mode should conflict
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .access_share));
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .row_share));
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .row_exclusive));
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .share));
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .share_row_exclusive));
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .exclusive));
+    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .access_exclusive));
+
+    lm.releaseTableLock(1, 5);
+}
+
+test "LockManager — three shared holders then upgrade attempt fails" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+
+    try lm.acquireRowLock(1, target, .shared);
+    try lm.acquireRowLock(2, target, .shared);
+    try lm.acquireRowLock(3, target, .shared);
+
+    // Any of them trying to upgrade should fail
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(1, target, .exclusive));
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(2, target, .exclusive));
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(3, target, .exclusive));
+
+    // Lock mode should still be shared after failed upgrades
+    const info = lm.row_locks.get(target).?;
+    try std.testing.expectEqual(LockMode.shared, info.mode);
+    try std.testing.expectEqual(@as(usize, 3), info.holders.items.len);
+
+    lm.releaseAllLocks(1);
+    lm.releaseAllLocks(2);
+    lm.releaseAllLocks(3);
+}
+
+test "LockManager — removeHolder for non-holding txn is no-op" {
+    const allocator = std.testing.allocator;
+    var info = RowLockInfo.init();
+    defer info.deinit(allocator);
+
+    try info.addHolder(allocator, 1);
+    try info.addHolder(allocator, 2);
+
+    // Remove txn 99 (not a holder) — should not change anything
+    const empty = info.removeHolder(99);
+    try std.testing.expect(!empty);
+    try std.testing.expectEqual(@as(usize, 2), info.holders.items.len);
+    try std.testing.expect(info.isHeldBy(1));
+    try std.testing.expect(info.isHeldBy(2));
+}

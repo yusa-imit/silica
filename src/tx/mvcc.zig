@@ -1667,3 +1667,252 @@ test "TransactionManager — resetCid errors" {
     try tm.commit(xid);
     try std.testing.expectError(error.TransactionNotActive, tm.resetCid(xid, 0));
 }
+
+test "isTupleVisibleWithTm — aborted xmin without hint flags consults TM" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Start and abort a transaction
+    const xid1 = try tm.begin(.read_committed);
+    try tm.abort(xid1);
+
+    // Start an observer transaction
+    const xid2 = try tm.begin(.read_committed);
+
+    // Create tuple with no hint flags — TM must be consulted
+    const h = TupleHeader{
+        .xmin = xid1,
+        .xmax = INVALID_XID,
+        .cid = 0,
+        .flags = .{}, // No hint flags
+    };
+
+    var snap = try tm.getSnapshot(xid2);
+    defer snap.deinit();
+
+    // Without TM: snapshot would treat xid1 as committed (pruned/not-active) → visible
+    // With TM: correctly identifies xid1 as aborted → invisible
+    try std.testing.expect(!isTupleVisibleWithTm(h, snap, xid2, 0, &tm));
+
+    // Without TM reference: falls back to snapshot → incorrectly visible
+    try std.testing.expect(isTupleVisible(h, snap, xid2, 0));
+
+    try tm.commit(xid2);
+}
+
+test "isTupleVisibleWithTm — aborted xmax without hint flags consults TM" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid_inserter = try tm.begin(.read_committed);
+    const xid_deleter = try tm.begin(.read_committed);
+    const xid_observer = try tm.begin(.read_committed);
+
+    // Commit inserter, abort deleter
+    try tm.commit(xid_inserter);
+    try tm.abort(xid_deleter);
+
+    // Tuple: committed insert, aborted delete — should be visible
+    const h = TupleHeader{
+        .xmin = xid_inserter,
+        .xmax = xid_deleter,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true }, // xmax has no hint flags
+    };
+
+    var snap = try tm.getSnapshot(xid_observer);
+    defer snap.deinit();
+
+    // With TM: xmax aborted → delete rolled back → tuple IS visible
+    try std.testing.expect(isTupleVisibleWithTm(h, snap, xid_observer, 0, &tm));
+
+    try tm.commit(xid_observer);
+}
+
+test "isTupleVisible — own txn future delete not yet visible" {
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    // Own transaction deleted this row at cid=3, current cid=2
+    // Since cid(3) >= current_cid(2), xmax is not visible → tuple IS visible
+    const h = TupleHeader{
+        .xmin = FROZEN_XID,
+        .xmax = 8, // our own xid
+        .cid = 3,
+        .flags = .{},
+    };
+    try std.testing.expect(isTupleVisible(h, snap, 8, 2));
+
+    // At cid=4, the delete at cid=3 is visible → tuple is NOT visible
+    try std.testing.expect(!isTupleVisible(h, snap, 8, 4));
+
+    // At cid=3, the delete at cid=3 is NOT visible (cid < current_cid required)
+    // cid(3) < current_cid(3) is false → xmax not visible → tuple IS visible
+    try std.testing.expect(isTupleVisible(h, snap, 8, 3));
+}
+
+test "isTupleVisible — own txn insert at same cid invisible" {
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    // Tuple inserted by own txn at cid=2, observing at cid=2
+    // cid(2) >= current_cid(2) → xmin NOT visible → invisible
+    const h = TupleHeader{
+        .xmin = 8, // our own xid
+        .xmax = INVALID_XID,
+        .cid = 2,
+        .flags = .{},
+    };
+    try std.testing.expect(!isTupleVisible(h, snap, 8, 2));
+
+    // At cid=3, the insert at cid=2 IS visible
+    try std.testing.expect(isTupleVisible(h, snap, 8, 3));
+}
+
+test "TransactionManager — REPEATABLE READ snapshot stability across commits" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // xid1 starts first
+    const xid1 = try tm.begin(.read_committed);
+
+    // xid2 starts with REPEATABLE READ
+    const xid2 = try tm.begin(.repeatable_read);
+
+    // xid3 starts after xid2's snapshot
+    const xid3 = try tm.begin(.read_committed);
+
+    // xid1 commits
+    try tm.commit(xid1);
+
+    // xid2's snapshot should still see xid1 as active (snapshot taken at begin)
+    const snap = try tm.getSnapshot(xid2);
+    try std.testing.expect(snap.isActive(xid1)); // Still in original snapshot
+
+    // xid3 is also active in xid2's snapshot since it started before snapshot
+    try std.testing.expect(snap.isActive(xid3));
+
+    // Calling getSnapshot again returns the SAME snapshot (no re-allocation)
+    const snap2 = try tm.getSnapshot(xid2);
+    try std.testing.expectEqual(snap.xmin, snap2.xmin);
+    try std.testing.expectEqual(snap.xmax, snap2.xmax);
+
+    try tm.commit(xid3);
+    try tm.commit(xid2);
+}
+
+test "TransactionManager — READ COMMITTED fresh snapshot per statement" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+
+    // First snapshot: xid1 is active
+    var snap1 = try tm.getSnapshot(xid2);
+    defer snap1.deinit();
+    try std.testing.expect(snap1.isActive(xid1));
+
+    // Commit xid1
+    try tm.commit(xid1);
+
+    // Second snapshot: xid1 is NO LONGER active (fresh snapshot)
+    var snap2 = try tm.getSnapshot(xid2);
+    defer snap2.deinit();
+    try std.testing.expect(!snap2.isActive(xid1));
+
+    try tm.commit(xid2);
+}
+
+test "TransactionManager — multiple concurrent transactions snapshot" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Start 5 concurrent transactions
+    var xids: [5]u32 = undefined;
+    for (&xids) |*xid| {
+        xid.* = try tm.begin(.read_committed);
+    }
+
+    // Take snapshot from xid[0]
+    var snap = try tm.getSnapshot(xids[0]);
+    defer snap.deinit();
+
+    // All 5 should be active
+    for (xids) |xid| {
+        try std.testing.expect(snap.isActive(xid));
+    }
+    try std.testing.expectEqual(@as(usize, 5), snap.active_xids.len);
+
+    // Commit all
+    for (xids) |xid| {
+        try tm.commit(xid);
+    }
+}
+
+test "TransactionManager — commit then abort sequence" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid = try tm.begin(.read_committed);
+    try tm.commit(xid);
+
+    // Double-commit should fail
+    try std.testing.expectError(error.TransactionNotActive, tm.commit(xid));
+
+    // Abort after commit should also fail
+    try std.testing.expectError(error.TransactionNotActive, tm.abort(xid));
+
+    // Abort then commit
+    const xid2 = try tm.begin(.read_committed);
+    try tm.abort(xid2);
+    try std.testing.expectError(error.TransactionNotActive, tm.commit(xid2));
+}
+
+test "Snapshot.isVisible — special XIDs" {
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    // FROZEN_XID always visible
+    try std.testing.expect(snap.isVisible(FROZEN_XID));
+
+    // INVALID_XID never visible
+    try std.testing.expect(!snap.isVisible(INVALID_XID));
+
+    // Committed XID below xmin → visible
+    try std.testing.expect(snap.isVisible(3));
+
+    // XID at or above xmax → not visible (future)
+    try std.testing.expect(!snap.isVisible(10));
+    try std.testing.expect(!snap.isVisible(11));
+
+    // XID in [xmin, xmax) and NOT in active list → visible (committed)
+    try std.testing.expect(snap.isVisible(7));
+}
+
+test "Snapshot.EMPTY — sees nothing as active" {
+    const snap = Snapshot.EMPTY;
+    // No transactions are active in empty snapshot
+    try std.testing.expect(!snap.isActive(0));
+    try std.testing.expect(!snap.isActive(1));
+    try std.testing.expect(snap.isActive(FIRST_NORMAL_XID)); // >= xmax
+    try std.testing.expect(snap.isActive(100));
+}

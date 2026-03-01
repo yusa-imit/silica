@@ -776,3 +776,291 @@ test "vacuumTable — empty table" {
     try std.testing.expectEqual(@as(u64, 0), result.tuples_removed);
     try std.testing.expectEqual(@as(u64, 0), result.tuples_frozen);
 }
+
+test "isDeadTuple — horizon boundary" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+
+    const vacuum_horizon: u32 = xid2; // horizon = xid2
+
+    // xmax == horizon → NOT dead (xmax must be LESS THAN horizon)
+    {
+        const h = TupleHeader{
+            .xmin = xid1,
+            .xmax = xid2,
+            .cid = 0,
+            .flags = .{ .xmin_committed = true, .xmax_committed = true },
+        };
+        try std.testing.expect(!isDeadTuple(h, &tm, vacuum_horizon));
+    }
+
+    // xmax == horizon - 1 → dead
+    {
+        const h = TupleHeader{
+            .xmin = xid1,
+            .xmax = xid1, // xid1 < xid2 = horizon
+            .cid = 0,
+            .flags = .{ .xmin_committed = true, .xmax_committed = true },
+        };
+        try std.testing.expect(isDeadTuple(h, &tm, vacuum_horizon));
+    }
+}
+
+test "isDeadTuple — already frozen tuple with xmax" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    try tm.commit(xid1);
+
+    // Frozen xmin, committed xmax below horizon
+    const h = TupleHeader{
+        .xmin = mvcc_mod.FROZEN_XID,
+        .xmax = xid1,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true, .xmax_committed = true },
+    };
+
+    // xmin is FROZEN_XID (= BOOTSTRAP_XID = 1), which isCommitted returns true for
+    // xmax is committed and < horizon → dead
+    try std.testing.expect(isDeadTuple(h, &tm, tm.getVacuumHorizon()));
+}
+
+test "canFreezeTuple — already frozen returns false" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const h = TupleHeader{
+        .xmin = mvcc_mod.FROZEN_XID,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true },
+    };
+    try std.testing.expect(!canFreezeTuple(h, &tm, 100));
+}
+
+test "canFreezeTuple — deleted tuple cannot be frozen" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    try tm.commit(xid1);
+
+    // xmax is set (tuple is deleted) → cannot freeze
+    const h = TupleHeader{
+        .xmin = xid1,
+        .xmax = xid1,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true, .xmax_committed = true },
+    };
+    try std.testing.expect(!canFreezeTuple(h, &tm, tm.getVacuumHorizon()));
+}
+
+test "canFreezeTuple — aborted xmin cannot be frozen" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    try tm.abort(xid1);
+
+    const h = TupleHeader{
+        .xmin = xid1,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{ .xmin_aborted = true },
+    };
+    try std.testing.expect(!canFreezeTuple(h, &tm, tm.getVacuumHorizon()));
+}
+
+test "canFreezeTuple — xmin at horizon cannot be frozen" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    try tm.commit(xid1);
+
+    // xmin == vacuum_horizon → cannot freeze (must be strictly less than)
+    const h = TupleHeader{
+        .xmin = xid1,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true },
+    };
+    // Set horizon to exactly xid1
+    try std.testing.expect(!canFreezeTuple(h, &tm, xid1));
+}
+
+test "isDeadTuple — active xmin means not dead" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+
+    // No hint flags, xmin is active → TM says not committed → not dead
+    const h = TupleHeader{
+        .xmin = xid1,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{},
+    };
+    try std.testing.expect(!isDeadTuple(h, &tm, tm.getVacuumHorizon()));
+
+    try tm.commit(xid1);
+}
+
+test "isDeadTuple — xmax aborted means not dead" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+    try tm.commit(xid1);
+    try tm.abort(xid2);
+
+    // xmin committed, xmax aborted (without hint flags, TM consulted)
+    const h = TupleHeader{
+        .xmin = xid1,
+        .xmax = xid2,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true }, // no xmax flags
+    };
+    try std.testing.expect(!isDeadTuple(h, &tm, tm.getVacuumHorizon()));
+}
+
+test "vacuumTable — all tuples dead" {
+    const allocator = std.testing.allocator;
+
+    const test_path = "test_vacuum_all_dead.db";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const pager = try allocator.create(Pager);
+    defer allocator.destroy(pager);
+    pager.* = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const pool = try allocator.create(BufferPool);
+    defer allocator.destroy(pool);
+    pool.* = try BufferPool.init(allocator, pager, 100);
+    defer pool.deinit();
+
+    var tree = try initTestTree(pager, pool);
+
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+
+    // Insert 3 rows, all deleted
+    var i: u64 = 1;
+    while (i <= 3) : (i += 1) {
+        var header = TupleHeader.forInsert(xid1, 0);
+        header.flags.xmin_committed = true;
+        header.markDeleted(xid2, 0);
+        header.flags.xmax_committed = true;
+
+        const vals = &[_]Value{.{ .integer = @as(i64, @intCast(i)) }};
+        const data = try mvcc_mod.serializeVersionedRow(allocator, header, vals);
+        defer allocator.free(data);
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, i, .big);
+        try tree.insert(&key_buf, data);
+    }
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+
+    var table_info = catalog_mod.TableInfo{
+        .name = "test",
+        .columns = &.{},
+        .table_constraints = &.{},
+        .data_root_page_id = tree.root_page_id,
+    };
+
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+
+    try std.testing.expectEqual(@as(u64, 3), result.tuples_scanned);
+    try std.testing.expectEqual(@as(u64, 3), result.tuples_removed);
+    try std.testing.expectEqual(@as(u64, 0), result.tuples_frozen);
+}
+
+test "vacuumTable — all tuples live and freezable" {
+    const allocator = std.testing.allocator;
+
+    const test_path = "test_vacuum_all_live.db";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const pager = try allocator.create(Pager);
+    defer allocator.destroy(pager);
+    pager.* = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const pool = try allocator.create(BufferPool);
+    defer allocator.destroy(pool);
+    pool.* = try BufferPool.init(allocator, pager, 100);
+    defer pool.deinit();
+
+    var tree = try initTestTree(pager, pool);
+
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+
+    // Insert 3 live rows (no xmax)
+    var i: u64 = 1;
+    while (i <= 3) : (i += 1) {
+        var header = TupleHeader.forInsert(xid1, 0);
+        header.flags.xmin_committed = true;
+
+        const vals = &[_]Value{.{ .integer = @as(i64, @intCast(i * 10)) }};
+        const data = try mvcc_mod.serializeVersionedRow(allocator, header, vals);
+        defer allocator.free(data);
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, i, .big);
+        try tree.insert(&key_buf, data);
+    }
+
+    try tm.commit(xid1);
+
+    var table_info = catalog_mod.TableInfo{
+        .name = "test",
+        .columns = &.{},
+        .table_constraints = &.{},
+        .data_root_page_id = tree.root_page_id,
+    };
+
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+
+    try std.testing.expectEqual(@as(u64, 3), result.tuples_scanned);
+    try std.testing.expectEqual(@as(u64, 0), result.tuples_removed);
+    try std.testing.expectEqual(@as(u64, 3), result.tuples_frozen);
+
+    // Verify all tuples are now frozen
+    var j: u64 = 1;
+    while (j <= 3) : (j += 1) {
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, j, .big);
+        const val = try tree.get(allocator, &key_buf);
+        defer if (val) |v| allocator.free(v);
+        if (val) |v| {
+            const hdr = TupleHeader.deserialize(v[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+            try std.testing.expectEqual(mvcc_mod.FROZEN_XID, hdr.xmin);
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+}

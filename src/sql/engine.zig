@@ -5684,3 +5684,331 @@ test "SAVEPOINT: transaction rollback cleans up savepoints" {
     // Rollback should clean up all savepoints without leaking
     try db.rollbackTransaction();
 }
+
+test "MVCC isolation: aborted INSERT invisible after rollback via new transaction" {
+    const path = "test_iso_aborted_invisible.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // Insert in transaction then rollback
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'ghost')");
+        r.close(testing.allocator);
+    }
+    try db.rollbackTransaction();
+
+    // Start new transaction — aborted row must be invisible
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM t");
+        var count: i64 = -1;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count = row.values[0].integer;
+        }
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(i64, 0), count);
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC isolation: committed INSERT visible to subsequent transaction" {
+    const path = "test_iso_committed_visible.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // Insert and commit
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'real')");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // New transaction should see the committed row
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT id, val FROM t");
+        var count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+            try testing.expectEqualStrings("real", row.values[1].text);
+            count += 1;
+        }
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(usize, 1), count);
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC isolation: INSERT then commit then DELETE then commit makes row invisible" {
+    const path = "test_iso_delete_commit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert and commit a row
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id) VALUES (42)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Delete and commit
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM t WHERE id = 42");
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 1), r.rows_affected);
+    }
+    try db.commitTransaction();
+
+    // Row should be invisible after committed delete
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM t");
+        var count: i64 = -1;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count = row.values[0].integer;
+        }
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(i64, 0), count);
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC isolation: UPDATE then commit reflects new value" {
+    const path = "test_iso_update_commit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // Insert and commit
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'original')");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Update and commit
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE t SET val = 'modified' WHERE id = 1");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Value should be 'modified'
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT val FROM t WHERE id = 1");
+        var found = false;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqualStrings("modified", row.values[0].text);
+            found = true;
+        }
+        r.close(testing.allocator);
+        try testing.expect(found);
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC: double commit returns error" {
+    const path = "test_double_commit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+    try db.commitTransaction();
+
+    // Second commit should fail (no active transaction)
+    try testing.expectError(error.NoActiveTransaction, db.commitTransaction());
+}
+
+test "MVCC: double rollback returns error" {
+    const path = "test_double_rollback.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+    try db.rollbackTransaction();
+
+    // Second rollback should fail
+    try testing.expectError(error.NoActiveTransaction, db.rollbackTransaction());
+}
+
+test "MVCC: nested BEGIN returns error" {
+    const path = "test_nested_begin.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+
+    // Nested BEGIN via SQL should report error
+    {
+        var r = try db.exec("BEGIN");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: already in a transaction", r.message);
+    }
+
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: create and release within transaction" {
+    const path = "test_savepoint_create_release.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    // Insert row 1
+    {
+        var r = try db.exec("INSERT INTO t (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // Create and release savepoint
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("SAVEPOINT", r.message);
+    }
+    {
+        var r = try db.exec("INSERT INTO t (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("RELEASE SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("RELEASE", r.message);
+    }
+
+    // After release, savepoint s1 should no longer exist
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
+    }
+
+    try db.commitTransaction();
+
+    // Both rows should be visible
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM t");
+        var count: i64 = -1;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count = row.values[0].integer;
+        }
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(i64, 2), count);
+    }
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: outside transaction returns error" {
+    const path = "test_savepoint_no_txn.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
+    }
+}
+
+test "MVCC isolation: multiple sequential transactions accumulate data" {
+    const path = "test_iso_sequential_accumulate.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Transaction 1: insert row 1
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Transaction 2: insert row 2
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Transaction 3: insert row 3
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO t (id) VALUES (3)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Verify all 3 rows visible
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM t");
+        var count: i64 = -1;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            count = row.values[0].integer;
+        }
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(i64, 3), count);
+    }
+    try db.commitTransaction();
+}
