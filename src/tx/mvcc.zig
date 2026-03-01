@@ -402,6 +402,13 @@ pub const TransactionManager = struct {
         return info.current_cid;
     }
 
+    /// Reset the command ID for a transaction (used by ROLLBACK TO SAVEPOINT).
+    pub fn resetCid(self: *TransactionManager, xid: u32, cid: u16) !void {
+        const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
+        if (info.state != .active) return error.TransactionNotActive;
+        info.current_cid = cid;
+    }
+
     /// Commit a transaction.
     pub fn commit(self: *TransactionManager, xid: u32) !void {
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
@@ -1622,4 +1629,41 @@ test "TransactionManager — getCurrentCid errors" {
     defer tm.deinit();
 
     try std.testing.expectError(error.TransactionNotFound, tm.getCurrentCid(999));
+}
+
+test "TransactionManager — resetCid" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid = try tm.begin(.read_committed);
+
+    // Advance CID a few times
+    _ = try tm.advanceCid(xid);
+    _ = try tm.advanceCid(xid);
+    _ = try tm.advanceCid(xid);
+    try std.testing.expectEqual(@as(u16, 3), try tm.getCurrentCid(xid));
+
+    // Reset CID to 1 (as if rolling back to a savepoint)
+    try tm.resetCid(xid, 1);
+    try std.testing.expectEqual(@as(u16, 1), try tm.getCurrentCid(xid));
+
+    // Can advance again from the reset position
+    const cid = try tm.advanceCid(xid);
+    try std.testing.expectEqual(@as(u16, 1), cid);
+    try std.testing.expectEqual(@as(u16, 2), try tm.getCurrentCid(xid));
+}
+
+test "TransactionManager — resetCid errors" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // Error for non-existent transaction
+    try std.testing.expectError(error.TransactionNotFound, tm.resetCid(999, 0));
+
+    // Error for non-active transaction
+    const xid = try tm.begin(.read_committed);
+    try tm.commit(xid);
+    try std.testing.expectError(error.TransactionNotActive, tm.resetCid(xid, 0));
 }

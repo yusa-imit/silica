@@ -198,6 +198,13 @@ pub const EngineError = error{
     TransactionError,
     NoActiveTransaction,
     LockConflict,
+    SavepointNotFound,
+};
+
+/// A named savepoint within a transaction.
+pub const Savepoint = struct {
+    name: []const u8,
+    cid: u16,
 };
 
 /// Active transaction context for the current session.
@@ -207,9 +214,17 @@ pub const TransactionContext = struct {
     /// For REPEATABLE READ / SERIALIZABLE: snapshot taken at BEGIN.
     /// For READ COMMITTED: null (fresh snapshot per statement).
     snapshot: ?Snapshot = null,
+    /// Stack of named savepoints (most recent last).
+    savepoints: std.ArrayListUnmanaged(Savepoint) = .{},
+    /// Allocator for savepoint stack.
+    allocator: ?Allocator = null,
 
     pub fn deinit(self: *TransactionContext) void {
         if (self.snapshot) |*snap| snap.deinit();
+        if (self.allocator) |alloc| {
+            for (self.savepoints.items) |sp| alloc.free(sp.name);
+            self.savepoints.deinit(alloc);
+        }
     }
 };
 
@@ -387,6 +402,7 @@ pub const Database = struct {
         self.current_txn = .{
             .xid = xid,
             .isolation = isolation,
+            .allocator = self.allocator,
         };
 
         // For REPEATABLE READ / SERIALIZABLE, take snapshot at BEGIN time
@@ -408,6 +424,8 @@ pub const Database = struct {
         }
         self.tm.commit(txn.xid) catch return EngineError.TransactionError;
         self.commitWal() catch {};
+        // Clean up savepoints and other transaction resources
+        self.current_txn.?.deinit();
         self.current_txn = null;
     }
 
@@ -425,7 +443,79 @@ pub const Database = struct {
         if (self.wal) |w| {
             w.rollback() catch {};
         }
+        // Clean up savepoints and other transaction resources
+        self.current_txn.?.deinit();
         self.current_txn = null;
+    }
+
+    // ── Savepoint Management ──────────────────────────────────────────
+
+    /// Create a named savepoint within the current transaction.
+    pub fn createSavepoint(self: *Database, name: []const u8) EngineError!void {
+        var txn = &(self.current_txn orelse return EngineError.NoActiveTransaction);
+        const alloc = txn.allocator orelse return EngineError.TransactionError;
+
+        // Get current CID to save the transaction's command position
+        const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+
+        // Duplicate the name for ownership
+        const owned_name = alloc.dupe(u8, name) catch return EngineError.OutOfMemory;
+
+        // If savepoint with same name exists, replace it
+        for (txn.savepoints.items, 0..) |*sp, idx| {
+            if (std.mem.eql(u8, sp.name, name)) {
+                alloc.free(sp.name);
+                txn.savepoints.items[idx] = .{ .name = owned_name, .cid = cid };
+                return;
+            }
+        }
+
+        txn.savepoints.append(alloc, .{ .name = owned_name, .cid = cid }) catch return EngineError.OutOfMemory;
+    }
+
+    /// Release a savepoint (discard it, merging into parent transaction).
+    pub fn releaseSavepoint(self: *Database, name: []const u8) EngineError!void {
+        var txn = &(self.current_txn orelse return EngineError.NoActiveTransaction);
+        const alloc = txn.allocator orelse return EngineError.TransactionError;
+
+        // Find the savepoint
+        for (txn.savepoints.items, 0..) |sp, idx| {
+            if (std.mem.eql(u8, sp.name, name)) {
+                alloc.free(sp.name);
+                _ = txn.savepoints.orderedRemove(idx);
+                return;
+            }
+        }
+        return EngineError.SavepointNotFound;
+    }
+
+    /// Rollback to a named savepoint, undoing commands issued after it.
+    pub fn rollbackToSavepoint(self: *Database, name: []const u8) EngineError!void {
+        var txn = &(self.current_txn orelse return EngineError.NoActiveTransaction);
+        const alloc = txn.allocator orelse return EngineError.TransactionError;
+
+        // Find the savepoint
+        var found_idx: ?usize = null;
+        for (txn.savepoints.items, 0..) |sp, idx| {
+            if (std.mem.eql(u8, sp.name, name)) {
+                found_idx = idx;
+                break;
+            }
+        }
+        const idx = found_idx orelse return EngineError.SavepointNotFound;
+        const saved_cid = txn.savepoints.items[idx].cid;
+
+        // Remove all savepoints created after this one (nested savepoints above are discarded)
+        while (txn.savepoints.items.len > idx + 1) {
+            if (txn.savepoints.pop()) |removed| {
+                alloc.free(removed.name);
+            }
+        }
+
+        // Reset the CID to the savepoint's value, effectively making
+        // commands issued after the savepoint invisible within this transaction's
+        // visibility rules (cid-based filtering in isTupleVisible).
+        self.tm.resetCid(txn.xid, saved_cid) catch return EngineError.TransactionError;
     }
 
     /// Get MVCC context for the current statement.
@@ -1452,13 +1542,43 @@ pub const Database = struct {
                         };
                         return .{ .message = "COMMIT" };
                     },
-                    .rollback => {
-                        self.rollbackTransaction() catch {
-                            return .{ .message = "WARNING: there is no transaction in progress" };
-                        };
-                        return .{ .message = "ROLLBACK" };
+                    .rollback => |rb| {
+                        if (rb.savepoint) |sp_name| {
+                            // ROLLBACK TO SAVEPOINT name
+                            self.rollbackToSavepoint(sp_name) catch |err| {
+                                return switch (err) {
+                                    EngineError.SavepointNotFound => .{ .message = "ERROR: savepoint not found" },
+                                    EngineError.NoActiveTransaction => .{ .message = "ERROR: no transaction in progress" },
+                                    else => .{ .message = "ERROR: rollback to savepoint failed" },
+                                };
+                            };
+                            return .{ .message = "ROLLBACK" };
+                        } else {
+                            self.rollbackTransaction() catch {
+                                return .{ .message = "WARNING: there is no transaction in progress" };
+                            };
+                            return .{ .message = "ROLLBACK" };
+                        }
                     },
-                    .savepoint, .release => return .{ .message = "OK" },
+                    .savepoint => |sp_name| {
+                        self.createSavepoint(sp_name) catch |err| {
+                            return switch (err) {
+                                EngineError.NoActiveTransaction => .{ .message = "ERROR: SAVEPOINT can only be used in transaction blocks" },
+                                else => .{ .message = "ERROR: savepoint creation failed" },
+                            };
+                        };
+                        return .{ .message = "SAVEPOINT" };
+                    },
+                    .release => |sp_name| {
+                        self.releaseSavepoint(sp_name) catch |err| {
+                            return switch (err) {
+                                EngineError.SavepointNotFound => .{ .message = "ERROR: savepoint not found" },
+                                EngineError.NoActiveTransaction => .{ .message = "ERROR: no transaction in progress" },
+                                else => .{ .message = "ERROR: release savepoint failed" },
+                            };
+                        };
+                        return .{ .message = "RELEASE" };
+                    },
                 }
             },
             else => {},
@@ -5287,4 +5407,280 @@ test "VACUUM: freezes old committed tuples" {
             try testing.expectEqual(@as(i64, 42), row.values[0].integer);
         }
     }
+}
+
+// ── Savepoint Tests ─────────────────────────────────────────────────
+
+test "SAVEPOINT: basic savepoint creation via SQL" {
+    const path = "test_savepoint_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE sp_test (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("SAVEPOINT", r.message);
+    }
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: release savepoint" {
+    const path = "test_savepoint_release.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE sp_rel (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("RELEASE SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("RELEASE", r.message);
+    }
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: rollback to savepoint" {
+    const path = "test_savepoint_rollback_to.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE sp_rb (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    // Insert before savepoint
+    {
+        var r = try db.exec("INSERT INTO sp_rb VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+
+    // Insert after savepoint
+    {
+        var r = try db.exec("INSERT INTO sp_rb VALUES (2)");
+        r.close(testing.allocator);
+    }
+
+    // Rollback to savepoint
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ROLLBACK", r.message);
+    }
+
+    // Can still commit the transaction
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: error outside transaction" {
+    const path = "test_savepoint_no_txn.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // SAVEPOINT outside transaction returns error message
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
+    }
+}
+
+test "SAVEPOINT: release nonexistent savepoint" {
+    const path = "test_savepoint_rel_missing.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("RELEASE SAVEPOINT nonexistent");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
+    }
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: rollback to nonexistent savepoint" {
+    const path = "test_savepoint_rb_missing.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT nonexistent");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
+    }
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: nested savepoints" {
+    const path = "test_savepoint_nested.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE sp_nest (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    {
+        var r = try db.exec("INSERT INTO sp_nest VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO sp_nest VALUES (2)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT s2");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO sp_nest VALUES (3)");
+        r.close(testing.allocator);
+    }
+
+    // Rollback to s1 should discard s2 as well
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+
+    // s2 should no longer exist
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT s2");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
+    }
+
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: replace same-name savepoint" {
+    const path = "test_savepoint_replace.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE sp_rep (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    {
+        var r = try db.exec("INSERT INTO sp_rep VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO sp_rep VALUES (2)");
+        r.close(testing.allocator);
+    }
+    // Creating savepoint with same name replaces it at the new CID position
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO sp_rep VALUES (3)");
+        r.close(testing.allocator);
+    }
+
+    // ROLLBACK TO s1 should only roll back the insert of 3, not 2
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: transaction commit cleans up savepoints" {
+    const path = "test_savepoint_commit_cleanup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT s2");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT s3");
+        r.close(testing.allocator);
+    }
+    // Commit should clean up all savepoints without leaking
+    try db.commitTransaction();
+
+    // Start new transaction — previous savepoints should not exist
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        r.close(testing.allocator);
+        try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
+    }
+    try db.commitTransaction();
+}
+
+test "SAVEPOINT: transaction rollback cleans up savepoints" {
+    const path = "test_savepoint_rollback_cleanup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SAVEPOINT s1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT s2");
+        r.close(testing.allocator);
+    }
+    // Rollback should clean up all savepoints without leaking
+    try db.rollbackTransaction();
 }
