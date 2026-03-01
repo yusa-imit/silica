@@ -668,3 +668,27 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] Test Unicode width with CJK column data
 
 **Note**: Non-breaking upgrade. Unicode/RTL improvements automatically benefit international database content display.
+
+### v1.2.0 — Layout & Composition (READY)
+
+**sailor v1.2.0 released** (2026-03-02) — Advanced layout and composition features
+
+- **New features**:
+  - Grid layout system (CSS Grid-inspired 2D constraint solver)
+  - ScrollView widget (virtual scrolling for large content)
+  - Overlay/z-index system (non-modal popups, tooltips, dropdown menus)
+  - Widget composition helpers (split panes, resizable borders)
+  - Responsive breakpoints (adaptive layouts based on terminal size)
+- **Impact on silica**: High priority — enables rich TUI shell interface
+  - Grid layout for SQL editor + results + schema browser layout
+  - ScrollView for large query results and table browsing
+  - Overlay system for autocomplete suggestions and help tooltips
+  - Split panes for query editor / results split view
+  - Responsive layouts for adapting to terminal size
+- [ ] `build.zig.zon`에 sailor v1.2.0 의존성 업데이트
+- [ ] Implement split-pane TUI: query editor (top) + results (bottom)
+- [ ] Add ScrollView for large result sets
+- [ ] Add Grid layout for 3-pane layout (editor | results | schema)
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Layout features are critical for rich SQL shell TUI with split views and scrollable results.
