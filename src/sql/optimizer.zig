@@ -28,7 +28,7 @@ pub const Optimizer = struct {
     /// Optimize a logical plan by applying all rules.
     pub fn optimize(self: *Optimizer, plan: LogicalPlan) !LogicalPlan {
         const optimized = try self.optimizeNode(plan.root);
-        return .{ .root = optimized, .plan_type = plan.plan_type };
+        return .{ .root = optimized, .plan_type = plan.plan_type, .ctes = plan.ctes };
     }
 
     fn optimizeNode(self: *Optimizer, node: *const PlanNode) error{OutOfMemory}!*const PlanNode {

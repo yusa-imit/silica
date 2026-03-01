@@ -1151,6 +1151,19 @@ pub const ProjectOp = struct {
 
         for (self.columns, 0..) |col, i| {
             vals[i] = evalExpr(self.allocator, col.expr, &row) catch |err| {
+                // When an aggregate function has an alias (e.g., SUM(x) AS total),
+                // the AggregateOp stores the result under the alias name. Try looking
+                // up by alias before reporting an error.
+                if (err == error.UnsupportedExpression) {
+                    if (col.alias) |alias| {
+                        if (row.getColumn(alias)) |v| {
+                            vals[i] = v.dupe(self.allocator) catch return ExecError.OutOfMemory;
+                            inited += 1;
+                            col_names[i] = col.alias orelse exprColumnName(col.expr);
+                            continue;
+                        }
+                    }
+                }
                 return switch (err) {
                     error.OutOfMemory => ExecError.OutOfMemory,
                     error.TypeError => ExecError.TypeError,

@@ -353,6 +353,10 @@ const OperatorChain = struct {
     values: ?*ValuesOp = null,
     empty: ?*EmptyOp = null,
     materialized: ?*MaterializedOp = null,
+    /// Materialized CTE results: name → MaterializedOp*.
+    cte_materialized: ?std.StringHashMapUnmanaged(*MaterializedOp) = null,
+    /// Operator chains for CTE sub-queries (need cleanup).
+    cte_ops: std.ArrayListUnmanaged(*OperatorChain) = .{},
     // For joins, we may need a second scan
     scan2: ?*ScanOp = null,
     /// Per-statement RC snapshot that needs cleanup (owned by this chain).
@@ -391,6 +395,22 @@ const OperatorChain = struct {
         if (self.values) |v| allocator.destroy(v);
         if (self.empty) |e| allocator.destroy(e);
         if (self.materialized) |m| allocator.destroy(m);
+        // Clean up CTE sub-query chains first (clear their cte_materialized
+        // references to avoid double-free — the parent owns the map).
+        for (self.cte_ops.items) |cte_chain| {
+            cte_chain.cte_materialized = null;
+            cte_chain.deinit(allocator);
+        }
+        self.cte_ops.deinit(allocator);
+        // Clean up CTE materialized ops (parent owns the map)
+        if (self.cte_materialized) |*cte_map| {
+            var it = cte_map.valueIterator();
+            while (it.next()) |mat_ptr| {
+                mat_ptr.*.close();
+                allocator.destroy(mat_ptr.*);
+            }
+            cte_map.deinit(allocator);
+        }
         allocator.destroy(self);
     }
 };
@@ -770,6 +790,11 @@ pub const Database = struct {
         ops.* = .{};
         errdefer ops.deinit(self.allocator);
 
+        // Materialize CTEs before executing main query
+        if (plan.ctes.len > 0) {
+            try self.materializeCtes(plan.ctes, ops);
+        }
+
         const iter = self.buildIterator(plan.root, ops) catch return EngineError.ExecutionError;
         return .{
             .rows = iter,
@@ -794,9 +819,15 @@ pub const Database = struct {
     }
 
     fn buildScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
-        // Check if the name refers to a view first
+        // Check if this scan references a materialized CTE
+        if (ops.cte_materialized) |cte_map| {
+            if (cte_map.get(scan.table)) |cte_mat| {
+                return self.buildCteScan(scan, ops, cte_mat);
+            }
+        }
+
+        // Check if the name refers to a table
         if (self.catalog.getTable(scan.table)) |_table_info| {
-            // It's a table — continue with normal scan
             var table_info = _table_info;
             return self.buildTableScan(scan, ops, &table_info);
         } else |_| {
@@ -935,6 +966,120 @@ pub const Database = struct {
             }
         }
         return cols;
+    }
+
+    // ── CTE execution ──────────────────────────────────────────────────
+
+    /// Materialize all CTEs in definition order and store in ops.cte_materialized.
+    fn materializeCtes(self: *Database, ctes: []const planner_mod.CtePlan, ops: *OperatorChain) EngineError!void {
+        var cte_map = std.StringHashMapUnmanaged(*MaterializedOp){};
+
+        for (ctes) |cte| {
+            // Create a sub-operator chain for this CTE's query
+            const cte_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+            cte_ops.* = .{};
+            // Propagate parent CTE map so later CTEs can reference earlier ones
+            cte_ops.cte_materialized = cte_map;
+
+            ops.cte_ops.append(self.allocator, cte_ops) catch return EngineError.OutOfMemory;
+
+            var cte_iter = self.buildIterator(cte.plan, cte_ops) catch return EngineError.ExecutionError;
+
+            // Materialize all rows from the CTE query
+            var rows = std.ArrayListUnmanaged([]Value){};
+            var first_row_cols: ?[]const []const u8 = null;
+
+            while (cte_iter.next() catch return EngineError.ExecutionError) |row_data| {
+                var row = row_data;
+                if (first_row_cols == null) {
+                    const saved = self.allocator.alloc([]const u8, row.columns.len) catch return EngineError.OutOfMemory;
+                    for (row.columns, 0..) |c, i| {
+                        saved[i] = self.allocator.dupe(u8, c) catch return EngineError.OutOfMemory;
+                    }
+                    first_row_cols = saved;
+                }
+                const vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                for (row.values, 0..) |v, i| {
+                    vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                }
+                row.deinit();
+                rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+            }
+            cte_iter.close();
+
+            // Build column names: use explicit CTE column aliases or inner query column names
+            const col_names = if (cte.column_names.len > 0) blk: {
+                // Free inner column names if we're overriding with explicit aliases
+                if (first_row_cols) |inner| {
+                    for (inner) |c| self.allocator.free(@constCast(c));
+                    self.allocator.free(inner);
+                }
+                const names = self.allocator.alloc([]const u8, cte.column_names.len) catch return EngineError.OutOfMemory;
+                for (cte.column_names, 0..) |name, i| {
+                    names[i] = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory;
+                }
+                break :blk names;
+            } else if (first_row_cols) |inner_cols| blk: {
+                // Strip table prefixes from inner column names
+                const names = self.allocator.alloc([]const u8, inner_cols.len) catch return EngineError.OutOfMemory;
+                for (inner_cols, 0..) |c, i| {
+                    const base = if (std.mem.indexOfScalar(u8, c, '.')) |dot| c[dot + 1 ..] else c;
+                    names[i] = self.allocator.dupe(u8, base) catch return EngineError.OutOfMemory;
+                    self.allocator.free(@constCast(c));
+                }
+                self.allocator.free(inner_cols);
+                break :blk names;
+            } else blk: {
+                // Empty result set
+                const names = self.allocator.alloc([]const u8, 0) catch return EngineError.OutOfMemory;
+                break :blk names;
+            };
+
+            // Create MaterializedOp
+            const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory,
+            );
+
+            cte_map.put(self.allocator, cte.name, mat_op) catch return EngineError.OutOfMemory;
+        }
+
+        ops.cte_materialized = cte_map;
+    }
+
+    /// Build a scan over a materialized CTE result.
+    fn buildCteScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, source_mat: *MaterializedOp) EngineError!RowIterator {
+        // Create a new MaterializedOp that reads from the same data
+        // We duplicate all the data since each MaterializedOp owns its data
+        const num_cols = source_mat.col_names.len;
+        const num_rows = source_mat.rows.len;
+
+        // Duplicate column names (apply scan alias if present)
+        const col_names = self.allocator.alloc([]const u8, num_cols) catch return EngineError.OutOfMemory;
+        for (source_mat.col_names, 0..) |c, i| {
+            if (scan.alias) |alias| {
+                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, c }) catch return EngineError.OutOfMemory;
+            } else {
+                col_names[i] = self.allocator.dupe(u8, c) catch return EngineError.OutOfMemory;
+            }
+        }
+
+        // Duplicate all rows
+        const rows = self.allocator.alloc([]Value, num_rows) catch return EngineError.OutOfMemory;
+        for (source_mat.rows, 0..) |src_vals, r| {
+            const vals = self.allocator.alloc(Value, src_vals.len) catch return EngineError.OutOfMemory;
+            for (src_vals, 0..) |v, c| {
+                vals[c] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+            }
+            rows[r] = vals;
+        }
+
+        const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+        mat_op.* = MaterializedOp.init(self.allocator, col_names, rows);
+        ops.materialized = mat_op;
+        return mat_op.iterator();
     }
 
     fn buildTableScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, table_info: *catalog_mod.TableInfo) EngineError!RowIterator {
@@ -7588,4 +7733,187 @@ test "view appears in view list" {
     }
 
     try testing.expectEqual(@as(usize, 2), views.len);
+}
+
+// ── CTE (WITH ... AS) Integration Tests ──────────────────────────────
+
+test "CTE: simple CTE from table" {
+    const path = "test_eng_cte_simple.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (x INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO vals VALUES (42)");
+    defer r2.close(testing.allocator);
+
+    var r = try db.execSQL("WITH cte AS (SELECT x FROM vals) SELECT * FROM cte");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+
+    try testing.expectEqual(@as(usize, 1), row.values.len);
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 42), row.values[0].integer);
+
+    // Only one row
+    const row2 = try r.rows.?.next();
+    try testing.expect(row2 == null);
+}
+
+test "CTE: CTE referencing real table" {
+    const path = "test_eng_cte_table.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO items VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("WITH fruits AS (SELECT id, name FROM items WHERE id <= 2) SELECT * FROM fruits");
+    defer r3.close(testing.allocator);
+
+    try testing.expect(r3.rows != null);
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "CTE: CTE with column aliases" {
+    const path = "test_eng_cte_colalias.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (x INTEGER, y INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO nums VALUES (10, 20)");
+    defer r2.close(testing.allocator);
+
+    var r = try db.execSQL("WITH cte(a, b) AS (SELECT x, y FROM nums) SELECT a, b FROM cte");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+
+    try testing.expectEqual(@as(usize, 2), row.values.len);
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 10), row.values[0].integer);
+    try testing.expect(row.values[1] == .integer);
+    try testing.expectEqual(@as(i64, 20), row.values[1].integer);
+}
+
+test "CTE: multiple CTEs" {
+    const path = "test_eng_cte_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (x INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (y INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (2)");
+    defer r4.close(testing.allocator);
+
+    var r = try db.execSQL(
+        "WITH a AS (SELECT x FROM t1), b AS (SELECT y FROM t2) SELECT * FROM a",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+}
+
+test "CTE: CTE with aggregate" {
+    const path = "test_eng_cte_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE scores (student TEXT, score INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO scores VALUES ('alice', 90), ('bob', 85), ('alice', 95), ('bob', 80)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL(
+        "WITH totals AS (SELECT student, SUM(score) AS total FROM scores GROUP BY student) SELECT * FROM totals ORDER BY total DESC",
+    );
+    defer r3.close(testing.allocator);
+
+    try testing.expect(r3.rows != null);
+    // First row should be alice with total 185
+    var row1 = (try r3.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expect(row1.values[1] == .integer);
+    try testing.expectEqual(@as(i64, 185), row1.values[1].integer);
+
+    // Second row should be bob with total 165
+    var row2 = (try r3.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expect(row2.values[1] == .integer);
+    try testing.expectEqual(@as(i64, 165), row2.values[1].integer);
+}
+
+test "CTE: CTE with WHERE in main query" {
+    const path = "test_eng_cte_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL(
+        "WITH big AS (SELECT val FROM nums WHERE val > 2) SELECT * FROM big WHERE val < 5",
+    );
+    defer r3.close(testing.allocator);
+
+    try testing.expect(r3.rows != null);
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        // Values should be 3 and 4
+        try testing.expect(row.values[0].integer >= 3 and row.values[0].integer <= 4);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "CTE: empty CTE result" {
+    const path = "test_eng_cte_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (x INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL(
+        "WITH empty AS (SELECT x FROM t WHERE x > 100) SELECT * FROM empty",
+    );
+    defer r2.close(testing.allocator);
+
+    try testing.expect(r2.rows != null);
+    const row = try r2.rows.?.next();
+    try testing.expect(row == null);
 }
