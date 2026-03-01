@@ -39,6 +39,7 @@ pub const Optimizer = struct {
             .sort => |s| self.optimizeSort(s),
             .aggregate => |a| self.optimizeAggregate(a),
             .limit => |l| self.optimizeLimit(l),
+            .set_op => |s| self.optimizeSetOp(s),
             // Leaf nodes — no optimization
             .scan, .values, .empty => node,
         };
@@ -187,6 +188,19 @@ pub const Optimizer = struct {
             .input = opt_input,
             .limit_expr = limit.limit_expr,
             .offset_expr = limit.offset_expr,
+        } });
+    }
+
+    // ── Set Operation Optimization ────────────────────────────────────
+
+    fn optimizeSetOp(self: *Optimizer, set_op: PlanNode.SetOp) !*const PlanNode {
+        const opt_left = try self.optimizeNode(set_op.left);
+        const opt_right = try self.optimizeNode(set_op.right);
+
+        return self.createNode(.{ .set_op = .{
+            .op = set_op.op,
+            .left = opt_left,
+            .right = opt_right,
         } });
     }
 

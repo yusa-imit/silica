@@ -1964,6 +1964,219 @@ pub const MaterializedOp = struct {
     }
 };
 
+// ── Set Operation Operator ───────────────────────────────────────────────
+
+/// Executes UNION, UNION ALL, INTERSECT, EXCEPT between two row iterators.
+/// For UNION/INTERSECT/EXCEPT, uses a hash set of serialized rows for dedup.
+pub const SetOpOp = struct {
+    allocator: Allocator,
+    left: RowIterator,
+    right: RowIterator,
+    op: ast.SetOpType,
+    /// Phase: true = reading from left, false = reading from right
+    reading_left: bool = true,
+    /// For deduplication (UNION, INTERSECT, EXCEPT):
+    /// Stores serialized row keys that have been seen/materialized.
+    seen: std.StringHashMapUnmanaged(void) = .{},
+    /// For INTERSECT/EXCEPT: materialized right side rows (serialized keys).
+    right_set: ?std.StringHashMapUnmanaged(void) = null,
+    /// Track all allocated keys for cleanup.
+    allocated_keys: std.ArrayListUnmanaged([]u8) = .{},
+    initialized: bool = false,
+
+    pub fn init(allocator: Allocator, left: RowIterator, right: RowIterator, op: ast.SetOpType) SetOpOp {
+        return .{
+            .allocator = allocator,
+            .left = left,
+            .right = right,
+            .op = op,
+        };
+    }
+
+    /// Serialize a row's values into a comparable key for dedup.
+    fn rowKey(self: *SetOpOp, row: *const Row) ![]u8 {
+        return serializeRow(self.allocator, row.values);
+    }
+
+    /// Materialize all rows from the right side into a hash set.
+    fn materializeRight(self: *SetOpOp) !void {
+        var right_set = std.StringHashMapUnmanaged(void){};
+        while (try self.right.next()) |*r| {
+            var row = r.*;
+            defer row.deinit();
+            const key = try self.rowKey(&row);
+            self.allocated_keys.append(self.allocator, key) catch return ExecError.OutOfMemory;
+            right_set.put(self.allocator, key, {}) catch return ExecError.OutOfMemory;
+        }
+        self.right_set = right_set;
+    }
+
+    pub fn next(self: *SetOpOp) ExecError!?Row {
+        // Initialize right side for INTERSECT/EXCEPT
+        if (!self.initialized) {
+            self.initialized = true;
+            if (self.op == .intersect or self.op == .except) {
+                try self.materializeRight();
+            }
+        }
+
+        switch (self.op) {
+            .union_all => return self.nextUnionAll(),
+            .@"union" => return self.nextUnion(),
+            .intersect => return self.nextIntersect(),
+            .except => return self.nextExcept(),
+        }
+    }
+
+    fn nextUnionAll(self: *SetOpOp) ExecError!?Row {
+        if (self.reading_left) {
+            if (try self.left.next()) |row| return row;
+            self.reading_left = false;
+        }
+        return self.right.next();
+    }
+
+    fn nextUnion(self: *SetOpOp) ExecError!?Row {
+        // Read from left, then right, skipping duplicates
+        while (self.reading_left) {
+            var row = try self.left.next() orelse {
+                self.reading_left = false;
+                break;
+            };
+            const key = self.rowKey(&row) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            if (self.seen.contains(key)) {
+                self.allocator.free(key);
+                row.deinit();
+                continue;
+            }
+            self.allocated_keys.append(self.allocator, key) catch {
+                self.allocator.free(key);
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            self.seen.put(self.allocator, key, {}) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            return row;
+        }
+
+        // Right side
+        while (true) {
+            var row = try self.right.next() orelse return null;
+            const key = self.rowKey(&row) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            if (self.seen.contains(key)) {
+                self.allocator.free(key);
+                row.deinit();
+                continue;
+            }
+            self.allocated_keys.append(self.allocator, key) catch {
+                self.allocator.free(key);
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            self.seen.put(self.allocator, key, {}) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            return row;
+        }
+    }
+
+    fn nextIntersect(self: *SetOpOp) ExecError!?Row {
+        const rs = self.right_set orelse return null;
+        while (true) {
+            var row = try self.left.next() orelse return null;
+            const key = self.rowKey(&row) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            defer self.allocator.free(key);
+            if (rs.contains(key)) {
+                // Also deduplicate: don't emit same row twice
+                if (!self.seen.contains(key)) {
+                    const key_dup = self.allocator.dupe(u8, key) catch {
+                        row.deinit();
+                        return ExecError.OutOfMemory;
+                    };
+                    self.allocated_keys.append(self.allocator, key_dup) catch {
+                        self.allocator.free(key_dup);
+                        row.deinit();
+                        return ExecError.OutOfMemory;
+                    };
+                    self.seen.put(self.allocator, key_dup, {}) catch {
+                        row.deinit();
+                        return ExecError.OutOfMemory;
+                    };
+                    return row;
+                }
+                row.deinit();
+                continue;
+            }
+            row.deinit();
+        }
+    }
+
+    fn nextExcept(self: *SetOpOp) ExecError!?Row {
+        const rs = self.right_set orelse return null;
+        while (true) {
+            var row = try self.left.next() orelse return null;
+            const key = self.rowKey(&row) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            defer self.allocator.free(key);
+            if (!rs.contains(key)) {
+                // Also deduplicate within left side
+                if (!self.seen.contains(key)) {
+                    const key_dup = self.allocator.dupe(u8, key) catch {
+                        row.deinit();
+                        return ExecError.OutOfMemory;
+                    };
+                    self.allocated_keys.append(self.allocator, key_dup) catch {
+                        self.allocator.free(key_dup);
+                        row.deinit();
+                        return ExecError.OutOfMemory;
+                    };
+                    self.seen.put(self.allocator, key_dup, {}) catch {
+                        row.deinit();
+                        return ExecError.OutOfMemory;
+                    };
+                    return row;
+                }
+                row.deinit();
+                continue;
+            }
+            row.deinit();
+        }
+    }
+
+    pub fn close(self: *SetOpOp) void {
+        self.left.close();
+        self.right.close();
+        self.seen.deinit(self.allocator);
+        if (self.right_set) |*rs| rs.deinit(self.allocator);
+        for (self.allocated_keys.items) |key| self.allocator.free(key);
+        self.allocated_keys.deinit(self.allocator);
+    }
+
+    pub fn iterator(self: *SetOpOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&SetOpOp.next),
+                .close = @ptrCast(&SetOpOp.close),
+            },
+        };
+    }
+};
+
 // ── Execution Result ────────────────────────────────────────────────────
 
 /// Result of executing a SQL statement.

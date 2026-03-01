@@ -95,8 +95,16 @@ pub const PlanNode = union(enum) {
     limit: Limit,
     /// Values — literal row set (for INSERT VALUES).
     values: Values,
+    /// Set operation — UNION, UNION ALL, INTERSECT, EXCEPT.
+    set_op: SetOp,
     /// Empty — produces no rows (e.g., for DDL results).
     empty: Empty,
+
+    pub const SetOp = struct {
+        op: ast.SetOpType,
+        left: *const PlanNode,
+        right: *const PlanNode,
+    };
 
     pub const Scan = struct {
         table: []const u8,
@@ -237,7 +245,7 @@ pub const Planner = struct {
 
     fn planSelect(self: *Planner, stmt: ast.SelectStmt) PlanError!LogicalPlan {
         // Build up the plan bottom-up:
-        // CTEs → Scan → Join → Filter → Aggregate → Having → Project → Sort → Limit
+        // CTEs → SelectBody → [SetOp(body, right_body)] → Sort → Limit
 
         // 0. Plan CTEs (in definition order)
         const alloc = self.arena.allocator();
@@ -254,6 +262,48 @@ pub const Planner = struct {
             self.cte_names.put(alloc, cte.name, {}) catch return error.OutOfMemory;
         }
 
+        // 1. Plan the left SELECT body
+        var node = try self.planSelectBody(&stmt);
+
+        // 2. Handle set operations (UNION, INTERSECT, EXCEPT)
+        if (stmt.set_operation) |set_op| {
+            const right_node = try self.planSetOpRight(set_op.right);
+            node = try self.createNode(.{ .set_op = .{
+                .op = set_op.op,
+                .left = node,
+                .right = right_node,
+            } });
+        }
+
+        // 3. ORDER BY → Sort (applies to the compound result)
+        if (stmt.order_by.len > 0) {
+            node = try self.createNode(.{ .sort = .{
+                .input = node,
+                .order_by = stmt.order_by,
+            } });
+        }
+
+        // 4. LIMIT/OFFSET → Limit
+        if (stmt.limit != null or stmt.offset != null) {
+            node = try self.createNode(.{ .limit = .{
+                .input = node,
+                .limit_expr = stmt.limit,
+                .offset_expr = stmt.offset,
+            } });
+        }
+
+        return .{
+            .root = node,
+            .plan_type = .select_query,
+            .ctes = if (cte_plans.items.len > 0)
+                cte_plans.toOwnedSlice(alloc) catch return error.OutOfMemory
+            else
+                &.{},
+        };
+    }
+
+    /// Plan the body of a SELECT statement (FROM, JOINs, WHERE, GROUP BY, HAVING, Project).
+    fn planSelectBody(self: *Planner, stmt: *const ast.SelectStmt) PlanError!*const PlanNode {
         // 1. FROM clause → base scan or joins
         var node: *const PlanNode = if (stmt.from) |from|
             try self.planTableRef(from)
@@ -279,7 +329,7 @@ pub const Planner = struct {
             } });
         }
 
-        // 4. GROUP BY → Aggregate (also add aggregate node when select contains aggregate functions)
+        // 4. GROUP BY → Aggregate
         const aggs = try self.extractAggregates(stmt.columns);
         if (stmt.group_by.len > 0 or aggs.len > 0) {
             node = try self.createNode(.{ .aggregate = .{
@@ -304,31 +354,24 @@ pub const Planner = struct {
             .columns = proj_cols,
         } });
 
-        // 7. ORDER BY → Sort
-        if (stmt.order_by.len > 0) {
-            node = try self.createNode(.{ .sort = .{
-                .input = node,
-                .order_by = stmt.order_by,
+        return node;
+    }
+
+    /// Plan the right side of a set operation, recursively handling chained set ops.
+    fn planSetOpRight(self: *Planner, stmt: *const ast.SelectStmt) PlanError!*const PlanNode {
+        var node = try self.planSelectBody(stmt);
+
+        // Handle chained set operations on the right side
+        if (stmt.set_operation) |set_op| {
+            const right_node = try self.planSetOpRight(set_op.right);
+            node = try self.createNode(.{ .set_op = .{
+                .op = set_op.op,
+                .left = node,
+                .right = right_node,
             } });
         }
 
-        // 8. LIMIT/OFFSET → Limit
-        if (stmt.limit != null or stmt.offset != null) {
-            node = try self.createNode(.{ .limit = .{
-                .input = node,
-                .limit_expr = stmt.limit,
-                .offset_expr = stmt.offset,
-            } });
-        }
-
-        return .{
-            .root = node,
-            .plan_type = .select_query,
-            .ctes = if (cte_plans.items.len > 0)
-                cte_plans.toOwnedSlice(alloc) catch return error.OutOfMemory
-            else
-                &.{},
-        };
+        return node;
     }
 
     fn planTableRef(self: *Planner, ref: *const ast.TableRef) PlanError!*const PlanNode {
@@ -624,6 +667,17 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
             if (l.offset_expr != null) try writer.writeAll("+Offset");
             try writer.writeAll("\n");
             try formatPlan(l.input, writer, depth + 1);
+        },
+        .set_op => |s| {
+            const op_name = switch (s.op) {
+                .@"union" => "Union",
+                .union_all => "Union All",
+                .intersect => "Intersect",
+                .except => "Except",
+            };
+            try writer.print("SetOp: {s}\n", .{op_name});
+            try formatPlan(s.left, writer, depth + 1);
+            try formatPlan(s.right, writer, depth + 1);
         },
         .values => |v| {
             try writer.print("Values: {s} ({d} rows)\n", .{ v.table, v.rows.len });
@@ -1398,4 +1452,163 @@ test "plan CTE referencing real table" {
         },
         else => return error.InvalidPlan,
     }
+}
+
+// ── Set Operation Planning Tests ─────────────────────────────────────
+
+test "plan UNION" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users UNION SELECT id FROM orders;",
+        &arena, &schema);
+
+    // Root should be SetOp(union, Project(Scan(users)), Project(Scan(orders)))
+    switch (plan.root.*) {
+        .set_op => |s| {
+            try testing.expectEqual(ast.SetOpType.@"union", s.op);
+            switch (s.left.*) {
+                .project => |p| {
+                    switch (p.input.*) {
+                        .scan => |sc| try testing.expectEqualStrings("users", sc.table),
+                        else => return error.InvalidPlan,
+                    }
+                },
+                else => return error.InvalidPlan,
+            }
+            switch (s.right.*) {
+                .project => |p| {
+                    switch (p.input.*) {
+                        .scan => |sc| try testing.expectEqualStrings("orders", sc.table),
+                        else => return error.InvalidPlan,
+                    }
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan UNION ALL" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users UNION ALL SELECT id FROM orders;",
+        &arena, &schema);
+
+    switch (plan.root.*) {
+        .set_op => |s| try testing.expectEqual(ast.SetOpType.union_all, s.op),
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan INTERSECT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users INTERSECT SELECT id FROM orders;",
+        &arena, &schema);
+
+    switch (plan.root.*) {
+        .set_op => |s| try testing.expectEqual(ast.SetOpType.intersect, s.op),
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan EXCEPT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users EXCEPT SELECT id FROM orders;",
+        &arena, &schema);
+
+    switch (plan.root.*) {
+        .set_op => |s| try testing.expectEqual(ast.SetOpType.except, s.op),
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan UNION with ORDER BY and LIMIT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users UNION SELECT id FROM orders ORDER BY id LIMIT 5;",
+        &arena, &schema);
+
+    // Should be: Limit → Sort → SetOp(union, ...)
+    switch (plan.root.*) {
+        .limit => |l| {
+            switch (l.input.*) {
+                .sort => |s| {
+                    switch (s.input.*) {
+                        .set_op => |so| try testing.expectEqual(ast.SetOpType.@"union", so.op),
+                        else => return error.InvalidPlan,
+                    }
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan chained set operations" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users UNION SELECT id FROM orders EXCEPT SELECT id FROM users;",
+        &arena, &schema);
+
+    // Root: SetOp(union, left, SetOp(except, ...))
+    switch (plan.root.*) {
+        .set_op => |s| {
+            try testing.expectEqual(ast.SetOpType.@"union", s.op);
+            switch (s.right.*) {
+                .set_op => |inner| {
+                    try testing.expectEqual(ast.SetOpType.except, inner.op);
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "formatPlan set operation" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT id FROM users UNION ALL SELECT id FROM orders;",
+        &arena, &schema);
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    try formatPlan(plan.root, &w, 0);
+    const output = fbs.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "SetOp: Union All") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "Scan: users") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "Scan: orders") != null);
 }

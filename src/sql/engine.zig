@@ -73,6 +73,7 @@ const NestedLoopJoinOp = executor_mod.NestedLoopJoinOp;
 const ValuesOp = executor_mod.ValuesOp;
 const MaterializedOp = executor_mod.MaterializedOp;
 const EmptyOp = executor_mod.EmptyOp;
+const SetOpOp = executor_mod.SetOpOp;
 const IndexScanOp = executor_mod.IndexScanOp;
 const MvccContext = executor_mod.MvccContext;
 const serializeRow = executor_mod.serializeRow;
@@ -92,6 +93,7 @@ fn extractPlanColumns(node: *const PlanNode) []const ColumnRef {
         .limit => |l| extractPlanColumns(l.input),
         .aggregate => |a| extractPlanColumns(a.input),
         .join => |j| extractPlanColumns(j.left),
+        .set_op => |s| extractPlanColumns(s.left),
         .values => &.{},
         .empty => &.{},
     };
@@ -353,6 +355,7 @@ const OperatorChain = struct {
     values: ?*ValuesOp = null,
     empty: ?*EmptyOp = null,
     materialized: ?*MaterializedOp = null,
+    set_op: ?*SetOpOp = null,
     /// Materialized CTE results: name → MaterializedOp*.
     cte_materialized: ?std.StringHashMapUnmanaged(*MaterializedOp) = null,
     /// Operator chains for CTE sub-queries (need cleanup).
@@ -395,6 +398,7 @@ const OperatorChain = struct {
         if (self.values) |v| allocator.destroy(v);
         if (self.empty) |e| allocator.destroy(e);
         if (self.materialized) |m| allocator.destroy(m);
+        if (self.set_op) |s| allocator.destroy(s);
         // Clean up CTE sub-query chains first (clear their cte_materialized
         // references to avoid double-free — the parent owns the map).
         for (self.cte_ops.items) |cte_chain| {
@@ -813,6 +817,7 @@ pub const Database = struct {
             .sort => |s| self.buildSort(s, ops),
             .aggregate => |a| self.buildAggregate(a, ops),
             .join => |j| self.buildJoin(j, ops),
+            .set_op => |s| self.buildSetOp(s, ops),
             .values => |v| self.buildValues(v, ops),
             .empty => self.buildEmpty(ops),
         };
@@ -1243,6 +1248,15 @@ pub const Database = struct {
         join_op.* = NestedLoopJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
         ops.join = join_op;
         return join_op.iterator();
+    }
+
+    fn buildSetOp(self: *Database, set_op: PlanNode.SetOp, ops: *OperatorChain) EngineError!RowIterator {
+        const left = try self.buildIterator(set_op.left, ops);
+        const right = try self.buildIterator(set_op.right, ops);
+        const set_op_op = self.allocator.create(SetOpOp) catch return EngineError.OutOfMemory;
+        set_op_op.* = SetOpOp.init(self.allocator, left, right, set_op.op);
+        ops.set_op = set_op_op;
+        return set_op_op.iterator();
     }
 
     fn buildValues(self: *Database, values: PlanNode.Values, ops: *OperatorChain) EngineError!RowIterator {
