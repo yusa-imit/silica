@@ -635,3 +635,14 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] 성능 최적화: sailor 벤치마크 기반으로 렌더링 성능 개선
 - [ ] 기존 테스트 전체 통과 확인
 - [ ] 커밋: `feat: upgrade to sailor v1.0.0 with theming and polish`
+
+### v1.0.3 — bug fix release (status: READY)
+
+**sailor v1.0.3 released** (2026-03-02) — Zig 0.15.2 compatibility patch
+
+- **Bug fix**: Tree widget ArrayList API updated for Zig 0.15.2
+- **Impact on silica**: None (silica doesn't use Tree widget)
+- [ ] `build.zig.zon`에 sailor v1.0.3 의존성 업데이트 (optional, no breaking changes)
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: This is an optional upgrade. Tree widget fix doesn't affect silica's current functionality.
