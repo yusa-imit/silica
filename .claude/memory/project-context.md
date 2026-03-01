@@ -72,28 +72,14 @@
 - `src/tx/mvcc.zig` — MVCC visibility, snapshots, TransactionManager
 - `src/tx/lock.zig` — Lock manager (row-level + table-level locks, conflict detection)
 
-## Test Summary (679 tests total: 630 library + 49 CLI/TUI)
-- `parser.zig`: 78 tests
-- `tokenizer.zig`: 53 tests
-- `ast.zig`: 10 tests
-- `btree.zig`: 53 tests
-- `fuzz.zig`: 12 tests
-- `overflow.zig`: 18 tests
-- `buffer_pool.zig`: 19 tests (incl. 4 WAL integration)
-- `page.zig`: 24 tests
-- `checksum.zig`: 12 tests
-- `varint.zig`: 19 tests
-- `catalog.zig`: 17 tests
-- `analyzer.zig`: 28 tests
-- `planner.zig`: 29 tests
-- `optimizer.zig`: 14 tests
-- `executor.zig`: 35 tests
-- `engine.zig`: 124 tests (incl. 8 WAL + 14 error handling + 31 MVCC + 8 lock integration)
-- `lock.zig`: 24 tests
-- `wal.zig`: 15 tests
-- `mvcc.zig`: 44 tests
-- `cli.zig`: 31 tests
-- `tui.zig`: 18 tests
+## Test Summary (895 tests total)
+- `tokenizer.zig`: 53 | `ast.zig`: 10 | `parser.zig`: 78 | `catalog.zig`: 30
+- `analyzer.zig`: 28 | `planner.zig`: 31 | `optimizer.zig`: 14 | `executor.zig`: 40
+- `btree.zig`: 53 | `fuzz.zig`: 12 | `overflow.zig`: 18 | `page.zig`: 24
+- `buffer_pool.zig`: 23 | `checksum.zig`: 12 | `varint.zig`: 19
+- `wal.zig`: 23 | `mvcc.zig`: 69 | `lock.zig`: 50
+- `vacuum.zig`: 46 | `fsm.zig`: 21
+- `engine.zig`: 192 | `cli.zig`: 30 | `tui.zig`: 18
 
 ## Current Phase: Phase 2 — SQL Layer + Phase 3 — Transactions
 
@@ -139,4 +125,11 @@
 - [x] Deadlock detection — wait-for graph with cycle detection
 - [x] Savepoints — SAVEPOINT, ROLLBACK TO, RELEASE with CID management
 
-## Phase 4 COMPLETE — Ready for Phase 5 (Advanced SQL)
+### Phase 5 — Advanced SQL (In Progress)
+- [x] CREATE VIEW / DROP VIEW — parsing and catalog storage
+- [x] SELECT from views — full execution pipeline (MaterializedOp, view expansion)
+- [ ] CTEs (WITH, WITH RECURSIVE)
+- [ ] Set operations (UNION/INTERSECT/EXCEPT)
+- [ ] DISTINCT ON
+- [ ] Window functions (ROW_NUMBER, RANK, etc.)
+- [ ] Advanced data types (DATE/TIME/TIMESTAMP, NUMERIC, UUID, ARRAY, ENUM)
