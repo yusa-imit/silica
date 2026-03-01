@@ -244,8 +244,22 @@ pub const BinaryOp = enum {
     right_shift,
 };
 
+/// A single CTE definition in a WITH clause.
+pub const CteDefinition = struct {
+    /// CTE name (used as table reference in main query)
+    name: []const u8,
+    /// The SELECT query defining the CTE
+    select: *const SelectStmt,
+    /// Optional explicit column names for the CTE
+    column_names: []const []const u8 = &.{},
+};
+
 /// SELECT statement.
 pub const SelectStmt = struct {
+    /// Common Table Expressions (WITH ... AS clauses)
+    ctes: []const CteDefinition = &.{},
+    /// Whether WITH RECURSIVE was used
+    recursive: bool = false,
     distinct: bool = false,
     columns: []const ResultColumn = &.{},
     from: ?*const TableRef = null,

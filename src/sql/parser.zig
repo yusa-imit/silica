@@ -76,6 +76,13 @@ pub const Parser = struct {
         return self.peek().type == tt;
     }
 
+    /// Look ahead by `offset` tokens from current position.
+    fn checkAhead(self: *const Parser, tt: TokenType, offset: u32) bool {
+        const idx = self.pos + offset;
+        if (idx < self.tokens.len) return self.tokens[idx].type == tt;
+        return tt == .eof;
+    }
+
     fn match(self: *Parser, tt: TokenType) bool {
         if (self.check(tt)) {
             _ = self.advance();
@@ -173,6 +180,7 @@ pub const Parser = struct {
         const t = self.peek();
         const stmt: ast.Stmt = switch (t.type) {
             .kw_select => .{ .select = try self.parseSelect() },
+            .kw_with => .{ .select = try self.parseSelect() },
             .kw_insert => .{ .insert = try self.parseInsert() },
             .kw_update => .{ .update = try self.parseUpdate() },
             .kw_delete => .{ .delete = try self.parseDelete() },
@@ -198,10 +206,23 @@ pub const Parser = struct {
     // ── SELECT ────────────────────────────────────────────────────
 
     fn parseSelect(self: *Parser) Error!ast.SelectStmt {
-        _ = try self.expect(.kw_select);
-
         var stmt = ast.SelectStmt{};
         const a = self.alloc();
+
+        // Parse optional WITH clause (CTEs)
+        if (self.match(.kw_with)) {
+            if (self.match(.kw_recursive)) {
+                stmt.recursive = true;
+            }
+            var ctes = std.ArrayListUnmanaged(ast.CteDefinition){};
+            while (true) {
+                ctes.append(a, try self.parseCteDefinition()) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            stmt.ctes = ctes.toOwnedSlice(a) catch return error.OutOfMemory;
+        }
+
+        _ = try self.expect(.kw_select);
 
         if (self.match(.kw_distinct)) {
             stmt.distinct = true;
@@ -266,6 +287,40 @@ pub const Parser = struct {
         }
 
         return stmt;
+    }
+
+    /// Parse a single CTE definition: name [(col1, col2, ...)] AS (SELECT ...)
+    fn parseCteDefinition(self: *Parser) Error!ast.CteDefinition {
+        const a = self.alloc();
+        const name = try self.expectIdentifier();
+
+        // Optional column aliases come before AS: name(col1, col2) AS (SELECT ...)
+        // If next token is '(' it must be column aliases (AS hasn't appeared yet)
+        var col_names = std.ArrayListUnmanaged([]const u8){};
+        if (self.check(.left_paren)) {
+            _ = self.advance(); // (
+            while (true) {
+                col_names.append(a, try self.expectIdentifier()) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+        }
+
+        _ = try self.expect(.kw_as);
+        _ = try self.expect(.left_paren);
+        const select = try self.parseSelect();
+        _ = try self.expect(.right_paren);
+
+        const select_ptr = self.arena.create(ast.SelectStmt, select) catch return error.OutOfMemory;
+
+        return .{
+            .name = name,
+            .select = select_ptr,
+            .column_names = if (col_names.items.len > 0)
+                col_names.toOwnedSlice(a) catch return error.OutOfMemory
+            else
+                &.{},
+        };
     }
 
     fn parseResultColumns(self: *Parser) Error![]const ast.ResultColumn {
@@ -2007,4 +2062,70 @@ test "parse complex WHERE with mixed operators" {
     try std.testing.expect(r.stmt.select.where != null);
     // The top-level expression should be an OR
     try std.testing.expect(r.stmt.select.where.?.binary_op.op == .@"or");
+}
+
+// ── CTE (WITH ... AS) tests ──────────────────────────────────
+
+test "parse simple CTE" {
+    var r = try testParseWithArena(
+        "WITH cte AS (SELECT 1) SELECT * FROM cte",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    try std.testing.expectEqualStrings("cte", sel.ctes[0].name);
+    try std.testing.expect(!sel.recursive);
+    try std.testing.expectEqual(@as(usize, 0), sel.ctes[0].column_names.len);
+    // Main query references CTE
+    try std.testing.expectEqualStrings("cte", sel.from.?.table_name.name);
+}
+
+test "parse CTE with column aliases" {
+    var r = try testParseWithArena(
+        "WITH cte(x, y) AS (SELECT 1, 2) SELECT x, y FROM cte",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    try std.testing.expectEqualStrings("cte", sel.ctes[0].name);
+    try std.testing.expectEqual(@as(usize, 2), sel.ctes[0].column_names.len);
+    try std.testing.expectEqualStrings("x", sel.ctes[0].column_names[0]);
+    try std.testing.expectEqualStrings("y", sel.ctes[0].column_names[1]);
+}
+
+test "parse multiple CTEs" {
+    var r = try testParseWithArena(
+        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 2), sel.ctes.len);
+    try std.testing.expectEqualStrings("a", sel.ctes[0].name);
+    try std.testing.expectEqualStrings("b", sel.ctes[1].name);
+    try std.testing.expect(!sel.recursive);
+}
+
+test "parse WITH RECURSIVE flag" {
+    // RECURSIVE flag is parsed even without actual recursion (UNION ALL support is separate)
+    var r = try testParseWithArena(
+        "WITH RECURSIVE cnt(x) AS (SELECT 1) SELECT x FROM cnt",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.recursive);
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    try std.testing.expectEqualStrings("cnt", sel.ctes[0].name);
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes[0].column_names.len);
+    try std.testing.expectEqualStrings("x", sel.ctes[0].column_names[0]);
+}
+
+test "parse CTE without FROM" {
+    var r = try testParseWithArena(
+        "WITH vals AS (SELECT 42) SELECT * FROM vals",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    // CTE inner select has no FROM
+    try std.testing.expect(sel.ctes[0].select.from == null);
 }
