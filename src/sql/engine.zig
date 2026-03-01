@@ -6431,3 +6431,251 @@ test "SSI: DELETE creates write dependency" {
     db.current_txn = saved_txn2;
     try db.commitTransaction();
 }
+
+test "SSI: UPDATE creates rw-antidependency (read + write)" {
+    const path = "test_ssi_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, qty INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items (id, qty) VALUES (1, 10)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items (id, qty) VALUES (2, 20)");
+        r.close(testing.allocator);
+    }
+
+    // T1: reads items, will update items
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM items");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    // T2: updates items (creates T1 →rw→ T2)
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("UPDATE items SET qty = 15 WHERE id = 1");
+        r.close(testing.allocator);
+    }
+    const saved_txn2 = db.current_txn;
+    db.current_txn = null;
+
+    // T1: updates items (creates T2 →rw→ T1 since UPDATE reads+writes)
+    db.current_txn = saved_txn1;
+    {
+        var r = try db.exec("UPDATE items SET qty = 25 WHERE id = 2");
+        r.close(testing.allocator);
+    }
+
+    // T1 is a pivot (both rw-in and rw-out on same table)
+    try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
+
+    // T2 can still commit
+    db.current_txn = saved_txn2;
+    try db.commitTransaction();
+}
+
+test "SSI: repeatable-read transactions are not tracked by SSI" {
+    const path = "test_ssi_rr_ignored.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // RR transaction should not be tracked
+    try db.beginTransaction(.repeatable_read);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try testing.expectEqual(@as(usize, 0), db.ssi_tracker.trackedTxnCount());
+    try db.commitTransaction();
+}
+
+test "SSI: sequential serializable transactions succeed" {
+    const path = "test_ssi_sequential.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // T1: read + write, commit
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction(); // committed, SSI state cleaned up
+
+    // T2: same table, no conflict since T1 already committed
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction(); // should succeed — no concurrent conflict
+}
+
+test "SSI: savepoint rollback preserves SSI tracking" {
+    const path = "test_ssi_savepoint.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // T1: reads t1, creates savepoint, reads t2, rolls back savepoint
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SAVEPOINT sp1");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SELECT * FROM t2");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("ROLLBACK TO sp1");
+        r.close(testing.allocator);
+    }
+    // SSI read on t1 should still be tracked even after savepoint rollback
+    // (SSI tracking is transaction-scoped, not savepoint-scoped)
+    const saved_txn1 = db.current_txn;
+    db.current_txn = null;
+
+    // T2: writes t1 (creates T1→rw→T2) and reads t2
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("SELECT * FROM t2");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    const saved_txn2 = db.current_txn;
+    db.current_txn = null;
+
+    // T1: writes t2 (creates T2→rw→T1, making T1 a pivot)
+    db.current_txn = saved_txn1;
+    {
+        var r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
+
+    db.current_txn = saved_txn2;
+    try db.commitTransaction();
+}
+
+test "SSI: abort cleans up SSI state" {
+    const path = "test_ssi_abort_cleanup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // Start a serializable transaction, do some reads
+    try db.beginTransaction(.serializable);
+    {
+        var r = try db.exec("SELECT * FROM t1");
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        r.close(testing.allocator);
+    }
+    try testing.expectEqual(@as(usize, 1), db.ssi_tracker.trackedTxnCount());
+
+    // Rollback should clean up SSI state
+    try db.rollbackTransaction();
+    try testing.expectEqual(@as(usize, 0), db.ssi_tracker.trackedTxnCount());
+}
