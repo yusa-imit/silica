@@ -1380,3 +1380,142 @@ test "set op: with CTE passes" {
 
     try std.testing.expect(!analyzer.hasErrors());
 }
+
+test "set op: chained UNION passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t3", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id FROM t1 UNION SELECT id FROM t2 UNION SELECT id FROM t3;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: chained with mismatched columns in third query fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t3", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id FROM t1 UNION SELECT id FROM t2 UNION SELECT id, name FROM t3;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_mismatch = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_count_mismatch) found_mismatch = true;
+    }
+    try std.testing.expect(found_mismatch);
+}
+
+test "set op: SELECT * with matching columns passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "x", .column_type = .integer, .flags = .{} },
+        .{ .name = "y", .column_type = .text, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t1 UNION SELECT * FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: SELECT * with different column counts fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "x", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t1 UNION SELECT * FROM t2;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "set op: with ORDER BY on compound result passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("t2", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT id FROM t1 UNION SELECT id FROM t2 ORDER BY id;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: CTE accessible on both sides" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+    schema.addTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH vals AS (SELECT 1 AS x) SELECT x FROM vals UNION ALL SELECT x FROM vals;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "set op: multiple CTEs with set operation" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) SELECT x FROM a UNION SELECT y FROM b;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
