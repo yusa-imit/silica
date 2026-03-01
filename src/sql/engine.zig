@@ -71,11 +71,93 @@ const SortOp = executor_mod.SortOp;
 const AggregateOp = executor_mod.AggregateOp;
 const NestedLoopJoinOp = executor_mod.NestedLoopJoinOp;
 const ValuesOp = executor_mod.ValuesOp;
+const MaterializedOp = executor_mod.MaterializedOp;
 const EmptyOp = executor_mod.EmptyOp;
 const IndexScanOp = executor_mod.IndexScanOp;
 const MvccContext = executor_mod.MvccContext;
 const serializeRow = executor_mod.serializeRow;
 const evalExpr = executor_mod.evalExpr;
+
+// ── View Column Extraction ──────────────────────────────────────────
+
+const ColumnRef = planner_mod.ColumnRef;
+
+/// Extract output column references from a plan tree's leaf Scan node.
+fn extractPlanColumns(node: *const PlanNode) []const ColumnRef {
+    return switch (node.*) {
+        .scan => |s| s.columns,
+        .filter => |f| extractPlanColumns(f.input),
+        .project => |p| extractPlanColumns(p.input),
+        .sort => |s| extractPlanColumns(s.input),
+        .limit => |l| extractPlanColumns(l.input),
+        .aggregate => |a| extractPlanColumns(a.input),
+        .join => |j| extractPlanColumns(j.left),
+        .values => &.{},
+        .empty => &.{},
+    };
+}
+
+/// Resolve the output columns of a view plan. For Project nodes,
+/// extracts the projected column names and types. Falls back to
+/// the underlying Scan columns for SELECT *.
+fn resolveViewPlanColumns(
+    allocator: std.mem.Allocator,
+    node: *const PlanNode,
+) ?[]const ColumnRef {
+    switch (node.*) {
+        .project => |proj| {
+            // Check for SELECT * (single column_ref with name "*")
+            if (proj.columns.len == 1) {
+                if (proj.columns[0].expr.* == .column_ref) {
+                    if (std.mem.eql(u8, proj.columns[0].expr.column_ref.name, "*")) {
+                        // SELECT * — use the Scan columns directly
+                        return extractPlanColumns(proj.input);
+                    }
+                }
+            }
+
+            // Get the scan columns for type info
+            const scan_cols = extractPlanColumns(proj.input);
+
+            var cols = std.ArrayListUnmanaged(ColumnRef){};
+            for (proj.columns) |pc| {
+                // Use alias if provided, else resolve column_ref name
+                const name = pc.alias orelse switch (pc.expr.*) {
+                    .column_ref => |cr| cr.name,
+                    .function_call => |fc| fc.name,
+                    else => "?",
+                };
+
+                // Try to find the type from the scan columns
+                var col_type = planner_mod.ValueType.text;
+                switch (pc.expr.*) {
+                    .column_ref => |cr| {
+                        for (scan_cols) |sc| {
+                            if (std.ascii.eqlIgnoreCase(sc.column, cr.name)) {
+                                col_type = sc.col_type;
+                                break;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+
+                cols.append(allocator, .{
+                    .table = "",
+                    .column = name,
+                    .col_type = col_type,
+                }) catch return null;
+            }
+            return cols.toOwnedSlice(allocator) catch return null;
+        },
+        .sort => |s| return resolveViewPlanColumns(allocator, s.input),
+        .limit => |l| return resolveViewPlanColumns(allocator, l.input),
+        .filter => |f| return resolveViewPlanColumns(allocator, f.input),
+        .aggregate => |a| return resolveViewPlanColumns(allocator, a.input),
+        .scan => |s| return s.columns,
+        else => return null,
+    }
+}
 
 // ── MVCC Row Detection ──────────────────────────────────────────────
 
@@ -270,6 +352,7 @@ const OperatorChain = struct {
     join: ?*NestedLoopJoinOp = null,
     values: ?*ValuesOp = null,
     empty: ?*EmptyOp = null,
+    materialized: ?*MaterializedOp = null,
     // For joins, we may need a second scan
     scan2: ?*ScanOp = null,
     /// Per-statement RC snapshot that needs cleanup (owned by this chain).
@@ -307,6 +390,7 @@ const OperatorChain = struct {
         if (self.join) |j| allocator.destroy(j);
         if (self.values) |v| allocator.destroy(v);
         if (self.empty) |e| allocator.destroy(e);
+        if (self.materialized) |m| allocator.destroy(m);
         allocator.destroy(self);
     }
 };
@@ -710,8 +794,150 @@ pub const Database = struct {
     }
 
     fn buildScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
-        // Look up table in catalog to get data root page ID
-        var table_info = self.catalog.getTable(scan.table) catch return EngineError.TableNotFound;
+        // Check if the name refers to a view first
+        if (self.catalog.getTable(scan.table)) |_table_info| {
+            // It's a table — continue with normal scan
+            var table_info = _table_info;
+            return self.buildTableScan(scan, ops, &table_info);
+        } else |_| {
+            // Table not found — check if it's a view
+            const view_info = self.catalog.getView(scan.table) catch return EngineError.TableNotFound;
+            defer view_info.deinit();
+            return self.buildViewScan(scan, ops, view_info);
+        }
+    }
+
+    fn buildViewScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, view_info: catalog_mod.Catalog.ViewInfo) EngineError!RowIterator {
+        // Phase 1: Parse and execute the view's SQL (uses temporary arenas)
+        var rows = std.ArrayListUnmanaged([]Value){};
+        var first_row_cols: ?[]const []const u8 = null;
+
+        {
+            // Temporary arenas for parsing/planning — freed after materialization
+            var view_arena = AstArena.init(self.allocator);
+            defer view_arena.deinit();
+
+            var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
+            defer infra_alloc.deinit();
+
+            var p = Parser.init(infra_alloc.allocator(), view_info.sql, &view_arena) catch return EngineError.ParseError;
+            defer p.deinit();
+
+            const stmt = (p.parseStatement() catch return EngineError.ParseError) orelse return EngineError.ParseError;
+
+            const view_select = switch (stmt) {
+                .create_view => |cv| cv.select,
+                .select => |s| s,
+                else => return EngineError.ExecutionError,
+            };
+
+            const provider = self.schemaProvider();
+            var plnr = Planner.init(&view_arena, provider);
+            const view_plan = plnr.plan(.{ .select = view_select }) catch return EngineError.PlanError;
+
+            var opt = Optimizer.init(&view_arena);
+            const optimized = opt.optimize(view_plan) catch return EngineError.PlanError;
+
+            const view_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+            view_ops.* = .{};
+
+            var view_iter = self.buildIterator(optimized.root, view_ops) catch return EngineError.ExecutionError;
+
+            // Materialize all rows
+            while (view_iter.next() catch null) |row_data| {
+                var row = row_data;
+                if (first_row_cols == null) {
+                    // Save column names from the first row (duped to survive arena cleanup)
+                    const saved = self.allocator.alloc([]const u8, row.columns.len) catch return EngineError.OutOfMemory;
+                    for (row.columns, 0..) |c, i| {
+                        saved[i] = self.allocator.dupe(u8, c) catch return EngineError.OutOfMemory;
+                    }
+                    first_row_cols = saved;
+                }
+                const vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                for (row.values, 0..) |v, i| {
+                    vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                }
+                row.deinit();
+                rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+            }
+            view_iter.close();
+            view_ops.deinit(self.allocator);
+        }
+        // view_arena and infra_alloc are now freed via defer
+
+        // Phase 2: Build column names
+        const col_names_result = if (first_row_cols) |inner_cols| blk: {
+            defer {
+                for (inner_cols) |c| self.allocator.free(@constCast(c));
+                self.allocator.free(inner_cols);
+            }
+            break :blk self.buildViewColNames(inner_cols, scan.alias, view_info.column_names) catch return EngineError.OutOfMemory;
+        } else self.buildViewColNamesFromScan(scan, view_info.column_names) catch return EngineError.OutOfMemory;
+
+        // Phase 3: Create MaterializedOp
+        const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+        mat_op.* = MaterializedOp.init(
+            self.allocator,
+            col_names_result,
+            rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory,
+        );
+
+        ops.materialized = mat_op;
+        return mat_op.iterator();
+    }
+
+    /// Build column names for a view from the inner query's row columns.
+    /// Applies view column aliases and scan alias prefix.
+    fn buildViewColNames(self: *Database, row_cols: []const []const u8, scan_alias: ?[]const u8, view_col_names: []const []const u8) ![]const []const u8 {
+        const num_cols = row_cols.len;
+        const cols = try self.allocator.alloc([]const u8, num_cols);
+        errdefer self.allocator.free(cols);
+
+        for (0..num_cols) |i| {
+            // Use view column alias if available, else strip any table prefix from inner column name
+            const base_name = if (i < view_col_names.len)
+                view_col_names[i]
+            else blk: {
+                // Strip "table." prefix from inner query column names
+                const inner = row_cols[i];
+                if (std.mem.indexOfScalar(u8, inner, '.')) |dot| {
+                    break :blk inner[dot + 1 ..];
+                }
+                break :blk inner;
+            };
+
+            if (scan_alias) |alias| {
+                cols[i] = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, base_name });
+            } else {
+                cols[i] = try self.allocator.dupe(u8, base_name);
+            }
+        }
+        return cols;
+    }
+
+    /// Build column names for an empty view result from the scan's column refs.
+    fn buildViewColNamesFromScan(self: *Database, scan: PlanNode.Scan, view_col_names: []const []const u8) ![]const []const u8 {
+        const num_cols = scan.columns.len;
+        const cols = try self.allocator.alloc([]const u8, num_cols);
+        errdefer self.allocator.free(cols);
+
+        for (scan.columns, 0..) |col_ref, i| {
+            const base_name = if (i < view_col_names.len)
+                view_col_names[i]
+            else
+                col_ref.column;
+
+            if (scan.alias) |alias| {
+                cols[i] = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, base_name });
+            } else {
+                cols[i] = try self.allocator.dupe(u8, base_name);
+            }
+        }
+        return cols;
+    }
+
+    fn buildTableScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, table_info: *catalog_mod.TableInfo) EngineError!RowIterator {
         defer table_info.deinit(self.allocator);
 
         // Register SSI read for SERIALIZABLE transactions
@@ -1689,8 +1915,6 @@ pub const Database = struct {
                     cv.if_not_exists,
                     cv.column_names,
                 ) catch |err| {
-                    arena.deinit();
-                    self.allocator.destroy(arena);
                     return switch (err) {
                         error.ViewAlreadyExists => EngineError.TableAlreadyExists,
                         error.OutOfMemory => EngineError.OutOfMemory,
@@ -1704,8 +1928,6 @@ pub const Database = struct {
             },
             .drop_view => |dv| {
                 self.catalog.dropView(dv.name, dv.if_exists) catch |err| {
-                    arena.deinit();
-                    self.allocator.destroy(arena);
                     return switch (err) {
                         error.ViewNotFound => EngineError.TableNotFound,
                         error.OutOfMemory => EngineError.OutOfMemory,
@@ -1860,13 +2082,79 @@ pub const Database = struct {
         // Database and freed between exec calls. The analyzer doesn't need
         // to manage TableInfo lifetimes.
         const value = self.catalog.tree.get(self.allocator, name) catch return null;
-        if (value == null) return null;
-        defer self.allocator.free(value.?);
-        return catalog_mod.deserializeTable(self.schema_arena.allocator(), name, value.?) catch null;
+        if (value) |v| {
+            defer self.allocator.free(v);
+            return catalog_mod.deserializeTable(self.schema_arena.allocator(), name, v) catch null;
+        }
+
+        // Not a real table — check if it's a view
+        return self.resolveViewAsTable(name);
+    }
+
+    /// Resolve a view as a synthetic TableInfo for the analyzer/planner.
+    /// Parses the view's SQL, plans it, and extracts column info from the plan.
+    fn resolveViewAsTable(self: *Database, name: []const u8) ?TableInfo {
+        const view_info = self.catalog.getView(name) catch return null;
+        defer view_info.deinit();
+
+        var view_arena = AstArena.init(self.allocator);
+        defer view_arena.deinit();
+
+        var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
+        defer infra_alloc.deinit();
+
+        var p = Parser.init(infra_alloc.allocator(), view_info.sql, &view_arena) catch return null;
+        defer p.deinit();
+
+        const stmt = (p.parseStatement() catch return null) orelse return null;
+
+        const view_select = switch (stmt) {
+            .create_view => |cv| cv.select,
+            .select => |s| s,
+            else => return null,
+        };
+
+        // Plan the view's SELECT to extract column types
+        const provider = self.schemaProvider();
+        var plnr = Planner.init(&view_arena, provider);
+        const view_plan = plnr.plan(.{ .select = view_select }) catch return null;
+
+        var opt = Optimizer.init(&view_arena);
+        const optimized = opt.optimize(view_plan) catch return null;
+
+        // Extract output columns from the plan — Project resolves to named/typed columns
+        const arena_alloc = self.schema_arena.allocator();
+        const plan_cols = resolveViewPlanColumns(arena_alloc, optimized.root) orelse
+            return null;
+
+        if (plan_cols.len > 0) {
+            const columns = arena_alloc.alloc(ColumnInfo, plan_cols.len) catch return null;
+            for (plan_cols, 0..) |col, i| {
+                // Use view column aliases if available
+                const col_name = if (i < view_info.column_names.len)
+                    view_info.column_names[i]
+                else
+                    col.column;
+                columns[i] = .{
+                    .name = arena_alloc.dupe(u8, col_name) catch return null,
+                    .column_type = col.col_type.toColumnType(),
+                    .flags = .{},
+                };
+            }
+            return .{
+                .name = arena_alloc.dupe(u8, name) catch return null,
+                .columns = columns,
+                .table_constraints = &.{},
+                .data_root_page_id = 0, // Views don't have a data root page
+            };
+        }
+
+        return null;
     }
 
     fn catalogTableExists(self: *Database, name: []const u8) bool {
-        return self.catalog.tableExists(name) catch false;
+        if (self.catalog.tableExists(name) catch false) return true;
+        return self.catalog.viewExists(name) catch false;
     }
 };
 
@@ -6985,4 +7273,319 @@ test "auto-vacuum: commit count tracked across tables" {
     const s2 = db.auto_vacuum.getStats("t2").?;
     try testing.expect(s1.commits_since_vacuum >= 1);
     try testing.expect(s2.commits_since_vacuum >= 1);
+}
+
+// ── View integration tests ──────────────────────────────────────────────
+
+test "CREATE VIEW and SELECT from view" {
+    const path = "test_eng_view_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT, active INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0), (3, 'Carol', 1)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("CREATE VIEW active_users AS SELECT id, name FROM users WHERE active = 1");
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE VIEW", r3.message);
+
+    var r4 = try db.execSQL("SELECT * FROM active_users");
+    defer r4.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r4.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        count += 1;
+        // Verify column names don't have table prefix
+        try testing.expectEqualStrings("id", row.columns[0]);
+        try testing.expectEqualStrings("name", row.columns[1]);
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "DROP VIEW removes view" {
+    const path = "test_eng_view_drop.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (x INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE VIEW v1 AS SELECT x FROM t1");
+    defer r2.close(testing.allocator);
+
+    try testing.expect(try db.catalog.viewExists("v1"));
+
+    var r3 = try db.execSQL("DROP VIEW v1");
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("DROP VIEW", r3.message);
+
+    try testing.expect(!try db.catalog.viewExists("v1"));
+}
+
+test "DROP VIEW IF EXISTS on non-existent view" {
+    const path = "test_eng_view_drop_ine.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("DROP VIEW IF EXISTS v_nonexistent");
+    defer r1.close(testing.allocator);
+    try testing.expectEqualStrings("DROP VIEW", r1.message);
+}
+
+test "CREATE OR REPLACE VIEW updates definition" {
+    const path = "test_eng_view_replace.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (a INTEGER, b TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1, 'x'), (2, 'y')");
+    defer r2.close(testing.allocator);
+
+    // Create initial view
+    var r3 = try db.execSQL("CREATE VIEW v1 AS SELECT a FROM t1");
+    defer r3.close(testing.allocator);
+
+    // Replace with different definition
+    var r4 = try db.execSQL("CREATE OR REPLACE VIEW v1 AS SELECT a, b FROM t1");
+    defer r4.close(testing.allocator);
+
+    // Query the replaced view — should have 2 columns
+    var r5 = try db.execSQL("SELECT * FROM v1");
+    defer r5.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r5.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expectEqual(@as(usize, 2), row.columns.len);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "CREATE VIEW IF NOT EXISTS does not overwrite" {
+    const path = "test_eng_view_ine.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (a INTEGER, b TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1, 'x')");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("CREATE VIEW v1 AS SELECT a FROM t1");
+    defer r3.close(testing.allocator);
+
+    // IF NOT EXISTS should silently succeed without overwriting
+    var r4 = try db.execSQL("CREATE VIEW IF NOT EXISTS v1 AS SELECT a, b FROM t1");
+    defer r4.close(testing.allocator);
+
+    // Original 1-column view definition should be preserved
+    var r5 = try db.execSQL("SELECT * FROM v1");
+    defer r5.close(testing.allocator);
+
+    while (try r5.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expectEqual(@as(usize, 1), row.columns.len);
+    }
+}
+
+test "view with column aliases" {
+    const path = "test_eng_view_aliases.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (a INTEGER, b TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1, 'hello')");
+    defer r2.close(testing.allocator);
+
+    // Create view with column aliases
+    var r3 = try db.execSQL("CREATE VIEW v1 (col_id, col_name) AS SELECT a, b FROM t1");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("SELECT * FROM v1");
+    defer r4.close(testing.allocator);
+
+    while (try r4.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expectEqualStrings("col_id", row.columns[0]);
+        try testing.expectEqualStrings("col_name", row.columns[1]);
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("hello", row.values[1].text);
+    }
+}
+
+test "view on empty table returns no rows" {
+    const path = "test_eng_view_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, val TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE VIEW v1 AS SELECT id, val FROM t1");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT * FROM v1");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 0), count);
+}
+
+test "view reflects underlying table changes" {
+    const path = "test_eng_view_live.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, val TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE VIEW v1 AS SELECT id, val FROM t1");
+    defer r2.close(testing.allocator);
+
+    // Empty initially
+    {
+        var r = try db.execSQL("SELECT * FROM v1");
+        defer r.close(testing.allocator);
+        var count: usize = 0;
+        while (try r.rows.?.next()) |row_data| {
+            var row = row_data;
+            defer row.deinit();
+            count += 1;
+        }
+        try testing.expectEqual(@as(usize, 0), count);
+    }
+
+    // Insert data
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1, 'a'), (2, 'b')");
+    defer r3.close(testing.allocator);
+
+    // View should now reflect new data
+    {
+        var r = try db.execSQL("SELECT * FROM v1");
+        defer r.close(testing.allocator);
+        var count: usize = 0;
+        while (try r.rows.?.next()) |row_data| {
+            var row = row_data;
+            defer row.deinit();
+            count += 1;
+        }
+        try testing.expectEqual(@as(usize, 2), count);
+    }
+}
+
+test "view with WHERE clause filters correctly" {
+    const path = "test_eng_view_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE scores (name TEXT, score INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO scores VALUES ('Alice', 95), ('Bob', 45), ('Carol', 80), ('Dave', 30)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("CREATE VIEW high_scores AS SELECT name, score FROM scores WHERE score >= 80");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("SELECT * FROM high_scores");
+    defer r4.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r4.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expect(row.values[1].integer >= 80);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "duplicate CREATE VIEW returns error" {
+    const path = "test_eng_view_dup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (x INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE VIEW v1 AS SELECT x FROM t1");
+    defer r2.close(testing.allocator);
+
+    // Duplicate should fail
+    const result = db.execSQL("CREATE VIEW v1 AS SELECT x FROM t1");
+    try testing.expectError(EngineError.TableAlreadyExists, result);
+}
+
+test "view does not appear in table list" {
+    const path = "test_eng_view_list.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (x INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE VIEW v1 AS SELECT x FROM t1");
+    defer r2.close(testing.allocator);
+
+    const tables = try db.catalog.listTables(testing.allocator);
+    defer {
+        for (tables) |t| testing.allocator.free(t);
+        testing.allocator.free(tables);
+    }
+
+    // Should contain t1 but not v1
+    var found_t1 = false;
+    var found_v1 = false;
+    for (tables) |t| {
+        if (std.mem.eql(u8, t, "t1")) found_t1 = true;
+        if (std.mem.eql(u8, t, "v1")) found_v1 = true;
+    }
+    try testing.expect(found_t1);
+    try testing.expect(!found_v1);
+}
+
+test "view appears in view list" {
+    const path = "test_eng_view_vlist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (x INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE VIEW v1 AS SELECT x FROM t1");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE VIEW v2 AS SELECT x FROM t1");
+    defer r3.close(testing.allocator);
+
+    const views = try db.catalog.listViews(testing.allocator);
+    defer {
+        for (views) |v| testing.allocator.free(v);
+        testing.allocator.free(views);
+    }
+
+    try testing.expectEqual(@as(usize, 2), views.len);
 }

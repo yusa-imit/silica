@@ -42,6 +42,17 @@ pub const ValueType = enum {
             .untyped => .text, // default untyped to text
         };
     }
+
+    pub fn toColumnType(self: ValueType) ColumnType {
+        return switch (self) {
+            .integer => .integer,
+            .real => .real,
+            .text => .text,
+            .blob => .blob,
+            .boolean => .boolean,
+            .null_type => .untyped,
+        };
+    }
 };
 
 // ── Column Reference ──────────────────────────────────────────────────

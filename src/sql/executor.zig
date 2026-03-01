@@ -1885,6 +1885,72 @@ pub const EmptyOp = struct {
     }
 };
 
+// ── Materialized Operator ────────────────────────────────────────────────
+
+/// Serves pre-materialized rows (used for view expansion).
+pub const MaterializedOp = struct {
+    allocator: Allocator,
+    col_names: []const []const u8,
+    rows: []const []Value,
+    index: usize = 0,
+
+    pub fn init(allocator: Allocator, col_names: []const []const u8, rows: []const []Value) MaterializedOp {
+        return .{
+            .allocator = allocator,
+            .col_names = col_names,
+            .rows = rows,
+        };
+    }
+
+    pub fn next(self: *MaterializedOp) ExecError!?Row {
+        if (self.index >= self.rows.len) return null;
+
+        const source_vals = self.rows[self.index];
+        self.index += 1;
+
+        // Duplicate values for the returned row (Row.deinit will free them)
+        const vals = self.allocator.alloc(Value, source_vals.len) catch return ExecError.OutOfMemory;
+        var inited: usize = 0;
+        errdefer {
+            for (vals[0..inited]) |v| v.free(self.allocator);
+            self.allocator.free(vals);
+        }
+        for (source_vals, 0..) |v, i| {
+            vals[i] = v.dupe(self.allocator) catch return ExecError.OutOfMemory;
+            inited += 1;
+        }
+
+        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        for (self.col_names, 0..) |c, i| cols[i] = c;
+
+        return Row{
+            .columns = cols,
+            .values = vals,
+            .allocator = self.allocator,
+        };
+    }
+
+    pub fn close(self: *MaterializedOp) void {
+        for (self.rows) |vals| {
+            for (vals) |v| v.free(self.allocator);
+            self.allocator.free(vals);
+        }
+        self.allocator.free(self.rows);
+        for (self.col_names) |name| self.allocator.free(@constCast(name));
+        self.allocator.free(self.col_names);
+    }
+
+    pub fn iterator(self: *MaterializedOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&MaterializedOp.next),
+                .close = @ptrCast(&MaterializedOp.close),
+            },
+        };
+    }
+};
+
 // ── Execution Result ────────────────────────────────────────────────────
 
 /// Result of executing a SQL statement.
