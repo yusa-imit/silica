@@ -72,14 +72,14 @@
 - `src/tx/mvcc.zig` — MVCC visibility, snapshots, TransactionManager
 - `src/tx/lock.zig` — Lock manager (row-level + table-level locks, conflict detection)
 
-## Test Summary (895 tests total)
-- `tokenizer.zig`: 53 | `ast.zig`: 10 | `parser.zig`: 78 | `catalog.zig`: 30
-- `analyzer.zig`: 28 | `planner.zig`: 31 | `optimizer.zig`: 14 | `executor.zig`: 40
+## Test Summary (1015 tests total: 966 main + 49 fuzz)
+- `tokenizer.zig`: 54 | `ast.zig`: 11 | `parser.zig`: 100 | `catalog.zig`: 30
+- `analyzer.zig`: 46 | `planner.zig`: 49 | `optimizer.zig`: 17 | `executor.zig`: 53
 - `btree.zig`: 53 | `fuzz.zig`: 12 | `overflow.zig`: 18 | `page.zig`: 24
 - `buffer_pool.zig`: 23 | `checksum.zig`: 12 | `varint.zig`: 19
 - `wal.zig`: 23 | `mvcc.zig`: 69 | `lock.zig`: 50
 - `vacuum.zig`: 46 | `fsm.zig`: 21
-- `engine.zig`: 192 | `cli.zig`: 30 | `tui.zig`: 18
+- `engine.zig`: 237 | `cli.zig`: 31 | `tui.zig`: 18
 
 ## Current Phase: Phase 2 — SQL Layer + Phase 3 — Transactions
 
@@ -126,10 +126,12 @@
 - [x] Savepoints — SAVEPOINT, ROLLBACK TO, RELEASE with CID management
 
 ### Phase 5 — Advanced SQL (In Progress)
-- [x] CREATE VIEW / DROP VIEW — parsing and catalog storage
-- [x] SELECT from views — full execution pipeline (MaterializedOp, view expansion)
-- [ ] CTEs (WITH, WITH RECURSIVE)
-- [ ] Set operations (UNION/INTERSECT/EXCEPT)
-- [ ] DISTINCT ON
-- [ ] Window functions (ROW_NUMBER, RANK, etc.)
-- [ ] Advanced data types (DATE/TIME/TIMESTAMP, NUMERIC, UUID, ARRAY, ENUM)
+- [x] CREATE VIEW / DROP VIEW — parsing, catalog, execution (17 tests)
+- [x] CTEs (WITH) — parsing, analysis, planning, execution (11 tests)
+- [x] Set operations (UNION/INTERSECT/EXCEPT) — full pipeline (16 tests)
+- [x] SELECT DISTINCT / DISTINCT ON — executor with hash-based dedup (10 tests)
+- [ ] Updatable views (INSERT/UPDATE/DELETE through views)
+- [ ] WITH CHECK OPTION
+- [ ] WITH RECURSIVE (recursive CTEs)
+- [ ] Window functions (ROW_NUMBER, RANK, etc.) — Milestone 9
+- [ ] Advanced data types (DATE/TIME/TIMESTAMP, NUMERIC, UUID, ARRAY, ENUM) — Milestone 10
