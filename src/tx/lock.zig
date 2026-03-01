@@ -149,6 +149,142 @@ pub const TableLockEntry = struct {
 
 pub const TableLockList = std.ArrayListUnmanaged(TableLockEntry);
 
+// ── Wait-For Graph ─────────────────────────────────────────────────────
+
+/// Wait-for graph for deadlock detection.
+///
+/// Directed graph where an edge (A → B) means "transaction A is waiting for
+/// a lock held by transaction B". A cycle in the graph indicates a deadlock.
+///
+/// The graph is stored as an adjacency list: each node (transaction XID)
+/// maps to the set of XIDs it's waiting for.
+pub const WaitForGraph = struct {
+    /// Adjacency list: waiter_xid → list of blocker_xids.
+    edges: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
+
+    pub fn init() WaitForGraph {
+        return .{ .edges = .{} };
+    }
+
+    pub fn deinit(self: *WaitForGraph, allocator: Allocator) void {
+        var it = self.edges.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        self.edges.deinit(allocator);
+    }
+
+    /// Add a wait-for edge: `waiter` is waiting for `blocker`.
+    pub fn addEdge(self: *WaitForGraph, allocator: Allocator, waiter: u32, blocker: u32) !void {
+        const gop = try self.edges.getOrPut(allocator, waiter);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+
+        // Don't add duplicate edges
+        for (gop.value_ptr.items) |existing| {
+            if (existing == blocker) return;
+        }
+
+        try gop.value_ptr.append(allocator, blocker);
+    }
+
+    /// Remove a specific wait-for edge.
+    pub fn removeEdge(self: *WaitForGraph, waiter: u32, blocker: u32) void {
+        if (self.edges.getPtr(waiter)) |list| {
+            var idx: usize = 0;
+            while (idx < list.items.len) {
+                if (list.items[idx] == blocker) {
+                    _ = list.orderedRemove(idx);
+                    break;
+                }
+                idx += 1;
+            }
+        }
+    }
+
+    /// Remove all edges involving a transaction (both as waiter and as blocker).
+    pub fn removeNode(self: *WaitForGraph, allocator: Allocator, xid: u32) void {
+        // Remove outgoing edges (this xid as waiter)
+        if (self.edges.fetchRemove(xid)) |kv| {
+            var list = kv.value;
+            list.deinit(allocator);
+        }
+
+        // Remove incoming edges (this xid as blocker in other waiters' lists)
+        var it = self.edges.iterator();
+        while (it.next()) |entry| {
+            const list = entry.value_ptr;
+            var idx: usize = 0;
+            while (idx < list.items.len) {
+                if (list.items[idx] == xid) {
+                    _ = list.orderedRemove(idx);
+                } else {
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    /// Check if there is a cycle starting from `start_xid` using DFS.
+    /// Returns true if a cycle is detected (deadlock).
+    pub fn hasCycle(self: *WaitForGraph, allocator: Allocator, start_xid: u32) bool {
+        // DFS with visited and in-stack tracking
+        var visited = std.AutoHashMapUnmanaged(u32, void){};
+        defer visited.deinit(allocator);
+        var in_stack = std.AutoHashMapUnmanaged(u32, void){};
+        defer in_stack.deinit(allocator);
+
+        return self.dfsHasCycle(allocator, start_xid, &visited, &in_stack);
+    }
+
+    fn dfsHasCycle(
+        self: *WaitForGraph,
+        allocator: Allocator,
+        node: u32,
+        visited: *std.AutoHashMapUnmanaged(u32, void),
+        in_stack: *std.AutoHashMapUnmanaged(u32, void),
+    ) bool {
+        // If already in the current DFS stack, we found a cycle
+        if (in_stack.get(node) != null) return true;
+
+        // If already fully processed, no cycle through this node
+        if (visited.get(node) != null) return false;
+
+        // Mark as visited and in stack
+        visited.put(allocator, node, {}) catch return false;
+        in_stack.put(allocator, node, {}) catch return false;
+
+        // Visit all neighbors (blockers)
+        if (self.edges.get(node)) |neighbors| {
+            for (neighbors.items) |neighbor| {
+                if (self.dfsHasCycle(allocator, neighbor, visited, in_stack)) {
+                    return true;
+                }
+            }
+        }
+
+        // Remove from stack (backtrack)
+        _ = in_stack.remove(node);
+        return false;
+    }
+
+    /// Count total number of edges in the graph.
+    pub fn edgeCount(self: *WaitForGraph) usize {
+        var count: usize = 0;
+        var it = self.edges.iterator();
+        while (it.next()) |entry| {
+            count += entry.value_ptr.items.len;
+        }
+        return count;
+    }
+
+    /// Count total number of nodes in the graph.
+    pub fn nodeCount(self: *WaitForGraph) usize {
+        return self.edges.count();
+    }
+};
+
 // ── Lock Manager ───────────────────────────────────────────────────────
 
 pub const LockError = error{
@@ -179,12 +315,15 @@ pub const LockManager = struct {
     ),
     /// Table-level locks: table_page_id → list of (xid, mode)
     table_locks: std.AutoHashMapUnmanaged(u32, TableLockList),
+    /// Wait-for graph for deadlock detection.
+    wait_for: WaitForGraph,
 
     pub fn init(allocator: Allocator) LockManager {
         return .{
             .allocator = allocator,
             .row_locks = .{},
             .table_locks = .{},
+            .wait_for = WaitForGraph.init(),
         };
     }
 
@@ -202,6 +341,9 @@ pub const LockManager = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.table_locks.deinit(self.allocator);
+
+        // Free wait-for graph
+        self.wait_for.deinit(self.allocator);
     }
 
     // ── Row-level Locks ────────────────────────────────────────────
@@ -347,6 +489,9 @@ pub const LockManager = struct {
 
     /// Release ALL locks held by a transaction (called on commit/rollback).
     pub fn releaseAllLocks(self: *LockManager, xid: u32) void {
+        // Remove from wait-for graph
+        self.wait_for.removeNode(self.allocator, xid);
+
         // Release all row locks
         var row_targets_to_remove = std.ArrayListUnmanaged(LockTarget){};
         defer row_targets_to_remove.deinit(self.allocator);
@@ -395,6 +540,41 @@ pub const LockManager = struct {
         }
     }
 
+    // ── Deadlock Detection ───────────────────────────────────────
+
+    /// Record that `waiter_xid` is waiting for a lock held by `blocker_xid`.
+    /// Then check for deadlock cycles. Returns DeadlockDetected if a cycle exists.
+    pub fn addWaitEdge(self: *LockManager, waiter_xid: u32, blocker_xid: u32) LockError!void {
+        try self.wait_for.addEdge(self.allocator, waiter_xid, blocker_xid);
+        if (self.wait_for.hasCycle(self.allocator, waiter_xid)) {
+            // Remove the edge that caused the cycle before returning error
+            self.wait_for.removeEdge(waiter_xid, blocker_xid);
+            return LockError.DeadlockDetected;
+        }
+    }
+
+    /// Remove all wait-for edges for a transaction (called on commit/abort).
+    pub fn removeWaiter(self: *LockManager, xid: u32) void {
+        self.wait_for.removeNode(self.allocator, xid);
+    }
+
+    /// Check if acquiring a row lock would cause a deadlock.
+    /// Returns the blocker XID if deadlock would occur, null otherwise.
+    pub fn wouldDeadlock(self: *LockManager, waiter_xid: u32, target: LockTarget) ?u32 {
+        const existing = self.row_locks.get(target) orelse return null;
+
+        // Find blockers for this lock
+        for (existing.holders.items) |holder| {
+            if (holder == waiter_xid) continue;
+            // Simulate adding a wait edge and check for cycle
+            self.wait_for.addEdge(self.allocator, waiter_xid, holder) catch return holder;
+            const has_cycle = self.wait_for.hasCycle(self.allocator, waiter_xid);
+            self.wait_for.removeEdge(waiter_xid, holder);
+            if (has_cycle) return holder;
+        }
+        return null;
+    }
+
     // ── Monitoring ─────────────────────────────────────────────────
 
     /// Count total active row locks.
@@ -410,6 +590,11 @@ pub const LockManager = struct {
             count += entry.value_ptr.items.len;
         }
         return count;
+    }
+
+    /// Return the number of active wait-for edges.
+    pub fn activeWaitEdgeCount(self: *LockManager) usize {
+        return self.wait_for.edgeCount();
     }
 };
 
@@ -1039,4 +1224,240 @@ test "LockManager — removeHolder for non-holding txn is no-op" {
     try std.testing.expectEqual(@as(usize, 2), info.holders.items.len);
     try std.testing.expect(info.isHeldBy(1));
     try std.testing.expect(info.isHeldBy(2));
+}
+
+// ── Wait-For Graph Tests ──────────────────────────────────────────────
+
+test "WaitForGraph — init and deinit" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), wfg.edgeCount());
+    try std.testing.expectEqual(@as(usize, 0), wfg.nodeCount());
+}
+
+test "WaitForGraph — add and remove edges" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    try wfg.addEdge(allocator, 1, 2);
+    try std.testing.expectEqual(@as(usize, 1), wfg.edgeCount());
+    try std.testing.expectEqual(@as(usize, 1), wfg.nodeCount());
+
+    try wfg.addEdge(allocator, 1, 3);
+    try std.testing.expectEqual(@as(usize, 2), wfg.edgeCount());
+
+    // Duplicate edge — no change
+    try wfg.addEdge(allocator, 1, 2);
+    try std.testing.expectEqual(@as(usize, 2), wfg.edgeCount());
+
+    wfg.removeEdge(1, 2);
+    try std.testing.expectEqual(@as(usize, 1), wfg.edgeCount());
+}
+
+test "WaitForGraph — no cycle in linear chain" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    // 1 → 2 → 3 → 4 (no cycle)
+    try wfg.addEdge(allocator, 1, 2);
+    try wfg.addEdge(allocator, 2, 3);
+    try wfg.addEdge(allocator, 3, 4);
+
+    try std.testing.expect(!wfg.hasCycle(allocator, 1));
+    try std.testing.expect(!wfg.hasCycle(allocator, 2));
+    try std.testing.expect(!wfg.hasCycle(allocator, 3));
+}
+
+test "WaitForGraph — simple 2-node cycle" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    // 1 → 2, 2 → 1 (cycle!)
+    try wfg.addEdge(allocator, 1, 2);
+    try wfg.addEdge(allocator, 2, 1);
+
+    try std.testing.expect(wfg.hasCycle(allocator, 1));
+    try std.testing.expect(wfg.hasCycle(allocator, 2));
+}
+
+test "WaitForGraph — 3-node cycle" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    // 1 → 2 → 3 → 1 (cycle!)
+    try wfg.addEdge(allocator, 1, 2);
+    try wfg.addEdge(allocator, 2, 3);
+    try wfg.addEdge(allocator, 3, 1);
+
+    try std.testing.expect(wfg.hasCycle(allocator, 1));
+    try std.testing.expect(wfg.hasCycle(allocator, 2));
+    try std.testing.expect(wfg.hasCycle(allocator, 3));
+}
+
+test "WaitForGraph — cycle detection with branches" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    // 1 → 2, 1 → 3, 2 → 4, 3 → 4 (no cycle — diamond shape)
+    try wfg.addEdge(allocator, 1, 2);
+    try wfg.addEdge(allocator, 1, 3);
+    try wfg.addEdge(allocator, 2, 4);
+    try wfg.addEdge(allocator, 3, 4);
+
+    try std.testing.expect(!wfg.hasCycle(allocator, 1));
+
+    // Add edge 4 → 1 to create a cycle
+    try wfg.addEdge(allocator, 4, 1);
+    try std.testing.expect(wfg.hasCycle(allocator, 1));
+}
+
+test "WaitForGraph — remove node clears all edges" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    // 1 → 2, 2 → 3, 3 → 1
+    try wfg.addEdge(allocator, 1, 2);
+    try wfg.addEdge(allocator, 2, 3);
+    try wfg.addEdge(allocator, 3, 1);
+
+    try std.testing.expect(wfg.hasCycle(allocator, 1));
+
+    // Remove node 2 — breaks the cycle
+    wfg.removeNode(allocator, 2);
+
+    try std.testing.expect(!wfg.hasCycle(allocator, 1));
+    try std.testing.expect(!wfg.hasCycle(allocator, 3));
+}
+
+test "WaitForGraph — self-loop is a cycle" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    try wfg.addEdge(allocator, 1, 1);
+    try std.testing.expect(wfg.hasCycle(allocator, 1));
+}
+
+test "WaitForGraph — no cycle with disconnected components" {
+    const allocator = std.testing.allocator;
+    var wfg = WaitForGraph.init();
+    defer wfg.deinit(allocator);
+
+    // Component 1: 1 → 2
+    try wfg.addEdge(allocator, 1, 2);
+    // Component 2: 3 → 4
+    try wfg.addEdge(allocator, 3, 4);
+
+    try std.testing.expect(!wfg.hasCycle(allocator, 1));
+    try std.testing.expect(!wfg.hasCycle(allocator, 3));
+}
+
+test "LockManager — addWaitEdge detects deadlock" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    // Set up: txn 1 waits for txn 2
+    try lm.addWaitEdge(1, 2);
+
+    // txn 2 waits for txn 1 — deadlock!
+    try std.testing.expectError(error.DeadlockDetected, lm.addWaitEdge(2, 1));
+
+    // The deadlock edge should have been removed
+    try std.testing.expectEqual(@as(usize, 1), lm.activeWaitEdgeCount());
+}
+
+test "LockManager — addWaitEdge no deadlock for chain" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    try lm.addWaitEdge(1, 2);
+    try lm.addWaitEdge(2, 3);
+    try lm.addWaitEdge(3, 4);
+
+    try std.testing.expectEqual(@as(usize, 3), lm.activeWaitEdgeCount());
+}
+
+test "LockManager — addWaitEdge 3-way deadlock" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    try lm.addWaitEdge(1, 2);
+    try lm.addWaitEdge(2, 3);
+
+    // txn 3 waits for txn 1 — 3-way deadlock!
+    try std.testing.expectError(error.DeadlockDetected, lm.addWaitEdge(3, 1));
+
+    // Only the first two edges should remain
+    try std.testing.expectEqual(@as(usize, 2), lm.activeWaitEdgeCount());
+}
+
+test "LockManager — releaseAllLocks clears wait-for edges" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+    try lm.acquireRowLock(1, target, .exclusive);
+
+    // Simulate txn 2 waiting for txn 1
+    try lm.addWaitEdge(2, 1);
+    try std.testing.expectEqual(@as(usize, 1), lm.activeWaitEdgeCount());
+
+    // Release txn 1 — should also clear wait-for edges
+    lm.releaseAllLocks(1);
+    try std.testing.expectEqual(@as(usize, 0), lm.activeWaitEdgeCount());
+}
+
+test "LockManager — wouldDeadlock detection" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target_a = LockTarget{ .table_page_id = 5, .row_key = 100 };
+    const target_b = LockTarget{ .table_page_id = 5, .row_key = 200 };
+
+    // Txn 1 holds exclusive lock on A
+    try lm.acquireRowLock(1, target_a, .exclusive);
+    // Txn 2 holds exclusive lock on B
+    try lm.acquireRowLock(2, target_b, .exclusive);
+
+    // Txn 1 is waiting for txn 2's lock on B
+    try lm.addWaitEdge(1, 2);
+
+    // Would txn 2 deadlock if it tried to acquire lock on A?
+    // Yes — txn 2 → (wants A held by txn 1) → txn 1 → (waits for txn 2) = cycle
+    const blocker = lm.wouldDeadlock(2, target_a);
+    try std.testing.expect(blocker != null);
+    try std.testing.expectEqual(@as(u32, 1), blocker.?);
+
+    lm.releaseAllLocks(1);
+    lm.releaseAllLocks(2);
+}
+
+test "LockManager — wouldDeadlock returns null when safe" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 5, .row_key = 100 };
+
+    // No locks — no deadlock
+    try std.testing.expectEqual(@as(?u32, null), lm.wouldDeadlock(1, target));
+
+    // Lock held, no wait-for edges — no deadlock
+    try lm.acquireRowLock(1, target, .exclusive);
+    try std.testing.expectEqual(@as(?u32, null), lm.wouldDeadlock(2, target));
+
+    lm.releaseAllLocks(1);
 }
