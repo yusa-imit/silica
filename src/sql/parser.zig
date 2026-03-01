@@ -472,6 +472,13 @@ pub const Parser = struct {
     fn parseCreate(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_create);
 
+        // CREATE OR REPLACE VIEW
+        if (self.check(.kw_or)) {
+            return .{ .create_view = try self.parseCreateView(true) };
+        }
+        if (self.check(.kw_view)) {
+            return .{ .create_view = try self.parseCreateView(false) };
+        }
         if (self.match(.kw_unique)) {
             return .{ .create_index = try self.parseCreateIndex(true) };
         }
@@ -482,7 +489,7 @@ pub const Parser = struct {
             return .{ .create_table = try self.parseCreateTable() };
         }
 
-        try self.addError(self.peek(), "expected TABLE or INDEX after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, or INDEX after CREATE");
         return error.ParseFailed;
     }
 
@@ -818,8 +825,9 @@ pub const Parser = struct {
     fn parseDrop(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_drop);
         if (self.check(.kw_table)) return .{ .drop_table = try self.parseDropTable() };
+        if (self.check(.kw_view)) return .{ .drop_view = try self.parseDropView() };
         if (self.check(.kw_index)) return .{ .drop_index = try self.parseDropIndex() };
-        try self.addError(self.peek(), "expected TABLE or INDEX after DROP");
+        try self.addError(self.peek(), "expected TABLE, VIEW, or INDEX after DROP");
         return error.ParseFailed;
     }
 
@@ -835,6 +843,64 @@ pub const Parser = struct {
 
     fn parseDropIndex(self: *Parser) Error!ast.DropIndexStmt {
         _ = try self.expect(.kw_index);
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+        return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    // ── CREATE VIEW / DROP VIEW ──────────────────────────────────
+
+    fn parseCreateView(self: *Parser, or_kw_seen: bool) Error!ast.CreateViewStmt {
+        const a = self.alloc();
+        var or_replace = false;
+
+        if (or_kw_seen) {
+            // CREATE OR REPLACE VIEW
+            _ = try self.expect(.kw_or);
+            _ = try self.expect(.kw_replace);
+            or_replace = true;
+        }
+
+        _ = try self.expect(.kw_view);
+
+        var if_not_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_not);
+            _ = try self.expect(.kw_exists);
+            if_not_exists = true;
+        }
+
+        const name = try self.expectIdentifier();
+
+        // Optional column list: CREATE VIEW v (col1, col2) AS ...
+        var column_names = std.ArrayListUnmanaged([]const u8){};
+        if (self.match(.left_paren)) {
+            while (!self.check(.right_paren) and !self.check(.eof)) {
+                const col = try self.expectIdentifier();
+                column_names.append(a, col) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+        }
+
+        _ = try self.expect(.kw_as);
+
+        const select = try self.parseSelect();
+
+        return .{
+            .name = name,
+            .select = select,
+            .or_replace = or_replace,
+            .if_not_exists = if_not_exists,
+            .column_names = column_names.toOwnedSlice(a) catch return error.OutOfMemory,
+        };
+    }
+
+    fn parseDropView(self: *Parser) Error!ast.DropViewStmt {
+        _ = try self.expect(.kw_view);
         var if_exists = false;
         if (self.match(.kw_if)) {
             _ = try self.expect(.kw_exists);

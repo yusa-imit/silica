@@ -1681,6 +1681,42 @@ pub const Database = struct {
                     },
                 }
             },
+            .create_view => |cv| {
+                self.catalog.createView(
+                    cv.name,
+                    sql,
+                    cv.or_replace,
+                    cv.if_not_exists,
+                    cv.column_names,
+                ) catch |err| {
+                    arena.deinit();
+                    self.allocator.destroy(arena);
+                    return switch (err) {
+                        error.ViewAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.deinit();
+                self.allocator.destroy(arena);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE VIEW" };
+            },
+            .drop_view => |dv| {
+                self.catalog.dropView(dv.name, dv.if_exists) catch |err| {
+                    arena.deinit();
+                    self.allocator.destroy(arena);
+                    return switch (err) {
+                        error.ViewNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.deinit();
+                self.allocator.destroy(arena);
+                self.commitWal() catch {};
+                return .{ .message = "DROP VIEW" };
+            },
             else => {},
         }
 

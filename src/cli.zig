@@ -531,6 +531,12 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
                 writer.writeAll("Parsed: VACUUM\n") catch {};
             }
         },
+        .create_view => |v| {
+            writer.print("Parsed: CREATE VIEW {s}\n", .{v.name}) catch {};
+        },
+        .drop_view => |v| {
+            writer.print("Parsed: DROP VIEW {s}\n", .{v.name}) catch {};
+        },
     }
 }
 

@@ -410,6 +410,8 @@ pub const CatalogError = error{
     TableNotFound,
     InvalidSchemaData,
     OutOfMemory,
+    ViewAlreadyExists,
+    ViewNotFound,
 };
 
 /// Schema catalog backed by a B+Tree on the schema root page (page 1).
@@ -611,9 +613,17 @@ pub const Catalog = struct {
 
         while (try cursor.next()) |entry| {
             defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            // Skip view entries (they have the VIEW_KEY_PREFIX)
+            if (entry.key.len > VIEW_KEY_PREFIX.len and
+                std.mem.eql(u8, entry.key[0..VIEW_KEY_PREFIX.len], VIEW_KEY_PREFIX))
+            {
+                continue;
+            }
+
             const name_copy = try allocator.dupe(u8, entry.key);
             errdefer allocator.free(name_copy);
-            defer allocator.free(entry.key);
             try names.append(allocator, name_copy);
         }
 
@@ -638,6 +648,198 @@ pub const Catalog = struct {
             }
         }
         return error.ColumnNotFound;
+    }
+
+    // ── View Catalog ────────────────────────────────────────────────────
+
+    const VIEW_KEY_PREFIX = "\x00view\x00";
+
+    fn makeViewKey(self: *Catalog, name: []const u8) ![]u8 {
+        const key = try self.allocator.alloc(u8, VIEW_KEY_PREFIX.len + name.len);
+        @memcpy(key[0..VIEW_KEY_PREFIX.len], VIEW_KEY_PREFIX);
+        @memcpy(key[VIEW_KEY_PREFIX.len..], name);
+        return key;
+    }
+
+    /// Store a view definition. The SQL text is stored as the value.
+    pub fn createView(
+        self: *Catalog,
+        name: []const u8,
+        sql: []const u8,
+        or_replace: bool,
+        if_not_exists: bool,
+        column_names: []const []const u8,
+    ) !void {
+        const key = try self.makeViewKey(name);
+        defer self.allocator.free(key);
+
+        // Check if view already exists
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            if (or_replace) {
+                // Drop existing and re-create
+                self.tree.delete(key) catch {};
+            } else if (if_not_exists) {
+                return;
+            } else {
+                return CatalogError.ViewAlreadyExists;
+            }
+        }
+
+        // Also check if a table with the same name exists
+        if (try self.tableExists(name)) {
+            return CatalogError.TableAlreadyExists;
+        }
+
+        // Serialize: [col_count: u16][col_names...][sql_text]
+        var buf_size: usize = 2; // col_count
+        for (column_names) |cn| {
+            buf_size += 2 + cn.len; // len_prefix + name
+        }
+        buf_size += sql.len;
+
+        const value = try self.allocator.alloc(u8, buf_size);
+        defer self.allocator.free(value);
+
+        var offset: usize = 0;
+        std.mem.writeInt(u16, value[offset..][0..2], @intCast(column_names.len), .little);
+        offset += 2;
+        for (column_names) |cn| {
+            std.mem.writeInt(u16, value[offset..][0..2], @intCast(cn.len), .little);
+            offset += 2;
+            @memcpy(value[offset..][0..cn.len], cn);
+            offset += cn.len;
+        }
+        @memcpy(value[offset..], sql);
+
+        self.tree.insert(key, value) catch |err| {
+            return switch (err) {
+                error.OutOfMemory => CatalogError.OutOfMemory,
+                else => CatalogError.InvalidSchemaData,
+            };
+        };
+    }
+
+    /// Drop a view from the catalog.
+    pub fn dropView(self: *Catalog, name: []const u8, if_exists: bool) !void {
+        const key = try self.makeViewKey(name);
+        defer self.allocator.free(key);
+
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+        } else {
+            if (if_exists) return;
+            return CatalogError.ViewNotFound;
+        }
+
+        self.tree.delete(key) catch |err| {
+            return switch (err) {
+                error.OutOfMemory => CatalogError.OutOfMemory,
+                else => err,
+            };
+        };
+    }
+
+    /// View definition returned from catalog lookup.
+    pub const ViewInfo = struct {
+        name: []const u8,
+        sql: []const u8,
+        column_names: []const []const u8,
+        allocator: Allocator,
+
+        pub fn deinit(self: ViewInfo) void {
+            self.allocator.free(self.name);
+            self.allocator.free(self.sql);
+            for (self.column_names) |cn| self.allocator.free(cn);
+            self.allocator.free(self.column_names);
+        }
+    };
+
+    /// Look up a view by name. Caller must call ViewInfo.deinit().
+    pub fn getView(self: *Catalog, name: []const u8) !ViewInfo {
+        const key = try self.makeViewKey(name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key) orelse
+            return CatalogError.ViewNotFound;
+        defer self.allocator.free(value);
+
+        // Deserialize: [col_count: u16][col_names...][sql_text]
+        if (value.len < 2) return CatalogError.InvalidSchemaData;
+
+        var offset: usize = 0;
+        const col_count = std.mem.readInt(u16, value[offset..][0..2], .little);
+        offset += 2;
+
+        const col_names = try self.allocator.alloc([]const u8, col_count);
+        errdefer {
+            for (col_names[0..col_count]) |cn| self.allocator.free(cn);
+            self.allocator.free(col_names);
+        }
+
+        for (0..col_count) |i| {
+            if (offset + 2 > value.len) return CatalogError.InvalidSchemaData;
+            const cn_len = std.mem.readInt(u16, value[offset..][0..2], .little);
+            offset += 2;
+            if (offset + cn_len > value.len) return CatalogError.InvalidSchemaData;
+            col_names[i] = try self.allocator.dupe(u8, value[offset..][0..cn_len]);
+            offset += cn_len;
+        }
+
+        const sql_text = try self.allocator.dupe(u8, value[offset..]);
+
+        return .{
+            .name = try self.allocator.dupe(u8, name),
+            .sql = sql_text,
+            .column_names = col_names,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// Check if a view exists.
+    pub fn viewExists(self: *Catalog, name: []const u8) !bool {
+        const key = try self.makeViewKey(name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
+    }
+
+    /// List all view names. Caller must free each name and the returned slice.
+    pub fn listViews(self: *Catalog, allocator: Allocator) ![][]const u8 {
+        var cursor = Cursor.init(allocator, &self.tree);
+        defer cursor.deinit();
+
+        try cursor.seekFirst();
+
+        var names = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (names.items) |n| allocator.free(n);
+            names.deinit(allocator);
+        }
+
+        while (try cursor.next()) |entry| {
+            defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            // Only include view entries (key starts with VIEW_KEY_PREFIX)
+            if (entry.key.len > VIEW_KEY_PREFIX.len and
+                std.mem.eql(u8, entry.key[0..VIEW_KEY_PREFIX.len], VIEW_KEY_PREFIX))
+            {
+                const view_name = entry.key[VIEW_KEY_PREFIX.len..];
+                const name_copy = try allocator.dupe(u8, view_name);
+                errdefer allocator.free(name_copy);
+                try names.append(allocator, name_copy);
+            }
+        }
+
+        return names.toOwnedSlice(allocator);
     }
 };
 

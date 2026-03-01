@@ -74,6 +74,12 @@ pub const TokenType = enum {
     kw_strict,
     kw_temp,
     kw_temporary,
+    kw_view,
+    kw_replace,
+    kw_with,
+    kw_option,
+    kw_recursive,
+    kw_materialized,
 
     // Keywords — DML
     kw_select,
@@ -580,6 +586,12 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "strict", .kw_strict },
         .{ "temp", .kw_temp },
         .{ "temporary", .kw_temporary },
+        .{ "view", .kw_view },
+        .{ "replace", .kw_replace },
+        .{ "with", .kw_with },
+        .{ "option", .kw_option },
+        .{ "recursive", .kw_recursive },
+        .{ "materialized", .kw_materialized },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -985,6 +997,17 @@ test "EXPLAIN and PRAGMA" {
     try expectSingleToken("explain", .kw_explain, "explain");
     try expectSingleToken("pragma", .kw_pragma, "pragma");
     try expectSingleToken("vacuum", .kw_vacuum, "vacuum");
+}
+
+test "VIEW and CTE keywords" {
+    try expectSingleToken("view", .kw_view, "view");
+    try expectSingleToken("VIEW", .kw_view, "VIEW");
+    try expectSingleToken("replace", .kw_replace, "replace");
+    try expectSingleToken("with", .kw_with, "with");
+    try expectSingleToken("WITH", .kw_with, "WITH");
+    try expectSingleToken("option", .kw_option, "option");
+    try expectSingleToken("recursive", .kw_recursive, "recursive");
+    try expectSingleToken("materialized", .kw_materialized, "materialized");
 }
 
 test "CASE expression tokens" {

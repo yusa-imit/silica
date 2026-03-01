@@ -344,6 +344,25 @@ pub const VacuumStmt = struct {
     table_name: ?[]const u8 = null,
 };
 
+/// CREATE VIEW statement.
+pub const CreateViewStmt = struct {
+    name: []const u8,
+    /// The SELECT query that defines the view.
+    select: SelectStmt,
+    /// CREATE OR REPLACE VIEW
+    or_replace: bool = false,
+    /// IF NOT EXISTS
+    if_not_exists: bool = false,
+    /// Optional column aliases for the view.
+    column_names: []const []const u8 = &.{},
+};
+
+/// DROP VIEW statement.
+pub const DropViewStmt = struct {
+    name: []const u8,
+    if_exists: bool = false,
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -357,6 +376,8 @@ pub const Stmt = union(enum) {
     transaction: TransactionStmt,
     explain: ExplainStmt,
     vacuum: VacuumStmt,
+    create_view: CreateViewStmt,
+    drop_view: DropViewStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;

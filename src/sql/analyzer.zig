@@ -211,6 +211,8 @@ pub const Analyzer = struct {
             .drop_index => {},
             .transaction => {},
             .vacuum => {},
+            .create_view => |s| self.analyzeSelect(&s.select),
+            .drop_view => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
