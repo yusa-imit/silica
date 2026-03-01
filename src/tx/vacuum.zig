@@ -29,6 +29,8 @@ const catalog_mod = @import("../sql/catalog.zig");
 const Catalog = catalog_mod.Catalog;
 const executor_mod = @import("../sql/executor.zig");
 const Value = executor_mod.Value;
+const fsm_mod = @import("../storage/fsm.zig");
+const FreeSpaceMap = fsm_mod.FreeSpaceMap;
 
 /// Result of a VACUUM operation on a single table.
 pub const VacuumResult = struct {
@@ -38,6 +40,10 @@ pub const VacuumResult = struct {
     tuples_frozen: u64 = 0,
     /// Number of tuples scanned.
     tuples_scanned: u64 = 0,
+    /// Number of leaf pages with updated free space info.
+    pages_updated: u64 = 0,
+    /// Total free space reclaimed (bytes, estimated via FSM categories).
+    free_space_bytes: u64 = 0,
 };
 
 /// Determine if a versioned row is dead and should be vacuumed.
@@ -103,6 +109,7 @@ pub fn vacuumTable(
     table_root_page_id: u32,
     tm: *TransactionManager,
     table_info: *catalog_mod.TableInfo,
+    fsm_opt: ?*FreeSpaceMap,
 ) !VacuumResult {
     var result = VacuumResult{};
     const vacuum_horizon = tm.getVacuumHorizon();
@@ -215,6 +222,11 @@ pub fn vacuumTable(
         table_info.data_root_page_id = tree.root_page_id;
     }
 
+    // Phase 4: Update Free Space Map for modified leaf pages
+    if (fsm_opt) |fsm| {
+        updateFsmForTree(pool, &tree, fsm) catch {};
+    }
+
     return result;
 }
 
@@ -262,6 +274,48 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };
+}
+
+/// Walk a B+Tree's leaf pages and update FSM entries with current free space.
+fn updateFsmForTree(pool: *BufferPool, tree: *BTree, fsm: *FreeSpaceMap) !void {
+    const page_size = pool.pager.page_size;
+    var page_id = tree.root_page_id;
+
+    // Traverse to the leftmost leaf
+    while (true) {
+        const frame = try pool.fetchPage(page_id);
+        defer pool.unpinPage(page_id, false);
+        const header = page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
+
+        if (header.page_type == .leaf) {
+            break;
+        } else if (header.page_type == .internal) {
+            if (header.cell_count == 0) {
+                page_id = btree_mod.getRightChild(frame.data);
+            } else {
+                const cell = btree_mod.readInternalCell(frame.data, page_size, 0);
+                page_id = cell.left_child;
+            }
+        } else {
+            return;
+        }
+    }
+
+    // Walk leaf pages via next_leaf pointers
+    while (page_id != 0) {
+        const frame = try pool.fetchPage(page_id);
+        defer pool.unpinPage(page_id, false);
+        const header = page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
+
+        if (header.page_type != .leaf) break;
+
+        const free_space = btree_mod.leafFreeSpace(frame.data, page_size, header.cell_count);
+        try fsm.update(page_id, free_space);
+
+        // Get next leaf
+        const next_leaf = btree_mod.getNextLeaf(frame.data);
+        page_id = next_leaf;
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -562,7 +616,7 @@ test "vacuumTable — removes dead tuples from aborted transactions" {
     };
 
     // Vacuum should remove the aborted row
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     try std.testing.expectEqual(@as(u64, 3), result.tuples_scanned);
     try std.testing.expectEqual(@as(u64, 1), result.tuples_removed);
@@ -621,7 +675,7 @@ test "vacuumTable — removes committed deletes below horizon" {
 
     // Both xid1 and xid2 committed, no active txns → horizon = next_xid
     // xmax (xid2) < horizon → dead
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     try std.testing.expectEqual(@as(u64, 1), result.tuples_scanned);
     try std.testing.expectEqual(@as(u64, 1), result.tuples_removed);
@@ -673,7 +727,7 @@ test "vacuumTable — freezes old committed tuples" {
         .data_root_page_id = tree.root_page_id,
     };
 
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     try std.testing.expectEqual(@as(u64, 1), result.tuples_scanned);
     try std.testing.expectEqual(@as(u64, 0), result.tuples_removed);
@@ -734,7 +788,7 @@ test "vacuumTable — skips legacy (non-MVCC) rows" {
         .data_root_page_id = tree.root_page_id,
     };
 
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     // Legacy rows should be scanned but not removed or frozen
     try std.testing.expectEqual(@as(u64, 1), result.tuples_scanned);
@@ -770,7 +824,7 @@ test "vacuumTable — empty table" {
         .data_root_page_id = tree.root_page_id,
     };
 
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     try std.testing.expectEqual(@as(u64, 0), result.tuples_scanned);
     try std.testing.expectEqual(@as(u64, 0), result.tuples_removed);
@@ -990,7 +1044,7 @@ test "vacuumTable — all tuples dead" {
         .data_root_page_id = tree.root_page_id,
     };
 
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     try std.testing.expectEqual(@as(u64, 3), result.tuples_scanned);
     try std.testing.expectEqual(@as(u64, 3), result.tuples_removed);
@@ -1043,7 +1097,7 @@ test "vacuumTable — all tuples live and freezable" {
         .data_root_page_id = tree.root_page_id,
     };
 
-    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info);
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
 
     try std.testing.expectEqual(@as(u64, 3), result.tuples_scanned);
     try std.testing.expectEqual(@as(u64, 0), result.tuples_removed);
@@ -1063,4 +1117,135 @@ test "vacuumTable — all tuples live and freezable" {
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "vacuum updates FSM after dead tuple removal" {
+    const allocator = std.testing.allocator;
+
+    const test_path = "test_vacuum_fsm.db";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const pager = try allocator.create(Pager);
+    defer allocator.destroy(pager);
+    pager.* = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const pool = try allocator.create(BufferPool);
+    defer allocator.destroy(pool);
+    pool.* = try BufferPool.init(allocator, pager, 100);
+    defer pool.deinit();
+
+    var tree = try initTestTree(pager, pool);
+
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    var fsm = FreeSpaceMap.init(allocator, pager.page_size);
+    defer fsm.deinit();
+
+    // Insert rows: 3 committed + 3 from aborted transaction
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+
+    // 3 committed rows
+    for (1..4) |i| {
+        const header = TupleHeader.forInsert(xid1, @intCast(i - 1));
+        const vals = &[_]Value{.{ .integer = @intCast(i * 100) }};
+        const data = try mvcc_mod.serializeVersionedRow(allocator, header, vals);
+        defer allocator.free(data);
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, @as(u64, @intCast(i)), .big);
+        try tree.insert(&key_buf, data);
+    }
+
+    // 3 aborted rows
+    for (4..7) |i| {
+        const header = TupleHeader.forInsert(xid2, @intCast(i - 4));
+        const vals = &[_]Value{.{ .integer = @intCast(i * 100) }};
+        const data = try mvcc_mod.serializeVersionedRow(allocator, header, vals);
+        defer allocator.free(data);
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, @as(u64, @intCast(i)), .big);
+        try tree.insert(&key_buf, data);
+    }
+
+    try tm.commit(xid1);
+    try tm.abort(xid2);
+
+    // FSM should have no entries before vacuum
+    try std.testing.expectEqual(@as(u8, 0), fsm.getCategory(tree.root_page_id));
+
+    var table_info = catalog_mod.TableInfo{
+        .name = "test",
+        .columns = &.{},
+        .table_constraints = &.{},
+        .data_root_page_id = tree.root_page_id,
+    };
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, &fsm);
+
+    // Should have removed 3 aborted rows
+    try std.testing.expectEqual(@as(u64, 3), result.tuples_removed);
+
+    // FSM should now have entries for leaf pages with free space
+    try std.testing.expect(fsm.trackedPages() > 0);
+
+    // The leaf page should have more free space after removing 3 rows
+    const cat = fsm.getCategory(tree.root_page_id);
+    try std.testing.expect(cat > 0);
+}
+
+test "vacuum FSM reflects free space correctly" {
+    const allocator = std.testing.allocator;
+
+    const test_path = "test_vacuum_fsm2.db";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const pager = try allocator.create(Pager);
+    defer allocator.destroy(pager);
+    pager.* = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const pool = try allocator.create(BufferPool);
+    defer allocator.destroy(pool);
+    pool.* = try BufferPool.init(allocator, pager, 100);
+    defer pool.deinit();
+
+    var tree = try initTestTree(pager, pool);
+
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    var fsm = FreeSpaceMap.init(allocator, pager.page_size);
+    defer fsm.deinit();
+
+    // All rows committed — vacuum should freeze but not remove
+    const xid1 = try tm.begin(.read_committed);
+
+    for (1..6) |i| {
+        const header = TupleHeader.forInsert(xid1, @intCast(i - 1));
+        const vals = &[_]Value{.{ .integer = @intCast(i * 100) }};
+        const data = try mvcc_mod.serializeVersionedRow(allocator, header, vals);
+        defer allocator.free(data);
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, @as(u64, @intCast(i)), .big);
+        try tree.insert(&key_buf, data);
+    }
+
+    try tm.commit(xid1);
+
+    var table_info = catalog_mod.TableInfo{
+        .name = "test",
+        .columns = &.{},
+        .table_constraints = &.{},
+        .data_root_page_id = tree.root_page_id,
+    };
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, &fsm);
+
+    // No removals, only freezing
+    try std.testing.expectEqual(@as(u64, 0), result.tuples_removed);
+    try std.testing.expectEqual(@as(u64, 5), result.tuples_frozen);
+
+    // FSM should track the leaf page (it has free space since not full)
+    try std.testing.expect(fsm.trackedPages() > 0);
+    try std.testing.expect(fsm.totalFreeSpace() > 0);
 }

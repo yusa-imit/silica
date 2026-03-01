@@ -1477,7 +1477,7 @@ fn leafCellSize(key: []const u8, value: []const u8) u16 {
 }
 
 /// Calculate free space in a leaf page.
-fn leafFreeSpace(data: []const u8, page_size: u32, cell_count: u16) u16 {
+pub fn leafFreeSpace(data: []const u8, page_size: u32, cell_count: u16) u16 {
     const ptrs_end = leafCellPtrOffset(cell_count);
     const cells_start = if (cell_count == 0) @as(u16, @intCast(page_size)) else lowestCellOffset(data, cell_count, true);
     if (cells_start <= ptrs_end) return 0;
@@ -1631,7 +1631,7 @@ fn getPrevLeaf(data: []const u8) u32 {
     return std.mem.readInt(u32, data[PAGE_HEADER_SIZE..][0..4], .little);
 }
 
-fn getNextLeaf(data: []const u8) u32 {
+pub fn getNextLeaf(data: []const u8) u32 {
     return std.mem.readInt(u32, data[PAGE_HEADER_SIZE + 4 ..][0..4], .little);
 }
 
@@ -1653,7 +1653,7 @@ fn internalCellPtrOffset(index: u16) u16 {
     return internalContentStart() + index * CELL_PTR_SIZE;
 }
 
-fn getRightChild(data: []const u8) u32 {
+pub fn getRightChild(data: []const u8) u32 {
     return std.mem.readInt(u32, data[PAGE_HEADER_SIZE..][0..4], .little);
 }
 
@@ -1661,12 +1661,12 @@ fn setRightChild(data: []u8, child_id: u32) void {
     std.mem.writeInt(u32, data[PAGE_HEADER_SIZE..][0..4], child_id, .little);
 }
 
-const InternalCell = struct {
+pub const InternalCell = struct {
     left_child: u32,
     key: []const u8,
 };
 
-fn readInternalCell(data: []const u8, page_size: u32, index: u16) InternalCell {
+pub fn readInternalCell(data: []const u8, page_size: u32, index: u16) InternalCell {
     _ = page_size;
     const ptr_off = internalCellPtrOffset(index);
     const cell_off = readCellPtr(data, ptr_off);

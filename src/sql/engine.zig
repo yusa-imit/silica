@@ -52,6 +52,8 @@ const Snapshot = mvcc_mod.Snapshot;
 const IsolationLevel = mvcc_mod.IsolationLevel;
 const lock_mod = @import("../tx/lock.zig");
 const vacuum_mod = @import("../tx/vacuum.zig");
+const fsm_mod = @import("../storage/fsm.zig");
+const FreeSpaceMap = fsm_mod.FreeSpaceMap;
 const LockManager = lock_mod.LockManager;
 const LockTarget = lock_mod.LockTarget;
 const LockMode = lock_mod.LockMode;
@@ -321,6 +323,8 @@ pub const Database = struct {
     tm: TransactionManager,
     /// Lock manager for row-level and table-level locking.
     lock_manager: LockManager,
+    /// Free space map for tracking available space per page.
+    fsm: FreeSpaceMap,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -360,6 +364,7 @@ pub const Database = struct {
             .wal = wal_ptr,
             .tm = TransactionManager.init(allocator),
             .lock_manager = LockManager.init(allocator),
+            .fsm = FreeSpaceMap.init(allocator, pager.page_size),
         };
     }
 
@@ -374,6 +379,7 @@ pub const Database = struct {
         }
 
         self.lock_manager.deinit();
+        self.fsm.deinit();
         self.tm.deinit();
         self.schema_arena.deinit();
 
@@ -1618,6 +1624,7 @@ pub const Database = struct {
                 table_info.data_root_page_id,
                 &self.tm,
                 &table_info,
+                &self.fsm,
             ) catch return EngineError.StorageError;
 
             // Update catalog if root page changed
@@ -1646,6 +1653,7 @@ pub const Database = struct {
                     table_info.data_root_page_id,
                     &self.tm,
                     &table_info,
+                    &self.fsm,
                 ) catch continue;
 
                 if (table_info.data_root_page_id != orig_root) {
