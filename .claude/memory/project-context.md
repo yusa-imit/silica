@@ -130,3 +130,13 @@
 - [x] RR/SERIALIZABLE snapshot ownership fix — no double-free
 - [x] Lock manager — row-level locking (shared/exclusive), table-level locks (7 modes), conflict detection
 - [x] Lock-engine integration — DML acquires exclusive row locks, conflict via xmax check, released on commit/rollback
+
+### Milestone 7 — VACUUM & SSI (Phase 4)
+- [x] VACUUM — dead tuple reclamation, freeze old tuples, FSM updates
+- [x] Auto-vacuum daemon — configurable thresholds (PostgreSQL-style), per-table stats, engine integration
+- [x] Free Space Map (FSM) — per-page free space tracking, disk persistence
+- [x] SERIALIZABLE isolation via SSI — rw-antidependency tracking, cycle detection, txn abort
+- [x] Deadlock detection — wait-for graph with cycle detection
+- [x] Savepoints — SAVEPOINT, ROLLBACK TO, RELEASE with CID management
+
+## Phase 4 COMPLETE — Ready for Phase 5 (Advanced SQL)
