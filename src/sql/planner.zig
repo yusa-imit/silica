@@ -97,6 +97,8 @@ pub const PlanNode = union(enum) {
     values: Values,
     /// Set operation — UNION, UNION ALL, INTERSECT, EXCEPT.
     set_op: SetOp,
+    /// Distinct — eliminate duplicate rows (SELECT DISTINCT / DISTINCT ON).
+    distinct: Distinct,
     /// Empty — produces no rows (e.g., for DDL results).
     empty: Empty,
 
@@ -156,6 +158,13 @@ pub const PlanNode = union(enum) {
         input: *const PlanNode,
         limit_expr: ?*const ast.Expr = null,
         offset_expr: ?*const ast.Expr = null,
+    };
+
+    pub const Distinct = struct {
+        input: *const PlanNode,
+        /// For DISTINCT ON: the expressions to compare for uniqueness.
+        /// Empty slice means plain DISTINCT (compare all columns).
+        on_exprs: []const *const ast.Expr = &.{},
     };
 
     pub const Values = struct {
@@ -280,6 +289,14 @@ pub const Planner = struct {
             node = try self.createNode(.{ .sort = .{
                 .input = node,
                 .order_by = stmt.order_by,
+            } });
+        }
+
+        // 3.5. DISTINCT / DISTINCT ON → Distinct (after sort, before limit)
+        if (stmt.distinct) {
+            node = try self.createNode(.{ .distinct = .{
+                .input = node,
+                .on_exprs = stmt.distinct_on,
             } });
         }
 
@@ -678,6 +695,14 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
             try writer.print("SetOp: {s}\n", .{op_name});
             try formatPlan(s.left, writer, depth + 1);
             try formatPlan(s.right, writer, depth + 1);
+        },
+        .distinct => |d| {
+            if (d.on_exprs.len > 0) {
+                try writer.print("Distinct On ({d} exprs)\n", .{d.on_exprs.len});
+            } else {
+                try writer.writeAll("Distinct\n");
+            }
+            try formatPlan(d.input, writer, depth + 1);
         },
         .values => |v| {
             try writer.print("Values: {s} ({d} rows)\n", .{ v.table, v.rows.len });
@@ -1611,4 +1636,137 @@ test "formatPlan set operation" {
     try testing.expect(std.mem.indexOf(u8, output, "SetOp: Union All") != null);
     try testing.expect(std.mem.indexOf(u8, output, "Scan: users") != null);
     try testing.expect(std.mem.indexOf(u8, output, "Scan: orders") != null);
+}
+
+test "plan SELECT DISTINCT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT DISTINCT name FROM users;",
+        &arena, &schema);
+
+    // Should be: Distinct → Project → Scan
+    switch (plan.root.*) {
+        .distinct => |d| {
+            try testing.expectEqual(@as(usize, 0), d.on_exprs.len);
+            switch (d.input.*) {
+                .project => |p| {
+                    try testing.expectEqual(@as(usize, 1), p.columns.len);
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan SELECT DISTINCT with ORDER BY" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT DISTINCT name, age FROM users ORDER BY name;",
+        &arena, &schema);
+
+    // Should be: Distinct → Sort → Project → Scan
+    switch (plan.root.*) {
+        .distinct => |d| {
+            try testing.expectEqual(@as(usize, 0), d.on_exprs.len);
+            switch (d.input.*) {
+                .sort => |s| {
+                    try testing.expectEqual(@as(usize, 1), s.order_by.len);
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan SELECT DISTINCT ON" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name, age;",
+        &arena, &schema);
+
+    // Should be: Distinct On → Sort → Project → Scan
+    switch (plan.root.*) {
+        .distinct => |d| {
+            try testing.expectEqual(@as(usize, 1), d.on_exprs.len);
+            switch (d.input.*) {
+                .sort => {},
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan DISTINCT with LIMIT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT DISTINCT name FROM users LIMIT 5;",
+        &arena, &schema);
+
+    // Should be: Limit → Distinct → Project → Scan
+    switch (plan.root.*) {
+        .limit => |l| {
+            switch (l.input.*) {
+                .distinct => |d| {
+                    try testing.expectEqual(@as(usize, 0), d.on_exprs.len);
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "formatPlan distinct" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT DISTINCT name FROM users;",
+        &arena, &schema);
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    try formatPlan(plan.root, &w, 0);
+    const output = fbs.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "Distinct\n") != null);
+}
+
+test "formatPlan distinct on" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name;",
+        &arena, &schema);
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    try formatPlan(plan.root, &w, 0);
+    const output = fbs.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "Distinct On (1 exprs)") != null);
 }

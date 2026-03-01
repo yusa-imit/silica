@@ -275,6 +275,9 @@ pub const SelectStmt = struct {
     /// Whether WITH RECURSIVE was used
     recursive: bool = false,
     distinct: bool = false,
+    /// DISTINCT ON expressions — when non-empty, dedup is based on these expressions only.
+    /// The first row per unique combination of these expressions is returned.
+    distinct_on: []const *const Expr = &.{},
     columns: []const ResultColumn = &.{},
     from: ?*const TableRef = null,
     joins: []const JoinClause = &.{},

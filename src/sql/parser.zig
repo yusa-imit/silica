@@ -292,7 +292,20 @@ pub const Parser = struct {
         _ = try self.expect(.kw_select);
 
         if (self.match(.kw_distinct)) {
-            stmt.distinct = true;
+            // Check for DISTINCT ON (expr, ...)
+            if (self.match(.kw_on)) {
+                _ = try self.expect(.left_paren);
+                var exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                while (true) {
+                    exprs.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                _ = try self.expect(.right_paren);
+                stmt.distinct = true;
+                stmt.distinct_on = exprs.toOwnedSlice(a) catch return error.OutOfMemory;
+            } else {
+                stmt.distinct = true;
+            }
         } else {
             _ = self.match(.kw_all);
         }
@@ -1514,6 +1527,26 @@ test "parse SELECT DISTINCT" {
     var r = try testParseWithArena("SELECT DISTINCT name FROM users");
     defer r.deinit();
     try std.testing.expect(r.stmt.select.distinct);
+    try std.testing.expectEqual(@as(usize, 0), r.stmt.select.distinct_on.len);
+}
+
+test "parse SELECT DISTINCT ON single column" {
+    var r = try testParseWithArena("SELECT DISTINCT ON (category) category, name, price FROM products");
+    defer r.deinit();
+    try std.testing.expect(r.stmt.select.distinct);
+    try std.testing.expectEqual(@as(usize, 1), r.stmt.select.distinct_on.len);
+    try std.testing.expectEqualStrings("category", r.stmt.select.distinct_on[0].column_ref.name);
+    try std.testing.expectEqual(@as(usize, 3), r.stmt.select.columns.len);
+}
+
+test "parse SELECT DISTINCT ON multiple columns" {
+    var r = try testParseWithArena("SELECT DISTINCT ON (dept, role) * FROM employees ORDER BY dept, role, salary DESC");
+    defer r.deinit();
+    try std.testing.expect(r.stmt.select.distinct);
+    try std.testing.expectEqual(@as(usize, 2), r.stmt.select.distinct_on.len);
+    try std.testing.expectEqualStrings("dept", r.stmt.select.distinct_on[0].column_ref.name);
+    try std.testing.expectEqualStrings("role", r.stmt.select.distinct_on[1].column_ref.name);
+    try std.testing.expectEqual(@as(usize, 3), r.stmt.select.order_by.len);
 }
 
 test "parse SELECT with WHERE" {

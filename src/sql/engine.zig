@@ -73,6 +73,7 @@ const NestedLoopJoinOp = executor_mod.NestedLoopJoinOp;
 const ValuesOp = executor_mod.ValuesOp;
 const MaterializedOp = executor_mod.MaterializedOp;
 const EmptyOp = executor_mod.EmptyOp;
+const DistinctOp = executor_mod.DistinctOp;
 const SetOpOp = executor_mod.SetOpOp;
 const IndexScanOp = executor_mod.IndexScanOp;
 const MvccContext = executor_mod.MvccContext;
@@ -92,6 +93,7 @@ fn extractPlanColumns(node: *const PlanNode) []const ColumnRef {
         .sort => |s| extractPlanColumns(s.input),
         .limit => |l| extractPlanColumns(l.input),
         .aggregate => |a| extractPlanColumns(a.input),
+        .distinct => |d| extractPlanColumns(d.input),
         .join => |j| extractPlanColumns(j.left),
         .set_op => |s| extractPlanColumns(s.left),
         .values => &.{},
@@ -355,6 +357,7 @@ const OperatorChain = struct {
     values: ?*ValuesOp = null,
     empty: ?*EmptyOp = null,
     materialized: ?*MaterializedOp = null,
+    distinct: ?*DistinctOp = null,
     set_op: ?*SetOpOp = null,
     /// Operator chains for set operation sub-queries (need cleanup).
     set_op_chains: std.ArrayListUnmanaged(*OperatorChain) = .{},
@@ -400,6 +403,7 @@ const OperatorChain = struct {
         if (self.values) |v| allocator.destroy(v);
         if (self.empty) |e| allocator.destroy(e);
         if (self.materialized) |m| allocator.destroy(m);
+        if (self.distinct) |d| allocator.destroy(d);
         if (self.set_op) |s| allocator.destroy(s);
         // Clean up set operation sub-query chains.
         for (self.set_op_chains.items) |chain| {
@@ -826,6 +830,7 @@ pub const Database = struct {
             .aggregate => |a| self.buildAggregate(a, ops),
             .join => |j| self.buildJoin(j, ops),
             .set_op => |s| self.buildSetOp(s, ops),
+            .distinct => |d| self.buildDistinct(d, ops),
             .values => |v| self.buildValues(v, ops),
             .empty => self.buildEmpty(ops),
         };
@@ -1256,6 +1261,14 @@ pub const Database = struct {
         join_op.* = NestedLoopJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
         ops.join = join_op;
         return join_op.iterator();
+    }
+
+    fn buildDistinct(self: *Database, d: PlanNode.Distinct, ops: *OperatorChain) EngineError!RowIterator {
+        const input = try self.buildIterator(d.input, ops);
+        const distinct_op = self.allocator.create(DistinctOp) catch return EngineError.OutOfMemory;
+        distinct_op.* = DistinctOp.init(self.allocator, input, d.on_exprs);
+        ops.distinct = distinct_op;
+        return distinct_op.iterator();
     }
 
     fn buildSetOp(self: *Database, set_op: PlanNode.SetOp, ops: *OperatorChain) EngineError!RowIterator {
@@ -8222,5 +8235,244 @@ test "UNION deduplicates within same table" {
         count += 1;
     }
     // Deduplicated: [1, 2]
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SELECT DISTINCT removes duplicate rows" {
+    const path = "test_eng_distinct.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE products (name TEXT, category TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO products VALUES ('Apple', 'Fruit'), ('Banana', 'Fruit'), ('Apple', 'Fruit'), ('Carrot', 'Vegetable'), ('Banana', 'Fruit')");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT name, category FROM products");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Apple+Fruit, Banana+Fruit, Carrot+Vegetable = 3 unique
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SELECT DISTINCT single column" {
+    const path = "test_eng_distinct_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (category TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('A'), ('B'), ('A'), ('C'), ('B'), ('A')");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT category FROM t");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SELECT DISTINCT with ORDER BY" {
+    const path = "test_eng_distinct_order.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (3), (1), (2), (1), (3)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT val FROM t ORDER BY val");
+    defer r3.close(testing.allocator);
+
+    var results = std.ArrayListUnmanaged(i64){};
+    defer results.deinit(testing.allocator);
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        results.append(testing.allocator, row.values[0].integer) catch unreachable;
+    }
+    try testing.expectEqual(@as(usize, 3), results.items.len);
+    try testing.expectEqual(@as(i64, 1), results.items[0]);
+    try testing.expectEqual(@as(i64, 2), results.items[1]);
+    try testing.expectEqual(@as(i64, 3), results.items[2]);
+}
+
+test "SELECT DISTINCT with LIMIT" {
+    const path = "test_eng_distinct_limit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1), (2), (1), (3), (2), (4)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT val FROM t ORDER BY val LIMIT 2");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SELECT DISTINCT with NULLs" {
+    const path = "test_eng_distinct_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1), (NULL), (2), (NULL), (1)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT val FROM t");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // 1, 2, NULL = 3 unique
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SELECT DISTINCT ON returns first row per group" {
+    const path = "test_eng_distinct_on.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE employees (dept TEXT, name TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO employees VALUES ('Engineering', 'Alice', 120000), ('Engineering', 'Bob', 110000), ('Sales', 'Carol', 90000), ('Sales', 'Dave', 95000), ('HR', 'Eve', 80000)");
+    defer r2.close(testing.allocator);
+
+    // Get the highest-paid person per department
+    var r3 = try db.execSQL("SELECT DISTINCT ON (dept) dept, name, salary FROM employees ORDER BY dept, salary DESC");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    var names = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (names.items) |n| testing.allocator.free(@constCast(n));
+        names.deinit(testing.allocator);
+    }
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        const name_copy = try testing.allocator.dupe(u8, row.values[1].text);
+        names.append(testing.allocator, name_copy) catch unreachable;
+        count += 1;
+    }
+    // 3 departments: Engineering, HR, Sales
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SELECT DISTINCT ON multiple columns" {
+    const path = "test_eng_distinct_on_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER, c TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1, 'x'), (1, 1, 'y'), (1, 2, 'z'), (2, 1, 'w')");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT ON (a, b) a, b, c FROM t ORDER BY a, b");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Unique (a,b) combos: (1,1), (1,2), (2,1) = 3
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SELECT DISTINCT all same rows" {
+    const path = "test_eng_distinct_all_same.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (42), (42), (42)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT val FROM t");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "SELECT DISTINCT empty table" {
+    const path = "test_eng_distinct_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT val FROM t");
+    defer r3.close(testing.allocator);
+
+    try testing.expectEqual(@as(?Row, null), try r3.rows.?.next());
+}
+
+test "SELECT DISTINCT with WHERE clause" {
+    const path = "test_eng_distinct_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (category TEXT, val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('A', 1), ('B', 2), ('A', 3), ('B', 4), ('A', 1)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("SELECT DISTINCT category FROM t WHERE val > 1");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // After WHERE val > 1: B/2, A/3, B/4. DISTINCT category: A, B = 2
     try testing.expectEqual(@as(usize, 2), count);
 }

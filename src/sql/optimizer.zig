@@ -40,6 +40,7 @@ pub const Optimizer = struct {
             .aggregate => |a| self.optimizeAggregate(a),
             .limit => |l| self.optimizeLimit(l),
             .set_op => |s| self.optimizeSetOp(s),
+            .distinct => |d| self.optimizeDistinct(d),
             // Leaf nodes — no optimization
             .scan, .values, .empty => node,
         };
@@ -201,6 +202,14 @@ pub const Optimizer = struct {
             .op = set_op.op,
             .left = opt_left,
             .right = opt_right,
+        } });
+    }
+
+    fn optimizeDistinct(self: *Optimizer, d: PlanNode.Distinct) !*const PlanNode {
+        const opt_input = try self.optimizeNode(d.input);
+        return self.createNode(.{ .distinct = .{
+            .input = opt_input,
+            .on_exprs = d.on_exprs,
         } });
     }
 

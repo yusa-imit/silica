@@ -1964,6 +1964,97 @@ pub const MaterializedOp = struct {
     }
 };
 
+// ── Distinct Operator ────────────────────────────────────────────────────
+
+/// Eliminates duplicate rows from input.
+/// - Plain DISTINCT: hashes all column values, emits each unique row once.
+/// - DISTINCT ON: hashes only the specified expression values, emits only
+///   the first row per unique key (relies on input being sorted by ON exprs).
+pub const DistinctOp = struct {
+    allocator: Allocator,
+    input: RowIterator,
+    /// For DISTINCT ON: expressions to evaluate for the dedup key.
+    /// Empty = plain DISTINCT (use all columns).
+    on_exprs: []const *const ast.Expr,
+    /// Hash set of seen keys for deduplication.
+    seen: std.StringHashMapUnmanaged(void) = .{},
+    /// Track all allocated keys for cleanup.
+    allocated_keys: std.ArrayListUnmanaged([]u8) = .{},
+
+    pub fn init(allocator: Allocator, input: RowIterator, on_exprs: []const *const ast.Expr) DistinctOp {
+        return .{
+            .allocator = allocator,
+            .input = input,
+            .on_exprs = on_exprs,
+        };
+    }
+
+    /// Build the dedup key for a row.
+    fn buildKey(self: *DistinctOp, row: *const Row) ExecError![]u8 {
+        if (self.on_exprs.len == 0) {
+            // Plain DISTINCT: serialize all columns
+            return serializeRow(self.allocator, row.values) catch return ExecError.OutOfMemory;
+        }
+
+        // DISTINCT ON: evaluate each expression and serialize
+        var vals = std.ArrayListUnmanaged(Value){};
+        defer {
+            for (vals.items) |v| v.free(self.allocator);
+            vals.deinit(self.allocator);
+        }
+        for (self.on_exprs) |expr| {
+            const v = evalExpr(self.allocator, expr, row) catch return ExecError.OutOfMemory;
+            vals.append(self.allocator, v) catch {
+                v.free(self.allocator);
+                return ExecError.OutOfMemory;
+            };
+        }
+        return serializeRow(self.allocator, vals.items) catch return ExecError.OutOfMemory;
+    }
+
+    pub fn next(self: *DistinctOp) ExecError!?Row {
+        while (true) {
+            var row = try self.input.next() orelse return null;
+            const key = self.buildKey(&row) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            if (self.seen.contains(key)) {
+                self.allocator.free(key);
+                row.deinit();
+                continue;
+            }
+            self.allocated_keys.append(self.allocator, key) catch {
+                self.allocator.free(key);
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            self.seen.put(self.allocator, key, {}) catch {
+                row.deinit();
+                return ExecError.OutOfMemory;
+            };
+            return row;
+        }
+    }
+
+    pub fn close(self: *DistinctOp) void {
+        self.input.close();
+        self.seen.deinit(self.allocator);
+        for (self.allocated_keys.items) |key| self.allocator.free(key);
+        self.allocated_keys.deinit(self.allocator);
+    }
+
+    pub fn iterator(self: *DistinctOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&DistinctOp.next),
+                .close = @ptrCast(&DistinctOp.close),
+            },
+        };
+    }
+};
+
 // ── Set Operation Operator ───────────────────────────────────────────────
 
 /// Executes UNION, UNION ALL, INTERSECT, EXCEPT between two row iterators.
@@ -3288,4 +3379,103 @@ test "SetOpOp UNION deduplicates within same side" {
     }
     // Deduplicated: [1, 2]
     try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "DistinctOp eliminates duplicate rows" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{ "id", "name" });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Alice" } });
+    try data.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "Bob" } });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Alice" } }); // duplicate
+    try data.addRow(&.{ Value{ .integer = 3 }, Value{ .text = "Carol" } });
+    try data.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "Bob" } }); // duplicate
+    defer data.deinit();
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{});
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "DistinctOp all unique rows pass through" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{"val"});
+    try data.addRow(&.{Value{ .integer = 1 }});
+    try data.addRow(&.{Value{ .integer = 2 }});
+    try data.addRow(&.{Value{ .integer = 3 }});
+    defer data.deinit();
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{});
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "DistinctOp empty input" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{"val"});
+    defer data.deinit();
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{});
+    defer op.close();
+
+    try std.testing.expectEqual(@as(?Row, null), try op.next());
+}
+
+test "DistinctOp handles NULL values" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{"val"});
+    try data.addRow(&.{Value.null_value});
+    try data.addRow(&.{Value{ .integer = 1 }});
+    try data.addRow(&.{Value.null_value}); // duplicate null
+    defer data.deinit();
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{});
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "DistinctOp with mixed types" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{ "a", "b" });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "x" } });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "y" } });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "x" } }); // dup
+    try data.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "x" } });
+    defer data.deinit();
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{});
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
 }
