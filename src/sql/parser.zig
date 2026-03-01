@@ -2317,3 +2317,73 @@ test "parse set operation with CTE" {
     try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
     try std.testing.expect(sel.set_operation != null);
 }
+
+// ── CREATE VIEW / DROP VIEW tests ────────────────────────────
+
+test "parse CREATE VIEW" {
+    var r = try testParseWithArena("CREATE VIEW user_names AS SELECT id, name FROM users");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqualStrings("user_names", cv.name);
+    try std.testing.expect(!cv.or_replace);
+    try std.testing.expect(!cv.if_not_exists);
+    try std.testing.expectEqual(@as(usize, 0), cv.column_names.len);
+    try std.testing.expectEqual(@as(usize, 2), cv.select.columns.len);
+}
+
+test "parse CREATE OR REPLACE VIEW" {
+    var r = try testParseWithArena("CREATE OR REPLACE VIEW v AS SELECT 1");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqualStrings("v", cv.name);
+    try std.testing.expect(cv.or_replace);
+    try std.testing.expect(!cv.if_not_exists);
+}
+
+test "parse CREATE VIEW IF NOT EXISTS" {
+    var r = try testParseWithArena("CREATE VIEW IF NOT EXISTS v AS SELECT 1");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqualStrings("v", cv.name);
+    try std.testing.expect(!cv.or_replace);
+    try std.testing.expect(cv.if_not_exists);
+}
+
+test "parse CREATE VIEW with column aliases" {
+    var r = try testParseWithArena("CREATE VIEW v (a, b, c) AS SELECT x, y, z FROM t");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqualStrings("v", cv.name);
+    try std.testing.expectEqual(@as(usize, 3), cv.column_names.len);
+    try std.testing.expectEqualStrings("a", cv.column_names[0]);
+    try std.testing.expectEqualStrings("b", cv.column_names[1]);
+    try std.testing.expectEqualStrings("c", cv.column_names[2]);
+    try std.testing.expectEqual(@as(usize, 3), cv.select.columns.len);
+}
+
+test "parse CREATE VIEW with complex SELECT" {
+    var r = try testParseWithArena(
+        "CREATE VIEW active_users AS SELECT id, name FROM users WHERE active = 1 ORDER BY name",
+    );
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqualStrings("active_users", cv.name);
+    try std.testing.expect(cv.select.where != null);
+    try std.testing.expectEqual(@as(usize, 1), cv.select.order_by.len);
+}
+
+test "parse DROP VIEW" {
+    var r = try testParseWithArena("DROP VIEW my_view");
+    defer r.deinit();
+    const dv = r.stmt.drop_view;
+    try std.testing.expectEqualStrings("my_view", dv.name);
+    try std.testing.expect(!dv.if_exists);
+}
+
+test "parse DROP VIEW IF EXISTS" {
+    var r = try testParseWithArena("DROP VIEW IF EXISTS my_view");
+    defer r.deinit();
+    const dv = r.stmt.drop_view;
+    try std.testing.expectEqualStrings("my_view", dv.name);
+    try std.testing.expect(dv.if_exists);
+}

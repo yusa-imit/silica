@@ -8476,3 +8476,584 @@ test "SELECT DISTINCT with WHERE clause" {
     // After WHERE val > 1: B/2, A/3, B/4. DISTINCT category: A, B = 2
     try testing.expectEqual(@as(usize, 2), count);
 }
+
+// ── CTE advanced scenarios ───────────────────────────────────
+
+test "CTE: CTE referencing another CTE" {
+    const path = "test_eng_cte_chain.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (n INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO nums VALUES (10), (20), (30)");
+    defer r2.close(testing.allocator);
+
+    // cte2 references cte1
+    var r = try db.execSQL(
+        "WITH cte1 AS (SELECT n FROM nums WHERE n > 10), cte2 AS (SELECT n FROM cte1 WHERE n < 30) SELECT * FROM cte2",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 20), row.values[0].integer);
+    // Only one row (20 passes both filters)
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "CTE: CTE with JOIN to real table" {
+    const path = "test_eng_cte_join.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE departments (id INTEGER, dept_name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE employees (emp_id INTEGER, dept_id INTEGER, emp_name TEXT)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO employees VALUES (1, 1, 'Alice'), (2, 1, 'Bob'), (3, 2, 'Carol')");
+    defer r4.close(testing.allocator);
+
+    // CTE joined with real table — use unique column names to avoid ambiguity
+    var r = try db.execSQL(
+        "WITH eng AS (SELECT dept_id, emp_name FROM employees WHERE dept_id = 1) SELECT emp_name, dept_name FROM eng JOIN departments ON eng.dept_id = departments.id",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    // Both Alice (dept_id=1) and Bob (dept_id=1) join with department 1 (Engineering)
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("Engineering", row.values[1].text);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "CTE: CTE with GROUP BY and aggregate" {
+    const path = "test_eng_cte_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE orders (product TEXT, amount INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO orders VALUES ('A', 10), ('B', 20), ('A', 30), ('B', 40)");
+    defer r2.close(testing.allocator);
+
+    var r = try db.execSQL(
+        "WITH totals AS (SELECT product, SUM(amount) AS total FROM orders GROUP BY product) SELECT * FROM totals ORDER BY product",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expectEqualStrings("A", row1.values[0].text);
+    try testing.expectEqual(@as(i64, 40), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expectEqualStrings("B", row2.values[0].text);
+    try testing.expectEqual(@as(i64, 60), row2.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "CTE: CTE with LIMIT" {
+    const path = "test_eng_cte_limit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4), (5)");
+    defer r2.close(testing.allocator);
+
+    // CTE produces all rows, then main query limits
+    var r = try db.execSQL(
+        "WITH data AS (SELECT val FROM t ORDER BY val) SELECT * FROM data LIMIT 3",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+// ── VIEW advanced scenarios ──────────────────────────────────
+
+test "view with JOIN query" {
+    const path = "test_eng_view_join.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE categories (id INTEGER, cat_name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO categories VALUES (1, 'Books'), (2, 'Games')");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE items (item_id INTEGER, cat_id INTEGER, title TEXT)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO items VALUES (1, 1, 'Dune'), (2, 2, 'Chess'), (3, 1, 'LOTR')");
+    defer r4.close(testing.allocator);
+
+    // Create a view with JOIN — use unique column names
+    var rv = try db.execSQL("CREATE VIEW item_categories AS SELECT title, cat_name FROM items JOIN categories ON items.cat_id = categories.id");
+    defer rv.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM item_categories ORDER BY title");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        // All rows should have two text columns
+        try testing.expect(row.values[0] == .text);
+        try testing.expect(row.values[1] == .text);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "view with aggregate query" {
+    const path = "test_eng_view_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE scores (player TEXT, points INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO scores VALUES ('Alice', 10), ('Bob', 20), ('Alice', 30), ('Bob', 5)");
+    defer r2.close(testing.allocator);
+
+    var rv = try db.execSQL("CREATE VIEW player_totals AS SELECT player, SUM(points) AS total FROM scores GROUP BY player");
+    defer rv.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM player_totals ORDER BY player");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expectEqualStrings("Alice", row1.values[0].text);
+    try testing.expectEqual(@as(i64, 40), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expectEqualStrings("Bob", row2.values[0].text);
+    try testing.expectEqual(@as(i64, 25), row2.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "view with ORDER BY and LIMIT in definition" {
+    const path = "test_eng_view_order.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE products (name TEXT, price INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO products VALUES ('A', 30), ('B', 10), ('C', 20)");
+    defer r2.close(testing.allocator);
+
+    var rv = try db.execSQL("CREATE VIEW cheap_products AS SELECT name, price FROM products WHERE price < 25 ORDER BY price");
+    defer rv.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM cheap_products");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expectEqualStrings("B", row1.values[0].text);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expectEqualStrings("C", row2.values[0].text);
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "view queried with additional WHERE" {
+    const path = "test_eng_view_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z')");
+    defer r2.close(testing.allocator);
+
+    var rv = try db.execSQL("CREATE VIEW all_items AS SELECT id, val FROM t");
+    defer rv.close(testing.allocator);
+
+    // Query the view with an additional WHERE filter
+    var r = try db.execSQL("SELECT * FROM all_items WHERE id > 1 ORDER BY id");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 2), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "view with NULL values" {
+    const path = "test_eng_view_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, optional TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 'yes'), (2, NULL), (3, 'no')");
+    defer r2.close(testing.allocator);
+
+    var rv = try db.execSQL("CREATE VIEW nullable_view AS SELECT id, optional FROM t");
+    defer rv.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM nullable_view WHERE optional IS NULL");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    try testing.expect(row.values[1] == .null_value);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+// ── Set operations advanced scenarios ────────────────────────
+
+test "UNION ALL with NULL values" {
+    const path = "test_eng_union_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (NULL)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (2)");
+    defer r4.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM t1 UNION ALL SELECT * FROM t2");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    var null_count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        if (row.values[0] == .null_value) null_count += 1;
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), count);
+    try testing.expectEqual(@as(usize, 2), null_count);
+}
+
+test "UNION deduplicates NULL values" {
+    const path = "test_eng_union_null_dedup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (NULL)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (1)");
+    defer r4.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM t1 UNION SELECT * FROM t2");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    var null_count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        if (row.values[0] == .null_value) null_count += 1;
+        count += 1;
+    }
+    // 1 and NULL from both sides, UNION deduplicates: result is {1, NULL}
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(usize, 1), null_count);
+}
+
+test "INTERSECT with NULL values" {
+    const path = "test_eng_intersect_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (NULL), (3)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (2), (3)");
+    defer r4.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM t1 INTERSECT SELECT * FROM t2");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    var has_null = false;
+    var has_three = false;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        if (row.values[0] == .null_value) has_null = true;
+        if (row.values[0] == .integer and row.values[0].integer == 3) has_three = true;
+        count += 1;
+    }
+    // Common: NULL, 3
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expect(has_null);
+    try testing.expect(has_three);
+}
+
+test "EXCEPT with NULL values" {
+    const path = "test_eng_except_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (NULL), (3)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (2)");
+    defer r4.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM t1 EXCEPT SELECT * FROM t2");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        // After EXCEPT: {1, NULL, 3} - {NULL, 2} = {1, 3}
+        try testing.expect(row.values[0] == .integer);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "UNION with aggregate queries" {
+    const path = "test_eng_union_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (category TEXT, val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES ('A', 10), ('A', 20)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (category TEXT, val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES ('B', 30), ('B', 40)");
+    defer r4.close(testing.allocator);
+
+    var r = try db.execSQL(
+        "SELECT category, SUM(val) AS total FROM t1 GROUP BY category UNION ALL SELECT category, SUM(val) AS total FROM t2 GROUP BY category ORDER BY category",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expectEqualStrings("A", row1.values[0].text);
+    try testing.expectEqual(@as(i64, 30), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expectEqualStrings("B", row2.values[0].text);
+    try testing.expectEqual(@as(i64, 70), row2.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "set operation with DISTINCT on left side" {
+    const path = "test_eng_setop_distinct.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (1), (2), (2)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (3), (4)");
+    defer r4.close(testing.allocator);
+
+    // DISTINCT on the left side deduplicates t1, then UNION ALL adds t2
+    // In Silica's implementation, DISTINCT applies to the full set op result:
+    // {1, 2, 3, 4} = 4 distinct values
+    var r = try db.execSQL("SELECT DISTINCT val FROM t1 UNION ALL SELECT val FROM t2 ORDER BY val");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "CTE with set operation" {
+    const path = "test_eng_cte_setop.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t1 (val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t1 VALUES (1), (2), (3)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("CREATE TABLE t2 (val INTEGER)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (2), (3), (4)");
+    defer r4.close(testing.allocator);
+
+    // CTE defined, then used in both sides of INTERSECT
+    var r = try db.execSQL(
+        "WITH combined AS (SELECT val FROM t1 UNION ALL SELECT val FROM t2) SELECT DISTINCT val FROM combined ORDER BY val",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var results: [4]i64 = undefined;
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        if (count < 4) results[count] = row.values[0].integer;
+        count += 1;
+    }
+    // UNION ALL: {1,2,3,2,3,4}, DISTINCT: {1,2,3,4}
+    try testing.expectEqual(@as(usize, 4), count);
+    try testing.expectEqual(@as(i64, 1), results[0]);
+    try testing.expectEqual(@as(i64, 2), results[1]);
+    try testing.expectEqual(@as(i64, 3), results[2]);
+    try testing.expectEqual(@as(i64, 4), results[3]);
+}
+
+test "view with multiple columns and WHERE" {
+    const path = "test_eng_view_multi_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, category TEXT, val INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'B', 40)");
+    defer r2.close(testing.allocator);
+
+    // View with WHERE
+    var rv = try db.execSQL("CREATE VIEW high_vals AS SELECT id, category, val FROM t WHERE val > 15");
+    defer rv.close(testing.allocator);
+
+    var r = try db.execSQL("SELECT * FROM high_vals ORDER BY id");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 2), row1.values[0].integer);
+    try testing.expectEqualStrings("B", row1.values[1].text);
+    try testing.expectEqual(@as(i64, 20), row1.values[2].integer);
+
+    var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 4), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "view persistence across close and reopen" {
+    const path = "test_eng_view_persist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create table and view, then close
+    {
+        var db = try Database.open(testing.allocator, path, .{});
+        defer db.close();
+
+        var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, name TEXT)");
+        defer r1.close(testing.allocator);
+        var r2 = try db.execSQL("INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob')");
+        defer r2.close(testing.allocator);
+        var rv = try db.execSQL("CREATE VIEW v AS SELECT name FROM t");
+        defer rv.close(testing.allocator);
+    }
+
+    // Reopen and verify view works
+    {
+        var db = try Database.open(testing.allocator, path, .{});
+        defer db.close();
+
+        var r = try db.execSQL("SELECT * FROM v ORDER BY name");
+        defer r.close(testing.allocator);
+
+        try testing.expect(r.rows != null);
+        var row1 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+        defer row1.deinit();
+        try testing.expectEqualStrings("Alice", row1.values[0].text);
+
+        var row2 = (try r.rows.?.next()) orelse return error.ExpectedRow;
+        defer row2.deinit();
+        try testing.expectEqualStrings("Bob", row2.values[0].text);
+
+        try testing.expect((try r.rows.?.next()) == null);
+    }
+
+    std.fs.cwd().deleteFile(path) catch {};
+}
