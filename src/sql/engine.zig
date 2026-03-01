@@ -51,6 +51,7 @@ const TupleHeader = mvcc_mod.TupleHeader;
 const Snapshot = mvcc_mod.Snapshot;
 const IsolationLevel = mvcc_mod.IsolationLevel;
 const lock_mod = @import("../tx/lock.zig");
+const vacuum_mod = @import("../tx/vacuum.zig");
 const LockManager = lock_mod.LockManager;
 const LockTarget = lock_mod.LockTarget;
 const LockMode = lock_mod.LockMode;
@@ -1427,6 +1428,14 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "DROP TABLE" };
             },
+            .vacuum => |v| {
+                const result = self.executeVacuum(v.table_name);
+                if (result) |_| {
+                    arena.deinit();
+                    self.allocator.destroy(arena);
+                } else |_| {}
+                return result;
+            },
             .transaction => |txn| {
                 arena.deinit();
                 self.allocator.destroy(arena);
@@ -1470,6 +1479,68 @@ pub const Database = struct {
         const optimized = opt.optimize(plan) catch return EngineError.PlanError;
 
         return self.executePlan(arena, optimized);
+    }
+
+    // ── VACUUM ──────────────────────────────────────────────────────
+
+    fn executeVacuum(self: *Database, table_name: ?[]const u8) EngineError!QueryResult {
+        // Cannot vacuum inside a transaction
+        if (self.current_txn != null) return EngineError.TransactionError;
+
+        if (table_name) |name| {
+            // Vacuum a specific table
+            var table_info = self.catalog.getTable(name) catch return EngineError.TableNotFound;
+            defer table_info.deinit(self.allocator);
+
+            _ = vacuum_mod.vacuumTable(
+                self.allocator,
+                self.pool,
+                table_info.data_root_page_id,
+                &self.tm,
+                &table_info,
+            ) catch return EngineError.StorageError;
+
+            // Update catalog if root page changed
+            const fresh = self.catalog.getTable(name) catch return EngineError.TableNotFound;
+            defer fresh.deinit(self.allocator);
+            if (table_info.data_root_page_id != fresh.data_root_page_id) {
+                self.updateTableRootPage(name, table_info.data_root_page_id) catch {};
+            }
+        } else {
+            // Vacuum all tables
+            const tables = self.catalog.listTables(self.allocator) catch return EngineError.StorageError;
+            defer {
+                for (tables) |t| self.allocator.free(t);
+                self.allocator.free(tables);
+            }
+
+            for (tables) |tbl_name| {
+                var table_info = self.catalog.getTable(tbl_name) catch continue;
+                defer table_info.deinit(self.allocator);
+
+                const orig_root = table_info.data_root_page_id;
+
+                _ = vacuum_mod.vacuumTable(
+                    self.allocator,
+                    self.pool,
+                    table_info.data_root_page_id,
+                    &self.tm,
+                    &table_info,
+                ) catch continue;
+
+                if (table_info.data_root_page_id != orig_root) {
+                    self.updateTableRootPage(tbl_name, table_info.data_root_page_id) catch {};
+                }
+            }
+        }
+
+        // Prune completed transactions after vacuuming
+        // (must be after vacuum so isAborted() can detect aborted XIDs)
+        self.tm.pruneCompleted();
+
+        self.commitWal() catch {};
+
+        return .{ .message = "VACUUM" };
     }
 
     // ── SchemaProvider adapter ────────────────────────────────────────
@@ -5026,6 +5097,194 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
             var row = row_ptr.*;
             defer row.deinit();
             try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+        }
+    }
+}
+
+// ── VACUUM Integration Tests ──────────────────────────────────────────
+
+test "VACUUM: basic VACUUM command" {
+    const path = "test_vacuum_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1, 'alpha')");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (2, 'beta')");
+        r.close(testing.allocator);
+    }
+
+    // VACUUM should succeed without error
+    {
+        var r = try db.exec("VACUUM");
+        try testing.expectEqualStrings("VACUUM", r.message);
+        r.close(testing.allocator);
+    }
+
+    // Data should still be intact
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM items");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        }
+    }
+}
+
+test "VACUUM: VACUUM specific table" {
+    const path = "test_vacuum_table.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t1 (x INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t1 VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // VACUUM specific table
+    {
+        var r = try db.exec("VACUUM t1");
+        try testing.expectEqualStrings("VACUUM", r.message);
+        r.close(testing.allocator);
+    }
+
+    // Data should still be intact
+    {
+        var r = try db.exec("SELECT x FROM t1");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        }
+    }
+}
+
+test "VACUUM: error when inside transaction" {
+    const path = "test_vacuum_txn_err.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+    // VACUUM inside a transaction should fail
+    try testing.expectError(EngineError.TransactionError, db.exec("VACUUM"));
+    try db.rollbackTransaction();
+}
+
+test "VACUUM: error for nonexistent table" {
+    const path = "test_vacuum_no_tbl.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try testing.expectError(EngineError.TableNotFound, db.exec("VACUUM nonexistent"));
+}
+
+test "VACUUM: cleans aborted transaction rows" {
+    const path = "test_vacuum_aborted.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE items (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert in committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO items VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items VALUES (2)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Insert in aborted transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO items VALUES (999)");
+        r.close(testing.allocator);
+    }
+    try db.rollbackTransaction();
+
+    // VACUUM should clean up the aborted row
+    {
+        var r = try db.exec("VACUUM items");
+        r.close(testing.allocator);
+    }
+
+    // Verify: only committed rows remain visible
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM items");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        }
+    }
+    try db.commitTransaction();
+}
+
+test "VACUUM: freezes old committed tuples" {
+    const path = "test_vacuum_freeze_eng.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE frozen_test (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert in a transaction and commit
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO frozen_test VALUES (42)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // VACUUM should freeze the committed row
+    {
+        var r = try db.exec("VACUUM frozen_test");
+        r.close(testing.allocator);
+    }
+
+    // Data should still be readable
+    {
+        var r = try db.exec("SELECT id FROM frozen_test");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 42), row.values[0].integer);
         }
     }
 }

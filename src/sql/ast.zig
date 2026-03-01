@@ -338,6 +338,12 @@ pub const ExplainStmt = struct {
     stmt: *const Stmt,
 };
 
+/// VACUUM statement — reclaim dead tuples from a table (or all tables).
+pub const VacuumStmt = struct {
+    /// Optional table name to vacuum. null = vacuum all tables.
+    table_name: ?[]const u8 = null,
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -350,6 +356,7 @@ pub const Stmt = union(enum) {
     drop_index: DropIndexStmt,
     transaction: TransactionStmt,
     explain: ExplainStmt,
+    vacuum: VacuumStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;

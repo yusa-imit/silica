@@ -524,6 +524,13 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             }
         },
         .explain => writer.writeAll("Parsed: EXPLAIN\n") catch {},
+        .vacuum => |v| {
+            if (v.table_name) |name| {
+                writer.print("Parsed: VACUUM {s}\n", .{name}) catch {};
+            } else {
+                writer.writeAll("Parsed: VACUUM\n") catch {};
+            }
+        },
     }
 }
 
@@ -735,6 +742,7 @@ const sql_keywords = [_][]const u8{
     "MIN",        "MAX",        "INTEGER",     "INT",          "REAL",
     "TEXT",       "BLOB",       "BOOLEAN",     "VARCHAR",      "TRUE",
     "FALSE",      "IF",         "EXISTS",      "AUTOINCREMENT", "TRANSACTION",
+    "VACUUM",
 };
 
 // ── Tests ────────────────────────────────────────────────────

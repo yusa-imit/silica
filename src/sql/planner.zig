@@ -204,6 +204,7 @@ pub const Planner = struct {
             .create_index => |s| self.planCreateIndex(s),
             .drop_index => |s| self.planDropIndex(s),
             .transaction => self.planTransaction(),
+            .vacuum => self.planTransaction(), // handled early in engine, should never reach planner
             .explain => |s| self.planExplain(s),
         };
     }

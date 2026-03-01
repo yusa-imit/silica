@@ -210,6 +210,7 @@ pub const Analyzer = struct {
             .create_index => |s| self.analyzeCreateIndex(&s),
             .drop_index => {},
             .transaction => {},
+            .vacuum => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

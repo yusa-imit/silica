@@ -132,6 +132,7 @@ pub const Parser = struct {
             .kw_commit => "expected 'COMMIT'",
             .kw_rollback => "expected 'ROLLBACK'",
             .kw_explain => "expected 'EXPLAIN'",
+            .kw_vacuum => "expected 'VACUUM'",
             .kw_select => "expected 'SELECT'",
             .kw_insert => "expected 'INSERT'",
             .identifier => "expected identifier",
@@ -183,6 +184,7 @@ pub const Parser = struct {
             .kw_savepoint => .{ .transaction = try self.parseSavepoint() },
             .kw_release => .{ .transaction = try self.parseRelease() },
             .kw_explain => .{ .explain = try self.parseExplain() },
+            .kw_vacuum => .{ .vacuum = self.parseVacuum() },
             else => {
                 try self.addError(t, "expected statement");
                 return error.ParseFailed;
@@ -894,6 +896,20 @@ pub const Parser = struct {
         };
         const stmt_ptr = self.arena.create(ast.Stmt, inner) catch return error.OutOfMemory;
         return .{ .stmt = stmt_ptr };
+    }
+
+    // ── VACUUM ────────────────────────────────────────────────────
+
+    fn parseVacuum(self: *Parser) ast.VacuumStmt {
+        _ = self.advance(); // consume VACUUM keyword
+        // Optional table name
+        const table_name = if (self.check(.identifier))
+            self.advance().lexeme(self.source)
+        else if (self.peek().type.isKeyword())
+            self.advance().lexeme(self.source) // allow keywords as table names
+        else
+            null;
+        return .{ .table_name = table_name };
     }
 
     // ── Expression parser (Pratt / precedence climbing) ──────────
