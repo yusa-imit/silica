@@ -186,6 +186,7 @@ pub const OpenOptions = struct {
     page_size: u32 = 4096,
     cache_size: u32 = 2000,
     wal_mode: bool = false,
+    auto_vacuum: vacuum_mod.AutoVacuumConfig = .{},
 };
 
 pub const EngineError = error{
@@ -329,6 +330,8 @@ pub const Database = struct {
     fsm: FreeSpaceMap,
     /// SSI tracker for SERIALIZABLE isolation conflict detection.
     ssi_tracker: SsiTracker,
+    /// Auto-vacuum daemon for background dead tuple reclamation.
+    auto_vacuum: vacuum_mod.AutoVacuumDaemon,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -370,6 +373,7 @@ pub const Database = struct {
             .lock_manager = LockManager.init(allocator),
             .fsm = FreeSpaceMap.init(allocator, pager.page_size),
             .ssi_tracker = SsiTracker.init(allocator),
+            .auto_vacuum = vacuum_mod.AutoVacuumDaemon.init(allocator, opts.auto_vacuum),
         };
     }
 
@@ -384,6 +388,7 @@ pub const Database = struct {
             self.current_txn = null;
         }
 
+        self.auto_vacuum.deinit();
         self.ssi_tracker.deinit();
         self.lock_manager.deinit();
         self.fsm.deinit();
@@ -458,6 +463,10 @@ pub const Database = struct {
         // Clean up savepoints and other transaction resources
         self.current_txn.?.deinit();
         self.current_txn = null;
+
+        // Record commit for auto-vacuum and trigger if thresholds exceeded
+        self.auto_vacuum.recordCommit();
+        self.runAutoVacuumIfNeeded();
     }
 
     /// Rollback the current transaction.
@@ -650,6 +659,11 @@ pub const Database = struct {
             if (result) |r| {
                 if (r.rows == null) {
                     self.commitWal() catch {};
+                    // Auto-commit DML: record commit and check auto-vacuum
+                    if (r.rows_affected > 0) {
+                        self.auto_vacuum.recordCommit();
+                        self.runAutoVacuumIfNeeded();
+                    }
                 }
             } else |_| {}
         }
@@ -954,6 +968,11 @@ pub const Database = struct {
             self.insertIndexEntries(values_node.table, &table_info, vals, &key_buf) catch return EngineError.StorageError;
 
             rows_inserted += 1;
+        }
+
+        // Track inserts for auto-vacuum
+        if (rows_inserted > 0) {
+            self.auto_vacuum.recordModification(values_node.table, rows_inserted, 0, 0) catch {};
         }
 
         return .{
@@ -1333,6 +1352,11 @@ pub const Database = struct {
             self.updateTableRootPage(scan_table, tree.root_page_id) catch {};
         }
 
+        // Track updates for auto-vacuum (each update creates a dead tuple)
+        if (rows_updated > 0) {
+            self.auto_vacuum.recordModification(scan_table, 0, @intCast(rows_updated), 0) catch {};
+        }
+
         return .{
             .rows_affected = @intCast(rows_updated),
             .message = "UPDATE",
@@ -1505,6 +1529,11 @@ pub const Database = struct {
             self.updateTableRootPage(scan_table, tree.root_page_id) catch {};
         }
 
+        // Track deletes for auto-vacuum (each delete creates a dead tuple)
+        if (rows_deleted > 0) {
+            self.auto_vacuum.recordModification(scan_table, 0, 0, @intCast(rows_deleted)) catch {};
+        }
+
         return .{
             .rows_affected = @intCast(rows_deleted),
             .message = "DELETE",
@@ -1582,6 +1611,8 @@ pub const Database = struct {
                         else => EngineError.StorageError,
                     };
                 };
+                // Remove table from auto-vacuum tracking
+                self.auto_vacuum.removeTable(dt.name);
                 arena.deinit();
                 self.allocator.destroy(arena);
                 self.commitWal() catch {};
@@ -1732,6 +1763,48 @@ pub const Database = struct {
         self.commitWal() catch {};
 
         return .{ .message = "VACUUM" };
+    }
+
+    // ── Auto-Vacuum ──────────────────────────────────────────────────
+
+    /// Check if any tables need vacuuming and run vacuum on those that do.
+    /// Called automatically after transaction commits and auto-commit DML.
+    fn runAutoVacuumIfNeeded(self: *Database) void {
+        if (!self.auto_vacuum.config.enabled) return;
+        // Cannot auto-vacuum while inside a transaction
+        if (self.current_txn != null) return;
+
+        const tables = self.auto_vacuum.getTablesNeedingVacuum(self.allocator) catch return;
+        defer self.allocator.free(tables);
+
+        if (tables.len == 0) return;
+
+        for (tables) |tbl_name| {
+            var table_info = self.catalog.getTable(tbl_name) catch continue;
+            defer table_info.deinit(self.allocator);
+
+            const orig_root = table_info.data_root_page_id;
+
+            const vac_result = vacuum_mod.vacuumTable(
+                self.allocator,
+                self.pool,
+                table_info.data_root_page_id,
+                &self.tm,
+                &table_info,
+                &self.fsm,
+            ) catch continue;
+
+            if (table_info.data_root_page_id != orig_root) {
+                self.updateTableRootPage(tbl_name, table_info.data_root_page_id) catch {};
+            }
+
+            // Report completion to reset counters
+            self.auto_vacuum.reportVacuumComplete(tbl_name, vac_result);
+        }
+
+        // Prune completed transactions after vacuuming
+        self.tm.pruneCompleted();
+        self.commitWal() catch {};
     }
 
     // ── SchemaProvider adapter ────────────────────────────────────────
@@ -6678,4 +6751,202 @@ test "SSI: abort cleans up SSI state" {
     // Rollback should clean up SSI state
     try db.rollbackTransaction();
     try testing.expectEqual(@as(usize, 0), db.ssi_tracker.trackedTxnCount());
+}
+
+// ── Auto-Vacuum Engine Integration Tests ──────────────────────────────
+
+test "auto-vacuum: tracks DML modifications" {
+    const path = "test_autovac_track.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE users (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO users VALUES (1, 'Alice')");
+    _ = try db.exec("INSERT INTO users VALUES (2, 'Bob')");
+
+    const stats = db.auto_vacuum.getStats("users").?;
+    try testing.expectEqual(@as(u64, 2), stats.n_inserts);
+    try testing.expectEqual(@as(u64, 0), stats.n_dead_tuples);
+}
+
+test "auto-vacuum: UPDATE increments dead tuples" {
+    const path = "test_autovac_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t VALUES (2, 20)");
+    _ = try db.exec("UPDATE t SET val = 99 WHERE id = 1");
+
+    const stats = db.auto_vacuum.getStats("t").?;
+    try testing.expectEqual(@as(u64, 1), stats.n_updates);
+    try testing.expectEqual(@as(u64, 1), stats.n_dead_tuples);
+}
+
+test "auto-vacuum: DELETE increments dead tuples" {
+    const path = "test_autovac_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1)");
+    _ = try db.exec("INSERT INTO t VALUES (2)");
+    _ = try db.exec("INSERT INTO t VALUES (3)");
+    _ = try db.exec("DELETE FROM t WHERE id = 2");
+
+    const stats = db.auto_vacuum.getStats("t").?;
+    try testing.expectEqual(@as(u64, 1), stats.n_deletes);
+    try testing.expectEqual(@as(u64, 1), stats.n_dead_tuples);
+}
+
+test "auto-vacuum: triggers vacuum when threshold exceeded" {
+    const path = "test_autovac_trigger.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    // Low threshold: vacuum after 2 dead tuples, no min commit interval
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 2, .scale_factor = 0.0, .min_commit_interval = 1 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+
+    // Use explicit transaction to batch inserts
+    try db.beginTransaction(.read_committed);
+    _ = try db.exec("INSERT INTO t VALUES (1, 'a')");
+    _ = try db.exec("INSERT INTO t VALUES (2, 'b')");
+    _ = try db.exec("INSERT INTO t VALUES (3, 'c')");
+    try db.commitTransaction();
+
+    // Now delete 2 rows in a transaction — should trigger auto-vacuum on commit
+    try db.beginTransaction(.read_committed);
+    _ = try db.exec("DELETE FROM t WHERE id = 1");
+    _ = try db.exec("DELETE FROM t WHERE id = 2");
+    try db.commitTransaction();
+
+    // After auto-vacuum, dead tuple counter should be reset
+    const stats = db.auto_vacuum.getStats("t");
+    if (stats) |s| {
+        // Auto-vacuum should have reset the counter
+        try testing.expectEqual(@as(u64, 0), s.n_dead_tuples);
+    }
+}
+
+test "auto-vacuum: disabled config prevents vacuum" {
+    const path = "test_autovac_disabled.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = false, .threshold = 0, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1)");
+    _ = try db.exec("DELETE FROM t WHERE id = 1");
+
+    // Dead tuples tracked but auto-vacuum shouldn't have run
+    const stats = db.auto_vacuum.getStats("t").?;
+    try testing.expectEqual(@as(u64, 1), stats.n_dead_tuples);
+}
+
+test "auto-vacuum: DROP TABLE removes tracking" {
+    const path = "test_autovac_drop.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE temp (id INTEGER)");
+    _ = try db.exec("INSERT INTO temp VALUES (1)");
+    try testing.expect(db.auto_vacuum.getStats("temp") != null);
+
+    _ = try db.exec("DROP TABLE temp");
+    try testing.expect(db.auto_vacuum.getStats("temp") == null);
+}
+
+test "auto-vacuum: default config has auto-vacuum enabled" {
+    const path = "test_autovac_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{});
+    defer cleanupTestDb(&db, path);
+
+    try testing.expect(db.auto_vacuum.config.enabled);
+    try testing.expectEqual(@as(u64, 50), db.auto_vacuum.config.threshold);
+}
+
+test "auto-vacuum: multiple tables tracked independently" {
+    const path = "test_autovac_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE a (id INTEGER)");
+    _ = try db.exec("CREATE TABLE b (id INTEGER)");
+
+    _ = try db.exec("INSERT INTO a VALUES (1)");
+    _ = try db.exec("INSERT INTO a VALUES (2)");
+    _ = try db.exec("INSERT INTO b VALUES (10)");
+
+    const stats_a = db.auto_vacuum.getStats("a").?;
+    const stats_b = db.auto_vacuum.getStats("b").?;
+    try testing.expectEqual(@as(u64, 2), stats_a.n_inserts);
+    try testing.expectEqual(@as(u64, 1), stats_b.n_inserts);
+}
+
+test "auto-vacuum: auto-commit DML triggers vacuum" {
+    const path = "test_autovac_autocommit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    // Very low threshold — should trigger on single delete
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1, .scale_factor = 0.0, .min_commit_interval = 1 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1)");
+    _ = try db.exec("INSERT INTO t VALUES (2)");
+
+    // Delete in auto-commit mode should trigger vacuum
+    _ = try db.exec("DELETE FROM t WHERE id = 1");
+
+    // Stats should show vacuum was triggered (counters reset)
+    const stats = db.auto_vacuum.getStats("t");
+    if (stats) |s| {
+        try testing.expectEqual(@as(u64, 0), s.n_dead_tuples);
+    }
+}
+
+test "auto-vacuum: commit count tracked across tables" {
+    const path = "test_autovac_commits.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{
+        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+    });
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE TABLE t2 (id INTEGER)");
+
+    // Auto-commit inserts increment commit counter
+    _ = try db.exec("INSERT INTO t1 VALUES (1)");
+    _ = try db.exec("INSERT INTO t2 VALUES (1)");
+    _ = try db.exec("INSERT INTO t1 VALUES (2)");
+
+    // Each auto-commit DML with rows_affected > 0 triggers recordCommit
+    const s1 = db.auto_vacuum.getStats("t1").?;
+    const s2 = db.auto_vacuum.getStats("t2").?;
+    try testing.expect(s1.commits_since_vacuum >= 1);
+    try testing.expect(s2.commits_since_vacuum >= 1);
 }
