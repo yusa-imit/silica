@@ -1,7 +1,7 @@
 # Silica — Claude Code Orchestrator
 
 > **Silica**: Zig로 작성된 프로덕션 등급 풀 RDBMS — 듀얼 모드 (임베디드 + 클라이언트-서버), MVCC, Full SQL:2016, 스트리밍 복제
-> Current Phase: **Phase 4 — MVCC & Full Transactions**
+> Current Phase: **Phase 5 — Advanced SQL**
 
 ---
 
@@ -617,7 +617,7 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - **Note**: sailor#7 filed — `renderDiff` still uses `std.fmt.format` (cross-compile fails). `localRenderDiff` workaround kept until fixed.
 - **Note**: Phase 5 위젯 (Tree, TextArea, Dialog, Notification) now compile with v0.5.1 — ready for FEATURE mode integration
 
-### v1.0.0 — production ready (status: READY)
+### v1.0.0 — production ready (status: DONE)
 
 **첫 안정 릴리즈**: 모든 기능 완성, 종합 문서화 포함
 
@@ -627,27 +627,27 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - API 변경 없음 — drop-in replacement
 
 **작업 내용**:
-- [ ] `build.zig.zon`에 sailor v1.0.0 의존성 업데이트
+- [x] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트 (v1.0.0 → v1.0.3 → v1.1.0 통합)
 - [ ] [Getting Started Guide](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/GUIDE.md) 참조하여 모범 사례 적용
 - [ ] [API Reference](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/API.md) 기반으로 기존 코드 리팩토링
 - [ ] 테마 시스템 활용: SQL TUI에 다크/라이트 모드 또는 SQL 신택스 하이라이팅 테마
 - [ ] 애니메이션 효과 추가 (선택사항): 쿼리 실행 프로그레스, 결과 로딩
 - [ ] 성능 최적화: sailor 벤치마크 기반으로 렌더링 성능 개선
-- [ ] 기존 테스트 전체 통과 확인
-- [ ] 커밋: `feat: upgrade to sailor v1.0.0 with theming and polish`
+- [x] 기존 테스트 전체 통과 확인
+- [x] 커밋: `chore: upgrade sailor dependency to v1.1.0`
 
-### v1.0.3 — bug fix release (status: READY)
+### v1.0.3 — bug fix release (status: DONE)
 
 **sailor v1.0.3 released** (2026-03-02) — Zig 0.15.2 compatibility patch
 
 - **Bug fix**: Tree widget ArrayList API updated for Zig 0.15.2
 - **Impact on silica**: None (silica doesn't use Tree widget)
-- [ ] `build.zig.zon`에 sailor v1.0.3 의존성 업데이트 (optional, no breaking changes)
-- [ ] 기존 테스트 전체 통과 확인
+- [x] `build.zig.zon`에 sailor v1.1.0으로 통합 업데이트 (v1.0.3 포함)
+- [x] 기존 테스트 전체 통과 확인
 
 **Note**: This is an optional upgrade. Tree widget fix doesn't affect silica's current functionality.
 
-### v1.1.0 — Accessibility & Internationalization (status: READY)
+### v1.1.0 — Accessibility & Internationalization (status: DONE)
 
 **sailor v1.1.0 released** (2026-03-02) — Accessibility and i18n features
 
@@ -662,8 +662,8 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
   - RTL support enables Arabic/Hebrew text in query results
   - Keyboard navigation improves SQL shell interactivity
   - Accessibility features enhance screen reader support for database tools
-- [ ] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트
-- [ ] 기존 테스트 전체 통과 확인
+- [x] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트
+- [x] 기존 테스트 전체 통과 확인
 - [ ] Consider keyboard bindings for SQL history navigation (Ctrl+R)
 - [ ] Test Unicode width with CJK column data
 

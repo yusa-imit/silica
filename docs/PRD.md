@@ -671,14 +671,14 @@ silica --tui app.db
 ### Phase 5: Advanced SQL
 
 **Milestone 8 — Views, CTEs, Set Operations**
-- [ ] `CREATE VIEW` / `DROP VIEW` — stored query definitions
-- [ ] View expansion in query planner
+- [x] `CREATE VIEW` / `DROP VIEW` — stored query definitions
+- [x] View expansion in query planner
 - [ ] Updatable views (single-table, no aggregates)
 - [ ] `WITH CHECK OPTION`
-- [ ] Common Table Expressions (`WITH ... AS`)
+- [x] Common Table Expressions (`WITH ... AS`)
 - [ ] Recursive CTEs (`WITH RECURSIVE`)
-- [ ] Set operations: `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
-- [ ] `DISTINCT ON` support
+- [x] Set operations: `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
+- [x] `DISTINCT ON` support
 
 **Milestone 9 — Window Functions**
 - [ ] `OVER (PARTITION BY ... ORDER BY ...)` clause parsing and planning
