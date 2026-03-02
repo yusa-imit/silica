@@ -685,10 +685,10 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
   - Overlay system for autocomplete suggestions and help tooltips
   - Split panes for query editor / results split view
   - Responsive layouts for adapting to terminal size
-- [ ] `build.zig.zon`에 sailor v1.2.0 의존성 업데이트
+- [x] `build.zig.zon`에 sailor v1.2.0 의존성 업데이트
 - [ ] Implement split-pane TUI: query editor (top) + results (bottom)
 - [ ] Add ScrollView for large result sets
 - [ ] Add Grid layout for 3-pane layout (editor | results | schema)
-- [ ] 기존 테스트 전체 통과 확인
+- [x] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Layout features are critical for rich SQL shell TUI with split views and scrollable results.
