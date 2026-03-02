@@ -225,6 +225,17 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             std.mem.writeInt(u64, buf[0..8], flipped, .big);
             return buf;
         },
+        .interval => |iv| {
+            // Encode as 16 bytes: months(4) + days(4) + micros(8), sign-flipped for ordering
+            const buf = try allocator.alloc(u8, 16);
+            const m_unsigned: u32 = @bitCast(iv.months);
+            std.mem.writeInt(u32, buf[0..4], m_unsigned ^ (@as(u32, 1) << 31), .big);
+            const d_unsigned: u32 = @bitCast(iv.days);
+            std.mem.writeInt(u32, buf[4..8], d_unsigned ^ (@as(u32, 1) << 31), .big);
+            const us_unsigned: u64 = @bitCast(iv.micros);
+            std.mem.writeInt(u64, buf[8..16], us_unsigned ^ (@as(u64, 1) << 63), .big);
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };
@@ -12034,4 +12045,225 @@ test "multi-table INSERT with constrained cache forces evictions" {
         emp_count += 1;
     }
     try testing.expectEqual(@as(usize, 20), emp_count);
+}
+
+test "INTERVAL type: CAST from text" {
+    const path = "test_eng_interval_cast.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Cast text to interval — various formats
+    var r1 = try db.execSQL("SELECT CAST('1 day' AS INTERVAL)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .interval);
+    try testing.expectEqual(@as(i32, 0), row1.values[0].interval.months);
+    try testing.expectEqual(@as(i32, 1), row1.values[0].interval.days);
+    try testing.expectEqual(@as(i64, 0), row1.values[0].interval.micros);
+
+    var r2 = try db.execSQL("SELECT CAST('2 hours 30 minutes' AS INTERVAL)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .interval);
+    try testing.expectEqual(@as(i64, 2 * 3600_000_000 + 30 * 60_000_000), row2.values[0].interval.micros);
+
+    var r3 = try db.execSQL("SELECT CAST('1 year 6 months' AS INTERVAL)");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i32, 18), row3.values[0].interval.months);
+}
+
+test "INTERVAL type: CAST to text" {
+    const path = "test_eng_interval_text.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("SELECT CAST(CAST('1 year 2 months 3 days 04:05:06' AS INTERVAL) AS TEXT)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .text);
+    try testing.expectEqualStrings("1 year 2 mons 3 days 04:05:06", row1.values[0].text);
+}
+
+test "INTERVAL type: store and retrieve" {
+    const path = "test_eng_interval_store.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE events (name TEXT, duration INTERVAL)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO events VALUES ('meeting', CAST('1 hour 30 minutes' AS INTERVAL))");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO events VALUES ('lunch', CAST('45 minutes' AS INTERVAL))");
+    defer r3.close(testing.allocator);
+
+    var sel = try db.execSQL("SELECT name, duration FROM events");
+    defer sel.close(testing.allocator);
+
+    var row1 = (try sel.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("meeting", row1.values[0].text);
+    try testing.expect(row1.values[1] == .interval);
+    try testing.expectEqual(@as(i64, 90 * 60_000_000), row1.values[1].interval.micros);
+
+    var row2 = (try sel.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("lunch", row2.values[0].text);
+    try testing.expectEqual(@as(i64, 45 * 60_000_000), row2.values[1].interval.micros);
+}
+
+test "INTERVAL type: arithmetic with dates" {
+    const path = "test_eng_interval_arith.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // date + interval → date (cast to text for comparison)
+    var r1 = try db.execSQL("SELECT CAST(CAST('2024-01-15' AS DATE) + CAST('10 days' AS INTERVAL) AS TEXT)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("2024-01-25", row1.values[0].text);
+
+    // date + interval with months (day clamping for leap year)
+    var r2 = try db.execSQL("SELECT CAST(CAST('2024-01-31' AS DATE) + CAST('1 month' AS INTERVAL) AS TEXT)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("2024-02-29", row2.values[0].text);
+
+    // date - interval → date
+    var r3 = try db.execSQL("SELECT CAST(CAST('2024-03-15' AS DATE) - CAST('1 month 5 days' AS INTERVAL) AS TEXT)");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("2024-02-10", row3.values[0].text);
+}
+
+test "INTERVAL type: arithmetic between intervals" {
+    const path = "test_eng_interval_add.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // interval + interval
+    var r1 = try db.execSQL("SELECT CAST('1 day' AS INTERVAL) + CAST('2 hours' AS INTERVAL)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .interval);
+    try testing.expectEqual(@as(i32, 1), row1.values[0].interval.days);
+    try testing.expectEqual(@as(i64, 2 * 3600_000_000), row1.values[0].interval.micros);
+
+    // interval * integer
+    var r2 = try db.execSQL("SELECT CAST('3 days' AS INTERVAL) * 4");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .interval);
+    try testing.expectEqual(@as(i32, 12), row2.values[0].interval.days);
+
+    // interval - interval
+    var r3 = try db.execSQL("SELECT CAST('10 days' AS INTERVAL) - CAST('3 days' AS INTERVAL)");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expect(row3.values[0] == .interval);
+    try testing.expectEqual(@as(i32, 7), row3.values[0].interval.days);
+}
+
+test "INTERVAL type: timestamp arithmetic" {
+    const path = "test_eng_interval_ts.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // timestamp + interval → timestamp (cast to text for comparison)
+    var r1 = try db.execSQL("SELECT CAST(CAST('2024-01-15 10:30:00' AS TIMESTAMP) + CAST('2 days 3 hours' AS INTERVAL) AS TEXT)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("2024-01-17 13:30:00", row1.values[0].text);
+}
+
+test "INTERVAL type: typeof function" {
+    const path = "test_eng_interval_typeof.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("SELECT typeof(CAST('1 day' AS INTERVAL))");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("interval", row1.values[0].text);
+}
+
+test "INTERVAL type: comparison and ordering" {
+    const path = "test_eng_interval_cmp.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE durations (name TEXT, dur INTERVAL)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO durations VALUES ('short', CAST('1 hour' AS INTERVAL))");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO durations VALUES ('long', CAST('2 days' AS INTERVAL))");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO durations VALUES ('medium', CAST('12 hours' AS INTERVAL))");
+    defer r4.close(testing.allocator);
+
+    // ORDER BY interval
+    var sel = try db.execSQL("SELECT name FROM durations ORDER BY dur");
+    defer sel.close(testing.allocator);
+
+    var row1 = (try sel.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("short", row1.values[0].text); // 1 hour
+
+    var row2 = (try sel.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("medium", row2.values[0].text); // 12 hours
+
+    var row3 = (try sel.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("long", row3.values[0].text); // 2 days
+}
+
+test "INTERVAL type: HH:MM:SS format parsing" {
+    const path = "test_eng_interval_hms.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("SELECT CAST('01:30:00' AS INTERVAL)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .interval);
+    try testing.expectEqual(@as(i64, 90 * 60_000_000), row1.values[0].interval.micros);
+}
+
+test "INTERVAL type: zero interval" {
+    const path = "test_eng_interval_zero.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("SELECT CAST('0 days' AS INTERVAL)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .interval);
+    try testing.expectEqual(@as(i32, 0), row1.values[0].interval.months);
+    try testing.expectEqual(@as(i32, 0), row1.values[0].interval.days);
+    try testing.expectEqual(@as(i64, 0), row1.values[0].interval.micros);
 }

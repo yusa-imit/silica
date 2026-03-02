@@ -47,6 +47,7 @@ pub const ColumnType = enum(u8) {
     date = 0x06,
     time = 0x07,
     timestamp = 0x08,
+    interval = 0x09,
     /// Column has no explicit type declaration.
     untyped = 0x00,
 };
@@ -63,6 +64,7 @@ pub fn columnTypeFromAst(dt: ?ast.DataType) ColumnType {
         .type_date => .date,
         .type_time => .time,
         .type_timestamp => .timestamp,
+        .type_interval => .interval,
     };
 }
 

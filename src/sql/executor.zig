@@ -179,6 +179,201 @@ pub fn formatTimestamp(allocator: Allocator, micros: i64) ![]u8 {
     }
 }
 
+/// Format an interval as PostgreSQL-compatible string (e.g., "1 year 2 mons 3 days 04:05:06").
+pub fn formatInterval(allocator: Allocator, iv: Value.Interval) ![]u8 {
+    var parts: [4][]const u8 = undefined;
+    var bufs: [4][]u8 = undefined;
+    var count: usize = 0;
+
+    const years = @divTrunc(iv.months, 12);
+    const mons = @mod(iv.months, 12);
+
+    if (years != 0) {
+        bufs[count] = try std.fmt.allocPrint(allocator, "{d} year{s}", .{ years, if (years == 1 or years == -1) "" else "s" });
+        parts[count] = bufs[count];
+        count += 1;
+    }
+    if (mons != 0) {
+        bufs[count] = try std.fmt.allocPrint(allocator, "{d} mon{s}", .{ mons, if (mons == 1 or mons == -1) "" else "s" });
+        parts[count] = bufs[count];
+        count += 1;
+    }
+    if (iv.days != 0) {
+        bufs[count] = try std.fmt.allocPrint(allocator, "{d} day{s}", .{ iv.days, if (iv.days == 1 or iv.days == -1) "" else "s" });
+        parts[count] = bufs[count];
+        count += 1;
+    }
+
+    const abs_micros = if (iv.micros < 0) -iv.micros else iv.micros;
+    const total_secs = @divTrunc(abs_micros, MICROS_PER_SECOND);
+    const h = @as(u32, @intCast(@divTrunc(total_secs, 3600)));
+    const m = @as(u32, @intCast(@divTrunc(@mod(total_secs, 3600), 60)));
+    const s = @as(u32, @intCast(@mod(total_secs, 60)));
+    if (iv.micros != 0) {
+        if (iv.micros < 0) {
+            bufs[count] = try std.fmt.allocPrint(allocator, "-{d:0>2}:{d:0>2}:{d:0>2}", .{ h, m, s });
+        } else {
+            bufs[count] = try std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}:{d:0>2}", .{ h, m, s });
+        }
+        parts[count] = bufs[count];
+        count += 1;
+    }
+
+    if (count == 0) {
+        return try std.fmt.allocPrint(allocator, "00:00:00", .{});
+    }
+
+    // Join parts with spaces
+    var total_len: usize = 0;
+    for (parts[0..count]) |p| total_len += p.len;
+    total_len += count - 1; // spaces
+
+    const result = try allocator.alloc(u8, total_len);
+    var pos: usize = 0;
+    for (parts[0..count], 0..) |p, i| {
+        @memcpy(result[pos..][0..p.len], p);
+        pos += p.len;
+        if (i < count - 1) {
+            result[pos] = ' ';
+            pos += 1;
+        }
+    }
+    for (bufs[0..count]) |b| allocator.free(b);
+
+    return result;
+}
+
+/// Parse PostgreSQL-style interval string: "1 year 2 months 3 days 04:05:06"
+/// Also supports short forms: "1 day", "2 hours", "30 minutes", "1 year 6 months"
+fn parseIntervalString(s: []const u8) ?Value.Interval {
+    var months: i32 = 0;
+    var days: i32 = 0;
+    var micros: i64 = 0;
+
+    var i: usize = 0;
+    while (i < s.len) {
+        // Skip whitespace
+        while (i < s.len and s[i] == ' ') i += 1;
+        if (i >= s.len) break;
+
+        // Check for time component (HH:MM:SS)
+        if (isTimeComponent(s[i..])) {
+            micros += parseTimeComponent(s[i..]) orelse return null;
+            break;
+        }
+
+        // Check for negative time component (-HH:MM:SS)
+        if (s[i] == '-' and i + 1 < s.len and isTimeComponent(s[i + 1 ..])) {
+            micros -= parseTimeComponent(s[i + 1 ..]) orelse return null;
+            break;
+        }
+
+        // Parse number
+        const neg = s[i] == '-';
+        if (neg) i += 1;
+        const num_start = i;
+        while (i < s.len and s[i] >= '0' and s[i] <= '9') i += 1;
+        if (i == num_start) return null;
+        const num = std.fmt.parseInt(i32, s[num_start..i], 10) catch return null;
+        const value = if (neg) -num else num;
+
+        // Skip whitespace
+        while (i < s.len and s[i] == ' ') i += 1;
+
+        // Parse unit
+        if (i >= s.len) {
+            // Bare number — treat as seconds
+            micros += @as(i64, value) * MICROS_PER_SECOND;
+            break;
+        }
+
+        const unit_start = i;
+        while (i < s.len and s[i] != ' ' and s[i] >= 'a' and s[i] <= 'z') i += 1;
+        // Also handle uppercase
+        if (i == unit_start) {
+            while (i < s.len and s[i] != ' ' and ((s[i] >= 'a' and s[i] <= 'z') or (s[i] >= 'A' and s[i] <= 'Z'))) i += 1;
+        }
+        const unit = s[unit_start..i];
+
+        if (startsWithI(unit, "year")) {
+            months += value * 12;
+        } else if (startsWithI(unit, "mon")) {
+            months += value;
+        } else if (startsWithI(unit, "week")) {
+            days += value * 7;
+        } else if (startsWithI(unit, "day")) {
+            days += value;
+        } else if (startsWithI(unit, "hour")) {
+            micros += @as(i64, value) * MICROS_PER_HOUR;
+        } else if (startsWithI(unit, "min")) {
+            micros += @as(i64, value) * MICROS_PER_MINUTE;
+        } else if (startsWithI(unit, "sec")) {
+            micros += @as(i64, value) * MICROS_PER_SECOND;
+        } else {
+            return null;
+        }
+    }
+
+    return .{ .months = months, .days = days, .micros = micros };
+}
+
+fn isTimeComponent(s: []const u8) bool {
+    // Check for HH:MM pattern
+    if (s.len < 5) return false;
+    return s[0] >= '0' and s[0] <= '9' and
+        s[1] >= '0' and s[1] <= '9' and s[2] == ':';
+}
+
+fn parseTimeComponent(s: []const u8) ?i64 {
+    if (s.len < 5) return null;
+    const h = std.fmt.parseInt(i64, s[0..2], 10) catch return null;
+    if (s[2] != ':') return null;
+    const m = std.fmt.parseInt(i64, s[3..5], 10) catch return null;
+    var sec: i64 = 0;
+    if (s.len >= 8 and s[5] == ':') {
+        sec = std.fmt.parseInt(i64, s[6..8], 10) catch return null;
+    }
+    return h * MICROS_PER_HOUR + m * MICROS_PER_MINUTE + sec * MICROS_PER_SECOND;
+}
+
+fn startsWithI(s: []const u8, prefix: []const u8) bool {
+    if (s.len < prefix.len) return false;
+    for (s[0..prefix.len], prefix) |a, b| {
+        if (std.ascii.toLower(a) != std.ascii.toLower(b)) return false;
+    }
+    return true;
+}
+
+/// Add months to a date, clamping day to the last valid day of the resulting month.
+fn addMonthsToDate(date_days: i32, month_delta: i32) i32 {
+    const date = daysToDate(date_days);
+    var new_month = @as(i32, date.month) + month_delta;
+    var new_year = date.year;
+    // Normalize month to 1..12
+    new_year += @divFloor(new_month - 1, 12);
+    new_month = @mod(new_month - 1, 12) + 1;
+    const max_day = daysInMonth(@intCast(new_month), new_year);
+    const new_day = @min(date.day, max_day);
+    return dateToDays(new_year, @intCast(new_month), new_day);
+}
+
+/// Add interval to timestamp: months first (calendar), then days, then microseconds.
+fn addIntervalToTimestamp(ts: i64, iv: Value.Interval) i64 {
+    // Extract date and time parts
+    const day_part: i32 = @intCast(@divTrunc(ts, MICROS_PER_DAY));
+    const time_part = @mod(ts, MICROS_PER_DAY);
+    // Add months (calendar arithmetic)
+    const after_months = addMonthsToDate(day_part, iv.months);
+    // Add days
+    const after_days = after_months + iv.days;
+    // Reconstruct timestamp with time component
+    return @as(i64, after_days) * MICROS_PER_DAY + time_part + iv.micros;
+}
+
+fn negateInterval(iv: Value.Interval) Value.Interval {
+    return .{ .months = -iv.months, .days = -iv.days, .micros = -iv.micros };
+}
+
 // ── MVCC Context ──────────────────────────────────────────────────────────
 
 /// MVCC context passed to scan operators for visibility filtering.
@@ -206,7 +401,14 @@ pub const Value = union(enum) {
     date: i32, // days since epoch (1970-01-01)
     time: i64, // microseconds since midnight
     timestamp: i64, // microseconds since epoch
+    interval: Interval, // composite: months + days + microseconds
     null_value,
+
+    pub const Interval = struct {
+        months: i32,
+        days: i32,
+        micros: i64,
+    };
 
     /// Compare two values. Returns .lt, .eq, or .gt.
     /// NULLs sort last (greater than any non-null value).
@@ -266,6 +468,17 @@ pub const Value = union(enum) {
                 },
                 else => .lt, // timestamps < text/blob/bool
             },
+            .interval => |av| switch (b) {
+                .interval => |bv| {
+                    // Compare months first, then days, then microseconds
+                    const m = std.math.order(av.months, bv.months);
+                    if (m != .eq) return m;
+                    const d = std.math.order(av.days, bv.days);
+                    if (d != .eq) return d;
+                    return std.math.order(av.micros, bv.micros);
+                },
+                else => .lt, // intervals < text/blob/bool
+            },
             .null_value => unreachable,
         };
     }
@@ -283,7 +496,7 @@ pub const Value = union(enum) {
             .text => |v| v.len > 0,
             .blob => |v| v.len > 0,
             .boolean => |v| v,
-            .date, .time, .timestamp => true, // temporal values are always truthy
+            .date, .time, .timestamp, .interval => true, // temporal values are always truthy
             .null_value => false,
         };
     }
@@ -297,6 +510,7 @@ pub const Value = union(enum) {
             .text => |v| std.fmt.parseInt(i64, v, 10) catch null,
             .date => |v| @as(i64, v), // days as integer
             .time, .timestamp => |v| v, // microseconds as integer
+            .interval => |v| v.micros, // total microseconds component
             else => null,
         };
     }
@@ -310,6 +524,7 @@ pub const Value = union(enum) {
             .text => |v| std.fmt.parseFloat(f64, v) catch null,
             .date => |v| @floatFromInt(v),
             .time, .timestamp => |v| @floatFromInt(v),
+            .interval => |v| @floatFromInt(v.micros),
             else => null,
         };
     }
@@ -422,6 +637,7 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
             .date => size += 4,
             .time => size += 8,
             .timestamp => size += 8,
+            .interval => size += 16, // months(4) + days(4) + micros(8)
             .null_value => {},
         }
     }
@@ -485,6 +701,16 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
                 buf[pos] = 0x08;
                 pos += 1;
                 std.mem.writeInt(i64, buf[pos..][0..8], ts, .little);
+                pos += 8;
+            },
+            .interval => |iv| {
+                buf[pos] = 0x09;
+                pos += 1;
+                std.mem.writeInt(i32, buf[pos..][0..4], iv.months, .little);
+                pos += 4;
+                std.mem.writeInt(i32, buf[pos..][0..4], iv.days, .little);
+                pos += 4;
+                std.mem.writeInt(i64, buf[pos..][0..8], iv.micros, .little);
                 pos += 8;
             },
             .null_value => {
@@ -564,6 +790,16 @@ pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
                 if (pos + 8 > data.len) return error.InvalidRowData;
                 v.* = .{ .timestamp = std.mem.readInt(i64, data[pos..][0..8], .little) };
                 pos += 8;
+            },
+            0x09 => { // interval
+                if (pos + 16 > data.len) return error.InvalidRowData;
+                const months = std.mem.readInt(i32, data[pos..][0..4], .little);
+                pos += 4;
+                const days = std.mem.readInt(i32, data[pos..][0..4], .little);
+                pos += 4;
+                const micros = std.mem.readInt(i64, data[pos..][0..8], .little);
+                pos += 8;
+                v.* = .{ .interval = .{ .months = months, .days = days, .micros = micros } };
             },
             0x00 => { // null
                 v.* = .null_value;
@@ -838,7 +1074,7 @@ fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Valu
 const ArithOp = enum { add, sub, mul, div };
 
 fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
-    // Date/timestamp arithmetic
+    // Date/timestamp arithmetic with integers
     if (left == .date and right == .integer) {
         if (op == .add) return .{ .date = left.date +% @as(i32, @intCast(right.integer)) };
         if (op == .sub) return .{ .date = left.date -% @as(i32, @intCast(right.integer)) };
@@ -848,6 +1084,62 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
     }
     if (left == .timestamp and right == .timestamp and op == .sub) {
         return .{ .integer = left.timestamp - right.timestamp };
+    }
+
+    // Interval arithmetic
+    if (left == .interval and right == .interval) {
+        const a = left.interval;
+        const b = right.interval;
+        if (op == .add) return .{ .interval = .{ .months = a.months +% b.months, .days = a.days +% b.days, .micros = a.micros +% b.micros } };
+        if (op == .sub) return .{ .interval = .{ .months = a.months -% b.months, .days = a.days -% b.days, .micros = a.micros -% b.micros } };
+    }
+
+    // date +/- interval → date (if no time component) or timestamp (if time component)
+    if (left == .date and right == .interval) {
+        const iv = right.interval;
+        if (iv.micros != 0) {
+            // Has time component → upcast to TIMESTAMP
+            const ts = @as(i64, left.date) * MICROS_PER_DAY;
+            if (op == .add) return .{ .timestamp = addIntervalToTimestamp(ts, iv) };
+            if (op == .sub) return .{ .timestamp = addIntervalToTimestamp(ts, negateInterval(iv)) };
+        }
+        const adjusted = addMonthsToDate(left.date, if (op == .sub) -iv.months else iv.months);
+        if (op == .add) return .{ .date = adjusted +% iv.days };
+        if (op == .sub) return .{ .date = adjusted -% iv.days };
+    }
+
+    // timestamp +/- interval → timestamp
+    if (left == .timestamp and right == .interval) {
+        const iv = right.interval;
+        if (op == .add) return .{ .timestamp = addIntervalToTimestamp(left.timestamp, iv) };
+        if (op == .sub) return .{ .timestamp = addIntervalToTimestamp(left.timestamp, negateInterval(iv)) };
+    }
+
+    // interval + date/timestamp (commutative for add)
+    if (left == .interval and right == .date and op == .add) {
+        const iv = left.interval;
+        if (iv.micros != 0) {
+            // Has time component → upcast to TIMESTAMP
+            const ts = @as(i64, right.date) * MICROS_PER_DAY;
+            return .{ .timestamp = addIntervalToTimestamp(ts, iv) };
+        }
+        return .{ .date = addMonthsToDate(right.date, iv.months) +% iv.days };
+    }
+    if (left == .interval and right == .timestamp and op == .add) {
+        return .{ .timestamp = addIntervalToTimestamp(right.timestamp, left.interval) };
+    }
+
+    // interval * integer / integer * interval
+    if (left == .interval and right == .integer) {
+        const iv = left.interval;
+        const n = @as(i32, @intCast(right.integer));
+        if (op == .mul) return .{ .interval = .{ .months = iv.months *% n, .days = iv.days *% n, .micros = iv.micros *% @as(i64, right.integer) } };
+        if (op == .div) return .{ .interval = .{ .months = @divTrunc(iv.months, n), .days = @divTrunc(iv.days, n), .micros = @divTrunc(iv.micros, right.integer) } };
+    }
+    if (left == .integer and right == .interval and op == .mul) {
+        const iv = right.interval;
+        const n = @as(i32, @intCast(left.integer));
+        return .{ .interval = .{ .months = iv.months *% n, .days = iv.days *% n, .micros = iv.micros *% left.integer } };
     }
 
     // Try integer arithmetic
@@ -886,6 +1178,7 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 .date => |v| formatDate(allocator, v) catch return EvalError.OutOfMemory,
                 .time => |v| formatTime(allocator, v) catch return EvalError.OutOfMemory,
                 .timestamp => |v| formatTimestamp(allocator, v) catch return EvalError.OutOfMemory,
+                .interval => |v| formatInterval(allocator, v) catch return EvalError.OutOfMemory,
                 .null_value => return .null_value,
                 .blob => return .null_value,
             };
@@ -918,6 +1211,15 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 else => return .null_value,
             };
             break :blk Value{ .timestamp = ts };
+        },
+        .type_interval => blk: {
+            const iv = switch (val) {
+                .text => |v| parseIntervalString(v) orelse return .null_value,
+                .interval => |v| v,
+                .integer => |v| Value.Interval{ .months = 0, .days = 0, .micros = v * MICROS_PER_SECOND },
+                else => return .null_value,
+            };
+            break :blk Value{ .interval = iv };
         },
     };
 }
@@ -1006,6 +1308,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .date => "date",
             .time => "time",
             .timestamp => "timestamp",
+            .interval => "interval",
             .null_value => "null",
         };
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };

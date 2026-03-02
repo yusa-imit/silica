@@ -763,7 +763,7 @@ pub const Parser = struct {
         const t = self.peek().type;
         return t == .kw_integer or t == .kw_int or t == .kw_real or
             t == .kw_text or t == .kw_blob or t == .kw_boolean or t == .kw_varchar or
-            t == .kw_date or t == .kw_time or t == .kw_timestamp;
+            t == .kw_date or t == .kw_time or t == .kw_timestamp or t == .kw_interval;
     }
 
     fn parseDataType(self: *Parser) ?ast.DataType {
@@ -779,6 +779,7 @@ pub const Parser = struct {
             .kw_date => .type_date,
             .kw_time => .type_time,
             .kw_timestamp => .type_timestamp,
+            .kw_interval => .type_interval,
             else => null,
         };
         if (dt != null) {

@@ -369,6 +369,7 @@ fn formatColumnLabel(allocator: std.mem.Allocator, col: ColumnInfo) ![]const u8 
         .date => "DATE",
         .time => "TIME",
         .timestamp => "TIMESTAMP",
+        .interval => "INTERVAL",
         .untyped => "",
     };
 
@@ -423,6 +424,7 @@ fn valueToString(allocator: std.mem.Allocator, val: Value) ![]const u8 {
         .date => |v| try executor.formatDate(allocator, v),
         .time => |v| try executor.formatTime(allocator, v),
         .timestamp => |v| try executor.formatTimestamp(allocator, v),
+        .interval => |v| try executor.formatInterval(allocator, v),
         .null_value => try allocator.dupe(u8, "NULL"),
     };
 }

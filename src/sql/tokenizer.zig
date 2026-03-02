@@ -184,6 +184,7 @@ pub const TokenType = enum {
     kw_date,
     kw_time,
     kw_timestamp,
+    kw_interval,
 
     // Keywords — Values
     kw_true,
@@ -719,6 +720,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "date", .kw_date },
         .{ "time", .kw_time },
         .{ "timestamp", .kw_timestamp },
+        .{ "interval", .kw_interval },
         // Values
         .{ "true", .kw_true },
         .{ "false", .kw_false },
