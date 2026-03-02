@@ -2505,6 +2505,65 @@ test "evalExpr logical AND/OR" {
     try std.testing.expect(v2.boolean);
 }
 
+test "evalExpr AND/OR with NULL (three-valued logic)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const t = ast.Expr{ .boolean_literal = true };
+    const f = ast.Expr{ .boolean_literal = false };
+    const n = ast.Expr{ .null_literal = {} };
+
+    // FALSE AND NULL = FALSE
+    const and_fn = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &f, .right = &n } };
+    const v1 = try evalExpr(allocator, &and_fn, &empty_row);
+    try std.testing.expect(v1 == .boolean and !v1.boolean);
+
+    // NULL AND FALSE = FALSE (commutative)
+    const and_nf = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &n, .right = &f } };
+    const v2 = try evalExpr(allocator, &and_nf, &empty_row);
+    try std.testing.expect(v2 == .boolean and !v2.boolean);
+
+    // TRUE AND NULL = NULL
+    const and_tn = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &t, .right = &n } };
+    const v3 = try evalExpr(allocator, &and_tn, &empty_row);
+    try std.testing.expect(v3 == .null_value);
+
+    // NULL AND TRUE = NULL
+    const and_nt = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &n, .right = &t } };
+    const v4 = try evalExpr(allocator, &and_nt, &empty_row);
+    try std.testing.expect(v4 == .null_value);
+
+    // TRUE OR NULL = TRUE
+    const or_tn = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &t, .right = &n } };
+    const v5 = try evalExpr(allocator, &or_tn, &empty_row);
+    try std.testing.expect(v5 == .boolean and v5.boolean);
+
+    // NULL OR TRUE = TRUE (commutative)
+    const or_nt = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &n, .right = &t } };
+    const v6 = try evalExpr(allocator, &or_nt, &empty_row);
+    try std.testing.expect(v6 == .boolean and v6.boolean);
+
+    // FALSE OR NULL = NULL
+    const or_fn = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &f, .right = &n } };
+    const v7 = try evalExpr(allocator, &or_fn, &empty_row);
+    try std.testing.expect(v7 == .null_value);
+
+    // NULL OR FALSE = NULL
+    const or_nf = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &n, .right = &f } };
+    const v8 = try evalExpr(allocator, &or_nf, &empty_row);
+    try std.testing.expect(v8 == .null_value);
+
+    // NULL AND NULL = NULL
+    const and_nn = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &n, .right = &n } };
+    const v9 = try evalExpr(allocator, &and_nn, &empty_row);
+    try std.testing.expect(v9 == .null_value);
+
+    // NULL OR NULL = NULL
+    const or_nn = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &n, .right = &n } };
+    const v10 = try evalExpr(allocator, &or_nn, &empty_row);
+    try std.testing.expect(v10 == .null_value);
+}
+
 test "evalExpr IS NULL / IS NOT NULL" {
     const allocator = std.testing.allocator;
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
@@ -2618,6 +2677,42 @@ test "LIKE pattern matching" {
     try std.testing.expect(likeMatch("", ""));
     try std.testing.expect(likeMatch("", "%"));
     try std.testing.expect(!likeMatch("", "_"));
+}
+
+test "LIKE pattern matching: extended cases" {
+    // Multiple wildcards
+    try std.testing.expect(likeMatch("abcdef", "a%c%f"));
+    try std.testing.expect(likeMatch("abcdef", "%b%e%"));
+    try std.testing.expect(!likeMatch("abcdef", "a%c%z"));
+
+    // Multiple underscores
+    try std.testing.expect(likeMatch("abc", "___"));
+    try std.testing.expect(!likeMatch("abcd", "___"));
+    try std.testing.expect(!likeMatch("ab", "___"));
+
+    // Mixed % and _
+    try std.testing.expect(likeMatch("abc", "_%c"));
+    try std.testing.expect(likeMatch("abc", "a_%"));
+    try std.testing.expect(likeMatch("a", "%_%")); // at least 1 char
+    try std.testing.expect(!likeMatch("", "%_%")); // empty doesn't match "at least 1"
+
+    // Case insensitivity
+    try std.testing.expect(likeMatch("Hello", "hello"));
+    try std.testing.expect(likeMatch("HELLO", "h%o"));
+
+    // Consecutive percent signs (should behave like single %)
+    try std.testing.expect(likeMatch("abc", "%%"));
+    try std.testing.expect(likeMatch("abc", "a%%c"));
+
+    // Pattern longer than text
+    try std.testing.expect(!likeMatch("ab", "abc"));
+    try std.testing.expect(!likeMatch("a", "ab"));
+
+    // Single char text
+    try std.testing.expect(likeMatch("x", "_"));
+    try std.testing.expect(likeMatch("x", "%"));
+    try std.testing.expect(likeMatch("x", "x"));
+    try std.testing.expect(!likeMatch("x", "y"));
 }
 
 test "FilterOp filters rows" {
