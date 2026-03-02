@@ -9446,3 +9446,79 @@ test "view persistence across close and reopen" {
 
     std.fs.cwd().deleteFile(path) catch {};
 }
+
+// ── Recursive CTE depth limit test ──────────────────────────
+
+test "recursive CTE: depth limit caps at 1000 iterations" {
+    const path = "test_eng_rcte_depth.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Recursive CTE with no termination condition — relies on depth limit.
+    // Each iteration produces one row: n+1. Without limit, infinite.
+    // With limit of 1000, we get anchor (1) + 1000 recursive rows = 1001 total.
+    var r = try db.execSQL(
+        "WITH RECURSIVE inf(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM inf" ++
+            ") SELECT COUNT(*) AS cnt FROM inf",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .integer);
+    // anchor produces 1 row, then 1000 iterations each producing 1 row = 1001
+    try testing.expectEqual(@as(i64, 1001), row.values[0].integer);
+}
+
+test "recursive CTE: single anchor row with immediate termination" {
+    const path = "test_eng_rcte_immediate.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Recursive part produces 0 rows immediately (WHERE false equivalent)
+    var r = try db.execSQL(
+        "WITH RECURSIVE cnt(x) AS (" ++
+            "SELECT 100 UNION ALL SELECT x + 1 FROM cnt WHERE x < 100" ++
+            ") SELECT * FROM cnt",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 100), row.values[0].integer);
+    // Only anchor row — recursive part WHERE 100 < 100 is false
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "recursive CTE: with ORDER BY on result" {
+    const path = "test_eng_rcte_order.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL(
+        "WITH RECURSIVE seq(n) AS (" ++
+            "SELECT 5 UNION ALL SELECT n - 1 FROM seq WHERE n > 1" ++
+            ") SELECT * FROM seq ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    // Should produce 1,2,3,4,5 in sorted order
+    var prev: i64 = 0;
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try testing.expect(row.values[0].integer > prev);
+        prev = row.values[0].integer;
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+    try testing.expectEqual(@as(i64, 5), prev);
+}

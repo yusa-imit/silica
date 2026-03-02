@@ -3503,3 +3503,371 @@ test "DistinctOp with mixed types" {
     }
     try std.testing.expectEqual(@as(usize, 3), count);
 }
+
+// ── DISTINCT ON Unit Tests ──────────────────────────────────────────────
+
+test "DistinctOp with DISTINCT ON single column keeps first row per group" {
+    const allocator = std.testing.allocator;
+
+    // Rows: (dept, name, salary) — sorted by dept
+    var data = InMemorySource.init(allocator, &.{ "dept", "name", "salary" });
+    try data.addRow(&.{ Value{ .text = "eng" }, Value{ .text = "Alice" }, Value{ .integer = 100 } });
+    try data.addRow(&.{ Value{ .text = "eng" }, Value{ .text = "Bob" }, Value{ .integer = 90 } });
+    try data.addRow(&.{ Value{ .text = "sales" }, Value{ .text = "Carol" }, Value{ .integer = 80 } });
+    try data.addRow(&.{ Value{ .text = "sales" }, Value{ .text = "Dave" }, Value{ .integer = 70 } });
+    defer data.deinit();
+
+    // DISTINCT ON (dept) — column_ref for "dept"
+    const on_expr = ast.Expr{ .column_ref = .{ .name = "dept" } };
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{&on_expr});
+    defer op.close();
+
+    // Should get first row per dept: Alice (eng) and Carol (sales)
+    var r1 = (try op.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqualStrings("Alice", r1.values[1].text);
+
+    var r2 = (try op.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("Carol", r2.values[1].text);
+
+    // No more rows
+    try std.testing.expect(try op.next() == null);
+}
+
+test "DistinctOp with DISTINCT ON multiple columns" {
+    const allocator = std.testing.allocator;
+
+    // Rows: (a, b, c) — sorted by a, b
+    var data = InMemorySource.init(allocator, &.{ "a", "b", "c" });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "x" } });
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "y" } }); // same (a,b)
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 20 }, Value{ .text = "z" } });
+    try data.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 10 }, Value{ .text = "w" } });
+    defer data.deinit();
+
+    // DISTINCT ON (a, b)
+    const expr_a = ast.Expr{ .column_ref = .{ .name = "a" } };
+    const expr_b = ast.Expr{ .column_ref = .{ .name = "b" } };
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{ &expr_a, &expr_b });
+    defer op.close();
+
+    // Should get 3 rows: (1,10,x), (1,20,z), (2,10,w) — second row (1,10,y) is dup
+    var r1 = (try op.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqualStrings("x", r1.values[2].text);
+
+    var r2 = (try op.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("z", r2.values[2].text);
+
+    var r3 = (try op.next()).?;
+    defer r3.deinit();
+    try std.testing.expectEqualStrings("w", r3.values[2].text);
+
+    try std.testing.expect(try op.next() == null);
+}
+
+test "DistinctOp with DISTINCT ON and NULL in dedup key" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{ "key", "val" });
+    try data.addRow(&.{ Value.null_value, Value{ .integer = 1 } });
+    try data.addRow(&.{ Value.null_value, Value{ .integer = 2 } }); // same NULL key
+    try data.addRow(&.{ Value{ .integer = 10 }, Value{ .integer = 3 } });
+    defer data.deinit();
+
+    const on_expr = ast.Expr{ .column_ref = .{ .name = "key" } };
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{&on_expr});
+    defer op.close();
+
+    // NULL key group: first row only
+    var r1 = (try op.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(Value.null_value, r1.values[0]);
+    try std.testing.expectEqual(@as(i64, 1), r1.values[1].integer);
+
+    // Non-null key group
+    var r2 = (try op.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 10), r2.values[0].integer);
+
+    try std.testing.expect(try op.next() == null);
+}
+
+test "DistinctOp with DISTINCT ON empty input" {
+    const allocator = std.testing.allocator;
+
+    var data = InMemorySource.init(allocator, &.{ "key", "val" });
+    defer data.deinit();
+
+    const on_expr = ast.Expr{ .column_ref = .{ .name = "key" } };
+
+    var op = DistinctOp.init(allocator, data.iterator(), &.{&on_expr});
+    defer op.close();
+
+    try std.testing.expect(try op.next() == null);
+}
+
+// ── SetOpOp NULL Handling Tests ─────────────────────────────────────────
+
+test "SetOpOp UNION ALL with NULL values in multi-column rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{ "id", "name" });
+    try left.addRow(&.{ Value{ .integer = 1 }, Value.null_value });
+    try left.addRow(&.{ Value.null_value, Value{ .text = "a" } });
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{ "id", "name" });
+    try right.addRow(&.{ Value.null_value, Value{ .text = "a" } });
+    try right.addRow(&.{ Value{ .integer = 2 }, Value.null_value });
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .union_all);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // UNION ALL returns all 4 rows (no dedup)
+    try std.testing.expectEqual(@as(usize, 4), count);
+}
+
+test "SetOpOp UNION deduplicates NULL rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"val"});
+    try left.addRow(&.{Value.null_value});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"val"});
+    try right.addRow(&.{Value.null_value}); // duplicate NULL
+    try right.addRow(&.{Value{ .integer = 2 }});
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .@"union");
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // NULL, 1, 2 — duplicate NULL removed
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SetOpOp INTERSECT with NULL rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{ "id", "name" });
+    try left.addRow(&.{ Value.null_value, Value{ .text = "a" } });
+    try left.addRow(&.{ Value{ .integer = 1 }, Value.null_value });
+    try left.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "b" } });
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{ "id", "name" });
+    try right.addRow(&.{ Value.null_value, Value{ .text = "a" } }); // matches left row 1
+    try right.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "c" } }); // no match
+    try right.addRow(&.{ Value{ .integer = 3 }, Value{ .text = "d" } });
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .intersect);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        // The only match is (NULL, "a")
+        try std.testing.expectEqual(Value.null_value, row.values[0]);
+        try std.testing.expectEqualStrings("a", row.values[1].text);
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "SetOpOp EXCEPT with NULL rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"val"});
+    try left.addRow(&.{Value.null_value});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"val"});
+    try right.addRow(&.{Value.null_value}); // remove NULL from result
+    try right.addRow(&.{Value{ .integer = 1 }}); // remove 1 from result
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .except);
+    defer op.close();
+
+    // Only 2 should remain
+    var row = (try op.next()).?;
+    defer row.deinit();
+    try std.testing.expectEqual(@as(i64, 2), row.values[0].integer);
+
+    try std.testing.expect(try op.next() == null);
+}
+
+test "SetOpOp UNION with multi-column NULL combinations" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{ "a", "b" });
+    try left.addRow(&.{ Value.null_value, Value.null_value });
+    try left.addRow(&.{ Value{ .integer = 1 }, Value.null_value });
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{ "a", "b" });
+    try right.addRow(&.{ Value.null_value, Value.null_value }); // dup of left row 1
+    try right.addRow(&.{ Value.null_value, Value{ .integer = 2 } }); // different — b differs
+    defer right.deinit();
+
+    var op = SetOpOp.init(allocator, left.iterator(), right.iterator(), .@"union");
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // (NULL,NULL), (1,NULL), (NULL,2) — 3 unique rows
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+// ── Row Utility Tests ───────────────────────────────────────────────────
+
+test "Row.clone creates independent deep copy" {
+    const allocator = std.testing.allocator;
+
+    // Create original row with text values (heap-allocated)
+    const cols = try allocator.alloc([]const u8, 3);
+    cols[0] = "id";
+    cols[1] = "name";
+    cols[2] = "tag";
+
+    const vals = try allocator.alloc(Value, 3);
+    vals[0] = Value{ .integer = 42 };
+    vals[1] = Value{ .text = try allocator.dupe(u8, "hello") };
+    vals[2] = Value.null_value;
+
+    var original = Row{
+        .columns = cols,
+        .values = vals,
+        .allocator = allocator,
+    };
+
+    // Clone
+    var cloned = try original.clone(allocator);
+
+    // Verify values match
+    try std.testing.expectEqual(@as(i64, 42), cloned.values[0].integer);
+    try std.testing.expectEqualStrings("hello", cloned.values[1].text);
+    try std.testing.expectEqual(Value.null_value, cloned.values[2]);
+
+    // Verify independence: free original, cloned should still be valid
+    original.deinit();
+
+    try std.testing.expectEqualStrings("hello", cloned.values[1].text);
+    try std.testing.expectEqual(@as(i64, 42), cloned.values[0].integer);
+
+    cloned.deinit();
+}
+
+test "Row.clone with empty row" {
+    const allocator = std.testing.allocator;
+
+    const cols = try allocator.alloc([]const u8, 0);
+    const vals = try allocator.alloc(Value, 0);
+
+    var original = Row{
+        .columns = cols,
+        .values = vals,
+        .allocator = allocator,
+    };
+
+    var cloned = try original.clone(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), cloned.columns.len);
+    try std.testing.expectEqual(@as(usize, 0), cloned.values.len);
+
+    original.deinit();
+    cloned.deinit();
+}
+
+test "Row.getQualifiedColumn with table prefix" {
+    const allocator = std.testing.allocator;
+
+    const cols = try allocator.alloc([]const u8, 3);
+    cols[0] = "users.id";
+    cols[1] = "users.name";
+    cols[2] = "orders.id";
+
+    const vals = try allocator.alloc(Value, 3);
+    vals[0] = Value{ .integer = 1 };
+    vals[1] = Value{ .text = try allocator.dupe(u8, "Alice") };
+    vals[2] = Value{ .integer = 100 };
+
+    var row = Row{
+        .columns = cols,
+        .values = vals,
+        .allocator = allocator,
+    };
+    defer row.deinit();
+
+    // Qualified lookup: users.id → 1
+    const uid = row.getQualifiedColumn("users", "id");
+    try std.testing.expect(uid != null);
+    try std.testing.expectEqual(@as(i64, 1), uid.?.integer);
+
+    // Qualified lookup: orders.id → 100
+    const oid = row.getQualifiedColumn("orders", "id");
+    try std.testing.expect(oid != null);
+    try std.testing.expectEqual(@as(i64, 100), oid.?.integer);
+
+    // Qualified lookup: users.name → "Alice"
+    const name = row.getQualifiedColumn("users", "name");
+    try std.testing.expect(name != null);
+    try std.testing.expectEqualStrings("Alice", name.?.text);
+
+    // Non-existent table — falls back to unqualified lookup for "id"
+    // but no plain "id" column exists (all are qualified), so returns null
+    const none = row.getQualifiedColumn("products", "id");
+    try std.testing.expect(none == null);
+}
+
+test "Row.getQualifiedColumn falls back to unqualified" {
+    const allocator = std.testing.allocator;
+
+    const cols = try allocator.alloc([]const u8, 2);
+    cols[0] = "id";
+    cols[1] = "name";
+
+    const vals = try allocator.alloc(Value, 2);
+    vals[0] = Value{ .integer = 5 };
+    vals[1] = Value{ .text = try allocator.dupe(u8, "Bob") };
+
+    var row = Row{
+        .columns = cols,
+        .values = vals,
+        .allocator = allocator,
+    };
+    defer row.deinit();
+
+    // No "t.id" found, falls back to plain "id"
+    const val = row.getQualifiedColumn("t", "id");
+    try std.testing.expect(val != null);
+    try std.testing.expectEqual(@as(i64, 5), val.?.integer);
+}
