@@ -1667,29 +1667,23 @@ pub const Database = struct {
         };
     }
 
-    /// Find the next available row key by scanning the B+Tree for the max existing key.
+    /// Find the next available row key by seeking to the last entry in the B+Tree.
     /// Keys are 8-byte big-endian u64 for lexicographic ordering.
     fn findNextRowKey(self: *Database, tree: *BTree) !u64 {
         var cursor = btree_mod.Cursor.init(self.allocator, tree);
         defer cursor.deinit();
 
-        try cursor.seekFirst();
-
-        var max_key: u64 = 0;
-        var found_any = false;
-        while (try cursor.next()) |entry| {
+        // Seek to last key directly — O(log n) instead of scanning all rows
+        try cursor.seekLast();
+        if (try cursor.next()) |entry| {
             defer self.allocator.free(entry.key);
             defer self.allocator.free(entry.value);
             if (entry.key.len == 8) {
-                const k = std.mem.readInt(u64, entry.key[0..8], .big);
-                if (!found_any or k >= max_key) {
-                    max_key = k;
-                    found_any = true;
-                }
+                return std.mem.readInt(u64, entry.key[0..8], .big) + 1;
             }
         }
 
-        return if (found_any) max_key + 1 else 0;
+        return 0;
     }
 
     /// Update a table's root page ID in the catalog after a B+Tree split.
@@ -1698,18 +1692,18 @@ pub const Database = struct {
         var info = try self.catalog.getTable(table_name);
         defer info.deinit(self.allocator);
 
-        const value = try catalog_mod.serializeTableFull(
+        const new_value = try catalog_mod.serializeTableFull(
             self.allocator,
             info.columns,
             info.table_constraints,
             info.indexes,
             new_root,
         );
-        defer self.allocator.free(value);
+        defer self.allocator.free(new_value);
 
         // Delete and re-insert in the schema B+Tree
-        self.catalog.tree.delete(table_name) catch return;
-        self.catalog.tree.insert(table_name, value) catch return;
+        try self.catalog.tree.delete(table_name);
+        try self.catalog.tree.insert(table_name, new_value);
     }
 
     /// Update an index's root page ID in the catalog after a B+Tree split.
@@ -1736,8 +1730,8 @@ pub const Database = struct {
         );
         defer self.allocator.free(value);
 
-        self.catalog.tree.delete(table_name) catch return;
-        self.catalog.tree.insert(table_name, value) catch return;
+        try self.catalog.tree.delete(table_name);
+        try self.catalog.tree.insert(table_name, value);
     }
 
     // ── Index Maintenance ─────────────────────────────────────────────
@@ -11933,4 +11927,111 @@ test "NOW() and CURRENT_DATE() functions" {
     var row2 = (try r2.rows.?.next()).?;
     defer row2.deinit();
     try testing.expect(row2.values[0] == .date);
+}
+
+test "multi-table INSERT does not produce DuplicateKey" {
+    const path = "test_eng_multi_table_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Reproduce: create 2 tables, insert rows into both
+    var r1 = try db.execSQL("CREATE TABLE dept (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO dept VALUES (1, 'eng')");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO dept VALUES (2, 'sales')");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("CREATE TABLE emp (id INTEGER, dept_id INTEGER, salary INTEGER)");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("INSERT INTO emp VALUES (1, 1, 100)");
+    defer r5.close(testing.allocator);
+    var r6 = try db.execSQL("INSERT INTO emp VALUES (2, 1, 200)");
+    defer r6.close(testing.allocator);
+    // This was the failing INSERT — 3rd row in 2nd table
+    var r7 = try db.execSQL("INSERT INTO emp VALUES (3, 2, 150)");
+    defer r7.close(testing.allocator);
+
+    // Verify all rows in both tables
+    var sel1 = try db.execSQL("SELECT id FROM dept");
+    defer sel1.close(testing.allocator);
+    var dept_count: usize = 0;
+    while (try sel1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        dept_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), dept_count);
+
+    var sel2 = try db.execSQL("SELECT id FROM emp");
+    defer sel2.close(testing.allocator);
+    var emp_count: usize = 0;
+    while (try sel2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        emp_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), emp_count);
+}
+
+test "multi-table INSERT with constrained cache forces evictions" {
+    const path = "test_eng_multi_insert_small_cache.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    std.fs.cwd().deleteFile(path) catch {};
+    // Use constrained cache (16 frames) and small page size to force splits and evictions.
+    // B+Tree splits need 3+ simultaneous pins, so cache_size must be >= 8 for safe operation.
+    var db = try Database.open(testing.allocator, path, .{ .cache_size = 16, .page_size = 512 });
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE dept (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var dept_results: [20]QueryResult = undefined;
+    var dept_inited: usize = 0;
+    defer for (dept_results[0..dept_inited]) |*r| r.close(testing.allocator);
+
+    for (0..20) |i| {
+        var buf: [128]u8 = undefined;
+        const sql = std.fmt.bufPrint(&buf, "INSERT INTO dept VALUES ({d}, 'department_name_{d}')", .{ i, i }) catch unreachable;
+        dept_results[i] = try db.execSQL(sql);
+        dept_inited += 1;
+    }
+
+    var r2 = try db.execSQL("CREATE TABLE emp (id INTEGER, dept_id INTEGER, salary INTEGER)");
+    defer r2.close(testing.allocator);
+
+    var emp_results: [20]QueryResult = undefined;
+    var emp_inited: usize = 0;
+    defer for (emp_results[0..emp_inited]) |*r| r.close(testing.allocator);
+
+    for (0..20) |i| {
+        var buf: [128]u8 = undefined;
+        const sql = std.fmt.bufPrint(&buf, "INSERT INTO emp VALUES ({d}, {d}, {d}00)", .{ i, i % 3, i }) catch unreachable;
+        emp_results[emp_inited] = try db.execSQL(sql);
+        emp_inited += 1;
+    }
+
+    // Verify row counts
+    var sel1 = try db.execSQL("SELECT id FROM dept");
+    defer sel1.close(testing.allocator);
+    var dept_count: usize = 0;
+    while (try sel1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        dept_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 20), dept_count);
+
+    var sel2 = try db.execSQL("SELECT id FROM emp");
+    defer sel2.close(testing.allocator);
+    var emp_count: usize = 0;
+    while (try sel2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        emp_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 20), emp_count);
 }

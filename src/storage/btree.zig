@@ -214,6 +214,7 @@ pub const BTree = struct {
 
         const result = try self.insertIntoNode(self.root_page_id, key, encoded_value);
         if (result.split) |split| {
+            defer self.pager.allocator.free(split.promoted_key);
             // Root was split — create a new root
             const new_root_id = try self.pager.allocPage();
             const frame = try self.pool.fetchNewPage(new_root_id);
@@ -325,6 +326,7 @@ pub const BTree = struct {
         const child_result = try self.insertIntoNode(child_page_id, key, value);
 
         if (child_result.split) |split| {
+            defer self.pager.allocator.free(split.promoted_key);
             // Child was split — insert promoted key into this internal node
             const re_frame = try self.pool.fetchPage(page_id);
             const re_header = PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
@@ -336,15 +338,6 @@ pub const BTree = struct {
             const free = internalFreeSpace(re_frame.data, page_size, re_count);
 
             if (free >= cell_size + CELL_PTR_SIZE) {
-                // Update the child pointer: the cell at insert_pos currently points to
-                // child_page_id. After insert, the new cell at insert_pos will point to
-                // child_page_id (left side of split), and the cell at insert_pos+1 or
-                // right_child will point to split.new_page_id.
-
-                // First, we need to update the pointer that currently leads to child_page_id
-                // to instead point to split.new_page_id for keys >= promoted key.
-                // The promoted key's left_child is child_page_id (the original, left half).
-                // The cell to the right (or right_child) should become split.new_page_id.
                 updateChildPointer(re_frame.data, page_size, re_count, insert_pos, split.new_page_id);
                 insertInternalCell(re_frame.data, page_size, re_count, insert_pos, child_page_id, split.promoted_key) catch {
                     self.pool.unpinPage(page_id, false);
@@ -1074,14 +1067,16 @@ pub const BTree = struct {
             self.pool.unpinPage(old_next, true);
         }
 
-        // The promoted key is the first key of the new (right) page
+        // The promoted key is the first key of the new (right) page.
+        // Must duplicate because the frame data may be evicted after unpin.
         const promoted = readLeafCell(new_frame.data, page_size, 0);
+        const promoted_key_owned = try self.pager.allocator.dupe(u8, promoted.key);
 
         self.pool.unpinPage(page_id, true);
         self.pool.unpinPage(new_page_id, true);
 
         return SplitInfo{
-            .promoted_key = promoted.key,
+            .promoted_key = promoted_key_owned,
             .new_page_id = new_page_id,
         };
     }
@@ -1142,11 +1137,14 @@ pub const BTree = struct {
         }
         setRightChild(new_frame.data, original_right_child);
 
+        // Must duplicate because promoted_key points into `saved` which is freed by defer.
+        const promoted_key_owned = try self.pager.allocator.dupe(u8, promoted_key);
+
         self.pool.unpinPage(page_id, true);
         self.pool.unpinPage(new_page_id, true);
 
         return SplitInfo{
-            .promoted_key = promoted_key,
+            .promoted_key = promoted_key_owned,
             .new_page_id = new_page_id,
         };
     }
