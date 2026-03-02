@@ -199,6 +199,21 @@ pub const Expr = union(enum) {
     paren: *const Expr,
     /// Subquery expression (scalar subquery)
     subquery: *const SelectStmt,
+    /// Window function call: func(...) OVER (PARTITION BY ... ORDER BY ... frame)
+    window_function: struct {
+        /// Function name (e.g., "row_number", "rank", "sum")
+        name: []const u8,
+        /// Function arguments (empty for ROW_NUMBER, RANK, etc.)
+        args: []const *const Expr = &.{},
+        /// DISTINCT in function args (e.g., COUNT(DISTINCT x) OVER ...)
+        distinct: bool = false,
+        /// PARTITION BY expressions
+        partition_by: []const *const Expr = &.{},
+        /// ORDER BY within the window
+        order_by: []const OrderByItem = &.{},
+        /// Optional frame specification
+        frame: ?*const WindowFrameSpec = null,
+    },
     /// Bind parameter: ?
     bind_parameter: u32,
 };
@@ -244,6 +259,42 @@ pub const BinaryOp = enum {
     right_shift,
 };
 
+/// Window frame mode: ROWS, RANGE, or GROUPS.
+pub const WindowFrameMode = enum {
+    rows,
+    range,
+    groups,
+};
+
+/// Window frame bound specification.
+pub const WindowFrameBound = union(enum) {
+    /// UNBOUNDED PRECEDING
+    unbounded_preceding,
+    /// UNBOUNDED FOLLOWING
+    unbounded_following,
+    /// CURRENT ROW
+    current_row,
+    /// <expr> PRECEDING
+    expr_preceding: *const Expr,
+    /// <expr> FOLLOWING
+    expr_following: *const Expr,
+};
+
+/// Window frame specification: ROWS/RANGE/GROUPS BETWEEN ... AND ...
+pub const WindowFrameSpec = struct {
+    mode: WindowFrameMode = .range,
+    start: WindowFrameBound = .unbounded_preceding,
+    end: WindowFrameBound = .current_row,
+};
+
+/// Named window definition in WINDOW clause.
+pub const WindowDef = struct {
+    name: []const u8,
+    partition_by: []const *const Expr = &.{},
+    order_by: []const OrderByItem = &.{},
+    frame: ?*const WindowFrameSpec = null,
+};
+
 /// A single CTE definition in a WITH clause.
 pub const CteDefinition = struct {
     /// CTE name (used as table reference in main query)
@@ -287,6 +338,8 @@ pub const SelectStmt = struct {
     order_by: []const OrderByItem = &.{},
     limit: ?*const Expr = null,
     offset: ?*const Expr = null,
+    /// Named window definitions (WINDOW w AS (...), ...)
+    window_defs: []const WindowDef = &.{},
     /// Optional set operation chaining (UNION, INTERSECT, EXCEPT)
     set_operation: ?*const SetOperation = null,
 };
@@ -599,6 +652,72 @@ test "SetOpType enum and SetOperation struct" {
     // Test all set op types
     try std.testing.expect(SetOpType.union_all != SetOpType.@"union");
     try std.testing.expect(SetOpType.intersect != SetOpType.except);
+}
+
+test "WindowFunction expression" {
+    var ast_arena = AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+
+    // ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)
+    const dept_ref = try ast_arena.create(Expr, .{ .column_ref = .{ .name = "dept" } });
+    const salary_ref = try ast_arena.create(Expr, .{ .column_ref = .{ .name = "salary" } });
+    const partition_by = try ast_arena.dupeSlice(*const Expr, &.{dept_ref});
+    const order_by = try ast_arena.dupeSlice(OrderByItem, &.{
+        .{ .expr = salary_ref, .direction = .desc },
+    });
+
+    const wf = try ast_arena.create(Expr, .{ .window_function = .{
+        .name = "row_number",
+        .partition_by = partition_by,
+        .order_by = order_by,
+    } });
+
+    try std.testing.expectEqualStrings("row_number", wf.window_function.name);
+    try std.testing.expectEqual(@as(usize, 0), wf.window_function.args.len);
+    try std.testing.expectEqual(@as(usize, 1), wf.window_function.partition_by.len);
+    try std.testing.expectEqual(@as(usize, 1), wf.window_function.order_by.len);
+    try std.testing.expectEqual(OrderDirection.desc, wf.window_function.order_by[0].direction);
+    try std.testing.expect(wf.window_function.frame == null);
+}
+
+test "WindowFrameSpec" {
+    var ast_arena = AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+
+    // ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    const frame = try ast_arena.create(WindowFrameSpec, .{
+        .mode = .rows,
+        .start = .unbounded_preceding,
+        .end = .current_row,
+    });
+
+    try std.testing.expectEqual(WindowFrameMode.rows, frame.mode);
+    try std.testing.expectEqual(WindowFrameBound.unbounded_preceding, frame.start);
+    try std.testing.expectEqual(WindowFrameBound.current_row, frame.end);
+
+    // ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+    const one = try ast_arena.create(Expr, .{ .integer_literal = 1 });
+    const frame2 = try ast_arena.create(WindowFrameSpec, .{
+        .mode = .rows,
+        .start = .{ .expr_preceding = one },
+        .end = .{ .expr_following = one },
+    });
+
+    try std.testing.expectEqual(WindowFrameMode.rows, frame2.mode);
+    switch (frame2.start) {
+        .expr_preceding => |e| try std.testing.expectEqual(@as(i64, 1), e.integer_literal),
+        else => unreachable,
+    }
+}
+
+test "WindowDef named window" {
+    const def = WindowDef{
+        .name = "w",
+    };
+    try std.testing.expectEqualStrings("w", def.name);
+    try std.testing.expectEqual(@as(usize, 0), def.partition_by.len);
+    try std.testing.expectEqual(@as(usize, 0), def.order_by.len);
+    try std.testing.expect(def.frame == null);
 }
 
 test "ColumnConstraint variants" {

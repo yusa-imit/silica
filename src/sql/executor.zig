@@ -501,6 +501,11 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
             return evalFunctionCall(allocator, fc, row);
         },
 
+        // Window function values are pre-computed by WindowOp and stored in the row.
+        // When evalExpr encounters a window_function, the value should already be
+        // in the row under the window function's alias/name.
+        .window_function => return EvalError.UnsupportedExpression,
+
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
         .subquery,
@@ -1203,6 +1208,7 @@ fn exprColumnName(expr: *const ast.Expr) []const u8 {
     return switch (expr.*) {
         .column_ref => |ref| ref.name,
         .function_call => |fc| fc.name,
+        .window_function => |wf| wf.name,
         .integer_literal => "?column?",
         .float_literal => "?column?",
         .string_literal => "?column?",

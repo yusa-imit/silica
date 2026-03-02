@@ -133,6 +133,30 @@ pub const TokenType = enum {
     kw_min,
     kw_max,
 
+    // Keywords — Window functions
+    kw_over,
+    kw_partition,
+    kw_rows,
+    kw_range,
+    kw_groups,
+    kw_unbounded,
+    kw_preceding,
+    kw_following,
+    kw_current,
+    kw_row,
+    kw_window,
+    kw_row_number,
+    kw_rank,
+    kw_dense_rank,
+    kw_ntile,
+    kw_lag,
+    kw_lead,
+    kw_first_value,
+    kw_last_value,
+    kw_nth_value,
+    kw_percent_rank,
+    kw_cume_dist,
+
     // Keywords — Transaction
     kw_begin,
     kw_commit,
@@ -644,6 +668,29 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "avg", .kw_avg },
         .{ "min", .kw_min },
         .{ "max", .kw_max },
+        // Window functions
+        .{ "over", .kw_over },
+        .{ "partition", .kw_partition },
+        .{ "rows", .kw_rows },
+        .{ "range", .kw_range },
+        .{ "groups", .kw_groups },
+        .{ "unbounded", .kw_unbounded },
+        .{ "preceding", .kw_preceding },
+        .{ "following", .kw_following },
+        .{ "current", .kw_current },
+        .{ "row", .kw_row },
+        .{ "window", .kw_window },
+        .{ "row_number", .kw_row_number },
+        .{ "rank", .kw_rank },
+        .{ "dense_rank", .kw_dense_rank },
+        .{ "ntile", .kw_ntile },
+        .{ "lag", .kw_lag },
+        .{ "lead", .kw_lead },
+        .{ "first_value", .kw_first_value },
+        .{ "last_value", .kw_last_value },
+        .{ "nth_value", .kw_nth_value },
+        .{ "percent_rank", .kw_percent_rank },
+        .{ "cume_dist", .kw_cume_dist },
         // Transaction
         .{ "begin", .kw_begin },
         .{ "commit", .kw_commit },
@@ -1129,5 +1176,51 @@ test "ORDER BY ASC DESC" {
 test "LIMIT OFFSET" {
     try expectTokens("LIMIT 10 OFFSET 20", &.{
         .kw_limit, .integer_literal, .kw_offset, .integer_literal,
+    });
+}
+
+test "window function keywords" {
+    try expectSingleToken("over", .kw_over, "over");
+    try expectSingleToken("OVER", .kw_over, "OVER");
+    try expectSingleToken("partition", .kw_partition, "partition");
+    try expectSingleToken("rows", .kw_rows, "rows");
+    try expectSingleToken("range", .kw_range, "range");
+    try expectSingleToken("groups", .kw_groups, "groups");
+    try expectSingleToken("unbounded", .kw_unbounded, "unbounded");
+    try expectSingleToken("preceding", .kw_preceding, "preceding");
+    try expectSingleToken("following", .kw_following, "following");
+    try expectSingleToken("current", .kw_current, "current");
+    try expectSingleToken("row", .kw_row, "row");
+    try expectSingleToken("window", .kw_window, "window");
+    try expectSingleToken("row_number", .kw_row_number, "row_number");
+    try expectSingleToken("rank", .kw_rank, "rank");
+    try expectSingleToken("dense_rank", .kw_dense_rank, "dense_rank");
+    try expectSingleToken("ntile", .kw_ntile, "ntile");
+    try expectSingleToken("lag", .kw_lag, "lag");
+    try expectSingleToken("lead", .kw_lead, "lead");
+    try expectSingleToken("first_value", .kw_first_value, "first_value");
+    try expectSingleToken("last_value", .kw_last_value, "last_value");
+    try expectSingleToken("nth_value", .kw_nth_value, "nth_value");
+    try expectSingleToken("percent_rank", .kw_percent_rank, "percent_rank");
+    try expectSingleToken("cume_dist", .kw_cume_dist, "cume_dist");
+}
+
+test "window function expression tokens" {
+    const sql = "ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)";
+    try expectTokens(sql, &.{
+        .kw_row_number, .left_paren,  .right_paren,  .kw_over,
+        .left_paren,    .kw_partition, .kw_by,        .identifier,
+        .kw_order,      .kw_by,        .identifier,   .kw_desc,
+        .right_paren,
+    });
+}
+
+test "window frame specification tokens" {
+    const sql = "SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)";
+    try expectTokens(sql, &.{
+        .kw_sum,       .left_paren,   .identifier,    .right_paren,
+        .kw_over,      .left_paren,   .kw_rows,       .kw_between,
+        .kw_unbounded, .kw_preceding, .kw_and,        .kw_current,
+        .kw_row,       .right_paren,
     });
 }

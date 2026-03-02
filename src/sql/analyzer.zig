@@ -645,6 +645,17 @@ pub const Analyzer = struct {
             .paren => |p| {
                 self.analyzeExpr(p);
             },
+            .window_function => |wf| {
+                // Analyze window function arguments
+                for (wf.args) |arg| {
+                    if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*")) continue;
+                    self.analyzeExpr(arg);
+                }
+                // Analyze PARTITION BY expressions
+                for (wf.partition_by) |pb| self.analyzeExpr(pb);
+                // Analyze ORDER BY expressions
+                for (wf.order_by) |ob| self.analyzeExpr(ob.expr);
+            },
             .subquery => {
                 // Subqueries have their own scope — skip deep analysis for now
             },
