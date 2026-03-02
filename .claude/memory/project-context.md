@@ -72,14 +72,14 @@
 - `src/tx/mvcc.zig` — MVCC visibility, snapshots, TransactionManager
 - `src/tx/lock.zig` — Lock manager (row-level + table-level locks, conflict detection)
 
-## Test Summary (1062 tests total: 1013 main + 49 fuzz)
+## Test Summary (1084 tests total: 1035 main + 49 fuzz)
 - `tokenizer.zig`: 54 | `ast.zig`: 11 | `parser.zig`: 104 | `catalog.zig`: 30
-- `analyzer.zig`: 46 | `planner.zig`: 51 | `optimizer.zig`: 17 | `executor.zig`: 66
+- `analyzer.zig`: 46 | `planner.zig`: 50 | `optimizer.zig`: 16 | `executor.zig`: 68
 - `btree.zig`: 53 | `fuzz.zig`: 12 | `overflow.zig`: 18 | `page.zig`: 24
 - `buffer_pool.zig`: 23 | `checksum.zig`: 12 | `varint.zig`: 19
 - `wal.zig`: 23 | `mvcc.zig`: 69 | `lock.zig`: 50
 - `vacuum.zig`: 46 | `fsm.zig`: 21
-- `engine.zig`: 264 | `cli.zig`: 31 | `tui.zig`: 18
+- `engine.zig`: 284 | `cli.zig`: 30 | `tui.zig`: 18
 
 ## Current Phase: Phase 2 — SQL Layer + Phase 3 — Transactions
 
