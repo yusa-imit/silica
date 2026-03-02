@@ -1782,3 +1782,44 @@ test "formatPlan distinct on" {
     const output = fbs.getWritten();
     try testing.expect(std.mem.indexOf(u8, output, "Distinct On (1 exprs)") != null);
 }
+
+test "plan recursive CTE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT * FROM cnt;",
+        &arena, &schema);
+
+    // Should have one CTE marked as recursive
+    try testing.expectEqual(@as(usize, 1), plan.ctes.len);
+    try testing.expectEqualStrings("cnt", plan.ctes[0].name);
+    try testing.expect(plan.ctes[0].recursive);
+    try testing.expectEqual(@as(usize, 1), plan.ctes[0].column_names.len);
+    try testing.expectEqualStrings("x", plan.ctes[0].column_names[0]);
+
+    // Plan root should be a set_op (UNION ALL) with anchor and recursive parts
+    switch (plan.ctes[0].plan.*) {
+        .set_op => |s| {
+            try testing.expectEqual(ast.SetOpType.union_all, s.op);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "plan non-recursive CTE with WITH RECURSIVE keyword" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    // WITH RECURSIVE without UNION ALL — CTE is not actually recursive
+    const plan = try parseAndPlan(testing.allocator,
+        "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte;",
+        &arena, &schema);
+
+    try testing.expectEqual(@as(usize, 1), plan.ctes.len);
+    try testing.expect(!plan.ctes[0].recursive); // No set_operation → not recursive
+}
