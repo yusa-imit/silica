@@ -1446,7 +1446,7 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
 
 fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Value {
     return switch (target) {
-        .type_integer, .type_int => .{ .integer = val.toInteger() orelse return .null_value },
+        .type_integer, .type_int, .type_serial, .type_bigserial => .{ .integer = val.toInteger() orelse return .null_value },
         .type_real => .{ .real = val.toReal() orelse return .null_value },
         .type_text, .type_varchar => blk: {
             const s = switch (val) {
@@ -5781,7 +5781,7 @@ test "UUID parseUuidString without dashes" {
     try std.testing.expect(result != null);
     const bytes = result.?;
     try std.testing.expectEqual(@as(u8, 0x55), bytes[0]);
-    try std.testing.expectEqual(@as(u8, 0x44), bytes[15]);
+    try std.testing.expectEqual(@as(u8, 0x00), bytes[15]);
 }
 
 test "UUID parseUuidString uppercase" {
