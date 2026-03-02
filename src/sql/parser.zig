@@ -764,7 +764,7 @@ pub const Parser = struct {
         return t == .kw_integer or t == .kw_int or t == .kw_real or
             t == .kw_text or t == .kw_blob or t == .kw_boolean or t == .kw_varchar or
             t == .kw_date or t == .kw_time or t == .kw_timestamp or t == .kw_interval or
-            t == .kw_numeric or t == .kw_decimal;
+            t == .kw_numeric or t == .kw_decimal or t == .kw_uuid;
     }
 
     fn parseDataType(self: *Parser) ?ast.DataType {
@@ -783,6 +783,7 @@ pub const Parser = struct {
             .kw_interval => .type_interval,
             .kw_numeric => .type_numeric,
             .kw_decimal => .type_decimal,
+            .kw_uuid => .type_uuid,
             else => null,
         };
         if (dt != null) {

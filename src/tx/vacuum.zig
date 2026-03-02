@@ -310,6 +310,7 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             std.mem.writeInt(u128, buf[1..17], flipped, .big);
             return buf;
         },
+        .uuid => |u| try allocator.dupe(u8, &u),
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };

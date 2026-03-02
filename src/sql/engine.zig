@@ -245,6 +245,11 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             std.mem.writeInt(u128, buf[1..17], flipped, .big);
             return buf;
         },
+        .uuid => |u| {
+            const buf = try allocator.alloc(u8, 16);
+            @memcpy(buf, &u);
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };
@@ -12614,4 +12619,171 @@ test "NUMERIC type: negative arithmetic" {
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
     try testing.expectEqualStrings("-5.50", row.values[0].text);
+}
+
+// ── UUID Integration Tests ──────────────────────────────────────────────
+
+test "UUID type: CREATE TABLE, INSERT, SELECT" {
+    const path = "test_uuid_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE users (id UUID, name TEXT)");
+    _ = try db.exec("INSERT INTO users VALUES (CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID), 'Alice')");
+    _ = try db.exec("INSERT INTO users VALUES (CAST('6ba7b810-9dad-11d1-80b4-00c04fd430c8' AS UUID), 'Bob')");
+
+    var r = try db.exec("SELECT CAST(id AS TEXT), name FROM users ORDER BY name");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", row1.values[0].text);
+    try testing.expectEqualStrings("Alice", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("6ba7b810-9dad-11d1-80b4-00c04fd430c8", row2.values[0].text);
+    try testing.expectEqualStrings("Bob", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "UUID type: gen_random_uuid() function" {
+    const path = "test_uuid_gen.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(gen_random_uuid() AS TEXT)");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    const uuid_str = row.values[0].text;
+
+    // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars)
+    try testing.expectEqual(@as(usize, 36), uuid_str.len);
+    try testing.expectEqual(@as(u8, '-'), uuid_str[8]);
+    try testing.expectEqual(@as(u8, '-'), uuid_str[13]);
+    try testing.expectEqual(@as(u8, '-'), uuid_str[18]);
+    try testing.expectEqual(@as(u8, '-'), uuid_str[23]);
+    // Version 4: char at position 14 must be '4'
+    try testing.expectEqual(@as(u8, '4'), uuid_str[14]);
+}
+
+test "UUID type: CAST roundtrip text→uuid→text" {
+    const path = "test_uuid_cast.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID) AS TEXT)");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", row.values[0].text);
+}
+
+test "UUID type: typeof function" {
+    const path = "test_uuid_typeof.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT typeof(CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID))");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("uuid", row.values[0].text);
+}
+
+test "UUID type: comparison in WHERE clause" {
+    const path = "test_uuid_where.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE records (id UUID, label TEXT)");
+    _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000001' AS UUID), 'first')");
+    _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000002' AS UUID), 'second')");
+    _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000003' AS UUID), 'third')");
+
+    var r = try db.exec("SELECT label FROM records WHERE id = CAST('00000000-0000-0000-0000-000000000002' AS UUID)");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("second", row.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "UUID type: ORDER BY" {
+    const path = "test_uuid_order.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE items (id UUID, name TEXT)");
+    _ = try db.exec("INSERT INTO items VALUES (CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID), 'last')");
+    _ = try db.exec("INSERT INTO items VALUES (CAST('00000000-0000-0000-0000-000000000000' AS UUID), 'first')");
+    _ = try db.exec("INSERT INTO items VALUES (CAST('80000000-0000-0000-0000-000000000000' AS UUID), 'middle')");
+
+    var r = try db.exec("SELECT name FROM items ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("first", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("middle", row2.values[0].text);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("last", row3.values[0].text);
+}
+
+test "UUID type: gen_random_uuid uniqueness" {
+    const path = "test_uuid_unique.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Generate two UUIDs and ensure they're different
+    var r1 = try db.execSQL("SELECT CAST(gen_random_uuid() AS TEXT)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    const uuid1 = row1.values[0].text;
+
+    var r2 = try db.execSQL("SELECT CAST(gen_random_uuid() AS TEXT)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    const uuid2 = row2.values[0].text;
+
+    try testing.expect(!std.mem.eql(u8, uuid1, uuid2));
+}
+
+test "UUID type: INSERT with gen_random_uuid" {
+    const path = "test_uuid_insert_gen.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE events (id UUID, name TEXT)");
+    _ = try db.exec("INSERT INTO events VALUES (gen_random_uuid(), 'event1')");
+    _ = try db.exec("INSERT INTO events VALUES (gen_random_uuid(), 'event2')");
+
+    var r = try db.exec("SELECT CAST(id AS TEXT), name FROM events ORDER BY name");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("event1", row1.values[1].text);
+    // UUID should be 36 chars
+    try testing.expectEqual(@as(usize, 36), row1.values[0].text.len);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("event2", row2.values[1].text);
+    // Different UUIDs
+    try testing.expect(!std.mem.eql(u8, row1.values[0].text, row2.values[0].text));
 }

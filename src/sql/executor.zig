@@ -506,6 +506,65 @@ pub fn formatNumeric(allocator: Allocator, n: Value.Numeric) ![]u8 {
     }
 }
 
+// ── UUID Helpers ─────────────────────────────────────────────────────────
+
+/// Format a UUID as "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
+pub fn formatUuid(allocator: Allocator, bytes: [16]u8) ![]u8 {
+    const hex = "0123456789abcdef";
+    const result = try allocator.alloc(u8, 36);
+    var pos: usize = 0;
+    for (bytes, 0..) |byte, i| {
+        result[pos] = hex[byte >> 4];
+        result[pos + 1] = hex[byte & 0x0f];
+        pos += 2;
+        if (i == 3 or i == 5 or i == 7 or i == 9) {
+            result[pos] = '-';
+            pos += 1;
+        }
+    }
+    return result;
+}
+
+/// Parse a UUID string "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" into 16 bytes.
+fn parseUuidString(s: []const u8) ?[16]u8 {
+    // Accept with or without dashes
+    var bytes: [16]u8 = undefined;
+    var bi: usize = 0;
+    var i: usize = 0;
+    while (i < s.len and bi < 16) {
+        if (s[i] == '-') {
+            i += 1;
+            continue;
+        }
+        if (i + 1 >= s.len) return null;
+        const hi: u8 = hexDigit(s[i]) orelse return null;
+        const lo: u8 = hexDigit(s[i + 1]) orelse return null;
+        bytes[bi] = (hi << 4) | lo;
+        bi += 1;
+        i += 2;
+    }
+    if (bi != 16) return null;
+    return bytes;
+}
+
+fn hexDigit(c: u8) ?u4 {
+    if (c >= '0' and c <= '9') return @intCast(c - '0');
+    if (c >= 'a' and c <= 'f') return @intCast(c - 'a' + 10);
+    if (c >= 'A' and c <= 'F') return @intCast(c - 'A' + 10);
+    return null;
+}
+
+/// Generate a random v4 UUID.
+fn generateUuidV4() [16]u8 {
+    var bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    // Set version 4 (bits 48-51)
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    // Set variant 2 (bits 64-65)
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return bytes;
+}
+
 // ── MVCC Context ──────────────────────────────────────────────────────────
 
 /// MVCC context passed to scan operators for visibility filtering.
@@ -535,6 +594,7 @@ pub const Value = union(enum) {
     timestamp: i64, // microseconds since epoch
     interval: Interval, // composite: months + days + microseconds
     numeric: Numeric, // fixed-point decimal
+    uuid: [16]u8, // 128-bit UUID
     null_value,
 
     pub const Interval = struct {
@@ -626,6 +686,10 @@ pub const Value = union(enum) {
                 },
                 else => .lt,
             },
+            .uuid => |av| switch (b) {
+                .uuid => |bv| std.mem.order(u8, &av, &bv),
+                else => .lt,
+            },
             .null_value => unreachable,
         };
     }
@@ -645,6 +709,7 @@ pub const Value = union(enum) {
             .boolean => |v| v,
             .date, .time, .timestamp, .interval => true, // temporal values are always truthy
             .numeric => |v| v.value != 0,
+            .uuid => true, // UUID values are always truthy
             .null_value => false,
         };
     }
@@ -789,6 +854,7 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
             .timestamp => size += 8,
             .interval => size += 16, // months(4) + days(4) + micros(8)
             .numeric => size += 17, // scale(1) + value(16)
+            .uuid => size += 16, // 128-bit UUID
             .null_value => {},
         }
     }
@@ -870,6 +936,12 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
                 buf[pos] = n.scale;
                 pos += 1;
                 std.mem.writeInt(i128, buf[pos..][0..16], n.value, .little);
+                pos += 16;
+            },
+            .uuid => |u| {
+                buf[pos] = 0x0B;
+                pos += 1;
+                @memcpy(buf[pos..][0..16], &u);
                 pos += 16;
             },
             .null_value => {
@@ -967,6 +1039,13 @@ pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
                 const value = std.mem.readInt(i128, data[pos..][0..16], .little);
                 pos += 16;
                 v.* = .{ .numeric = .{ .value = value, .scale = scale } };
+            },
+            0x0B => { // uuid
+                if (pos + 16 > data.len) return error.InvalidRowData;
+                var uuid_bytes: [16]u8 = undefined;
+                @memcpy(&uuid_bytes, data[pos..][0..16]);
+                pos += 16;
+                v.* = .{ .uuid = uuid_bytes };
             },
             0x00 => { // null
                 v.* = .null_value;
@@ -1380,6 +1459,7 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 .timestamp => |v| formatTimestamp(allocator, v) catch return EvalError.OutOfMemory,
                 .interval => |v| formatInterval(allocator, v) catch return EvalError.OutOfMemory,
                 .numeric => |v| formatNumeric(allocator, v) catch return EvalError.OutOfMemory,
+                .uuid => |v| formatUuid(allocator, v) catch return EvalError.OutOfMemory,
                 .null_value => return .null_value,
                 .blob => return .null_value,
             };
@@ -1431,6 +1511,14 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 else => return .null_value,
             };
             break :blk Value{ .numeric = n };
+        },
+        .type_uuid => blk: {
+            const bytes = switch (val) {
+                .text => |v| parseUuidString(v) orelse return .null_value,
+                .uuid => |v| v,
+                else => return .null_value,
+            };
+            break :blk Value{ .uuid = bytes };
         },
     };
 }
@@ -1521,6 +1609,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .timestamp => "timestamp",
             .interval => "interval",
             .numeric => "numeric",
+            .uuid => "uuid",
             .null_value => "null",
         };
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };
@@ -1540,6 +1629,11 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     if (std.ascii.eqlIgnoreCase(fc.name, "current_timestamp") or std.ascii.eqlIgnoreCase(fc.name, "now")) {
         const now = std.time.timestamp();
         return Value{ .timestamp = now * MICROS_PER_SECOND };
+    }
+
+    // UUID generation
+    if (std.ascii.eqlIgnoreCase(fc.name, "gen_random_uuid")) {
+        return Value{ .uuid = generateUuidV4() };
     }
 
     return EvalError.UnsupportedExpression;
@@ -5666,4 +5760,79 @@ test "powI128" {
     try std.testing.expectEqual(@as(i128, 100), powI128(10, 2));
     try std.testing.expectEqual(@as(i128, 1000), powI128(10, 3));
     try std.testing.expectEqual(@as(i128, 1000000), powI128(10, 6));
+}
+
+// ── UUID Unit Tests ──────────────────────────────────────────────────────
+
+test "UUID parseUuidString with dashes" {
+    const result = parseUuidString("550e8400-e29b-41d4-a716-446655440000");
+    try std.testing.expect(result != null);
+    const bytes = result.?;
+    try std.testing.expectEqual(@as(u8, 0x55), bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0x0e), bytes[1]);
+    try std.testing.expectEqual(@as(u8, 0x84), bytes[2]);
+    try std.testing.expectEqual(@as(u8, 0x00), bytes[3]);
+    try std.testing.expectEqual(@as(u8, 0xe2), bytes[4]);
+    try std.testing.expectEqual(@as(u8, 0x9b), bytes[5]);
+}
+
+test "UUID parseUuidString without dashes" {
+    const result = parseUuidString("550e8400e29b41d4a716446655440000");
+    try std.testing.expect(result != null);
+    const bytes = result.?;
+    try std.testing.expectEqual(@as(u8, 0x55), bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0x44), bytes[15]);
+}
+
+test "UUID parseUuidString uppercase" {
+    const result = parseUuidString("550E8400-E29B-41D4-A716-446655440000");
+    try std.testing.expect(result != null);
+}
+
+test "UUID parseUuidString invalid" {
+    try std.testing.expect(parseUuidString("not-a-uuid") == null);
+    try std.testing.expect(parseUuidString("550e8400-e29b-41d4-a716") == null); // too short
+    try std.testing.expect(parseUuidString("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz") == null); // invalid hex
+}
+
+test "UUID formatUuid roundtrip" {
+    const allocator = std.testing.allocator;
+    const input = "550e8400-e29b-41d4-a716-446655440000";
+    const bytes = parseUuidString(input).?;
+    const formatted = try formatUuid(allocator, bytes);
+    defer allocator.free(formatted);
+    try std.testing.expectEqualStrings(input, formatted);
+}
+
+test "UUID generateUuidV4 version and variant" {
+    const uuid = generateUuidV4();
+    // Version 4: byte 6 high nibble must be 0x4
+    try std.testing.expectEqual(@as(u8, 0x40), uuid[6] & 0xf0);
+    // Variant 2: byte 8 top 2 bits must be 10
+    try std.testing.expectEqual(@as(u8, 0x80), uuid[8] & 0xc0);
+}
+
+test "UUID comparison" {
+    const a = Value{ .uuid = parseUuidString("00000000-0000-0000-0000-000000000001").? };
+    const b = Value{ .uuid = parseUuidString("00000000-0000-0000-0000-000000000002").? };
+    const c = Value{ .uuid = parseUuidString("00000000-0000-0000-0000-000000000001").? };
+    try std.testing.expectEqual(std.math.Order.lt, a.compare(b));
+    try std.testing.expectEqual(std.math.Order.gt, b.compare(a));
+    try std.testing.expectEqual(std.math.Order.eq, a.compare(c));
+}
+
+test "UUID serialization roundtrip" {
+    const allocator = std.testing.allocator;
+    const original = parseUuidString("550e8400-e29b-41d4-a716-446655440000").?;
+    const row = [_]Value{Value{ .uuid = original }};
+    const data = try serializeRow(allocator, &row);
+    defer allocator.free(data);
+    const deserialized = try deserializeRow(allocator, data);
+    defer allocator.free(deserialized);
+    try std.testing.expectEqualSlices(u8, &original, &deserialized[0].uuid);
+}
+
+test "UUID isTruthy" {
+    const v = Value{ .uuid = parseUuidString("550e8400-e29b-41d4-a716-446655440000").? };
+    try std.testing.expect(v.isTruthy());
 }

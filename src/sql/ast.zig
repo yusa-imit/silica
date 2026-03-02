@@ -27,6 +27,7 @@ pub const DataType = enum {
     type_interval,
     type_numeric,
     type_decimal,
+    type_uuid,
 };
 
 /// Column constraint in a CREATE TABLE statement.
