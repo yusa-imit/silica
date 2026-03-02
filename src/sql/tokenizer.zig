@@ -188,6 +188,8 @@ pub const TokenType = enum {
     kw_numeric,
     kw_decimal,
     kw_uuid,
+    kw_serial,
+    kw_bigserial,
 
     // Keywords — Values
     kw_true,
@@ -727,6 +729,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "numeric", .kw_numeric },
         .{ "decimal", .kw_decimal },
         .{ "uuid", .kw_uuid },
+        .{ "serial", .kw_serial },
+        .{ "bigserial", .kw_bigserial },
         // Values
         .{ "true", .kw_true },
         .{ "false", .kw_false },

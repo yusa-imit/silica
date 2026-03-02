@@ -69,6 +69,7 @@ pub fn columnTypeFromAst(dt: ?ast.DataType) ColumnType {
         .type_interval => .interval,
         .type_numeric, .type_decimal => .numeric,
         .type_uuid => .uuid,
+        .type_serial, .type_bigserial => .integer,
     };
 }
 
@@ -503,10 +504,18 @@ pub const Catalog = struct {
         defer self.allocator.free(columns);
 
         for (stmt.columns, 0..) |col_def, i| {
+            var flags = constraintFlagsFromAst(col_def.constraints);
+            // SERIAL/BIGSERIAL implies NOT NULL + AUTOINCREMENT
+            if (col_def.data_type) |dt| {
+                if (dt == .type_serial or dt == .type_bigserial) {
+                    flags.autoincrement = true;
+                    flags.not_null = true;
+                }
+            }
             columns[i] = .{
                 .name = col_def.name,
                 .column_type = columnTypeFromAst(col_def.data_type),
-                .flags = constraintFlagsFromAst(col_def.constraints),
+                .flags = flags,
             };
         }
 

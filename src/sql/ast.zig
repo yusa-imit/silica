@@ -28,6 +28,8 @@ pub const DataType = enum {
     type_numeric,
     type_decimal,
     type_uuid,
+    type_serial,
+    type_bigserial,
 };
 
 /// Column constraint in a CREATE TABLE statement.
