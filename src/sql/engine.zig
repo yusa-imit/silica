@@ -12787,3 +12787,217 @@ test "UUID type: INSERT with gen_random_uuid" {
     // Different UUIDs
     try testing.expect(!std.mem.eql(u8, row1.values[0].text, row2.values[0].text));
 }
+
+test "SERIAL type: CREATE TABLE and INSERT" {
+    const path = "test_serial_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // SERIAL maps to INTEGER with NOT NULL + AUTOINCREMENT
+    _ = try db.exec("CREATE TABLE counters (id SERIAL, name TEXT)");
+    _ = try db.exec("INSERT INTO counters VALUES (1, 'first')");
+    _ = try db.exec("INSERT INTO counters VALUES (2, 'second')");
+
+    var r = try db.exec("SELECT id, name FROM counters ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("first", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("second", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "BIGSERIAL type: CREATE TABLE and INSERT" {
+    const path = "test_bigserial_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE events (id BIGSERIAL, payload TEXT)");
+    _ = try db.exec("INSERT INTO events VALUES (100, 'event_a')");
+
+    var r = try db.exec("SELECT id, payload FROM events");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 100), row1.values[0].integer);
+    try testing.expectEqualStrings("event_a", row1.values[1].text);
+}
+
+test "SERIAL type: CAST to SERIAL" {
+    const path = "test_serial_cast.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST('42' AS SERIAL)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 42), row1.values[0].integer);
+}
+
+test "NUMERIC type: negative values" {
+    const path = "test_numeric_negative.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE ledger (amount NUMERIC)");
+    _ = try db.exec("INSERT INTO ledger VALUES (CAST('-123.45' AS NUMERIC))");
+    _ = try db.exec("INSERT INTO ledger VALUES (CAST('0.00' AS NUMERIC))");
+    _ = try db.exec("INSERT INTO ledger VALUES (CAST('999.99' AS NUMERIC))");
+
+    var r = try db.exec("SELECT CAST(amount AS TEXT) FROM ledger ORDER BY amount");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("-123.45", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("0.00", row2.values[0].text);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("999.99", row3.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NUMERIC type: arithmetic operations" {
+    const path = "test_numeric_arith.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(CAST('10.5' AS NUMERIC) + CAST('3.2' AS NUMERIC) AS TEXT)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("13.7", row1.values[0].text);
+}
+
+test "UUID type: case-insensitive parsing" {
+    const path = "test_uuid_case.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE items (id UUID)");
+    _ = try db.exec("INSERT INTO items VALUES (CAST('550E8400-E29B-41D4-A716-446655440000' AS UUID))");
+
+    var r = try db.exec("SELECT CAST(id AS TEXT) FROM items");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    // Output should be lowercase
+    try testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", row1.values[0].text);
+}
+
+test "TIMESTAMP type: microsecond precision" {
+    const path = "test_ts_precision.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE logs (ts TIMESTAMP, msg TEXT)");
+    _ = try db.exec("INSERT INTO logs VALUES (CAST('2024-06-15 10:30:45' AS TIMESTAMP), 'event1')");
+    _ = try db.exec("INSERT INTO logs VALUES (CAST('2024-06-15 10:30:46' AS TIMESTAMP), 'event2')");
+
+    var r = try db.exec("SELECT CAST(ts AS TEXT), msg FROM logs ORDER BY ts");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("2024-06-15 10:30:45", row1.values[0].text);
+    try testing.expectEqualStrings("event1", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("2024-06-15 10:30:46", row2.values[0].text);
+    try testing.expectEqualStrings("event2", row2.values[1].text);
+}
+
+test "DATE type: comparison operators" {
+    const path = "test_date_compare.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE events (dt DATE, name TEXT)");
+    _ = try db.exec("INSERT INTO events VALUES (CAST('2024-01-15' AS DATE), 'jan')");
+    _ = try db.exec("INSERT INTO events VALUES (CAST('2024-06-15' AS DATE), 'jun')");
+    _ = try db.exec("INSERT INTO events VALUES (CAST('2024-12-25' AS DATE), 'dec')");
+
+    // Test >= filter
+    var r = try db.exec("SELECT name FROM events WHERE dt >= CAST('2024-06-01' AS DATE) ORDER BY dt");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("jun", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("dec", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "TIME type: basic operations" {
+    const path = "test_time_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE schedule (t TIME, task TEXT)");
+    _ = try db.exec("INSERT INTO schedule VALUES (CAST('09:00:00' AS TIME), 'standup')");
+    _ = try db.exec("INSERT INTO schedule VALUES (CAST('14:30:00' AS TIME), 'review')");
+
+    var r = try db.exec("SELECT CAST(t AS TEXT), task FROM schedule ORDER BY t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("09:00:00", row1.values[0].text);
+    try testing.expectEqualStrings("standup", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("14:30:00", row2.values[0].text);
+    try testing.expectEqualStrings("review", row2.values[1].text);
+}
+
+test "INTERVAL type: negative days formatting" {
+    const path = "test_interval_neg_fmt2.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(CAST('-3 days' AS INTERVAL) AS TEXT)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("-3 days", row1.values[0].text);
+}
+
+test "INTERVAL type: date plus interval in table" {
+    const path = "test_interval_date_add.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE deadlines (start_date DATE, offset INTERVAL)");
+    _ = try db.exec("INSERT INTO deadlines VALUES (CAST('2024-01-01' AS DATE), CAST('30 days' AS INTERVAL))");
+
+    var r = try db.exec("SELECT CAST(start_date + offset AS TEXT) FROM deadlines");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("2024-01-31", row1.values[0].text);
+}
