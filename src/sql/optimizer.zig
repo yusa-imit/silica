@@ -697,14 +697,14 @@ test "optimize full query with pushdown" {
         &schema,
     );
 
-    // Should have Limit → Sort → Project → Filter → Scan structure preserved
+    // Should have Limit → Project → Sort → Filter → Scan structure preserved
     switch (plan.root.*) {
         .limit => |l| {
             switch (l.input.*) {
-                .sort => |s| {
-                    switch (s.input.*) {
-                        .project => |p| {
-                            switch (p.input.*) {
+                .project => |p| {
+                    switch (p.input.*) {
+                        .sort => |s| {
+                            switch (s.input.*) {
                                 .filter => |f| {
                                     switch (f.input.*) {
                                         .scan => {},

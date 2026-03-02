@@ -33,6 +33,7 @@ pub const ValueType = enum {
     date,
     time,
     timestamp,
+    interval,
     null_type,
 
     pub fn fromColumnType(ct: ColumnType) ValueType {
@@ -45,6 +46,7 @@ pub const ValueType = enum {
             .date => .date,
             .time => .time,
             .timestamp => .timestamp,
+            .interval => .interval,
             .untyped => .text, // default untyped to text
         };
     }
@@ -59,6 +61,7 @@ pub const ValueType = enum {
             .date => .date,
             .time => .time,
             .timestamp => .timestamp,
+            .interval => .interval,
             .null_type => .untyped,
         };
     }
@@ -303,11 +306,17 @@ pub const Planner = struct {
             }
         }
 
-        // 1. Plan the left SELECT body
+        // 1. Plan the left SELECT body (without Project — see below)
         var node = try self.planSelectBody(&stmt);
 
         // 2. Handle set operations (UNION, INTERSECT, EXCEPT)
         if (stmt.set_operation) |set_op| {
+            // For set ops, both sides need Project before the set op to match column counts
+            const left_proj_cols = try self.buildProjectColumns(stmt.columns);
+            node = try self.createNode(.{ .project = .{
+                .input = node,
+                .columns = left_proj_cols,
+            } });
             const right_node = try self.planSetOpRight(set_op.right);
             node = try self.createNode(.{ .set_op = .{
                 .op = set_op.op,
@@ -316,7 +325,7 @@ pub const Planner = struct {
             } });
         }
 
-        // 3. ORDER BY → Sort (applies to the compound result)
+        // 3. ORDER BY → Sort (before Project so it can reference non-selected columns)
         if (stmt.order_by.len > 0) {
             node = try self.createNode(.{ .sort = .{
                 .input = node,
@@ -324,7 +333,17 @@ pub const Planner = struct {
             } });
         }
 
-        // 3.5. DISTINCT / DISTINCT ON → Distinct (after sort, before limit)
+        // 3.5. Project — applied after Sort so ORDER BY can access all columns
+        // (for set ops, Project was already applied above before the set op)
+        if (stmt.set_operation == null) {
+            const proj_cols = try self.buildProjectColumns(stmt.columns);
+            node = try self.createNode(.{ .project = .{
+                .input = node,
+                .columns = proj_cols,
+            } });
+        }
+
+        // 4. DISTINCT / DISTINCT ON → Distinct (after project, before limit)
         if (stmt.distinct) {
             node = try self.createNode(.{ .distinct = .{
                 .input = node,
@@ -406,12 +425,8 @@ pub const Planner = struct {
             } });
         }
 
-        // 7. SELECT columns → Project
-        const proj_cols = try self.buildProjectColumns(stmt.columns);
-        node = try self.createNode(.{ .project = .{
-            .input = node,
-            .columns = proj_cols,
-        } });
+        // Note: Project is NOT added here — it's added in planSelect/planSetOpRight
+        // after Sort, so ORDER BY can reference columns not in the SELECT list.
 
         return node;
     }
@@ -419,6 +434,13 @@ pub const Planner = struct {
     /// Plan the right side of a set operation, recursively handling chained set ops.
     fn planSetOpRight(self: *Planner, stmt: *const ast.SelectStmt) PlanError!*const PlanNode {
         var node = try self.planSelectBody(stmt);
+
+        // Add Project for set op branches (column count must match across sides)
+        const proj_cols = try self.buildProjectColumns(stmt.columns);
+        node = try self.createNode(.{ .project = .{
+            .input = node,
+            .columns = proj_cols,
+        } });
 
         // Handle chained set operations on the right side
         if (stmt.set_operation) |set_op| {
@@ -905,12 +927,13 @@ test "plan SELECT with ORDER BY" {
 
     const plan = try parseAndPlan(testing.allocator, "SELECT * FROM users ORDER BY name ASC;", &arena, &schema);
 
-    // Should be: Sort → Project → Scan
+    // Should be: Project → Sort → Scan (Sort before Project so ORDER BY can access all columns)
     switch (plan.root.*) {
-        .sort => |s| {
-            try testing.expectEqual(@as(usize, 1), s.order_by.len);
-            switch (s.input.*) {
-                .project => {},
+        .project => |p| {
+            switch (p.input.*) {
+                .sort => |s| {
+                    try testing.expectEqual(@as(usize, 1), s.order_by.len);
+                },
                 else => return error.InvalidPlan,
             }
         },
@@ -1032,14 +1055,14 @@ test "plan SELECT with WHERE, ORDER BY, LIMIT" {
         &schema,
     );
 
-    // Should be: Limit → Sort → Project → Filter → Scan
+    // Should be: Limit → Project → Sort → Filter → Scan
     switch (plan.root.*) {
         .limit => |l| {
             switch (l.input.*) {
-                .sort => |s| {
-                    switch (s.input.*) {
-                        .project => |p| {
-                            switch (p.input.*) {
+                .project => |p| {
+                    switch (p.input.*) {
+                        .sort => |s| {
+                            switch (s.input.*) {
                                 .filter => |f| {
                                     switch (f.input.*) {
                                         .scan => {},
@@ -1775,13 +1798,18 @@ test "plan SELECT DISTINCT with ORDER BY" {
         "SELECT DISTINCT name, age FROM users ORDER BY name;",
         &arena, &schema);
 
-    // Should be: Distinct → Sort → Project → Scan
+    // Should be: Distinct → Project → Sort → Scan
     switch (plan.root.*) {
         .distinct => |d| {
             try testing.expectEqual(@as(usize, 0), d.on_exprs.len);
             switch (d.input.*) {
-                .sort => |s| {
-                    try testing.expectEqual(@as(usize, 1), s.order_by.len);
+                .project => |p| {
+                    switch (p.input.*) {
+                        .sort => |s| {
+                            try testing.expectEqual(@as(usize, 1), s.order_by.len);
+                        },
+                        else => return error.InvalidPlan,
+                    }
                 },
                 else => return error.InvalidPlan,
             }
@@ -1800,12 +1828,17 @@ test "plan SELECT DISTINCT ON" {
         "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name, age;",
         &arena, &schema);
 
-    // Should be: Distinct On → Sort → Project → Scan
+    // Should be: Distinct On → Project → Sort → Scan
     switch (plan.root.*) {
         .distinct => |d| {
             try testing.expectEqual(@as(usize, 1), d.on_exprs.len);
             switch (d.input.*) {
-                .sort => {},
+                .project => |p| {
+                    switch (p.input.*) {
+                        .sort => {},
+                        else => return error.InvalidPlan,
+                    }
+                },
                 else => return error.InvalidPlan,
             }
         },
