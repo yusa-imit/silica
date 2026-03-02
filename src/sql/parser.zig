@@ -142,6 +142,8 @@ pub const Parser = struct {
             .kw_vacuum => "expected 'VACUUM'",
             .kw_select => "expected 'SELECT'",
             .kw_insert => "expected 'INSERT'",
+            .kw_over => "expected 'OVER'",
+            .kw_row => "expected 'ROW'",
             .identifier => "expected identifier",
             .equals => "expected '='",
             .integer_literal => "expected integer",
@@ -1253,6 +1255,19 @@ pub const Parser = struct {
             .kw_case => return self.parseCaseExpr(),
             .kw_cast => return self.parseCastExpr(),
             .kw_count, .kw_sum, .kw_avg, .kw_min, .kw_max => return self.parseFunctionCall(),
+            // Window function keywords — always followed by ()
+            .kw_row_number,
+            .kw_rank,
+            .kw_dense_rank,
+            .kw_ntile,
+            .kw_lag,
+            .kw_lead,
+            .kw_first_value,
+            .kw_last_value,
+            .kw_nth_value,
+            .kw_percent_rank,
+            .kw_cume_dist,
+            => return self.parseFunctionCall(),
             .identifier, .quoted_identifier => {
                 if (self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .left_paren) {
                     return self.parseFunctionCall();
@@ -1325,11 +1340,125 @@ pub const Parser = struct {
 
         _ = try self.expect(.right_paren);
 
+        // Check for OVER clause — converts to window function
+        if (self.check(.kw_over)) {
+            return self.parseWindowSpec(name, args.toOwnedSlice(a) catch return error.OutOfMemory, distinct);
+        }
+
         return self.arena.create(ast.Expr, .{ .function_call = .{
             .name = name,
             .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
             .distinct = distinct,
         } }) catch return error.OutOfMemory;
+    }
+
+    /// Parse OVER (...) window specification after a function call.
+    fn parseWindowSpec(self: *Parser, name: []const u8, func_args: []const *const ast.Expr, distinct: bool) Error!*const ast.Expr {
+        const a = self.alloc();
+        _ = try self.expect(.kw_over);
+        _ = try self.expect(.left_paren);
+
+        // Parse PARTITION BY
+        var partition_by = std.ArrayListUnmanaged(*const ast.Expr){};
+        if (self.match(.kw_partition)) {
+            _ = try self.expect(.kw_by);
+            while (true) {
+                partition_by.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // Parse ORDER BY
+        var order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
+        if (self.match(.kw_order)) {
+            _ = try self.expect(.kw_by);
+            while (true) {
+                const expr = try self.parseExpr(0);
+                var dir: ast.OrderDirection = .asc;
+                if (self.match(.kw_desc)) {
+                    dir = .desc;
+                } else {
+                    _ = self.match(.kw_asc);
+                }
+                order_by.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // Parse frame specification: ROWS | RANGE | GROUPS [BETWEEN ... AND ...]
+        var frame: ?*const ast.WindowFrameSpec = null;
+        if (self.check(.kw_rows) or self.check(.kw_range) or self.check(.kw_groups)) {
+            frame = try self.parseFrameSpec();
+        }
+
+        _ = try self.expect(.right_paren);
+
+        return self.arena.create(ast.Expr, .{ .window_function = .{
+            .name = name,
+            .args = func_args,
+            .distinct = distinct,
+            .partition_by = partition_by.toOwnedSlice(a) catch return error.OutOfMemory,
+            .order_by = order_by.toOwnedSlice(a) catch return error.OutOfMemory,
+            .frame = frame,
+        } }) catch return error.OutOfMemory;
+    }
+
+    /// Parse ROWS/RANGE/GROUPS BETWEEN ... AND ... frame specification.
+    fn parseFrameSpec(self: *Parser) Error!*const ast.WindowFrameSpec {
+        // Parse frame mode
+        const mode: ast.WindowFrameMode = if (self.match(.kw_rows))
+            .rows
+        else if (self.match(.kw_range))
+            .range
+        else if (self.match(.kw_groups))
+            .groups
+        else {
+            try self.addError(self.peek(), "expected ROWS, RANGE, or GROUPS");
+            return error.ParseFailed;
+        };
+
+        if (self.match(.kw_between)) {
+            // BETWEEN start AND end
+            const start = try self.parseFrameBound();
+            _ = try self.expect(.kw_and);
+            const end = try self.parseFrameBound();
+            return self.arena.create(ast.WindowFrameSpec, .{
+                .mode = mode,
+                .start = start,
+                .end = end,
+            }) catch return error.OutOfMemory;
+        }
+
+        // Single bound (start only, end defaults to CURRENT ROW)
+        const start = try self.parseFrameBound();
+        return self.arena.create(ast.WindowFrameSpec, .{
+            .mode = mode,
+            .start = start,
+            .end = .current_row,
+        }) catch return error.OutOfMemory;
+    }
+
+    /// Parse a single frame bound: UNBOUNDED PRECEDING/FOLLOWING, CURRENT ROW, or <expr> PRECEDING/FOLLOWING.
+    fn parseFrameBound(self: *Parser) Error!ast.WindowFrameBound {
+        if (self.match(.kw_unbounded)) {
+            if (self.match(.kw_preceding)) return .unbounded_preceding;
+            if (self.match(.kw_following)) return .unbounded_following;
+            try self.addError(self.peek(), "expected PRECEDING or FOLLOWING after UNBOUNDED");
+            return error.ParseFailed;
+        }
+
+        if (self.match(.kw_current)) {
+            _ = try self.expect(.kw_row);
+            return .current_row;
+        }
+
+        // <expr> PRECEDING or <expr> FOLLOWING
+        const expr = try self.parseExpr(0);
+        if (self.match(.kw_preceding)) return .{ .expr_preceding = expr };
+        if (self.match(.kw_following)) return .{ .expr_following = expr };
+
+        try self.addError(self.peek(), "expected PRECEDING or FOLLOWING");
+        return error.ParseFailed;
     }
 
     fn parseCaseExpr(self: *Parser) Error!*const ast.Expr {
@@ -2439,4 +2568,113 @@ test "parse CREATE VIEW without CHECK OPTION" {
     defer r.deinit();
     const cv = r.stmt.create_view;
     try std.testing.expectEqual(ast.CheckOption.none, cv.check_option);
+}
+
+// ── Window Function tests ─────────────────────────────────────
+
+test "parse ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)" {
+    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp");
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.columns.len);
+    const col_expr = sel.columns[0].expr.value;
+    const wf = col_expr.window_function;
+    try std.testing.expectEqualStrings("ROW_NUMBER", wf.name);
+    try std.testing.expectEqual(@as(usize, 0), wf.args.len);
+    try std.testing.expectEqual(@as(usize, 1), wf.partition_by.len);
+    try std.testing.expectEqual(@as(usize, 1), wf.order_by.len);
+    try std.testing.expectEqual(ast.OrderDirection.desc, wf.order_by[0].direction);
+    try std.testing.expect(wf.frame == null);
+}
+
+test "parse SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expectEqualStrings("SUM", wf.name);
+    try std.testing.expectEqual(@as(usize, 1), wf.args.len);
+    try std.testing.expect(wf.frame != null);
+    try std.testing.expectEqual(ast.WindowFrameMode.rows, wf.frame.?.mode);
+    try std.testing.expectEqual(ast.WindowFrameBound.unbounded_preceding, wf.frame.?.start);
+    try std.testing.expectEqual(ast.WindowFrameBound.current_row, wf.frame.?.end);
+}
+
+test "parse RANK() OVER (ORDER BY score)" {
+    var r = try testParseWithArena("SELECT RANK() OVER (ORDER BY score) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expectEqualStrings("RANK", wf.name);
+    try std.testing.expectEqual(@as(usize, 0), wf.partition_by.len);
+    try std.testing.expectEqual(@as(usize, 1), wf.order_by.len);
+}
+
+test "parse LAG(salary, 1) OVER (PARTITION BY dept ORDER BY id)" {
+    var r = try testParseWithArena("SELECT LAG(salary, 1) OVER (PARTITION BY dept ORDER BY id) FROM emp");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expectEqualStrings("LAG", wf.name);
+    try std.testing.expectEqual(@as(usize, 2), wf.args.len);
+    try std.testing.expectEqual(@as(usize, 1), wf.partition_by.len);
+}
+
+test "parse ROWS BETWEEN N PRECEDING AND N FOLLOWING" {
+    var r = try testParseWithArena("SELECT AVG(val) OVER (ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    const frame = wf.frame.?;
+    try std.testing.expectEqual(ast.WindowFrameMode.rows, frame.mode);
+    switch (frame.start) {
+        .expr_preceding => |e| try std.testing.expectEqual(@as(i64, 2), e.integer_literal),
+        else => return error.ParseFailed,
+    }
+    switch (frame.end) {
+        .expr_following => |e| try std.testing.expectEqual(@as(i64, 2), e.integer_literal),
+        else => return error.ParseFailed,
+    }
+}
+
+test "parse RANGE UNBOUNDED PRECEDING (short form)" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY id RANGE UNBOUNDED PRECEDING) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    const frame = wf.frame.?;
+    try std.testing.expectEqual(ast.WindowFrameMode.range, frame.mode);
+    try std.testing.expectEqual(ast.WindowFrameBound.unbounded_preceding, frame.start);
+    try std.testing.expectEqual(ast.WindowFrameBound.current_row, frame.end);
+}
+
+test "parse DENSE_RANK with empty OVER()" {
+    var r = try testParseWithArena("SELECT DENSE_RANK() OVER () FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expectEqualStrings("DENSE_RANK", wf.name);
+    try std.testing.expectEqual(@as(usize, 0), wf.partition_by.len);
+    try std.testing.expectEqual(@as(usize, 0), wf.order_by.len);
+    try std.testing.expect(wf.frame == null);
+}
+
+test "parse aggregate as window function: COUNT(*) OVER ()" {
+    var r = try testParseWithArena("SELECT COUNT(*) OVER () FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expectEqualStrings("COUNT", wf.name);
+    try std.testing.expectEqual(@as(usize, 1), wf.args.len);
+}
+
+test "parse multiple window functions in SELECT" {
+    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER (ORDER BY id), RANK() OVER (ORDER BY score) FROM t");
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 2), sel.columns.len);
+    const wf1 = sel.columns[0].expr.value.window_function;
+    const wf2 = sel.columns[1].expr.value.window_function;
+    try std.testing.expectEqualStrings("ROW_NUMBER", wf1.name);
+    try std.testing.expectEqualStrings("RANK", wf2.name);
+}
+
+test "parse GROUPS frame mode" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY id GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t");
+    defer r.deinit();
+    const frame = r.stmt.select.columns[0].expr.value.window_function.frame.?;
+    try std.testing.expectEqual(ast.WindowFrameMode.groups, frame.mode);
 }
