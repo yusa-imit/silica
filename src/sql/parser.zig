@@ -344,6 +344,61 @@ pub const Parser = struct {
             }
         }
 
+        // Parse optional WINDOW clause: WINDOW name AS (...), ...
+        if (self.match(.kw_window)) {
+            var defs = std.ArrayListUnmanaged(ast.WindowDef){};
+            while (true) {
+                const win_name = try self.expectIdentifier();
+                _ = try self.expect(.kw_as);
+                _ = try self.expect(.left_paren);
+
+                // Parse PARTITION BY
+                var partition_by = std.ArrayListUnmanaged(*const ast.Expr){};
+                if (self.match(.kw_partition)) {
+                    _ = try self.expect(.kw_by);
+                    while (true) {
+                        partition_by.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                        if (!self.match(.comma)) break;
+                    }
+                }
+
+                // Parse ORDER BY
+                var order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
+                if (self.match(.kw_order)) {
+                    _ = try self.expect(.kw_by);
+                    while (true) {
+                        const expr = try self.parseExpr(0);
+                        var dir: ast.OrderDirection = .asc;
+                        if (self.match(.kw_desc)) {
+                            dir = .desc;
+                        } else {
+                            _ = self.match(.kw_asc);
+                        }
+                        order_by.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+                        if (!self.match(.comma)) break;
+                    }
+                }
+
+                // Parse frame specification
+                var frame: ?*const ast.WindowFrameSpec = null;
+                if (self.check(.kw_rows) or self.check(.kw_range) or self.check(.kw_groups)) {
+                    frame = try self.parseFrameSpec();
+                }
+
+                _ = try self.expect(.right_paren);
+
+                defs.append(a, .{
+                    .name = win_name,
+                    .partition_by = partition_by.toOwnedSlice(a) catch return error.OutOfMemory,
+                    .order_by = order_by.toOwnedSlice(a) catch return error.OutOfMemory,
+                    .frame = frame,
+                }) catch return error.OutOfMemory;
+
+                if (!self.match(.comma)) break;
+            }
+            stmt.window_defs = defs.toOwnedSlice(a) catch return error.OutOfMemory;
+        }
+
         return stmt;
     }
 
@@ -1352,10 +1407,22 @@ pub const Parser = struct {
         } }) catch return error.OutOfMemory;
     }
 
-    /// Parse OVER (...) window specification after a function call.
+    /// Parse OVER (...) or OVER window_name after a function call.
     fn parseWindowSpec(self: *Parser, name: []const u8, func_args: []const *const ast.Expr, distinct: bool) Error!*const ast.Expr {
         const a = self.alloc();
         _ = try self.expect(.kw_over);
+
+        // OVER window_name — named window reference
+        if (self.check(.identifier)) {
+            const win_name = try self.expectIdentifier();
+            return self.arena.create(ast.Expr, .{ .window_function = .{
+                .name = name,
+                .args = func_args,
+                .distinct = distinct,
+                .window_name = win_name,
+            } }) catch return error.OutOfMemory;
+        }
+
         _ = try self.expect(.left_paren);
 
         // Parse PARTITION BY
@@ -2677,4 +2744,44 @@ test "parse GROUPS frame mode" {
     defer r.deinit();
     const frame = r.stmt.select.columns[0].expr.value.window_function.frame.?;
     try std.testing.expectEqual(ast.WindowFrameMode.groups, frame.mode);
+}
+
+test "parse WINDOW clause with named window definition" {
+    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER w FROM t WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)");
+    defer r.deinit();
+    const sel = r.stmt.select;
+    // Check window function references named window
+    const wf = sel.columns[0].expr.value.window_function;
+    try std.testing.expectEqualStrings("ROW_NUMBER", wf.name);
+    try std.testing.expectEqualStrings("w", wf.window_name.?);
+    try std.testing.expectEqual(@as(usize, 0), wf.partition_by.len);
+    // Check window definition
+    try std.testing.expectEqual(@as(usize, 1), sel.window_defs.len);
+    try std.testing.expectEqualStrings("w", sel.window_defs[0].name);
+    try std.testing.expectEqual(@as(usize, 1), sel.window_defs[0].partition_by.len);
+    try std.testing.expectEqual(@as(usize, 1), sel.window_defs[0].order_by.len);
+    try std.testing.expectEqual(ast.OrderDirection.desc, sel.window_defs[0].order_by[0].direction);
+}
+
+test "parse WINDOW clause with multiple named windows" {
+    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER w1, SUM(x) OVER w2 FROM t WINDOW w1 AS (ORDER BY id), w2 AS (PARTITION BY dept)");
+    defer r.deinit();
+    const sel = r.stmt.select;
+    // Two window functions referencing different named windows
+    try std.testing.expectEqualStrings("w1", sel.columns[0].expr.value.window_function.window_name.?);
+    try std.testing.expectEqualStrings("w2", sel.columns[1].expr.value.window_function.window_name.?);
+    // Two window definitions
+    try std.testing.expectEqual(@as(usize, 2), sel.window_defs.len);
+    try std.testing.expectEqualStrings("w1", sel.window_defs[0].name);
+    try std.testing.expectEqualStrings("w2", sel.window_defs[1].name);
+}
+
+test "parse WINDOW clause with frame spec" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER w FROM t WINDOW w AS (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)");
+    defer r.deinit();
+    const def = r.stmt.select.window_defs[0];
+    try std.testing.expect(def.frame != null);
+    try std.testing.expectEqual(ast.WindowFrameMode.rows, def.frame.?.mode);
+    try std.testing.expectEqual(ast.WindowFrameBound.unbounded_preceding, def.frame.?.start);
+    try std.testing.expectEqual(ast.WindowFrameBound.current_row, def.frame.?.end);
 }

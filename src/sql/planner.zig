@@ -388,7 +388,7 @@ pub const Planner = struct {
         }
 
         // 6. Window functions → Window node (before project)
-        const win_result = try self.extractWindowFunctions(stmt.columns);
+        const win_result = try self.extractWindowFunctions(stmt.columns, stmt.window_defs);
         if (win_result.funcs.len > 0) {
             node = try self.createNode(.{ .window = .{
                 .input = node,
@@ -523,7 +523,7 @@ pub const Planner = struct {
         aliases: []const ?[]const u8,
     };
 
-    fn extractWindowFunctions(self: *Planner, columns: []const ast.ResultColumn) PlanError!WindowExtractResult {
+    fn extractWindowFunctions(self: *Planner, columns: []const ast.ResultColumn, window_defs: []const ast.WindowDef) PlanError!WindowExtractResult {
         const alloc = self.arena.allocator();
         var funcs = std.ArrayListUnmanaged(*const ast.Expr){};
         var aliases = std.ArrayListUnmanaged(?[]const u8){};
@@ -532,7 +532,8 @@ pub const Planner = struct {
             switch (col) {
                 .expr => |e| {
                     if (e.value.* == .window_function) {
-                        funcs.append(alloc, e.value) catch return error.OutOfMemory;
+                        const resolved = try self.resolveWindowRef(e.value, window_defs);
+                        funcs.append(alloc, resolved) catch return error.OutOfMemory;
                         aliases.append(alloc, e.alias) catch return error.OutOfMemory;
                     }
                 },
@@ -544,6 +545,33 @@ pub const Planner = struct {
             .funcs = funcs.toOwnedSlice(alloc) catch return error.OutOfMemory,
             .aliases = aliases.toOwnedSlice(alloc) catch return error.OutOfMemory,
         };
+    }
+
+    /// Resolve a window function expression that references a named window definition.
+    /// If the expression has a window_name, merge the named definition's spec into it.
+    fn resolveWindowRef(self: *Planner, expr: *const ast.Expr, window_defs: []const ast.WindowDef) PlanError!*const ast.Expr {
+        const wf = expr.window_function;
+        const win_name = wf.window_name orelse return expr;
+
+        // Look up the named window definition
+        for (window_defs) |def| {
+            if (std.mem.eql(u8, def.name, win_name)) {
+                // Create a new expression with the named definition's spec merged in.
+                // Inline spec (if any) overrides the named definition.
+                return self.arena.create(ast.Expr, .{ .window_function = .{
+                    .name = wf.name,
+                    .args = wf.args,
+                    .distinct = wf.distinct,
+                    .partition_by = if (wf.partition_by.len > 0) wf.partition_by else def.partition_by,
+                    .order_by = if (wf.order_by.len > 0) wf.order_by else def.order_by,
+                    .frame = if (wf.frame != null) wf.frame else def.frame,
+                    .window_name = null,
+                } }) catch return error.OutOfMemory;
+            }
+        }
+
+        // Named window not found — return as-is (analyzer should catch this)
+        return expr;
     }
 
     fn isAggregateExpr(_: *Planner, expr: *const ast.Expr) bool {

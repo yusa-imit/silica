@@ -141,6 +141,8 @@ pub const WindowFunctionExpr = struct {
     order_by: []const OrderByItem = &.{},
     /// Optional frame specification
     frame: ?*const WindowFrameSpec = null,
+    /// Named window reference (e.g., OVER w) — resolved by planner
+    window_name: ?[]const u8 = null,
 };
 
 /// SQL expression node (recursive).

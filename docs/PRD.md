@@ -680,16 +680,16 @@ silica --tui app.db
 - [x] Set operations: `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
 - [x] `DISTINCT ON` support
 
-**Milestone 9 — Window Functions**
-- [ ] `OVER (PARTITION BY ... ORDER BY ...)` clause parsing and planning
-- [ ] Window frame specification: `ROWS`, `RANGE`, `GROUPS` with `BETWEEN ... AND ...`
-- [ ] Ranking functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`
-- [ ] Value functions: `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`
-- [ ] Distribution functions: `PERCENT_RANK`, `CUME_DIST`
-- [ ] Aggregate functions as window functions (e.g., `SUM(...) OVER (...)`)
-- [ ] Multiple window definitions in a single query
-- [ ] `WINDOW` clause for named window definitions
-- [ ] WindowAgg executor operator with partition tracking
+**Milestone 9 — Window Functions** ✅
+- [x] `OVER (PARTITION BY ... ORDER BY ...)` clause parsing and planning
+- [x] Window frame specification: `ROWS`, `RANGE`, `GROUPS` with `BETWEEN ... AND ...`
+- [x] Ranking functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`
+- [x] Value functions: `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`
+- [x] Distribution functions: `PERCENT_RANK`, `CUME_DIST`
+- [x] Aggregate functions as window functions (e.g., `SUM(...) OVER (...)`)
+- [x] Multiple window definitions in a single query
+- [x] `WINDOW` clause for named window definitions
+- [x] WindowAgg executor operator with partition tracking
 
 **Milestone 10 — Advanced Data Types**
 - [ ] `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE` types with arithmetic

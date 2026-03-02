@@ -11742,3 +11742,83 @@ test "SUM OVER with ORDER BY (running sum)" {
 
     try testing.expect((try r.rows.?.next()) == null);
 }
+
+test "WINDOW clause: named window with ROW_NUMBER and RANK" {
+    const path = "test_wf_window_clause.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE emp (name TEXT, dept TEXT, salary INTEGER)");
+    _ = try db.exec("INSERT INTO emp VALUES ('alice', 'eng', 100)");
+    _ = try db.exec("INSERT INTO emp VALUES ('bob', 'eng', 200)");
+    _ = try db.exec("INSERT INTO emp VALUES ('charlie', 'sales', 150)");
+
+    // Use WINDOW clause to define a named window, referenced by two functions
+    var r = try db.exec("SELECT name, ROW_NUMBER() OVER w, RANK() OVER w FROM emp WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)");
+    defer r.close(testing.allocator);
+
+    // eng partition: bob(200) rn=1 rank=1, alice(100) rn=2 rank=2
+    // sales partition: charlie(150) rn=1 rank=1
+    var count: usize = 0;
+    while (try r.rows.?.next()) |row_const| {
+        var row = row_const;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "WINDOW clause: named window with aggregate-as-window SUM" {
+    const path = "test_wf_window_clause_sum.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE nums (val INTEGER)");
+    _ = try db.exec("INSERT INTO nums VALUES (10)");
+    _ = try db.exec("INSERT INTO nums VALUES (20)");
+    _ = try db.exec("INSERT INTO nums VALUES (30)");
+
+    // Named window with ORDER BY → running sum
+    var r = try db.exec("SELECT val, SUM(val) OVER w FROM nums WINDOW w AS (ORDER BY val)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 30), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 60), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "WINDOW clause: multiple named windows" {
+    const path = "test_wf_multi_window.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE items (cat TEXT, price INTEGER)");
+    _ = try db.exec("INSERT INTO items VALUES ('a', 10)");
+    _ = try db.exec("INSERT INTO items VALUES ('a', 20)");
+    _ = try db.exec("INSERT INTO items VALUES ('b', 30)");
+
+    // Two different named windows
+    var r = try db.exec("SELECT cat, price, ROW_NUMBER() OVER w1, SUM(price) OVER w2 FROM items WINDOW w1 AS (PARTITION BY cat ORDER BY price), w2 AS (ORDER BY price)");
+    defer r.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r.rows.?.next()) |row_const| {
+        var row = row_const;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}

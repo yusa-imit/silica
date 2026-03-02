@@ -330,6 +330,45 @@ pub const Analyzer = struct {
 
         // HAVING
         if (stmt.having) |h| self.analyzeExpr(h);
+
+        // WINDOW clause — validate definitions and resolve references
+        for (stmt.window_defs, 0..) |def, i| {
+            // Check for duplicate window names
+            for (stmt.window_defs[0..i]) |prev| {
+                if (std.ascii.eqlIgnoreCase(def.name, prev.name)) {
+                    self.addError(.duplicate_alias, "duplicate window name '{s}'", .{def.name});
+                    break;
+                }
+            }
+            // Analyze expressions in the window definition
+            for (def.partition_by) |pb| self.analyzeExpr(pb);
+            for (def.order_by) |ob| self.analyzeExpr(ob.expr);
+        }
+
+        // Validate window function references to named windows
+        if (stmt.window_defs.len > 0) {
+            for (stmt.columns) |col| {
+                switch (col) {
+                    .expr => |e| {
+                        if (e.value.* == .window_function) {
+                            if (e.value.window_function.window_name) |win_name| {
+                                var found = false;
+                                for (stmt.window_defs) |def| {
+                                    if (std.mem.eql(u8, def.name, win_name)) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) {
+                                    self.addError(.column_not_found, "window '{s}' not defined", .{win_name});
+                                }
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
     }
 
     /// Recursively analyze chained set operations, validating column counts.
