@@ -993,6 +993,11 @@ pub const Database = struct {
         var cte_map = std.StringHashMapUnmanaged(*MaterializedOp){};
 
         for (ctes) |cte| {
+            if (cte.recursive) {
+                try self.materializeRecursiveCte(cte, &cte_map, ops);
+                continue;
+            }
+
             // Create a sub-operator chain for this CTE's query
             const cte_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
             cte_ops.* = .{};
@@ -1065,6 +1070,182 @@ pub const Database = struct {
         }
 
         ops.cte_materialized = cte_map;
+    }
+
+    /// Maximum recursion depth to prevent infinite loops.
+    const max_recursive_cte_depth = 1000;
+
+    /// Materialize a recursive CTE using iterative fixed-point evaluation.
+    /// The CTE's plan must be a set_op (UNION ALL) node with left=anchor, right=recursive.
+    fn materializeRecursiveCte(
+        self: *Database,
+        cte: planner_mod.CtePlan,
+        cte_map: *std.StringHashMapUnmanaged(*MaterializedOp),
+        ops: *OperatorChain,
+    ) EngineError!void {
+        // The plan root must be a set_op (UNION ALL) — anchor UNION ALL recursive
+        const set_op = switch (cte.plan.*) {
+            .set_op => |s| s,
+            else => return EngineError.ExecutionError,
+        };
+        if (set_op.op != .union_all) return EngineError.ExecutionError;
+
+        const anchor_plan = set_op.left;
+        const recursive_plan = set_op.right;
+
+        // Step 1: Execute the anchor query
+        const anchor_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+        anchor_ops.* = .{};
+        anchor_ops.cte_materialized = cte_map.*;
+        ops.cte_ops.append(self.allocator, anchor_ops) catch return EngineError.OutOfMemory;
+
+        var anchor_iter = self.buildIterator(anchor_plan, anchor_ops) catch return EngineError.ExecutionError;
+
+        // Collect anchor rows and determine column names
+        var all_rows = std.ArrayListUnmanaged([]Value){};
+        var col_names: ?[]const []const u8 = null;
+
+        while (anchor_iter.next() catch return EngineError.ExecutionError) |row_data| {
+            var row = row_data;
+            if (col_names == null) {
+                col_names = try self.captureColNames(&row, cte.column_names);
+            }
+            const vals = try self.dupeRowValues(row.values);
+            row.deinit();
+            all_rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+        }
+        anchor_iter.close();
+
+        // If anchor produced no rows, create empty CTE
+        if (col_names == null) {
+            col_names = try self.buildEmptyColNames(cte.column_names);
+        }
+
+        // Step 2: Iterative fixed-point — feed last iteration's rows as the working table
+        var working_rows = std.ArrayListUnmanaged([]Value){};
+        // Copy anchor rows as initial working set
+        for (all_rows.items) |row_vals| {
+            const duped = try self.dupeRowValuesSlice(row_vals);
+            working_rows.append(self.allocator, duped) catch return EngineError.OutOfMemory;
+        }
+
+        var iteration: usize = 0;
+        while (iteration < max_recursive_cte_depth) : (iteration += 1) {
+            if (working_rows.items.len == 0) break;
+
+            // Create a MaterializedOp for the working table (current iteration's input)
+            const working_col_names = try self.dupeColNames(col_names.?);
+            const working_data = working_rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory;
+            const working_mat = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+            working_mat.* = MaterializedOp.init(self.allocator, working_col_names, working_data);
+
+            // Put the working table into the CTE map so recursive scans find it
+            if (cte_map.get(cte.name)) |old_mat| {
+                old_mat.close();
+                self.allocator.destroy(old_mat);
+            }
+            cte_map.put(self.allocator, cte.name, working_mat) catch return EngineError.OutOfMemory;
+
+            // Execute the recursive part against the working table
+            const rec_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+            rec_ops.* = .{};
+            rec_ops.cte_materialized = cte_map.*;
+            ops.cte_ops.append(self.allocator, rec_ops) catch return EngineError.OutOfMemory;
+
+            var rec_iter = self.buildIterator(recursive_plan, rec_ops) catch return EngineError.ExecutionError;
+
+            // Collect new rows from this iteration
+            working_rows = .{};
+            while (rec_iter.next() catch return EngineError.ExecutionError) |row_data| {
+                var row = row_data;
+                const vals = try self.dupeRowValues(row.values);
+                row.deinit();
+                // Add to both the complete result and the next iteration's working set
+                all_rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+                const working_copy = try self.dupeRowValuesSlice(vals);
+                working_rows.append(self.allocator, working_copy) catch return EngineError.OutOfMemory;
+            }
+            rec_iter.close();
+        }
+
+        // Free any remaining working rows (from the last empty iteration or overflow)
+        for (working_rows.items) |vals| {
+            for (vals) |v| v.free(self.allocator);
+            self.allocator.free(vals);
+        }
+        working_rows.deinit(self.allocator);
+
+        // Build final MaterializedOp with all accumulated rows
+        const final_col_names = try self.dupeColNames(col_names.?);
+        // Free the original col_names
+        for (col_names.?) |c| self.allocator.free(@constCast(c));
+        self.allocator.free(col_names.?);
+
+        const final_mat = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+        final_mat.* = MaterializedOp.init(
+            self.allocator,
+            final_col_names,
+            all_rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory,
+        );
+
+        // Replace the working table entry with the final complete result
+        if (cte_map.get(cte.name)) |old_mat| {
+            old_mat.close();
+            self.allocator.destroy(old_mat);
+        }
+        cte_map.put(self.allocator, cte.name, final_mat) catch return EngineError.OutOfMemory;
+    }
+
+    /// Capture column names from a row, applying CTE column aliases if provided.
+    fn captureColNames(self: *Database, row: *const Row, cte_col_names: []const []const u8) EngineError![]const []const u8 {
+        if (cte_col_names.len > 0) {
+            const names = self.allocator.alloc([]const u8, cte_col_names.len) catch return EngineError.OutOfMemory;
+            for (cte_col_names, 0..) |name, i| {
+                names[i] = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory;
+            }
+            return names;
+        }
+        const names = self.allocator.alloc([]const u8, row.columns.len) catch return EngineError.OutOfMemory;
+        for (row.columns, 0..) |c, i| {
+            const base = if (std.mem.indexOfScalar(u8, c, '.')) |dot| c[dot + 1 ..] else c;
+            names[i] = self.allocator.dupe(u8, base) catch return EngineError.OutOfMemory;
+        }
+        return names;
+    }
+
+    /// Build empty column names from explicit CTE column aliases.
+    fn buildEmptyColNames(self: *Database, cte_col_names: []const []const u8) EngineError![]const []const u8 {
+        if (cte_col_names.len > 0) {
+            const names = self.allocator.alloc([]const u8, cte_col_names.len) catch return EngineError.OutOfMemory;
+            for (cte_col_names, 0..) |name, i| {
+                names[i] = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory;
+            }
+            return names;
+        }
+        return self.allocator.alloc([]const u8, 0) catch return EngineError.OutOfMemory;
+    }
+
+    /// Duplicate row values.
+    fn dupeRowValues(self: *Database, values: []const Value) EngineError![]Value {
+        const vals = self.allocator.alloc(Value, values.len) catch return EngineError.OutOfMemory;
+        for (values, 0..) |v, i| {
+            vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+        }
+        return vals;
+    }
+
+    /// Duplicate a slice of values (for working set copies).
+    fn dupeRowValuesSlice(self: *Database, values: []const Value) EngineError![]Value {
+        return self.dupeRowValues(values);
+    }
+
+    /// Duplicate column names.
+    fn dupeColNames(self: *Database, names: []const []const u8) EngineError![]const []const u8 {
+        const result = self.allocator.alloc([]const u8, names.len) catch return EngineError.OutOfMemory;
+        for (names, 0..) |n, i| {
+            result[i] = self.allocator.dupe(u8, n) catch return EngineError.OutOfMemory;
+        }
+        return result;
     }
 
     /// Build a scan over a materialized CTE result.
@@ -1303,7 +1484,7 @@ pub const Database = struct {
 
     fn buildEmpty(self: *Database, ops: *OperatorChain) EngineError!RowIterator {
         const empty_op = self.allocator.create(EmptyOp) catch return EngineError.OutOfMemory;
-        empty_op.* = .{};
+        empty_op.* = .{ .allocator = self.allocator };
         ops.empty = empty_op;
         return empty_op.iterator();
     }
@@ -8592,6 +8773,214 @@ test "CTE: CTE with LIMIT" {
         count += 1;
     }
     try testing.expectEqual(@as(usize, 3), count);
+}
+
+// ── Recursive CTE tests ─────────────────────────────────────
+
+test "recursive CTE: counting sequence" {
+    const path = "test_eng_rcte_count.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Generate numbers 1..5
+    var r = try db.execSQL(
+        "WITH RECURSIVE cnt(x) AS (" ++
+            "SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5" ++
+            ") SELECT x FROM cnt",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var expected: i64 = 1;
+    while (try r.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(expected, row.values[0].integer);
+        expected += 1;
+    }
+    try testing.expectEqual(@as(i64, 6), expected); // 1..5 → next expected = 6
+}
+
+test "recursive CTE: fibonacci sequence" {
+    const path = "test_eng_rcte_fib.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Fibonacci: 1, 1, 2, 3, 5, 8
+    var r = try db.execSQL(
+        "WITH RECURSIVE fib(a, b) AS (" ++
+            "SELECT 1, 1 UNION ALL SELECT b, a + b FROM fib WHERE b < 8" ++
+            ") SELECT a FROM fib",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    const expected_fibs = [_]i64{ 1, 1, 2, 3, 5 };
+    var idx: usize = 0;
+    while (try r.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expect(idx < expected_fibs.len);
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(expected_fibs[idx], row.values[0].integer);
+        idx += 1;
+    }
+    try testing.expectEqual(expected_fibs.len, idx);
+}
+
+test "recursive CTE: tree traversal" {
+    const path = "test_eng_rcte_tree.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE org (id INTEGER, parent_id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL(
+        "INSERT INTO org VALUES (1, 0, 'CEO'), (2, 1, 'VP1'), (3, 1, 'VP2'), (4, 2, 'Mgr1'), (5, 3, 'Mgr2')",
+    );
+    defer r2.close(testing.allocator);
+
+    // Find all reports under CEO (id=1)
+    var r = try db.execSQL(
+        "WITH RECURSIVE reports(id, name, lvl) AS (" ++
+            "SELECT id, name, 0 FROM org WHERE id = 1 " ++
+            "UNION ALL " ++
+            "SELECT o.id, o.name, r.lvl + 1 FROM org o JOIN reports r ON o.parent_id = r.id" ++
+            ") SELECT id, name, lvl FROM reports ORDER BY id",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "recursive CTE: single anchor row, no recursion" {
+    const path = "test_eng_rcte_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Anchor produces 100, recursive part produces nothing (WHERE false)
+    var r = try db.execSQL(
+        "WITH RECURSIVE s(x) AS (" ++
+            "SELECT 100 UNION ALL SELECT x + 1 FROM s WHERE x < 100" ++
+            ") SELECT x FROM s",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 100), row.values[0].integer);
+    // No more rows
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "recursive CTE: powers of 2" {
+    const path = "test_eng_rcte_pow2.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Powers of 2: 1, 2, 4, 8, 16, 32, 64
+    var r = try db.execSQL(
+        "WITH RECURSIVE pow2(x) AS (" ++
+            "SELECT 1 UNION ALL SELECT x * 2 FROM pow2 WHERE x < 64" ++
+            ") SELECT x FROM pow2",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    const expected = [_]i64{ 1, 2, 4, 8, 16, 32, 64 };
+    var idx: usize = 0;
+    while (try r.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expect(idx < expected.len);
+        try testing.expectEqual(expected[idx], row.values[0].integer);
+        idx += 1;
+    }
+    try testing.expectEqual(expected.len, idx);
+}
+
+test "recursive CTE: with main query filter" {
+    const path = "test_eng_rcte_filter.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Generate 1..10, then filter for even numbers
+    var r = try db.execSQL(
+        "WITH RECURSIVE nums(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 10" ++
+            ") SELECT n FROM nums WHERE n % 2 = 0 ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    const expected = [_]i64{ 2, 4, 6, 8, 10 };
+    var idx: usize = 0;
+    while (try r.rows.?.next()) |row_data| {
+        var row = row_data;
+        defer row.deinit();
+        try testing.expect(idx < expected.len);
+        try testing.expectEqual(expected[idx], row.values[0].integer);
+        idx += 1;
+    }
+    try testing.expectEqual(expected.len, idx);
+}
+
+test "recursive CTE: with aggregate on result" {
+    const path = "test_eng_rcte_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Sum of 1..10 = 55
+    var r = try db.execSQL(
+        "WITH RECURSIVE nums(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 10" ++
+            ") SELECT SUM(n) AS total FROM nums",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 55), row.values[0].integer);
+}
+
+test "recursive CTE: count result" {
+    const path = "test_eng_rcte_cnt.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // COUNT of 1..20 = 20
+    var r = try db.execSQL(
+        "WITH RECURSIVE nums(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 20" ++
+            ") SELECT COUNT(*) AS cnt FROM nums",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row = (try r.rows.?.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 20), row.values[0].integer);
 }
 
 // ── VIEW advanced scenarios ──────────────────────────────────

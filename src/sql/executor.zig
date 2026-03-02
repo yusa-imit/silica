@@ -1880,9 +1880,27 @@ pub const ValuesOp = struct {
 // ── Empty Operator ──────────────────────────────────────────────────────
 
 /// Produces no rows (used for DDL results).
+/// Produces exactly one row with no columns (like Oracle's DUAL table).
+/// This allows `SELECT <expr>` without FROM to produce one result row.
 pub const EmptyOp = struct {
-    pub fn next(_: *EmptyOp) ExecError!?Row {
-        return null;
+    allocator: Allocator,
+    done: bool = false,
+
+    pub fn next(self: *EmptyOp) ExecError!?Row {
+        if (self.done) return null;
+        self.done = true;
+        // Return a single row with no columns — ProjectOp will evaluate
+        // literal expressions against this empty row.
+        const cols = self.allocator.alloc([]const u8, 0) catch return ExecError.OutOfMemory;
+        const vals = self.allocator.alloc(Value, 0) catch {
+            self.allocator.free(cols);
+            return ExecError.OutOfMemory;
+        };
+        return Row{
+            .columns = cols,
+            .values = vals,
+            .allocator = self.allocator,
+        };
     }
 
     pub fn close(_: *EmptyOp) void {}
@@ -2909,8 +2927,14 @@ test "NestedLoopJoinOp inner join" {
     try std.testing.expectEqual(@as(?Row, null), try join.next());
 }
 
-test "EmptyOp produces no rows" {
-    var empty = EmptyOp{};
+test "EmptyOp produces one dual row" {
+    var empty = EmptyOp{ .allocator = std.testing.allocator };
+    // EmptyOp produces exactly one row with no columns (DUAL table behavior)
+    var row = (try empty.next()) orelse return error.ExpectedRow;
+    defer row.deinit();
+    try std.testing.expectEqual(@as(usize, 0), row.values.len);
+    try std.testing.expectEqual(@as(usize, 0), row.columns.len);
+    // Second call returns null
     try std.testing.expectEqual(@as(?Row, null), try empty.next());
 }
 

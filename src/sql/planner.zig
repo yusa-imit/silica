@@ -186,6 +186,8 @@ pub const CtePlan = struct {
     name: []const u8,
     plan: *const PlanNode,
     column_names: []const []const u8 = &.{},
+    /// True if this CTE is recursive (WITH RECURSIVE and self-referencing).
+    recursive: bool = false,
 };
 
 /// The complete logical plan for a SQL statement.
@@ -260,15 +262,25 @@ pub const Planner = struct {
         const alloc = self.arena.allocator();
         var cte_plans = std.ArrayListUnmanaged(CtePlan){};
         for (stmt.ctes) |cte| {
+            // For recursive CTEs, register name BEFORE planning so self-reference resolves
+            if (stmt.recursive) {
+                self.cte_names.put(alloc, cte.name, {}) catch return error.OutOfMemory;
+            }
             // Plan each CTE's inner SELECT
             const cte_inner = try self.planSelect(cte.select.*);
+            // A CTE is recursive if WITH RECURSIVE is set and the inner
+            // SELECT has a UNION ALL set operation (anchor UNION ALL recursive).
+            const is_recursive = stmt.recursive and cte.select.set_operation != null;
             cte_plans.append(alloc, .{
                 .name = cte.name,
                 .plan = cte_inner.root,
                 .column_names = cte.column_names,
+                .recursive = is_recursive,
             }) catch return error.OutOfMemory;
-            // Register CTE name so planTableRef recognizes it
-            self.cte_names.put(alloc, cte.name, {}) catch return error.OutOfMemory;
+            // Register CTE name so later CTEs and the main query recognize it
+            if (!stmt.recursive) {
+                self.cte_names.put(alloc, cte.name, {}) catch return error.OutOfMemory;
+            }
         }
 
         // 1. Plan the left SELECT body
