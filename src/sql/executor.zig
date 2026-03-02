@@ -374,6 +374,138 @@ fn negateInterval(iv: Value.Interval) Value.Interval {
     return .{ .months = -iv.months, .days = -iv.days, .micros = -iv.micros };
 }
 
+// ── Numeric Helpers ──────────────────────────────────────────────────────
+
+/// Compute 10^exp as i128.
+fn powI128(base: i128, exp: u8) i128 {
+    var result: i128 = 1;
+    var i: u8 = 0;
+    while (i < exp) : (i += 1) {
+        result *%= base;
+    }
+    return result;
+}
+
+/// Convert integer to Numeric with given scale.
+fn intToNumeric(v: i64, scale: u8) Value.Numeric {
+    return .{ .value = @as(i128, v) *% powI128(10, scale), .scale = scale };
+}
+
+/// Convert f64 to Numeric with given scale.
+fn realToNumeric(v: f64, scale: u8) Value.Numeric {
+    const factor: f64 = @floatFromInt(powI128(10, scale));
+    const scaled: i128 = @intFromFloat(v * factor);
+    return .{ .value = scaled, .scale = scale };
+}
+
+/// Convert Numeric to f64.
+fn numericToReal(n: Value.Numeric) f64 {
+    const factor: f64 = @floatFromInt(powI128(10, n.scale));
+    return @as(f64, @floatFromInt(n.value)) / factor;
+}
+
+/// Align two numerics to the same scale (the larger one).
+fn alignScale(a: Value.Numeric, b: Value.Numeric) struct { av: i128, bv: i128, scale: u8 } {
+    if (a.scale == b.scale) return .{ .av = a.value, .bv = b.value, .scale = a.scale };
+    if (a.scale > b.scale) {
+        const diff = a.scale - b.scale;
+        return .{ .av = a.value, .bv = b.value *% powI128(10, diff), .scale = a.scale };
+    } else {
+        const diff = b.scale - a.scale;
+        return .{ .av = a.value *% powI128(10, diff), .bv = b.value, .scale = b.scale };
+    }
+}
+
+/// Compare two Numeric values.
+fn compareNumeric(a: Value.Numeric, b: Value.Numeric) std.math.Order {
+    const aligned = alignScale(a, b);
+    return std.math.order(aligned.av, aligned.bv);
+}
+
+/// Parse a decimal string like "123.45" into Numeric.
+fn parseNumericString(s: []const u8) ?Value.Numeric {
+    if (s.len == 0) return null;
+
+    var start: usize = 0;
+    var negative = false;
+    if (s[0] == '-') {
+        negative = true;
+        start = 1;
+    } else if (s[0] == '+') {
+        start = 1;
+    }
+    if (start >= s.len) return null;
+
+    var int_part: i128 = 0;
+    var frac_part: i128 = 0;
+    var scale: u8 = 0;
+    var in_frac = false;
+
+    for (s[start..]) |c| {
+        if (c == '.') {
+            if (in_frac) return null; // double dot
+            in_frac = true;
+            continue;
+        }
+        if (c < '0' or c > '9') return null;
+        const digit: i128 = c - '0';
+        if (in_frac) {
+            if (scale >= 38) return null; // max precision
+            frac_part = frac_part * 10 + digit;
+            scale += 1;
+        } else {
+            int_part = int_part * 10 + digit;
+        }
+    }
+
+    var value = int_part * powI128(10, scale) + frac_part;
+    if (negative) value = -value;
+    return .{ .value = value, .scale = scale };
+}
+
+/// Format a Numeric value as a string (e.g., 12345 with scale=2 → "123.45").
+pub fn formatNumeric(allocator: Allocator, n: Value.Numeric) ![]u8 {
+    if (n.scale == 0) {
+        return std.fmt.allocPrint(allocator, "{d}", .{n.value});
+    }
+
+    const is_negative = n.value < 0;
+    const abs_val = if (is_negative) -n.value else n.value;
+    const divisor = powI128(10, n.scale);
+    const int_part = @divTrunc(abs_val, divisor);
+    const frac_part = @mod(abs_val, divisor);
+
+    // Format fractional part with leading zeros
+    const frac_str = try std.fmt.allocPrint(allocator, "{d}", .{frac_part});
+    defer allocator.free(frac_str);
+
+    // Pad with leading zeros if needed
+    const scale_usize: usize = @intCast(n.scale);
+    if (is_negative) {
+        if (frac_str.len >= scale_usize) {
+            return std.fmt.allocPrint(allocator, "-{d}.{s}", .{ int_part, frac_str });
+        } else {
+            const pad = scale_usize - frac_str.len;
+            const padded = try allocator.alloc(u8, scale_usize);
+            defer allocator.free(padded);
+            @memset(padded[0..pad], '0');
+            @memcpy(padded[pad..], frac_str);
+            return std.fmt.allocPrint(allocator, "-{d}.{s}", .{ int_part, padded });
+        }
+    } else {
+        if (frac_str.len >= scale_usize) {
+            return std.fmt.allocPrint(allocator, "{d}.{s}", .{ int_part, frac_str });
+        } else {
+            const pad = scale_usize - frac_str.len;
+            const padded = try allocator.alloc(u8, scale_usize);
+            defer allocator.free(padded);
+            @memset(padded[0..pad], '0');
+            @memcpy(padded[pad..], frac_str);
+            return std.fmt.allocPrint(allocator, "{d}.{s}", .{ int_part, padded });
+        }
+    }
+}
+
 // ── MVCC Context ──────────────────────────────────────────────────────────
 
 /// MVCC context passed to scan operators for visibility filtering.
@@ -402,12 +534,18 @@ pub const Value = union(enum) {
     time: i64, // microseconds since midnight
     timestamp: i64, // microseconds since epoch
     interval: Interval, // composite: months + days + microseconds
+    numeric: Numeric, // fixed-point decimal
     null_value,
 
     pub const Interval = struct {
         months: i32,
         days: i32,
         micros: i64,
+    };
+
+    pub const Numeric = struct {
+        value: i128, // unscaled value (e.g., 12345 for 123.45 with scale=2)
+        scale: u8, // number of decimal digits (0-38)
     };
 
     /// Compare two values. Returns .lt, .eq, or .gt.
@@ -479,6 +617,15 @@ pub const Value = union(enum) {
                 },
                 else => .lt, // intervals < text/blob/bool
             },
+            .numeric => |av| switch (b) {
+                .numeric => |bv| compareNumeric(av, bv),
+                .integer => |bv| compareNumeric(av, intToNumeric(bv, av.scale)),
+                .real => |bv| {
+                    const bn = realToNumeric(bv, av.scale);
+                    return compareNumeric(av, bn);
+                },
+                else => .lt,
+            },
             .null_value => unreachable,
         };
     }
@@ -497,6 +644,7 @@ pub const Value = union(enum) {
             .blob => |v| v.len > 0,
             .boolean => |v| v,
             .date, .time, .timestamp, .interval => true, // temporal values are always truthy
+            .numeric => |v| v.value != 0,
             .null_value => false,
         };
     }
@@ -511,6 +659,7 @@ pub const Value = union(enum) {
             .date => |v| @as(i64, v), // days as integer
             .time, .timestamp => |v| v, // microseconds as integer
             .interval => |v| v.micros, // total microseconds component
+            .numeric => |v| @as(i64, @intCast(@divTrunc(v.value, powI128(10, v.scale)))),
             else => null,
         };
     }
@@ -525,6 +674,7 @@ pub const Value = union(enum) {
             .date => |v| @floatFromInt(v),
             .time, .timestamp => |v| @floatFromInt(v),
             .interval => |v| @floatFromInt(v.micros),
+            .numeric => |v| numericToReal(v),
             else => null,
         };
     }
@@ -638,6 +788,7 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
             .time => size += 8,
             .timestamp => size += 8,
             .interval => size += 16, // months(4) + days(4) + micros(8)
+            .numeric => size += 17, // scale(1) + value(16)
             .null_value => {},
         }
     }
@@ -712,6 +863,14 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
                 pos += 4;
                 std.mem.writeInt(i64, buf[pos..][0..8], iv.micros, .little);
                 pos += 8;
+            },
+            .numeric => |n| {
+                buf[pos] = 0x0A;
+                pos += 1;
+                buf[pos] = n.scale;
+                pos += 1;
+                std.mem.writeInt(i128, buf[pos..][0..16], n.value, .little);
+                pos += 16;
             },
             .null_value => {
                 buf[pos] = 0x00;
@@ -800,6 +959,14 @@ pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
                 const micros = std.mem.readInt(i64, data[pos..][0..8], .little);
                 pos += 8;
                 v.* = .{ .interval = .{ .months = months, .days = days, .micros = micros } };
+            },
+            0x0A => { // numeric
+                if (pos + 17 > data.len) return error.InvalidRowData;
+                const scale = data[pos];
+                pos += 1;
+                const value = std.mem.readInt(i128, data[pos..][0..16], .little);
+                pos += 16;
+                v.* = .{ .numeric = .{ .value = value, .scale = scale } };
             },
             0x00 => { // null
                 v.* = .null_value;
@@ -1142,6 +1309,39 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
         return .{ .interval = .{ .months = iv.months *% n, .days = iv.days *% n, .micros = iv.micros *% left.integer } };
     }
 
+    // Numeric arithmetic
+    if (left == .numeric and right == .numeric) {
+        const aligned = alignScale(left.numeric, right.numeric);
+        return switch (op) {
+            .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
+            .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
+            .mul => .{ .numeric = .{ .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)), .scale = aligned.scale } },
+            .div => .{ .numeric = .{ .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv), .scale = aligned.scale } },
+        };
+    }
+    // numeric op integer → numeric
+    if (left == .numeric and right == .integer) {
+        const bn = intToNumeric(right.integer, left.numeric.scale);
+        const aligned = alignScale(left.numeric, bn);
+        return switch (op) {
+            .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
+            .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
+            .mul => .{ .numeric = .{ .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)), .scale = aligned.scale } },
+            .div => .{ .numeric = .{ .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv), .scale = aligned.scale } },
+        };
+    }
+    // integer op numeric → numeric
+    if (left == .integer and right == .numeric) {
+        const an = intToNumeric(left.integer, right.numeric.scale);
+        const aligned = alignScale(an, right.numeric);
+        return switch (op) {
+            .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
+            .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
+            .mul => .{ .numeric = .{ .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)), .scale = aligned.scale } },
+            .div => .{ .numeric = .{ .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv), .scale = aligned.scale } },
+        };
+    }
+
     // Try integer arithmetic
     if (left == .integer and right == .integer) {
         const a = left.integer;
@@ -1179,6 +1379,7 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 .time => |v| formatTime(allocator, v) catch return EvalError.OutOfMemory,
                 .timestamp => |v| formatTimestamp(allocator, v) catch return EvalError.OutOfMemory,
                 .interval => |v| formatInterval(allocator, v) catch return EvalError.OutOfMemory,
+                .numeric => |v| formatNumeric(allocator, v) catch return EvalError.OutOfMemory,
                 .null_value => return .null_value,
                 .blob => return .null_value,
             };
@@ -1220,6 +1421,16 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 else => return .null_value,
             };
             break :blk Value{ .interval = iv };
+        },
+        .type_numeric, .type_decimal => blk: {
+            const n = switch (val) {
+                .text => |v| parseNumericString(v) orelse return .null_value,
+                .integer => |v| Value.Numeric{ .value = @as(i128, v), .scale = 0 },
+                .real => |v| realToNumeric(v, 6), // default 6 decimal places for float→numeric
+                .numeric => |v| v,
+                else => return .null_value,
+            };
+            break :blk Value{ .numeric = n };
         },
     };
 }
@@ -1309,6 +1520,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .time => "time",
             .timestamp => "timestamp",
             .interval => "interval",
+            .numeric => "numeric",
             .null_value => "null",
         };
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };
@@ -5238,4 +5450,220 @@ test "Value comparison with temporal types" {
     const date = Value{ .date = 1 }; // 1 day = 86400000000 microseconds
     const ts = Value{ .timestamp = MICROS_PER_DAY }; // same as 1 day
     try std.testing.expectEqual(std.math.Order.eq, date.compare(ts));
+}
+
+// ── NUMERIC Unit Tests ──────────────────────────────────────────────────
+
+test "parseNumericString basic" {
+    // Integer-like
+    const n1 = parseNumericString("123").?;
+    try std.testing.expectEqual(@as(i128, 123), n1.value);
+    try std.testing.expectEqual(@as(u8, 0), n1.scale);
+
+    // Decimal
+    const n2 = parseNumericString("123.45").?;
+    try std.testing.expectEqual(@as(i128, 12345), n2.value);
+    try std.testing.expectEqual(@as(u8, 2), n2.scale);
+
+    // Negative
+    const n3 = parseNumericString("-99.9").?;
+    try std.testing.expectEqual(@as(i128, -999), n3.value);
+    try std.testing.expectEqual(@as(u8, 1), n3.scale);
+
+    // Zero
+    const n4 = parseNumericString("0.00").?;
+    try std.testing.expectEqual(@as(i128, 0), n4.value);
+    try std.testing.expectEqual(@as(u8, 2), n4.scale);
+
+    // Leading zeros in fractional part
+    const n5 = parseNumericString("1.05").?;
+    try std.testing.expectEqual(@as(i128, 105), n5.value);
+    try std.testing.expectEqual(@as(u8, 2), n5.scale);
+
+    // Invalid
+    try std.testing.expect(parseNumericString("") == null);
+    try std.testing.expect(parseNumericString("abc") == null);
+    try std.testing.expect(parseNumericString("1.2.3") == null);
+    try std.testing.expect(parseNumericString("-") == null);
+}
+
+test "formatNumeric basic" {
+    const allocator = std.testing.allocator;
+
+    // Integer (scale 0)
+    const s1 = try formatNumeric(allocator, .{ .value = 42, .scale = 0 });
+    defer allocator.free(s1);
+    try std.testing.expectEqualStrings("42", s1);
+
+    // Decimal
+    const s2 = try formatNumeric(allocator, .{ .value = 12345, .scale = 2 });
+    defer allocator.free(s2);
+    try std.testing.expectEqualStrings("123.45", s2);
+
+    // Negative decimal
+    const s3 = try formatNumeric(allocator, .{ .value = -999, .scale = 1 });
+    defer allocator.free(s3);
+    try std.testing.expectEqualStrings("-99.9", s3);
+
+    // Leading zeros in fraction
+    const s4 = try formatNumeric(allocator, .{ .value = 105, .scale = 2 });
+    defer allocator.free(s4);
+    try std.testing.expectEqualStrings("1.05", s4);
+
+    // Zero with scale
+    const s5 = try formatNumeric(allocator, .{ .value = 0, .scale = 3 });
+    defer allocator.free(s5);
+    try std.testing.expectEqualStrings("0.000", s5);
+
+    // Small value with leading zeros
+    const s6 = try formatNumeric(allocator, .{ .value = 1, .scale = 3 });
+    defer allocator.free(s6);
+    try std.testing.expectEqualStrings("0.001", s6);
+}
+
+test "Numeric comparison" {
+    const a = Value{ .numeric = .{ .value = 100, .scale = 2 } }; // 1.00
+    const b = Value{ .numeric = .{ .value = 200, .scale = 2 } }; // 2.00
+    try std.testing.expectEqual(std.math.Order.lt, a.compare(b));
+    try std.testing.expectEqual(std.math.Order.gt, b.compare(a));
+    try std.testing.expectEqual(std.math.Order.eq, a.compare(a));
+
+    // Cross-scale comparison: 1.0 vs 1.00
+    const c = Value{ .numeric = .{ .value = 10, .scale = 1 } }; // 1.0
+    const d = Value{ .numeric = .{ .value = 100, .scale = 2 } }; // 1.00
+    try std.testing.expectEqual(std.math.Order.eq, c.compare(d));
+
+    // Numeric vs integer: 1.50 vs 2
+    const e = Value{ .numeric = .{ .value = 150, .scale = 2 } }; // 1.50
+    const f = Value{ .integer = 2 };
+    try std.testing.expectEqual(std.math.Order.lt, e.compare(f));
+}
+
+test "Numeric arithmetic" {
+    // add
+    const a = Value{ .numeric = .{ .value = 100, .scale = 2 } }; // 1.00
+    const b = Value{ .numeric = .{ .value = 250, .scale = 2 } }; // 2.50
+    const sum = evalArithmetic(a, b, .add);
+    try std.testing.expectEqual(@as(i128, 350), sum.numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), sum.numeric.scale);
+
+    // subtract
+    const diff = evalArithmetic(b, a, .sub);
+    try std.testing.expectEqual(@as(i128, 150), diff.numeric.value);
+
+    // multiply: 1.50 * 2.00 = 3.00
+    const c = Value{ .numeric = .{ .value = 150, .scale = 2 } };
+    const d = Value{ .numeric = .{ .value = 200, .scale = 2 } };
+    const prod = evalArithmetic(c, d, .mul);
+    try std.testing.expectEqual(@as(i128, 300), prod.numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), prod.numeric.scale);
+
+    // divide: 3.00 / 1.50 = 2.00
+    const three = Value{ .numeric = .{ .value = 300, .scale = 2 } };
+    const onePointFive = Value{ .numeric = .{ .value = 150, .scale = 2 } };
+    const quot = evalArithmetic(three, onePointFive, .div);
+    try std.testing.expectEqual(@as(i128, 200), quot.numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), quot.numeric.scale);
+}
+
+test "Numeric + integer arithmetic" {
+    const a = Value{ .numeric = .{ .value = 150, .scale = 2 } }; // 1.50
+    const b = Value{ .integer = 3 };
+
+    // numeric + integer
+    const sum = evalArithmetic(a, b, .add);
+    try std.testing.expectEqual(@as(i128, 450), sum.numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), sum.numeric.scale);
+
+    // integer + numeric
+    const sum2 = evalArithmetic(b, a, .add);
+    try std.testing.expectEqual(@as(i128, 450), sum2.numeric.value);
+
+    // numeric * integer: 1.50 * 3 = 4.50
+    const prod = evalArithmetic(a, b, .mul);
+    try std.testing.expectEqual(@as(i128, 450), prod.numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), prod.numeric.scale);
+}
+
+test "Numeric toInteger and toReal" {
+    const n = Value{ .numeric = .{ .value = 12345, .scale = 2 } }; // 123.45
+    try std.testing.expectEqual(@as(i64, 123), n.toInteger().?);
+
+    const r = n.toReal().?;
+    try std.testing.expect(@abs(r - 123.45) < 0.001);
+
+    // Zero
+    const z = Value{ .numeric = .{ .value = 0, .scale = 2 } };
+    try std.testing.expectEqual(@as(i64, 0), z.toInteger().?);
+    try std.testing.expect(z.toReal().? == 0.0);
+}
+
+test "Numeric serialization roundtrip" {
+    const allocator = std.testing.allocator;
+
+    const values = [_]Value{
+        .{ .numeric = .{ .value = 12345, .scale = 2 } },
+        .{ .numeric = .{ .value = -99900, .scale = 3 } },
+        .{ .numeric = .{ .value = 0, .scale = 0 } },
+    };
+
+    const data = try serializeRow(allocator, &values);
+    defer allocator.free(data);
+
+    const deserialized = try deserializeRow(allocator, data);
+    defer {
+        for (deserialized) |v| v.free(allocator);
+        allocator.free(deserialized);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), deserialized.len);
+    try std.testing.expectEqual(@as(i128, 12345), deserialized[0].numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), deserialized[0].numeric.scale);
+    try std.testing.expectEqual(@as(i128, -99900), deserialized[1].numeric.value);
+    try std.testing.expectEqual(@as(u8, 3), deserialized[1].numeric.scale);
+    try std.testing.expectEqual(@as(i128, 0), deserialized[2].numeric.value);
+    try std.testing.expectEqual(@as(u8, 0), deserialized[2].numeric.scale);
+}
+
+test "Numeric isTruthy" {
+    const nonzero = Value{ .numeric = .{ .value = 1, .scale = 0 } };
+    try std.testing.expect(nonzero.isTruthy());
+
+    const zero = Value{ .numeric = .{ .value = 0, .scale = 2 } };
+    try std.testing.expect(!zero.isTruthy());
+}
+
+test "Numeric CAST from text" {
+    const allocator = std.testing.allocator;
+    const result = try evalCast(allocator, Value{ .text = "123.45" }, .type_numeric);
+    try std.testing.expectEqual(@as(i128, 12345), result.numeric.value);
+    try std.testing.expectEqual(@as(u8, 2), result.numeric.scale);
+}
+
+test "Numeric CAST from integer" {
+    const allocator = std.testing.allocator;
+    const result = try evalCast(allocator, Value{ .integer = 42 }, .type_numeric);
+    try std.testing.expectEqual(@as(i128, 42), result.numeric.value);
+    try std.testing.expectEqual(@as(u8, 0), result.numeric.scale);
+}
+
+test "Numeric CAST to text" {
+    const allocator = std.testing.allocator;
+    const result = try evalCast(allocator, Value{ .numeric = .{ .value = 12345, .scale = 2 } }, .type_text);
+    defer result.free(allocator);
+    try std.testing.expectEqualStrings("123.45", result.text);
+}
+
+test "Numeric CAST to integer (truncates)" {
+    const allocator = std.testing.allocator;
+    const result = try evalCast(allocator, Value{ .numeric = .{ .value = 12345, .scale = 2 } }, .type_integer);
+    try std.testing.expectEqual(@as(i64, 123), result.integer);
+}
+
+test "powI128" {
+    try std.testing.expectEqual(@as(i128, 1), powI128(10, 0));
+    try std.testing.expectEqual(@as(i128, 10), powI128(10, 1));
+    try std.testing.expectEqual(@as(i128, 100), powI128(10, 2));
+    try std.testing.expectEqual(@as(i128, 1000), powI128(10, 3));
+    try std.testing.expectEqual(@as(i128, 1000000), powI128(10, 6));
 }

@@ -236,6 +236,15 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             std.mem.writeInt(u64, buf[8..16], us_unsigned ^ (@as(u64, 1) << 63), .big);
             return buf;
         },
+        .numeric => |n| {
+            // Encode as 17 bytes: scale(1) + sign-flipped i128(16) for correct ordering
+            const buf = try allocator.alloc(u8, 17);
+            buf[0] = n.scale;
+            const unsigned: u128 = @bitCast(n.value);
+            const flipped = unsigned ^ (@as(u128, 1) << 127);
+            std.mem.writeInt(u128, buf[1..17], flipped, .big);
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };
@@ -12417,4 +12426,192 @@ test "INTERVAL type: negative interval formatting" {
     defer row3.deinit();
     try testing.expect(row3.values[0] == .text);
     try testing.expectEqualStrings("-3 days -02:30:00", row3.values[0].text);
+}
+
+test "NUMERIC type: CREATE TABLE, INSERT, SELECT with CAST" {
+    const path = "test_numeric_type.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE products (name TEXT, price NUMERIC(10,2))");
+    _ = try db.exec("INSERT INTO products VALUES ('Widget', CAST('19.99' AS NUMERIC))");
+    _ = try db.exec("INSERT INTO products VALUES ('Gadget', CAST('49.50' AS NUMERIC))");
+    _ = try db.exec("INSERT INTO products VALUES ('Budget', CAST('5.00' AS NUMERIC))");
+
+    // Select with ORDER BY on numeric column
+    var r = try db.exec("SELECT name, CAST(price AS TEXT) FROM products ORDER BY price");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("Budget", row1.values[0].text);
+    try testing.expectEqualStrings("5.00", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("Widget", row2.values[0].text);
+    try testing.expectEqualStrings("19.99", row2.values[1].text);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("Gadget", row3.values[0].text);
+    try testing.expectEqualStrings("49.50", row3.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NUMERIC type: arithmetic in SELECT" {
+    const path = "test_numeric_arith.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // NUMERIC + NUMERIC
+    var r1 = try db.execSQL("SELECT CAST('10.50' AS NUMERIC) + CAST('3.25' AS NUMERIC)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .numeric);
+    try testing.expectEqual(@as(i128, 1375), row1.values[0].numeric.value); // 13.75
+    try testing.expectEqual(@as(u8, 2), row1.values[0].numeric.scale);
+
+    // NUMERIC * NUMERIC
+    var r2 = try db.execSQL("SELECT CAST('2.50' AS NUMERIC) * CAST('4.00' AS NUMERIC)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .numeric);
+    try testing.expectEqual(@as(i128, 1000), row2.values[0].numeric.value); // 10.00
+    try testing.expectEqual(@as(u8, 2), row2.values[0].numeric.scale);
+
+    // NUMERIC - NUMERIC
+    var r3 = try db.execSQL("SELECT CAST('100.00' AS NUMERIC) - CAST('33.33' AS NUMERIC)");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expect(row3.values[0] == .numeric);
+    try testing.expectEqual(@as(i128, 6667), row3.values[0].numeric.value); // 66.67
+}
+
+test "NUMERIC type: comparison in WHERE clause" {
+    const path = "test_numeric_where.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE items (name TEXT, cost NUMERIC)");
+    _ = try db.exec("INSERT INTO items VALUES ('cheap', CAST('9.99' AS NUMERIC))");
+    _ = try db.exec("INSERT INTO items VALUES ('mid', CAST('25.00' AS NUMERIC))");
+    _ = try db.exec("INSERT INTO items VALUES ('expensive', CAST('99.99' AS NUMERIC))");
+
+    // Filter with numeric comparison
+    var r = try db.exec("SELECT name FROM items WHERE cost > CAST('20.00' AS NUMERIC) ORDER BY cost");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("mid", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("expensive", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NUMERIC type: CAST roundtrip text→numeric→text" {
+    const path = "test_numeric_cast.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("SELECT CAST(CAST('123.45' AS NUMERIC) AS TEXT)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("123.45", row1.values[0].text);
+
+    // Negative value
+    var r2 = try db.execSQL("SELECT CAST(CAST('-0.50' AS NUMERIC) AS TEXT)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("-0.50", row2.values[0].text);
+}
+
+test "NUMERIC type: CAST integer to numeric" {
+    const path = "test_numeric_int_cast.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(42 AS NUMERIC)");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .numeric);
+    try testing.expectEqual(@as(i128, 42), row.values[0].numeric.value);
+    try testing.expectEqual(@as(u8, 0), row.values[0].numeric.scale);
+}
+
+test "NUMERIC type: CAST numeric to integer (truncation)" {
+    const path = "test_numeric_to_int.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(CAST('99.99' AS NUMERIC) AS INTEGER)");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .integer);
+    try testing.expectEqual(@as(i64, 99), row.values[0].integer);
+}
+
+test "DECIMAL type: alias for NUMERIC" {
+    const path = "test_decimal_type.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE wages (amount DECIMAL(8,2))");
+    _ = try db.exec("INSERT INTO wages VALUES (CAST('1234.56' AS DECIMAL))");
+
+    var r = try db.exec("SELECT CAST(amount AS TEXT) FROM wages");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("1234.56", row.values[0].text);
+}
+
+test "NUMERIC type: typeof function" {
+    const path = "test_numeric_typeof.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT typeof(CAST('1.5' AS NUMERIC))");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("numeric", row.values[0].text);
+}
+
+test "NUMERIC type: mixed scale arithmetic" {
+    const path = "test_numeric_mixed_scale.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Adding values with different scales: 1.5 (scale=1) + 2.25 (scale=2) = 3.75
+    var r = try db.execSQL("SELECT CAST(CAST('1.5' AS NUMERIC) + CAST('2.25' AS NUMERIC) AS TEXT)");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("3.75", row.values[0].text);
+}
+
+test "NUMERIC type: negative arithmetic" {
+    const path = "test_numeric_negative.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL("SELECT CAST(CAST('10.00' AS NUMERIC) - CAST('15.50' AS NUMERIC) AS TEXT)");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("-5.50", row.values[0].text);
 }

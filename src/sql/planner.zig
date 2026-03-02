@@ -34,6 +34,7 @@ pub const ValueType = enum {
     time,
     timestamp,
     interval,
+    numeric,
     null_type,
 
     pub fn fromColumnType(ct: ColumnType) ValueType {
@@ -47,6 +48,7 @@ pub const ValueType = enum {
             .time => .time,
             .timestamp => .timestamp,
             .interval => .interval,
+            .numeric => .numeric,
             .untyped => .text, // default untyped to text
         };
     }
@@ -62,6 +64,7 @@ pub const ValueType = enum {
             .time => .time,
             .timestamp => .timestamp,
             .interval => .interval,
+            .numeric => .numeric,
             .null_type => .untyped,
         };
     }

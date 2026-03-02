@@ -299,6 +299,7 @@ fn valueToText(allocator: std.mem.Allocator, val: Value) ?[]const u8 {
         .time => |v| executor.formatTime(allocator, v) catch null,
         .timestamp => |v| executor.formatTimestamp(allocator, v) catch null,
         .interval => |v| executor.formatInterval(allocator, v) catch null,
+        .numeric => |v| executor.formatNumeric(allocator, v) catch null,
         .null_value => allocator.dupe(u8, "NULL") catch null,
     };
 }
@@ -430,6 +431,11 @@ fn writeJsonValue(obj: anytype, key: []const u8, val: Value, allocator: std.mem.
         },
         .interval => |v| {
             const s = executor.formatInterval(allocator, v) catch return;
+            defer allocator.free(s);
+            obj.addString(key, s) catch {};
+        },
+        .numeric => |v| {
+            const s = executor.formatNumeric(allocator, v) catch return;
             defer allocator.free(s);
             obj.addString(key, s) catch {};
         },

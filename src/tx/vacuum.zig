@@ -302,6 +302,14 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             std.mem.writeInt(u64, buf[8..16], us_unsigned ^ (@as(u64, 1) << 63), .big);
             return buf;
         },
+        .numeric => |n| {
+            const buf = try allocator.alloc(u8, 17);
+            buf[0] = n.scale;
+            const unsigned: u128 = @bitCast(n.value);
+            const flipped = unsigned ^ (@as(u128, 1) << 127);
+            std.mem.writeInt(u128, buf[1..17], flipped, .big);
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };
