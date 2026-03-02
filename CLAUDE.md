@@ -692,3 +692,28 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Layout features are critical for rich SQL shell TUI with split views and scrollable results.
+
+### v1.3.0 — Performance & Developer Experience (status: READY)
+
+**sailor v1.3.0 released** (2026-03-02) — Performance optimization and debugging tools
+
+- **New features**:
+  - RenderBudget: Frame time tracking with automatic frame skip for 60fps
+  - LazyBuffer: Dirty region tracking (only render changed cells)
+  - EventBatcher: Coalesce rapid events (resize storms, key bursts)
+  - DebugOverlay: Visual debugging (layout rects, FPS, event log)
+  - ThemeWatcher: Hot-reload JSON themes without restart
+- **Impact on silica**: High priority — critical for SQL shell performance
+  - Lazy rendering essential for large result sets (skip unchanged cells)
+  - Event batching handles resize during long-running queries
+  - DebugOverlay critical for shell TUI development
+  - ThemeWatcher enables SQL syntax highlighting theme iteration
+- [ ] `build.zig.zon`에 sailor v1.3.0 의존성 업데이트
+- [ ] Integrate LazyBuffer for result table rendering (reduce overhead on large queries)
+  - Only redraw changed cells (e.g., cursor position, highlighted row)
+  - Skip entire table when only status bar updates
+- [ ] Add DebugOverlay toggle (Alt+D) for shell development
+- [ ] Consider ThemeWatcher for SQL syntax theme hot-reload
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Performance features are opt-in. SQL shell result viewer will see major performance improvement with lazy rendering (90%+ cell skip on partial updates).
