@@ -887,6 +887,9 @@ test "ColumnType from AST DataType" {
     try std.testing.expectEqual(ColumnType.blob, columnTypeFromAst(.type_blob));
     try std.testing.expectEqual(ColumnType.boolean, columnTypeFromAst(.type_boolean));
     try std.testing.expectEqual(ColumnType.untyped, columnTypeFromAst(null));
+    // SERIAL/BIGSERIAL map to integer
+    try std.testing.expectEqual(ColumnType.integer, columnTypeFromAst(.type_serial));
+    try std.testing.expectEqual(ColumnType.integer, columnTypeFromAst(.type_bigserial));
 }
 
 test "ConstraintFlags from AST constraints" {

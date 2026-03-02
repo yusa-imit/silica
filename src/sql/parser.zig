@@ -2801,3 +2801,28 @@ test "parse WINDOW clause with frame spec" {
     try std.testing.expectEqual(ast.WindowFrameBound.unbounded_preceding, def.frame.?.start);
     try std.testing.expectEqual(ast.WindowFrameBound.current_row, def.frame.?.end);
 }
+
+test "parse CREATE TABLE with SERIAL column" {
+    var r = try testParseWithArena("CREATE TABLE t (id SERIAL, name TEXT)");
+    defer r.deinit();
+    const ct = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 2), ct.columns.len);
+    try std.testing.expectEqual(ast.DataType.type_serial, ct.columns[0].data_type.?);
+    try std.testing.expectEqual(ast.DataType.type_text, ct.columns[1].data_type.?);
+}
+
+test "parse CREATE TABLE with BIGSERIAL column" {
+    var r = try testParseWithArena("CREATE TABLE t (id BIGSERIAL, payload TEXT)");
+    defer r.deinit();
+    const ct = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 2), ct.columns.len);
+    try std.testing.expectEqual(ast.DataType.type_bigserial, ct.columns[0].data_type.?);
+}
+
+test "parse CAST to SERIAL" {
+    var r = try testParseWithArena("SELECT CAST(x AS SERIAL) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .cast);
+    try std.testing.expectEqual(ast.DataType.type_serial, expr.cast.target_type);
+}

@@ -1242,3 +1242,19 @@ test "window frame specification tokens" {
         .kw_row,       .right_paren,
     });
 }
+
+test "SERIAL and BIGSERIAL keywords" {
+    try expectSingleToken("serial", .kw_serial, "serial");
+    try expectSingleToken("bigserial", .kw_bigserial, "bigserial");
+    try expectSingleToken("SERIAL", .kw_serial, "SERIAL");
+    try expectSingleToken("BIGSERIAL", .kw_bigserial, "BIGSERIAL");
+}
+
+test "SERIAL in CREATE TABLE context" {
+    const sql = "CREATE TABLE t (id SERIAL, name TEXT)";
+    try expectTokens(sql, &.{
+        .kw_create, .kw_table, .identifier, .left_paren,
+        .identifier, .kw_serial, .comma,
+        .identifier, .kw_text, .right_paren,
+    });
+}
