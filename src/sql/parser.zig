@@ -2410,3 +2410,33 @@ test "parse DROP VIEW IF EXISTS" {
     try std.testing.expectEqualStrings("my_view", dv.name);
     try std.testing.expect(dv.if_exists);
 }
+
+test "parse CREATE VIEW WITH CHECK OPTION (default cascaded)" {
+    var r = try testParseWithArena("CREATE VIEW v AS SELECT * FROM t WHERE x > 0 WITH CHECK OPTION");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqualStrings("v", cv.name);
+    try std.testing.expectEqual(ast.CheckOption.cascaded, cv.check_option);
+    try std.testing.expect(cv.select.where != null);
+}
+
+test "parse CREATE VIEW WITH LOCAL CHECK OPTION" {
+    var r = try testParseWithArena("CREATE VIEW v AS SELECT id FROM t WITH LOCAL CHECK OPTION");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqual(ast.CheckOption.local, cv.check_option);
+}
+
+test "parse CREATE VIEW WITH CASCADED CHECK OPTION" {
+    var r = try testParseWithArena("CREATE VIEW v AS SELECT id FROM t WITH CASCADED CHECK OPTION");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqual(ast.CheckOption.cascaded, cv.check_option);
+}
+
+test "parse CREATE VIEW without CHECK OPTION" {
+    var r = try testParseWithArena("CREATE VIEW v AS SELECT * FROM t");
+    defer r.deinit();
+    const cv = r.stmt.create_view;
+    try std.testing.expectEqual(ast.CheckOption.none, cv.check_option);
+}

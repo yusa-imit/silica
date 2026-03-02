@@ -1513,7 +1513,9 @@ pub const Database = struct {
         var view_check_where: ?*const ast_mod.Expr = null;
 
         var actual_table: []const u8 = values_node.table;
-        if (self.catalog.getTable(values_node.table)) |_| {} else |_| {
+        if (self.catalog.getTable(values_node.table)) |ti| {
+            ti.deinit(self.allocator);
+        } else |_| {
             // Table not found — check for updatable view
             view_arena_storage = AstArena.init(self.allocator);
             view_infra_storage = std.heap.ArenaAllocator.init(self.allocator);
@@ -1781,7 +1783,9 @@ pub const Database = struct {
         var view_check_where: ?*const ast_mod.Expr = null;
         var actual_table: []const u8 = scan_table;
 
-        if (self.catalog.getTable(scan_table)) |_| {} else |_| {
+        if (self.catalog.getTable(scan_table)) |ti| {
+            ti.deinit(self.allocator);
+        } else |_| {
             view_arena_storage = AstArena.init(self.allocator);
             view_infra_storage = std.heap.ArenaAllocator.init(self.allocator);
             if (self.resolveUpdatableView(
@@ -2098,7 +2102,9 @@ pub const Database = struct {
 
         var actual_table: []const u8 = scan_table;
 
-        if (self.catalog.getTable(scan_table)) |_| {} else |_| {
+        if (self.catalog.getTable(scan_table)) |ti| {
+            ti.deinit(self.allocator);
+        } else |_| {
             view_arena_storage = AstArena.init(self.allocator);
             view_infra_storage = std.heap.ArenaAllocator.init(self.allocator);
             if (self.resolveUpdatableView(
@@ -2307,17 +2313,17 @@ pub const Database = struct {
         _ = self.schema_arena.reset(.retain_capacity);
 
         // Parse first to determine statement type
-        var arena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
-        arena.* = AstArena.init(self.allocator);
-        errdefer {
-            arena.deinit();
-            self.allocator.destroy(arena);
-        }
+        var arena: ?*AstArena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
+        arena.?.* = AstArena.init(self.allocator);
+        errdefer if (arena) |a| {
+            a.deinit();
+            self.allocator.destroy(a);
+        };
 
         var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
         defer infra_alloc.deinit();
 
-        var p = Parser.init(infra_alloc.allocator(), sql, arena) catch return EngineError.ParseError;
+        var p = Parser.init(infra_alloc.allocator(), sql, arena.?) catch return EngineError.ParseError;
         defer p.deinit();
 
         const maybe_stmt = p.parseStatement() catch return EngineError.ParseError;
@@ -2333,8 +2339,8 @@ pub const Database = struct {
                         else => EngineError.StorageError,
                     };
                 };
-                arena.deinit();
-                self.allocator.destroy(arena);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
                 return .{ .message = "CREATE TABLE" };
             },
@@ -2348,22 +2354,22 @@ pub const Database = struct {
                 };
                 // Remove table from auto-vacuum tracking
                 self.auto_vacuum.removeTable(dt.name);
-                arena.deinit();
-                self.allocator.destroy(arena);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
                 return .{ .message = "DROP TABLE" };
             },
             .vacuum => |v| {
                 const result = self.executeVacuum(v.table_name);
                 if (result) |_| {
-                    arena.deinit();
-                    self.allocator.destroy(arena);
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
                 } else |_| {}
                 return result;
             },
             .transaction => |txn| {
-                arena.deinit();
-                self.allocator.destroy(arena);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
                 switch (txn) {
                     .begin => {
                         self.beginTransaction(.read_committed) catch {
@@ -2436,8 +2442,8 @@ pub const Database = struct {
                         else => EngineError.StorageError,
                     };
                 };
-                arena.deinit();
-                self.allocator.destroy(arena);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
                 return .{ .message = "CREATE VIEW" };
             },
@@ -2449,8 +2455,8 @@ pub const Database = struct {
                         else => EngineError.StorageError,
                     };
                 };
-                arena.deinit();
-                self.allocator.destroy(arena);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
                 return .{ .message = "DROP VIEW" };
             },
@@ -2465,13 +2471,16 @@ pub const Database = struct {
         an.analyze(stmt);
         if (an.hasErrors()) return EngineError.AnalysisError;
 
-        var plnr = Planner.init(arena, provider);
+        var plnr = Planner.init(arena.?, provider);
         const plan = plnr.plan(stmt) catch return EngineError.PlanError;
 
-        var opt = Optimizer.init(arena);
+        var opt = Optimizer.init(arena.?);
         const optimized = opt.optimize(plan) catch return EngineError.PlanError;
 
-        return self.executePlan(arena, optimized);
+        // Transfer arena ownership to executePlan — prevent errdefer double-free
+        const owned_arena = arena.?;
+        arena = null;
+        return self.executePlan(owned_arena, optimized);
     }
 
     // ── VACUUM ──────────────────────────────────────────────────────
@@ -2703,9 +2712,15 @@ pub const Database = struct {
         view_name: []const u8,
     ) ?UpdatableViewInfo {
         const view_info = self.catalog.getView(view_name) catch return null;
-        defer view_info.deinit();
+        // Dupe SQL into infra_arena so AST string references survive view_info.deinit()
+        const duped_sql = infra_arena.allocator().dupe(u8, view_info.sql) catch {
+            view_info.deinit();
+            return null;
+        };
+        const check_opt = view_info.check_option;
+        view_info.deinit();
 
-        var p = Parser.init(infra_arena.allocator(), view_info.sql, view_arena) catch return null;
+        var p = Parser.init(infra_arena.allocator(), duped_sql, view_arena) catch return null;
         defer p.deinit();
 
         const stmt = (p.parseStatement() catch return null) orelse return null;
@@ -2757,7 +2772,7 @@ pub const Database = struct {
             .base_table = base_table,
             .where_clause = view_select.where,
             .view_columns = view_select.columns,
-            .check_option = view_info.check_option,
+            .check_option = check_opt,
         };
     }
 
@@ -9811,4 +9826,318 @@ test "recursive CTE: with ORDER BY on result" {
     }
     try testing.expectEqual(@as(usize, 5), count);
     try testing.expectEqual(@as(i64, 5), prev);
+}
+
+// ── Updatable View Tests ──────────────────────────────────────────
+
+test "INSERT through updatable view" {
+    const path = "test_updatable_view_insert.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, name TEXT, status TEXT)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id, name, status FROM t1");
+
+    // INSERT through the view
+    _ = try db.exec("INSERT INTO v1 VALUES (1, 'Alice', 'active')");
+    _ = try db.exec("INSERT INTO v1 VALUES (2, 'Bob', 'inactive')");
+
+    // Verify data landed in the base table
+    var r = try db.exec("SELECT id, name, status FROM t1 ORDER BY id");
+    defer r.close(testing.allocator);
+    try testing.expect(r.rows != null);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("Alice", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("Bob", row2.values[1].text);
+}
+
+test "UPDATE through updatable view" {
+    const path = "test_updatable_view_update.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, name TEXT, val INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 'a', 10)");
+    _ = try db.exec("INSERT INTO t1 VALUES (2, 'b', 20)");
+    _ = try db.exec("INSERT INTO t1 VALUES (3, 'c', 30)");
+
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id, name, val FROM t1");
+
+    // UPDATE through the view
+    var ur = try db.exec("UPDATE v1 SET val = 99 WHERE id = 2");
+    defer ur.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), ur.rows_affected);
+
+    // Verify in base table
+    var r = try db.exec("SELECT val FROM t1 WHERE id = 2");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 99), row.values[0].integer);
+}
+
+test "DELETE through updatable view" {
+    const path = "test_updatable_view_delete.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 'a')");
+    _ = try db.exec("INSERT INTO t1 VALUES (2, 'b')");
+    _ = try db.exec("INSERT INTO t1 VALUES (3, 'c')");
+
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id, name FROM t1");
+
+    // DELETE through the view
+    var dr = try db.exec("DELETE FROM v1 WHERE id = 2");
+    defer dr.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), dr.rows_affected);
+
+    // Verify row is gone from base table
+    var r = try db.exec("SELECT id FROM t1 ORDER BY id");
+    defer r.close(testing.allocator);
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "DELETE through updatable view with WHERE merging" {
+    const path = "test_updatable_view_del_where.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 'active')");
+    _ = try db.exec("INSERT INTO t1 VALUES (2, 'inactive')");
+    _ = try db.exec("INSERT INTO t1 VALUES (3, 'active')");
+
+    // View filters only active rows
+    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active'");
+
+    // DELETE from the view — should only affect rows matching both WHERE clauses
+    var dr = try db.exec("DELETE FROM active_v WHERE id = 1");
+    defer dr.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), dr.rows_affected);
+
+    // Row 2 (inactive) should still exist, row 3 (active) too
+    var r = try db.exec("SELECT id FROM t1 ORDER BY id");
+    defer r.close(testing.allocator);
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 2), row1.values[0].integer);
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "UPDATE through updatable view with WHERE merging" {
+    const path = "test_updatable_view_upd_where.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT, val INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 'active', 10)");
+    _ = try db.exec("INSERT INTO t1 VALUES (2, 'inactive', 20)");
+    _ = try db.exec("INSERT INTO t1 VALUES (3, 'active', 30)");
+
+    // View filters only active rows
+    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status, val FROM t1 WHERE status = 'active'");
+
+    // UPDATE through view — should only update active rows
+    var ur = try db.exec("UPDATE active_v SET val = 99");
+    defer ur.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 2), ur.rows_affected);
+
+    // Row 2 (inactive) should be unchanged
+    var r = try db.exec("SELECT id, val FROM t1 ORDER BY id");
+    defer r.close(testing.allocator);
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 99), row1.values[1].integer);
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer); // unchanged
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 99), row3.values[1].integer);
+}
+
+test "WITH CHECK OPTION blocks INSERT violating view condition" {
+    const path = "test_view_check_insert.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT)");
+    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active' WITH CHECK OPTION");
+
+    // INSERT satisfying the condition should work
+    _ = try db.exec("INSERT INTO active_v VALUES (1, 'active')");
+
+    // INSERT violating the condition should fail
+    const result = db.exec("INSERT INTO active_v VALUES (2, 'inactive')");
+    try testing.expectError(EngineError.CheckOptionViolation, result);
+
+    // Only the valid row should exist
+    var r = try db.exec("SELECT id FROM t1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "WITH CHECK OPTION blocks UPDATE violating view condition" {
+    const path = "test_view_check_update.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 'active')");
+    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active' WITH CHECK OPTION");
+
+    // UPDATE that maintains the condition should work
+    _ = try db.exec("UPDATE active_v SET id = 10 WHERE id = 1");
+
+    // UPDATE that violates the condition should fail
+    const result = db.exec("UPDATE active_v SET status = 'inactive' WHERE id = 10");
+    try testing.expectError(EngineError.CheckOptionViolation, result);
+
+    // Row should still be active
+    var r = try db.exec("SELECT id, status FROM t1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 10), row.values[0].integer);
+    try testing.expectEqualStrings("active", row.values[1].text);
+}
+
+test "WITH LOCAL CHECK OPTION stored and enforced" {
+    const path = "test_view_check_local.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id, val FROM t1 WHERE val > 0 WITH LOCAL CHECK OPTION");
+
+    _ = try db.exec("INSERT INTO v1 VALUES (1, 5)"); // OK
+    const result = db.exec("INSERT INTO v1 VALUES (2, -1)"); // violation
+    try testing.expectError(EngineError.CheckOptionViolation, result);
+}
+
+test "view without CHECK OPTION allows any INSERT" {
+    const path = "test_view_no_check.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id, status FROM t1 WHERE status = 'active'");
+
+    // Without CHECK OPTION, INSERT of non-matching rows should succeed
+    _ = try db.exec("INSERT INTO v1 VALUES (1, 'inactive')");
+
+    var r = try db.exec("SELECT status FROM t1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("inactive", row.values[0].text);
+}
+
+test "non-updatable view rejects INSERT (aggregates)" {
+    const path = "test_view_nonagg.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 10)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT count(*) FROM t1");
+
+    const result = db.exec("INSERT INTO v1 VALUES (5)");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "non-updatable view rejects INSERT (DISTINCT)" {
+    const path = "test_view_nondist.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT DISTINCT id FROM t1");
+
+    const result = db.exec("INSERT INTO v1 VALUES (1)");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "non-updatable view rejects INSERT (GROUP BY)" {
+    const path = "test_view_nongroup.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, cat TEXT)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT cat, count(*) FROM t1 GROUP BY cat");
+
+    const result = db.exec("INSERT INTO v1 VALUES ('a', 1)");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "INSERT through updatable view with star columns" {
+    const path = "test_updatable_view_star.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, name TEXT)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT * FROM t1");
+
+    _ = try db.exec("INSERT INTO v1 VALUES (1, 'test')");
+
+    var r = try db.exec("SELECT id, name FROM t1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    try testing.expectEqualStrings("test", row.values[1].text);
+}
+
+test "DELETE all rows through updatable view" {
+    const path = "test_updatable_view_del_all.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1)");
+    _ = try db.exec("INSERT INTO t1 VALUES (2)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id FROM t1");
+
+    var dr = try db.exec("DELETE FROM v1");
+    defer dr.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 2), dr.rows_affected);
+
+    var r = try db.exec("SELECT id FROM t1");
+    defer r.close(testing.allocator);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "WITH CHECK OPTION catalog roundtrip" {
+    const path = "test_view_check_catalog.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id FROM t1 WHERE id > 0 WITH LOCAL CHECK OPTION");
+
+    // Verify check_option is stored
+    const info = try db.catalog.getView("v1");
+    defer info.deinit();
+    try testing.expectEqual(@as(u8, 1), info.check_option); // 1 = local
 }
