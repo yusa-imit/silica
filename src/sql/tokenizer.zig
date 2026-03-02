@@ -80,6 +80,8 @@ pub const TokenType = enum {
     kw_option,
     kw_recursive,
     kw_materialized,
+    kw_local,
+    kw_cascaded,
 
     // Keywords — DML
     kw_select,
@@ -592,6 +594,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "option", .kw_option },
         .{ "recursive", .kw_recursive },
         .{ "materialized", .kw_materialized },
+        .{ "local", .kw_local },
+        .{ "cascaded", .kw_cascaded },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },

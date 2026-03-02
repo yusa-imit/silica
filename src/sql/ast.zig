@@ -377,6 +377,13 @@ pub const VacuumStmt = struct {
     table_name: ?[]const u8 = null,
 };
 
+/// WITH CHECK OPTION type for updatable views.
+pub const CheckOption = enum {
+    none,
+    local,
+    cascaded,
+};
+
 /// CREATE VIEW statement.
 pub const CreateViewStmt = struct {
     name: []const u8,
@@ -388,6 +395,8 @@ pub const CreateViewStmt = struct {
     if_not_exists: bool = false,
     /// Optional column aliases for the view.
     column_names: []const []const u8 = &.{},
+    /// WITH [LOCAL | CASCADED] CHECK OPTION
+    check_option: CheckOption = .none,
 };
 
 /// DROP VIEW statement.

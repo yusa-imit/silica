@@ -669,6 +669,7 @@ pub const Catalog = struct {
         or_replace: bool,
         if_not_exists: bool,
         column_names: []const []const u8,
+        check_option: u8,
     ) !void {
         const key = try self.makeViewKey(name);
         defer self.allocator.free(key);
@@ -692,11 +693,12 @@ pub const Catalog = struct {
             return CatalogError.TableAlreadyExists;
         }
 
-        // Serialize: [col_count: u16][col_names...][sql_text]
+        // Serialize: [col_count: u16][col_names...][check_option: u8][sql_text]
         var buf_size: usize = 2; // col_count
         for (column_names) |cn| {
             buf_size += 2 + cn.len; // len_prefix + name
         }
+        buf_size += 1; // check_option
         buf_size += sql.len;
 
         const value = try self.allocator.alloc(u8, buf_size);
@@ -711,6 +713,8 @@ pub const Catalog = struct {
             @memcpy(value[offset..][0..cn.len], cn);
             offset += cn.len;
         }
+        value[offset] = check_option;
+        offset += 1;
         @memcpy(value[offset..], sql);
 
         self.tree.insert(key, value) catch |err| {
@@ -747,6 +751,8 @@ pub const Catalog = struct {
         name: []const u8,
         sql: []const u8,
         column_names: []const []const u8,
+        /// 0 = none, 1 = local, 2 = cascaded
+        check_option: u8 = 0,
         allocator: Allocator,
 
         pub fn deinit(self: ViewInfo) void {
@@ -766,7 +772,7 @@ pub const Catalog = struct {
             return CatalogError.ViewNotFound;
         defer self.allocator.free(value);
 
-        // Deserialize: [col_count: u16][col_names...][sql_text]
+        // Deserialize: [col_count: u16][col_names...][check_option: u8][sql_text]
         if (value.len < 2) return CatalogError.InvalidSchemaData;
 
         var offset: usize = 0;
@@ -788,12 +794,18 @@ pub const Catalog = struct {
             offset += cn_len;
         }
 
+        // Read check_option byte (0=none, 1=local, 2=cascaded)
+        if (offset >= value.len) return CatalogError.InvalidSchemaData;
+        const check_opt = value[offset];
+        offset += 1;
+
         const sql_text = try self.allocator.dupe(u8, value[offset..]);
 
         return .{
             .name = try self.allocator.dupe(u8, name),
             .sql = sql_text,
             .column_names = col_names,
+            .check_option = check_opt,
             .allocator = self.allocator,
         };
     }
@@ -1303,7 +1315,7 @@ test "Catalog createView and getView" {
     var tc = try TestCatalog.setup(allocator, path);
     defer tc.teardown(allocator);
 
-    try tc.catalog.createView("v1", "SELECT * FROM t1", false, false, &.{ "a", "b" });
+    try tc.catalog.createView("v1", "SELECT * FROM t1", false, false, &.{ "a", "b" }, 0);
 
     const info = try tc.catalog.getView("v1");
     defer info.deinit();
@@ -1322,7 +1334,7 @@ test "Catalog createView with no column names" {
     var tc = try TestCatalog.setup(allocator, path);
     defer tc.teardown(allocator);
 
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
 
     const info = try tc.catalog.getView("v1");
     defer info.deinit();
@@ -1338,8 +1350,8 @@ test "Catalog createView duplicate error" {
     var tc = try TestCatalog.setup(allocator, path);
     defer tc.teardown(allocator);
 
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
-    try std.testing.expectError(CatalogError.ViewAlreadyExists, tc.catalog.createView("v1", "SELECT 2", false, false, &.{}));
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
+    try std.testing.expectError(CatalogError.ViewAlreadyExists, tc.catalog.createView("v1", "SELECT 2", false, false, &.{}, 0));
 }
 
 test "Catalog createView OR REPLACE overwrites" {
@@ -1349,8 +1361,8 @@ test "Catalog createView OR REPLACE overwrites" {
     var tc = try TestCatalog.setup(allocator, path);
     defer tc.teardown(allocator);
 
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
-    try tc.catalog.createView("v1", "SELECT 2", true, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
+    try tc.catalog.createView("v1", "SELECT 2", true, false, &.{}, 0);
 
     const info = try tc.catalog.getView("v1");
     defer info.deinit();
@@ -1364,8 +1376,8 @@ test "Catalog createView IF NOT EXISTS skips existing" {
     var tc = try TestCatalog.setup(allocator, path);
     defer tc.teardown(allocator);
 
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
-    try tc.catalog.createView("v1", "SELECT 2", false, true, &.{});
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
+    try tc.catalog.createView("v1", "SELECT 2", false, true, &.{}, 0);
 
     const info = try tc.catalog.getView("v1");
     defer info.deinit();
@@ -1383,7 +1395,7 @@ test "Catalog createView name collision with table" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     }, &.{}, 0);
 
-    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createView("t1", "SELECT 1", false, false, &.{}));
+    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createView("t1", "SELECT 1", false, false, &.{}, 0));
 }
 
 test "Catalog dropView" {
@@ -1393,7 +1405,7 @@ test "Catalog dropView" {
     var tc = try TestCatalog.setup(allocator, path);
     defer tc.teardown(allocator);
 
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
     try std.testing.expect(try tc.catalog.viewExists("v1"));
 
     try tc.catalog.dropView("v1", false);
@@ -1419,7 +1431,7 @@ test "Catalog viewExists" {
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.viewExists("v1"));
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
     try std.testing.expect(try tc.catalog.viewExists("v1"));
 }
 
@@ -1446,8 +1458,8 @@ test "Catalog listViews" {
     try std.testing.expectEqual(@as(usize, 0), empty.len);
 
     // Create views
-    try tc.catalog.createView("alpha_view", "SELECT 1", false, false, &.{});
-    try tc.catalog.createView("beta_view", "SELECT 2", false, false, &.{});
+    try tc.catalog.createView("alpha_view", "SELECT 1", false, false, &.{}, 0);
+    try tc.catalog.createView("beta_view", "SELECT 2", false, false, &.{}, 0);
 
     const views = try tc.catalog.listViews(allocator);
     defer {
@@ -1468,7 +1480,7 @@ test "Catalog listViews does not include tables" {
     try tc.catalog.createTable("t1", &.{
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     }, &.{}, 0);
-    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{});
+    try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
 
     const views = try tc.catalog.listViews(allocator);
     defer {
@@ -1499,7 +1511,7 @@ test "Catalog view serialization roundtrip with many columns" {
 
     const col_names = [_][]const u8{ "col_a", "col_b", "col_c", "col_d", "col_e" };
     const sql = "SELECT col_a, col_b, col_c, col_d, col_e FROM wide_table";
-    try tc.catalog.createView("wide_view", sql, false, false, &col_names);
+    try tc.catalog.createView("wide_view", sql, false, false, &col_names, 0);
 
     const info = try tc.catalog.getView("wide_view");
     defer info.deinit();

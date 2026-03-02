@@ -1019,12 +1019,35 @@ pub const Parser = struct {
 
         const select = try self.parseSelect();
 
+        // Optional: WITH [LOCAL | CASCADED] CHECK OPTION
+        var check_option: ast.CheckOption = .none;
+        if (self.check(.kw_with)) {
+            // Peek ahead to distinguish WITH CHECK OPTION from other WITH clauses
+            if (self.checkAhead(.kw_check, 1) or
+                self.checkAhead(.kw_local, 1) or
+                self.checkAhead(.kw_cascaded, 1))
+            {
+                _ = self.advance(); // consume WITH
+                if (self.match(.kw_local)) {
+                    check_option = .local;
+                } else if (self.match(.kw_cascaded)) {
+                    check_option = .cascaded;
+                } else {
+                    // WITH CHECK OPTION (default is CASCADED per SQL standard)
+                    check_option = .cascaded;
+                }
+                _ = try self.expect(.kw_check);
+                _ = try self.expect(.kw_option);
+            }
+        }
+
         return .{
             .name = name,
             .select = select,
             .or_replace = or_replace,
             .if_not_exists = if_not_exists,
             .column_names = column_names.toOwnedSlice(a) catch return error.OutOfMemory,
+            .check_option = check_option,
         };
     }
 

@@ -2282,12 +2282,18 @@ pub const Database = struct {
                 }
             },
             .create_view => |cv| {
+                const check_opt: u8 = switch (cv.check_option) {
+                    .none => 0,
+                    .local => 1,
+                    .cascaded => 2,
+                };
                 self.catalog.createView(
                     cv.name,
                     sql,
                     cv.or_replace,
                     cv.if_not_exists,
                     cv.column_names,
+                    check_opt,
                 ) catch |err| {
                     return switch (err) {
                         error.ViewAlreadyExists => EngineError.TableAlreadyExists,
