@@ -10141,3 +10141,433 @@ test "WITH CHECK OPTION catalog roundtrip" {
     defer info.deinit();
     try testing.expectEqual(@as(u8, 1), info.check_option); // 1 = local
 }
+
+// ── Stabilization: LIKE edge case tests ─────────────────────────────────
+
+test "LIKE with underscore wildcard" {
+    const path = "test_like_underscore.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (name TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES ('cat')");
+    _ = try db.exec("INSERT INTO t VALUES ('cut')");
+    _ = try db.exec("INSERT INTO t VALUES ('ct')");
+    _ = try db.exec("INSERT INTO t VALUES ('cart')");
+
+    // c_t matches 3-char strings: cat, cut — NOT ct (too short) or cart (too long)
+    var r = try db.exec("SELECT name FROM t WHERE name LIKE 'c_t' ORDER BY name");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("cat", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("cut", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "LIKE with percent in middle" {
+    const path = "test_like_mid_pct.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES ('abc')");
+    _ = try db.exec("INSERT INTO t VALUES ('aXYZc')");
+    _ = try db.exec("INSERT INTO t VALUES ('ac')");
+    _ = try db.exec("INSERT INTO t VALUES ('axyz')");
+
+    // a%c matches: abc, aXYZc, ac — NOT axyz (doesn't end with c)
+    var r = try db.exec("SELECT val FROM t WHERE val LIKE 'a%c' ORDER BY val");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("aXYZc", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("abc", row2.values[0].text);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("ac", row3.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NOT LIKE filters matching rows" {
+    const path = "test_not_like.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (name TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES ('apple')");
+    _ = try db.exec("INSERT INTO t VALUES ('banana')");
+    _ = try db.exec("INSERT INTO t VALUES ('apricot')");
+
+    // NOT LIKE 'ap%' should return only banana
+    var r = try db.exec("SELECT name FROM t WHERE name NOT LIKE 'ap%'");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("banana", row.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "LIKE with no wildcard is exact match" {
+    const path = "test_like_exact.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (v TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES ('hello')");
+    _ = try db.exec("INSERT INTO t VALUES ('Hello')");
+    _ = try db.exec("INSERT INTO t VALUES ('HELLO')");
+
+    // LIKE without wildcards = case-insensitive exact match
+    var r = try db.exec("SELECT v FROM t WHERE v LIKE 'hello'");
+    defer r.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // likeMatch is case-insensitive, so all 3 match
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+// ── Stabilization: NULL three-valued logic tests ────────────────────────
+
+test "NULL AND FALSE yields FALSE" {
+    const path = "test_null_and_false.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
+
+    // WHERE NULL AND FALSE should yield FALSE (row excluded)
+    var r = try db.exec("SELECT id FROM t WHERE val > 5 AND 1 = 0");
+    defer r.close(testing.allocator);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NULL OR TRUE yields TRUE" {
+    const path = "test_null_or_true.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
+
+    // WHERE (val > 5) OR (1 = 1): val > 5 is NULL (val is NULL), 1=1 is TRUE
+    // NULL OR TRUE = TRUE → row included
+    var r = try db.exec("SELECT id FROM t WHERE val > 5 OR 1 = 1");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+}
+
+test "NULL AND TRUE yields NULL (row excluded)" {
+    const path = "test_null_and_true.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
+
+    // WHERE (val > 5) AND (1 = 1): val > 5 is NULL, 1=1 is TRUE
+    // NULL AND TRUE = NULL → treated as FALSE (row excluded)
+    var r = try db.exec("SELECT id FROM t WHERE val > 5 AND 1 = 1");
+    defer r.close(testing.allocator);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NULL OR FALSE yields NULL (row excluded)" {
+    const path = "test_null_or_false.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
+
+    // WHERE (val > 5) OR (1 = 0): NULL OR FALSE = NULL → row excluded
+    var r = try db.exec("SELECT id FROM t WHERE val > 5 OR 1 = 0");
+    defer r.close(testing.allocator);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+// ── Stabilization: non-updatable view rejection tests ───────────────────
+
+test "non-updatable view rejects INSERT (set operation / UNION)" {
+    const path = "test_view_nonunion.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE TABLE t2 (id INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1)");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT id FROM t1 UNION SELECT id FROM t2");
+
+    const result = db.exec("INSERT INTO v1 VALUES (5)");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "non-updatable view rejects UPDATE (JOIN)" {
+    const path = "test_view_nonjoin.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
+    _ = try db.exec("CREATE TABLE t2 (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t2 VALUES (1, 'a')");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT t1.id, t1.val FROM t1 JOIN t2 ON t1.id = t2.id");
+
+    const result = db.exec("UPDATE v1 SET val = 20 WHERE id = 1");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "non-updatable view rejects DELETE (HAVING clause)" {
+    const path = "test_view_nonhaving.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER, cat TEXT)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1, 'a')");
+    _ = try db.exec("CREATE VIEW v1 AS SELECT cat, count(*) AS cnt FROM t1 GROUP BY cat HAVING count(*) > 0");
+
+    const result = db.exec("DELETE FROM v1 WHERE cat = 'a'");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "non-updatable view rejects INSERT (CTE)" {
+    const path = "test_view_noncte.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1)");
+    _ = try db.exec("CREATE VIEW v1 AS WITH cte AS (SELECT id FROM t1) SELECT id FROM cte");
+
+    const result = db.exec("INSERT INTO v1 VALUES (2)");
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+// ── Stabilization: set operation edge case tests ────────────────────────
+
+test "UNION ALL with both sides empty" {
+    const path = "test_union_empty.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE TABLE t2 (id INTEGER)");
+
+    var r = try db.exec("SELECT id FROM t1 UNION ALL SELECT id FROM t2");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "INTERSECT with one side empty returns empty" {
+    const path = "test_intersect_one_empty.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE TABLE t2 (id INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1)");
+    _ = try db.exec("INSERT INTO t1 VALUES (2)");
+
+    var r = try db.exec("SELECT id FROM t1 INTERSECT SELECT id FROM t2");
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "EXCEPT with empty right side returns all left rows" {
+    const path = "test_except_empty_right.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.exec("CREATE TABLE t2 (id INTEGER)");
+    _ = try db.exec("INSERT INTO t1 VALUES (1)");
+    _ = try db.exec("INSERT INTO t1 VALUES (2)");
+
+    var r = try db.exec("SELECT id FROM t1 EXCEPT SELECT id FROM t2 ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+// ── Stabilization: EXPLAIN returns OK ───────────────────────────────────
+
+test "EXPLAIN SELECT returns OK message" {
+    const path = "test_explain.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER)");
+
+    var r = try db.exec("EXPLAIN SELECT id FROM t");
+    defer r.close(testing.allocator);
+
+    // EXPLAIN currently returns OK message (known limitation)
+    try testing.expect(r.rows == null);
+    try testing.expectEqualStrings("OK", r.message);
+}
+
+// ── Stabilization: arithmetic edge case ─────────────────────────────────
+
+test "integer arithmetic in SELECT expressions" {
+    const path = "test_arith.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (a INTEGER, b INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10, 3)");
+
+    var r = try db.exec("SELECT a + b, a - b, a * b, a / b FROM t");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 13), row.values[0].integer); // 10+3
+    try testing.expectEqual(@as(i64, 7), row.values[1].integer); // 10-3
+    try testing.expectEqual(@as(i64, 30), row.values[2].integer); // 10*3
+    try testing.expectEqual(@as(i64, 3), row.values[3].integer); // 10/3 (integer div)
+}
+
+// ── Stabilization: IS NULL / IS NOT NULL edge cases ─────────────────────
+
+test "IS NULL and IS NOT NULL with mixed values" {
+    const path = "test_is_null_mixed.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
+    _ = try db.exec("INSERT INTO t VALUES (3, 30)");
+
+    // IS NULL
+    var r1 = try db.exec("SELECT id FROM t WHERE val IS NULL");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 2), row1.values[0].integer);
+    try testing.expect((try r1.rows.?.next()) == null);
+
+    // IS NOT NULL
+    var r2 = try db.exec("SELECT id FROM t WHERE val IS NOT NULL ORDER BY id");
+    defer r2.close(testing.allocator);
+    var row2a = (try r2.rows.?.next()).?;
+    defer row2a.deinit();
+    try testing.expectEqual(@as(i64, 1), row2a.values[0].integer);
+    var row2b = (try r2.rows.?.next()).?;
+    defer row2b.deinit();
+    try testing.expectEqual(@as(i64, 3), row2b.values[0].integer);
+    try testing.expect((try r2.rows.?.next()) == null);
+}
+
+// ── Stabilization: CASE expression tests ────────────────────────────────
+
+test "CASE WHEN with NULL comparison" {
+    const path = "test_case_null.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, status TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
+    _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
+
+    var r = try db.exec("SELECT id, CASE WHEN status = 'active' THEN 'yes' ELSE 'no' END AS label FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("yes", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    // status = 'active' when status is NULL → NULL (not equal) → falls to ELSE
+    try testing.expectEqualStrings("no", row2.values[1].text);
+}
+
+// ── Stabilization: IN list test ─────────────────────────────────────────
+
+test "IN list with multiple matches" {
+    const path = "test_in_list_multi.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 'alice')");
+    _ = try db.exec("INSERT INTO t VALUES (2, 'bob')");
+    _ = try db.exec("INSERT INTO t VALUES (3, 'charlie')");
+    _ = try db.exec("INSERT INTO t VALUES (4, 'dave')");
+
+    var r = try db.exec("SELECT name FROM t WHERE id IN (1, 3) ORDER BY name");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("alice", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("charlie", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+// ── Stabilization: BETWEEN test ─────────────────────────────────────────
+
+test "NOT BETWEEN excludes range" {
+    const path = "test_not_between.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1)");
+    _ = try db.exec("INSERT INTO t VALUES (5)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+
+    var r = try db.exec("SELECT id FROM t WHERE id NOT BETWEEN 2 AND 8 ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 10), row2.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
