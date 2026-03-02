@@ -708,12 +708,12 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
   - Event batching handles resize during long-running queries
   - DebugOverlay critical for shell TUI development
   - ThemeWatcher enables SQL syntax highlighting theme iteration
-- [ ] `build.zig.zon`에 sailor v1.3.0 의존성 업데이트
+- [x] `build.zig.zon`에 sailor v1.3.0 의존성 업데이트
 - [ ] Integrate LazyBuffer for result table rendering (reduce overhead on large queries)
   - Only redraw changed cells (e.g., cursor position, highlighted row)
   - Skip entire table when only status bar updates
 - [ ] Add DebugOverlay toggle (Alt+D) for shell development
 - [ ] Consider ThemeWatcher for SQL syntax theme hot-reload
-- [ ] 기존 테스트 전체 통과 확인
+- [x] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Performance features are opt-in. SQL shell result viewer will see major performance improvement with lazy rendering (90%+ cell skip on partial updates).
