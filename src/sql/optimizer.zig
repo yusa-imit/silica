@@ -41,6 +41,14 @@ pub const Optimizer = struct {
             .limit => |l| self.optimizeLimit(l),
             .set_op => |s| self.optimizeSetOp(s),
             .distinct => |d| self.optimizeDistinct(d),
+            .window => |w| {
+                const opt_input = try self.optimizeNode(w.input);
+                return self.createNode(.{ .window = .{
+                    .input = opt_input,
+                    .funcs = w.funcs,
+                    .aliases = w.aliases,
+                } });
+            },
             // Leaf nodes — no optimization
             .scan, .values, .empty => node,
         };

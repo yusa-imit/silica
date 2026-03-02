@@ -1160,11 +1160,21 @@ pub const ProjectOp = struct {
                 // the AggregateOp stores the result under the alias name. Try looking
                 // up by alias before reporting an error.
                 if (err == error.UnsupportedExpression) {
+                    // Try alias first (aggregates, window functions with AS)
                     if (col.alias) |alias| {
                         if (row.getColumn(alias)) |v| {
                             vals[i] = v.dupe(self.allocator) catch return ExecError.OutOfMemory;
                             inited += 1;
                             col_names[i] = col.alias orelse exprColumnName(col.expr);
+                            continue;
+                        }
+                    }
+                    // For window functions, look up by function name
+                    if (col.expr.* == .window_function) {
+                        if (row.getColumn(col.expr.window_function.name)) |v| {
+                            vals[i] = v.dupe(self.allocator) catch return ExecError.OutOfMemory;
+                            inited += 1;
+                            col_names[i] = col.alias orelse col.expr.window_function.name;
                             continue;
                         }
                     }
@@ -1351,6 +1361,545 @@ pub const SortOp = struct {
             return false;
         }
     };
+};
+
+// ── Window Operator ─────────────────────────────────────────────────────
+
+/// Window function operator. Buffers all input rows, sorts by partition+order keys,
+/// then emits each row with computed window function values appended as extra columns.
+pub const WindowOp = struct {
+    allocator: Allocator,
+    input: RowIterator,
+    /// Window function AST expressions (each is .window_function variant).
+    funcs: []const *const ast.Expr,
+    /// Aliases for each window function result column.
+    aliases: []const ?[]const u8,
+    /// Buffered and augmented rows with window function results.
+    result_rows: std.ArrayListUnmanaged(Row) = .{},
+    index: usize = 0,
+    materialized: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        input: RowIterator,
+        funcs: []const *const ast.Expr,
+        aliases: []const ?[]const u8,
+    ) WindowOp {
+        return .{
+            .allocator = allocator,
+            .input = input,
+            .funcs = funcs,
+            .aliases = aliases,
+        };
+    }
+
+    fn materialize(self: *WindowOp) ExecError!void {
+        const alloc = self.allocator;
+
+        // 1. Buffer all input rows
+        var input_rows = std.ArrayListUnmanaged(Row){};
+        while (true) {
+            const row = try self.input.next() orelse break;
+            input_rows.append(alloc, row) catch return ExecError.OutOfMemory;
+        }
+
+        // Process each window function specification
+        // For simplicity, we process all window functions together since they
+        // share the same input rows. For each function, we sort by its
+        // partition+order keys, compute values, then merge results.
+
+        // Build per-row result values for each window function
+        const num_funcs = self.funcs.len;
+        const num_rows = input_rows.items.len;
+
+        // results[func_idx][row_idx] — computed window value for each function per row
+        var func_results = alloc.alloc([]Value, num_funcs) catch return ExecError.OutOfMemory;
+        defer {
+            for (func_results) |fr| alloc.free(fr);
+            alloc.free(func_results);
+        }
+
+        for (self.funcs, 0..) |func_expr, fi| {
+            func_results[fi] = alloc.alloc(Value, num_rows) catch return ExecError.OutOfMemory;
+
+            const wf = func_expr.window_function;
+
+            // Build sort indices for this window's partition+order
+            var indices = alloc.alloc(usize, num_rows) catch return ExecError.OutOfMemory;
+            defer alloc.free(indices);
+            for (0..num_rows) |i| indices[i] = i;
+
+            // Sort indices by partition_by + order_by keys
+            const sort_ctx = WindowSortContext{
+                .partition_by = wf.partition_by,
+                .order_by = wf.order_by,
+                .rows = input_rows.items,
+                .allocator = alloc,
+            };
+            std.sort.block(usize, indices, sort_ctx, WindowSortContext.lessThan);
+
+            // Walk sorted indices, detect partition boundaries, compute window values
+            var partition_start: usize = 0;
+            var ri: usize = 0;
+            while (ri < num_rows) {
+                // Find end of current partition
+                partition_start = ri;
+                var partition_end = ri + 1;
+                while (partition_end < num_rows) {
+                    if (!samePartition(alloc, wf.partition_by, &input_rows.items[indices[partition_start]], &input_rows.items[indices[partition_end]])) break;
+                    partition_end += 1;
+                }
+
+                // Compute values for each row in this partition
+                computePartitionValues(
+                    alloc,
+                    wf,
+                    input_rows.items,
+                    indices[partition_start..partition_end],
+                    func_results[fi],
+                );
+
+                ri = partition_end;
+            }
+        }
+
+        // 2. Build output rows: original columns + window function columns
+        for (input_rows.items, 0..) |*row, row_idx| {
+            const orig_cols = row.columns.len;
+            const new_cols = alloc.alloc([]const u8, orig_cols + num_funcs) catch return ExecError.OutOfMemory;
+            const new_vals = alloc.alloc(Value, orig_cols + num_funcs) catch return ExecError.OutOfMemory;
+
+            // Copy original columns
+            for (0..orig_cols) |i| {
+                new_cols[i] = row.columns[i];
+                new_vals[i] = row.values[i];
+            }
+
+            // Append window function results
+            for (0..num_funcs) |fi| {
+                const alias = self.aliases[fi] orelse self.funcs[fi].window_function.name;
+                new_cols[orig_cols + fi] = alias;
+                new_vals[orig_cols + fi] = func_results[fi][row_idx];
+            }
+
+            // Free old column/value arrays (values ownership transferred)
+            alloc.free(row.columns);
+            alloc.free(row.values);
+            row.columns = new_cols;
+            row.values = new_vals;
+
+            self.result_rows.append(alloc, row.*) catch return ExecError.OutOfMemory;
+        }
+        input_rows.deinit(alloc);
+
+        self.materialized = true;
+    }
+
+    pub fn next(self: *WindowOp) ExecError!?Row {
+        if (!self.materialized) try self.materialize();
+        if (self.index >= self.result_rows.items.len) return null;
+        const row = self.result_rows.items[self.index];
+        self.index += 1;
+        return row;
+    }
+
+    pub fn close(self: *WindowOp) void {
+        for (self.result_rows.items[self.index..]) |*row| row.deinit();
+        self.result_rows.deinit(self.allocator);
+        self.input.close();
+    }
+
+    pub fn iterator(self: *WindowOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&WindowOp.next),
+                .close = @ptrCast(&WindowOp.close),
+            },
+        };
+    }
+
+    // ── Partition helpers ────────────────────────────────────────────
+
+    const WindowSortContext = struct {
+        partition_by: []const *const ast.Expr,
+        order_by: []const ast.OrderByItem,
+        rows: []const Row,
+        allocator: Allocator,
+
+        fn lessThan(ctx: WindowSortContext, a_idx: usize, b_idx: usize) bool {
+            const a = &ctx.rows[a_idx];
+            const b = &ctx.rows[b_idx];
+            // Compare partition keys first
+            for (ctx.partition_by) |pb| {
+                const av = evalExpr(ctx.allocator, pb, a) catch Value.null_value;
+                defer av.free(ctx.allocator);
+                const bv = evalExpr(ctx.allocator, pb, b) catch Value.null_value;
+                defer bv.free(ctx.allocator);
+                const order = av.compare(bv);
+                if (order != .eq) return order == .lt;
+            }
+            // Then order keys
+            for (ctx.order_by) |ob| {
+                const av = evalExpr(ctx.allocator, ob.expr, a) catch Value.null_value;
+                defer av.free(ctx.allocator);
+                const bv = evalExpr(ctx.allocator, ob.expr, b) catch Value.null_value;
+                defer bv.free(ctx.allocator);
+                const order = av.compare(bv);
+                if (order == .eq) continue;
+                return switch (ob.direction) {
+                    .asc => order == .lt,
+                    .desc => order == .gt,
+                };
+            }
+            return false;
+        }
+    };
+
+    fn samePartition(alloc: Allocator, partition_by: []const *const ast.Expr, a: *const Row, b: *const Row) bool {
+        for (partition_by) |pb| {
+            const av = evalExpr(alloc, pb, a) catch Value.null_value;
+            defer av.free(alloc);
+            const bv = evalExpr(alloc, pb, b) catch Value.null_value;
+            defer bv.free(alloc);
+            if (!av.eql(bv)) return false;
+        }
+        return true;
+    }
+
+    fn toLower(name: []const u8, buf: []u8) []const u8 {
+        const len = @min(name.len, buf.len);
+        for (0..len) |i| {
+            buf[i] = if (name[i] >= 'A' and name[i] <= 'Z') name[i] + 32 else name[i];
+        }
+        return buf[0..len];
+    }
+
+    /// Compute window function values for a partition slice of sorted indices.
+    fn computePartitionValues(
+        alloc: Allocator,
+        wf: ast.WindowFunctionExpr,
+        all_rows: []const Row,
+        partition_indices: []const usize,
+        results: []Value,
+    ) void {
+        var name_buf: [32]u8 = undefined;
+        const func_name_lower = toLower(wf.name, &name_buf);
+
+        const part_len = partition_indices.len;
+
+        if (std.mem.eql(u8, func_name_lower, "row_number")) {
+            for (partition_indices, 0..) |orig_idx, pos| {
+                results[orig_idx] = .{ .integer = @intCast(pos + 1) };
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "rank")) {
+            var rank: i64 = 1;
+            for (partition_indices, 0..) |orig_idx, pos| {
+                if (pos > 0 and !orderKeysEqual(alloc, wf.order_by, &all_rows[partition_indices[pos - 1]], &all_rows[orig_idx])) {
+                    rank = @intCast(pos + 1);
+                }
+                results[orig_idx] = .{ .integer = rank };
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "dense_rank")) {
+            var rank: i64 = 1;
+            for (partition_indices, 0..) |orig_idx, pos| {
+                if (pos > 0 and !orderKeysEqual(alloc, wf.order_by, &all_rows[partition_indices[pos - 1]], &all_rows[orig_idx])) {
+                    rank += 1;
+                }
+                results[orig_idx] = .{ .integer = rank };
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "ntile")) {
+            const n: i64 = if (wf.args.len > 0) blk: {
+                const val: Value = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]]) catch .null_value;
+                break :blk val.toInteger() orelse 1;
+            } else 1;
+            const bucket_size = if (n > 0) @max(1, @divTrunc(@as(i64, @intCast(part_len)), n)) else 1;
+            for (partition_indices, 0..) |orig_idx, pos| {
+                const tile = @min(n, @divTrunc(@as(i64, @intCast(pos)), bucket_size) + 1);
+                results[orig_idx] = .{ .integer = tile };
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "lag")) {
+            const offset: usize = if (wf.args.len > 1) blk: {
+                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]]) catch .null_value;
+                break :blk @intCast(val.toInteger() orelse 1);
+            } else 1;
+            const default_val: Value = if (wf.args.len > 2)
+                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]]) catch Value.null_value
+            else
+                Value.null_value;
+            for (partition_indices, 0..) |orig_idx, pos| {
+                if (pos >= offset) {
+                    const prev_idx = partition_indices[pos - offset];
+                    if (wf.args.len > 0) {
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[prev_idx]) catch Value.null_value;
+                    } else {
+                        results[orig_idx] = Value.null_value;
+                    }
+                } else {
+                    results[orig_idx] = default_val.dupe(alloc) catch Value.null_value;
+                }
+            }
+            if (wf.args.len > 2) default_val.free(alloc);
+        } else if (std.mem.eql(u8, func_name_lower, "lead")) {
+            const offset: usize = if (wf.args.len > 1) blk: {
+                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]]) catch .null_value;
+                break :blk @intCast(val.toInteger() orelse 1);
+            } else 1;
+            const default_val: Value = if (wf.args.len > 2)
+                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]]) catch Value.null_value
+            else
+                Value.null_value;
+            for (partition_indices, 0..) |orig_idx, pos| {
+                if (pos + offset < part_len) {
+                    const next_idx = partition_indices[pos + offset];
+                    if (wf.args.len > 0) {
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[next_idx]) catch Value.null_value;
+                    } else {
+                        results[orig_idx] = Value.null_value;
+                    }
+                } else {
+                    results[orig_idx] = default_val.dupe(alloc) catch Value.null_value;
+                }
+            }
+            if (wf.args.len > 2) default_val.free(alloc);
+        } else if (std.mem.eql(u8, func_name_lower, "first_value")) {
+            if (wf.args.len > 0) {
+                for (partition_indices) |orig_idx| {
+                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]]) catch Value.null_value;
+                }
+            } else {
+                for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "last_value")) {
+            // Default frame is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            // so last_value with default frame returns current row's value.
+            // With ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING, it returns actual last.
+            const use_full_partition = if (wf.frame) |frame|
+                @as(std.meta.Tag(ast.WindowFrameBound), frame.end) == .unbounded_following
+            else
+                false;
+            if (wf.args.len > 0) {
+                if (use_full_partition) {
+                    for (partition_indices) |orig_idx| {
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[part_len - 1]]) catch Value.null_value;
+                    }
+                } else {
+                    // Default frame: last_value = current row's value
+                    for (partition_indices) |orig_idx| {
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[orig_idx]) catch Value.null_value;
+                    }
+                }
+            } else {
+                for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "nth_value")) {
+            const n: usize = if (wf.args.len > 1) blk: {
+                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]]) catch .null_value;
+                break :blk @intCast(val.toInteger() orelse 1);
+            } else 1;
+            if (wf.args.len > 0 and n >= 1 and n <= part_len) {
+                for (partition_indices) |orig_idx| {
+                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[n - 1]]) catch Value.null_value;
+                }
+            } else {
+                for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "percent_rank")) {
+            if (part_len <= 1) {
+                for (partition_indices) |orig_idx| results[orig_idx] = .{ .real = 0.0 };
+            } else {
+                var rank: i64 = 1;
+                for (partition_indices, 0..) |orig_idx, pos| {
+                    if (pos > 0 and !orderKeysEqual(alloc, wf.order_by, &all_rows[partition_indices[pos - 1]], &all_rows[orig_idx])) {
+                        rank = @intCast(pos + 1);
+                    }
+                    const pr = @as(f64, @floatFromInt(rank - 1)) / @as(f64, @floatFromInt(part_len - 1));
+                    results[orig_idx] = .{ .real = pr };
+                }
+            }
+        } else if (std.mem.eql(u8, func_name_lower, "cume_dist")) {
+            for (partition_indices, 0..) |orig_idx, pos| {
+                // Count rows with order key <= current row
+                var count: usize = pos + 1;
+                // Include subsequent rows with equal order key
+                var k = pos + 1;
+                while (k < part_len and orderKeysEqual(alloc, wf.order_by, &all_rows[orig_idx], &all_rows[partition_indices[k]])) : (k += 1) {
+                    count += 1;
+                }
+                const cd = @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(part_len));
+                results[orig_idx] = .{ .real = cd };
+            }
+        } else {
+            // Aggregate as window function (SUM, COUNT, AVG, MIN, MAX)
+            computeAggregateWindow(alloc, wf, all_rows, partition_indices, results);
+        }
+    }
+
+    fn computeAggregateWindow(
+        alloc: Allocator,
+        wf: ast.WindowFunctionExpr,
+        all_rows: []const Row,
+        partition_indices: []const usize,
+        results: []Value,
+    ) void {
+        var name_buf: [32]u8 = undefined;
+        const func_name_lower = toLower(wf.name, &name_buf);
+        const is_count_star = std.mem.eql(u8, func_name_lower, "count") and
+            (wf.args.len == 0 or (wf.args.len > 0 and wf.args[0].* == .column_ref and std.mem.eql(u8, wf.args[0].column_ref.name, "*")));
+
+        // Determine frame bounds for each row
+        for (partition_indices, 0..) |orig_idx, pos| {
+            const frame_range = resolveFrameRange(wf.frame, pos, partition_indices.len, wf.order_by.len > 0);
+            const frame_start = frame_range[0];
+            const frame_end = frame_range[1];
+
+            if (is_count_star) {
+                results[orig_idx] = .{ .integer = @intCast(frame_end - frame_start) };
+            } else if (std.mem.eql(u8, func_name_lower, "count")) {
+                var count: i64 = 0;
+                for (frame_start..frame_end) |fi| {
+                    if (wf.args.len > 0) {
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        defer v.free(alloc);
+                        if (v != .null_value) count += 1;
+                    }
+                }
+                results[orig_idx] = .{ .integer = count };
+            } else if (std.mem.eql(u8, func_name_lower, "sum")) {
+                var sum_int: i64 = 0;
+                var sum_real: f64 = 0;
+                var has_real = false;
+                var has_any = false;
+                for (frame_start..frame_end) |fi| {
+                    if (wf.args.len > 0) {
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        defer v.free(alloc);
+                        switch (v) {
+                            .integer => |iv| {
+                                sum_int += iv;
+                                has_any = true;
+                            },
+                            .real => |rv| {
+                                sum_real += rv;
+                                has_real = true;
+                                has_any = true;
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                if (!has_any) {
+                    results[orig_idx] = Value.null_value;
+                } else if (has_real) {
+                    results[orig_idx] = .{ .real = sum_real + @as(f64, @floatFromInt(sum_int)) };
+                } else {
+                    results[orig_idx] = .{ .integer = sum_int };
+                }
+            } else if (std.mem.eql(u8, func_name_lower, "avg")) {
+                var sum: f64 = 0;
+                var count: usize = 0;
+                for (frame_start..frame_end) |fi| {
+                    if (wf.args.len > 0) {
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        defer v.free(alloc);
+                        switch (v) {
+                            .integer => |iv| {
+                                sum += @floatFromInt(iv);
+                                count += 1;
+                            },
+                            .real => |rv| {
+                                sum += rv;
+                                count += 1;
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                if (count == 0) {
+                    results[orig_idx] = Value.null_value;
+                } else {
+                    results[orig_idx] = .{ .real = sum / @as(f64, @floatFromInt(count)) };
+                }
+            } else if (std.mem.eql(u8, func_name_lower, "min")) {
+                var min_val: Value = Value.null_value;
+                for (frame_start..frame_end) |fi| {
+                    if (wf.args.len > 0) {
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        if (v == .null_value) {
+                            v.free(alloc);
+                            continue;
+                        }
+                        if (min_val == .null_value or v.compare(min_val) == .lt) {
+                            min_val.free(alloc);
+                            min_val = v;
+                        } else {
+                            v.free(alloc);
+                        }
+                    }
+                }
+                results[orig_idx] = min_val;
+            } else if (std.mem.eql(u8, func_name_lower, "max")) {
+                var max_val: Value = Value.null_value;
+                for (frame_start..frame_end) |fi| {
+                    if (wf.args.len > 0) {
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        if (v == .null_value) {
+                            v.free(alloc);
+                            continue;
+                        }
+                        if (max_val == .null_value or v.compare(max_val) == .gt) {
+                            max_val.free(alloc);
+                            max_val = v;
+                        } else {
+                            v.free(alloc);
+                        }
+                    }
+                }
+                results[orig_idx] = max_val;
+            } else {
+                results[orig_idx] = Value.null_value;
+            }
+        }
+    }
+
+    /// Resolve frame bounds to a [start, end) range within the partition.
+    /// SQL standard: with ORDER BY → default RANGE UNBOUNDED PRECEDING TO CURRENT ROW;
+    /// without ORDER BY → default entire partition.
+    fn resolveFrameRange(frame: ?*const ast.WindowFrameSpec, pos: usize, part_len: usize, has_order_by: bool) [2]usize {
+        if (frame) |f| {
+            const start = resolveOneBound(f.start, pos, part_len, true);
+            const end = resolveOneBound(f.end, pos, part_len, false);
+            return .{ start, @min(end, part_len) };
+        }
+        if (has_order_by) {
+            // Default with ORDER BY: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            return .{ 0, pos + 1 };
+        }
+        // Default without ORDER BY: entire partition
+        return .{ 0, part_len };
+    }
+
+    fn resolveOneBound(bound: ast.WindowFrameBound, pos: usize, part_len: usize, is_start: bool) usize {
+        _ = is_start;
+        return switch (bound) {
+            .unbounded_preceding => 0,
+            .unbounded_following => part_len,
+            .current_row => pos + 1, // exclusive end for current row
+            .expr_preceding => |_| if (pos > 0) pos else 0, // simplified: treat as 1 preceding
+            .expr_following => |_| @min(pos + 2, part_len), // simplified: treat as 1 following
+        };
+    }
+
+    fn orderKeysEqual(alloc: Allocator, order_by: []const ast.OrderByItem, a: *const Row, b: *const Row) bool {
+        for (order_by) |ob| {
+            const av = evalExpr(alloc, ob.expr, a) catch Value.null_value;
+            defer av.free(alloc);
+            const bv = evalExpr(alloc, ob.expr, b) catch Value.null_value;
+            defer bv.free(alloc);
+            if (!av.eql(bv)) return false;
+        }
+        return true;
+    }
 };
 
 // ── Aggregate Operator ──────────────────────────────────────────────────

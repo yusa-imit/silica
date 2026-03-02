@@ -99,6 +99,8 @@ pub const PlanNode = union(enum) {
     set_op: SetOp,
     /// Distinct — eliminate duplicate rows (SELECT DISTINCT / DISTINCT ON).
     distinct: Distinct,
+    /// Window — compute window functions over the input rows.
+    window: Window,
     /// Empty — produces no rows (e.g., for DDL results).
     empty: Empty,
 
@@ -165,6 +167,15 @@ pub const PlanNode = union(enum) {
         /// For DISTINCT ON: the expressions to compare for uniqueness.
         /// Empty slice means plain DISTINCT (compare all columns).
         on_exprs: []const *const ast.Expr = &.{},
+    };
+
+    pub const Window = struct {
+        input: *const PlanNode,
+        /// Window function expressions from SELECT columns.
+        /// Each entry is a pointer to a window_function Expr node.
+        funcs: []const *const ast.Expr,
+        /// Aliases for each window function (from SELECT AS clause).
+        aliases: []const ?[]const u8,
     };
 
     pub const Values = struct {
@@ -376,7 +387,17 @@ pub const Planner = struct {
             } });
         }
 
-        // 6. SELECT columns → Project
+        // 6. Window functions → Window node (before project)
+        const win_result = try self.extractWindowFunctions(stmt.columns);
+        if (win_result.funcs.len > 0) {
+            node = try self.createNode(.{ .window = .{
+                .input = node,
+                .funcs = win_result.funcs,
+                .aliases = win_result.aliases,
+            } });
+        }
+
+        // 7. SELECT columns → Project
         const proj_cols = try self.buildProjectColumns(stmt.columns);
         node = try self.createNode(.{ .project = .{
             .input = node,
@@ -495,6 +516,34 @@ pub const Planner = struct {
         }
 
         return aggs.toOwnedSlice(alloc) catch return error.OutOfMemory;
+    }
+
+    const WindowExtractResult = struct {
+        funcs: []const *const ast.Expr,
+        aliases: []const ?[]const u8,
+    };
+
+    fn extractWindowFunctions(self: *Planner, columns: []const ast.ResultColumn) PlanError!WindowExtractResult {
+        const alloc = self.arena.allocator();
+        var funcs = std.ArrayListUnmanaged(*const ast.Expr){};
+        var aliases = std.ArrayListUnmanaged(?[]const u8){};
+
+        for (columns) |col| {
+            switch (col) {
+                .expr => |e| {
+                    if (e.value.* == .window_function) {
+                        funcs.append(alloc, e.value) catch return error.OutOfMemory;
+                        aliases.append(alloc, e.alias) catch return error.OutOfMemory;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        return .{
+            .funcs = funcs.toOwnedSlice(alloc) catch return error.OutOfMemory,
+            .aliases = aliases.toOwnedSlice(alloc) catch return error.OutOfMemory,
+        };
     }
 
     fn isAggregateExpr(_: *Planner, expr: *const ast.Expr) bool {
@@ -715,6 +764,10 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
                 try writer.writeAll("Distinct\n");
             }
             try formatPlan(d.input, writer, depth + 1);
+        },
+        .window => |w| {
+            try writer.print("Window ({d} funcs)\n", .{w.funcs.len});
+            try formatPlan(w.input, writer, depth + 1);
         },
         .values => |v| {
             try writer.print("Values: {s} ({d} rows)\n", .{ v.table, v.rows.len });

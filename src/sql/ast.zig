@@ -127,6 +127,22 @@ pub const ResultColumn = union(enum) {
     },
 };
 
+/// Window function call payload: func(...) OVER (PARTITION BY ... ORDER BY ... frame)
+pub const WindowFunctionExpr = struct {
+    /// Function name (e.g., "row_number", "rank", "sum")
+    name: []const u8,
+    /// Function arguments (empty for ROW_NUMBER, RANK, etc.)
+    args: []const *const Expr = &.{},
+    /// DISTINCT in function args (e.g., COUNT(DISTINCT x) OVER ...)
+    distinct: bool = false,
+    /// PARTITION BY expressions
+    partition_by: []const *const Expr = &.{},
+    /// ORDER BY within the window
+    order_by: []const OrderByItem = &.{},
+    /// Optional frame specification
+    frame: ?*const WindowFrameSpec = null,
+};
+
 /// SQL expression node (recursive).
 pub const Expr = union(enum) {
     /// Integer literal
@@ -200,20 +216,7 @@ pub const Expr = union(enum) {
     /// Subquery expression (scalar subquery)
     subquery: *const SelectStmt,
     /// Window function call: func(...) OVER (PARTITION BY ... ORDER BY ... frame)
-    window_function: struct {
-        /// Function name (e.g., "row_number", "rank", "sum")
-        name: []const u8,
-        /// Function arguments (empty for ROW_NUMBER, RANK, etc.)
-        args: []const *const Expr = &.{},
-        /// DISTINCT in function args (e.g., COUNT(DISTINCT x) OVER ...)
-        distinct: bool = false,
-        /// PARTITION BY expressions
-        partition_by: []const *const Expr = &.{},
-        /// ORDER BY within the window
-        order_by: []const OrderByItem = &.{},
-        /// Optional frame specification
-        frame: ?*const WindowFrameSpec = null,
-    },
+    window_function: WindowFunctionExpr,
     /// Bind parameter: ?
     bind_parameter: u32,
 };
