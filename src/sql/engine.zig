@@ -12267,3 +12267,110 @@ test "INTERVAL type: zero interval" {
     try testing.expectEqual(@as(i32, 0), row1.values[0].interval.days);
     try testing.expectEqual(@as(i64, 0), row1.values[0].interval.micros);
 }
+
+test "INTERVAL type: multiplication and division" {
+    const path = "test_eng_interval_muldiv.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Test interval multiplication
+    var r1 = try db.execSQL("SELECT CAST('2 hours' AS INTERVAL) * 3");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .interval);
+    try testing.expectEqual(@as(i64, 6 * 3600_000_000), row1.values[0].interval.micros);
+
+    // Test interval division
+    var r2 = try db.execSQL("SELECT CAST('10 days' AS INTERVAL) / 2");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .interval);
+    try testing.expectEqual(@as(i32, 5), row2.values[0].interval.days);
+}
+
+test "INTERVAL type: date plus interval with time component" {
+    const path = "test_eng_interval_date_time.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // date + interval with time component → TIMESTAMP (not DATE)
+    var r1 = try db.execSQL("SELECT CAST('2024-01-15' AS DATE) + CAST('1 day 6 hours' AS INTERVAL)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .timestamp);
+
+    // Cast to text to verify exact value: 2024-01-16 06:00:00
+    var r2 = try db.execSQL("SELECT CAST(CAST('2024-01-15' AS DATE) + CAST('1 day 6 hours' AS INTERVAL) AS TEXT)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("2024-01-16 06:00:00", row2.values[0].text);
+}
+
+test "INTERVAL type: ORDER BY on non-selected column" {
+    const path = "test_eng_interval_order_noselect.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE tasks (name TEXT, duration INTERVAL)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO tasks VALUES ('quick', CAST('30 minutes' AS INTERVAL))");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO tasks VALUES ('long', CAST('3 hours' AS INTERVAL))");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO tasks VALUES ('medium', CAST('1 hour 15 minutes' AS INTERVAL))");
+    defer r4.close(testing.allocator);
+
+    // ORDER BY duration even though it's not in SELECT list
+    var sel = try db.execSQL("SELECT name FROM tasks ORDER BY duration");
+    defer sel.close(testing.allocator);
+
+    var row1 = (try sel.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("quick", row1.values[0].text); // 30 min
+
+    var row2 = (try sel.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("medium", row2.values[0].text); // 1h 15min
+
+    var row3 = (try sel.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("long", row3.values[0].text); // 3h
+}
+
+test "INTERVAL type: negative interval formatting" {
+    const path = "test_eng_interval_negative.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Negative days
+    var r1 = try db.execSQL("SELECT CAST(CAST('-2 days' AS INTERVAL) AS TEXT)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .text);
+    try testing.expectEqualStrings("-2 days", row1.values[0].text);
+
+    // Negative months (verify internal representation)
+    var r2 = try db.execSQL("SELECT CAST('-15 months' AS INTERVAL)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .interval);
+    try testing.expectEqual(@as(i32, -15), row2.values[0].interval.months);
+
+    // Negative interval with time component
+    var r3 = try db.execSQL("SELECT CAST(CAST('-3 days -02:30:00' AS INTERVAL) AS TEXT)");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expect(row3.values[0] == .text);
+    try testing.expectEqualStrings("-3 days -02:30:00", row3.values[0].text);
+}
