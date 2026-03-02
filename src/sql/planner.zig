@@ -30,6 +30,9 @@ pub const ValueType = enum {
     text,
     blob,
     boolean,
+    date,
+    time,
+    timestamp,
     null_type,
 
     pub fn fromColumnType(ct: ColumnType) ValueType {
@@ -39,6 +42,9 @@ pub const ValueType = enum {
             .text => .text,
             .blob => .blob,
             .boolean => .boolean,
+            .date => .date,
+            .time => .time,
+            .timestamp => .timestamp,
             .untyped => .text, // default untyped to text
         };
     }
@@ -50,6 +56,9 @@ pub const ValueType = enum {
             .text => .text,
             .blob => .blob,
             .boolean => .boolean,
+            .date => .date,
+            .time => .time,
+            .timestamp => .timestamp,
             .null_type => .untyped,
         };
     }

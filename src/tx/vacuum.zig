@@ -271,6 +271,27 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             buf[0] = if (b) 1 else 0;
             return buf;
         },
+        .date => |d| {
+            const buf = try allocator.alloc(u8, 4);
+            const unsigned: u32 = @bitCast(d);
+            const flipped = unsigned ^ (@as(u32, 1) << 31);
+            std.mem.writeInt(u32, buf[0..4], flipped, .big);
+            return buf;
+        },
+        .time => |t| {
+            const buf = try allocator.alloc(u8, 8);
+            const unsigned: u64 = @bitCast(t);
+            const flipped = unsigned ^ (@as(u64, 1) << 63);
+            std.mem.writeInt(u64, buf[0..8], flipped, .big);
+            return buf;
+        },
+        .timestamp => |ts| {
+            const buf = try allocator.alloc(u8, 8);
+            const unsigned: u64 = @bitCast(ts);
+            const flipped = unsigned ^ (@as(u64, 1) << 63);
+            std.mem.writeInt(u64, buf[0..8], flipped, .big);
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };

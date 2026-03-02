@@ -44,6 +44,9 @@ pub const ColumnType = enum(u8) {
     text = 0x03,
     blob = 0x04,
     boolean = 0x05,
+    date = 0x06,
+    time = 0x07,
+    timestamp = 0x08,
     /// Column has no explicit type declaration.
     untyped = 0x00,
 };
@@ -57,6 +60,9 @@ pub fn columnTypeFromAst(dt: ?ast.DataType) ColumnType {
         .type_text, .type_varchar => .text,
         .type_blob => .blob,
         .type_boolean => .boolean,
+        .type_date => .date,
+        .type_time => .time,
+        .type_timestamp => .timestamp,
     };
 }
 

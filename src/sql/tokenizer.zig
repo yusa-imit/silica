@@ -181,6 +181,9 @@ pub const TokenType = enum {
     kw_blob,
     kw_boolean,
     kw_varchar,
+    kw_date,
+    kw_time,
+    kw_timestamp,
 
     // Keywords — Values
     kw_true,
@@ -713,6 +716,9 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "blob", .kw_blob },
         .{ "boolean", .kw_boolean },
         .{ "varchar", .kw_varchar },
+        .{ "date", .kw_date },
+        .{ "time", .kw_time },
+        .{ "timestamp", .kw_timestamp },
         // Values
         .{ "true", .kw_true },
         .{ "false", .kw_false },

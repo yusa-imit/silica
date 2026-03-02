@@ -6,8 +6,9 @@ const tui_mod = @import("tui.zig");
 
 const version = "0.4.0";
 
-const Value = silica.executor.Value;
-const Row = silica.executor.Row;
+const executor = silica.executor;
+const Value = executor.Value;
+const Row = executor.Row;
 const Database = silica.engine.Database;
 const QueryResult = silica.engine.QueryResult;
 
@@ -294,6 +295,9 @@ fn valueToText(allocator: std.mem.Allocator, val: Value) ?[]const u8 {
             break :blk hex_buf;
         },
         .boolean => |v| allocator.dupe(u8, if (v) "TRUE" else "FALSE") catch null,
+        .date => |v| executor.formatDate(allocator, v) catch null,
+        .time => |v| executor.formatTime(allocator, v) catch null,
+        .timestamp => |v| executor.formatTimestamp(allocator, v) catch null,
         .null_value => allocator.dupe(u8, "NULL") catch null,
     };
 }
@@ -408,6 +412,21 @@ fn writeJsonValue(obj: anytype, key: []const u8, val: Value, allocator: std.mem.
         .text => |v| obj.addString(key, v) catch {},
         .boolean => |v| obj.addBool(key, v) catch {},
         .null_value => obj.addNull(key) catch {},
+        .date => |v| {
+            const s = executor.formatDate(allocator, v) catch return;
+            defer allocator.free(s);
+            obj.addString(key, s) catch {};
+        },
+        .time => |v| {
+            const s = executor.formatTime(allocator, v) catch return;
+            defer allocator.free(s);
+            obj.addString(key, s) catch {};
+        },
+        .timestamp => |v| {
+            const s = executor.formatTimestamp(allocator, v) catch return;
+            defer allocator.free(s);
+            obj.addString(key, s) catch {};
+        },
         .blob => |v| {
             // Format blob as hex string
             const hex = allocator.alloc(u8, v.len * 2) catch return;

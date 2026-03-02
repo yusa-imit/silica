@@ -204,6 +204,27 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             buf[0] = if (b) 1 else 0;
             return buf;
         },
+        .date => |d| {
+            const buf = try allocator.alloc(u8, 4);
+            const unsigned: u32 = @bitCast(d);
+            const flipped = unsigned ^ (@as(u32, 1) << 31);
+            std.mem.writeInt(u32, buf[0..4], flipped, .big);
+            return buf;
+        },
+        .time => |t| {
+            const buf = try allocator.alloc(u8, 8);
+            const unsigned: u64 = @bitCast(t);
+            const flipped = unsigned ^ (@as(u64, 1) << 63);
+            std.mem.writeInt(u64, buf[0..8], flipped, .big);
+            return buf;
+        },
+        .timestamp => |ts| {
+            const buf = try allocator.alloc(u8, 8);
+            const unsigned: u64 = @bitCast(ts);
+            const flipped = unsigned ^ (@as(u64, 1) << 63);
+            std.mem.writeInt(u64, buf[0..8], flipped, .big);
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };
@@ -11821,4 +11842,95 @@ test "WINDOW clause: multiple named windows" {
         count += 1;
     }
     try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "DATE type: CREATE TABLE, INSERT, SELECT with CAST" {
+    const path = "test_date_type.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE events (name TEXT, event_date DATE)");
+    _ = try db.exec("INSERT INTO events VALUES ('launch', CAST('2024-03-15' AS DATE))");
+    _ = try db.exec("INSERT INTO events VALUES ('update', CAST('2024-06-01' AS DATE))");
+
+    var r = try db.exec("SELECT name, CAST(event_date AS TEXT) FROM events ORDER BY event_date");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("launch", row1.values[0].text);
+    try testing.expectEqualStrings("2024-03-15", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("update", row2.values[0].text);
+    try testing.expectEqualStrings("2024-06-01", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "TIMESTAMP type: CREATE TABLE, INSERT, SELECT" {
+    const path = "test_timestamp_type.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE logs (msg TEXT, created_at TIMESTAMP)");
+    _ = try db.exec("INSERT INTO logs VALUES ('start', CAST('2024-01-15 08:30:00' AS TIMESTAMP))");
+    _ = try db.exec("INSERT INTO logs VALUES ('stop', CAST('2024-01-15 17:45:00' AS TIMESTAMP))");
+
+    var r = try db.exec("SELECT msg, CAST(created_at AS TEXT) FROM logs ORDER BY created_at");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("start", row1.values[0].text);
+    try testing.expectEqualStrings("2024-01-15 08:30:00", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("stop", row2.values[0].text);
+    try testing.expectEqualStrings("2024-01-15 17:45:00", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "DATE arithmetic: date + integer, date - date" {
+    const path = "test_date_arith.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE d (val DATE)");
+    _ = try db.exec("INSERT INTO d VALUES (CAST('2024-01-01' AS DATE))");
+
+    // date + 30 days
+    var r = try db.exec("SELECT CAST(val + 30 AS TEXT) FROM d");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("2024-01-31", row1.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NOW() and CURRENT_DATE() functions" {
+    const path = "test_now_func.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // NOW() should return a non-null timestamp
+    var r = try db.exec("SELECT NOW()");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .timestamp);
+
+    // CURRENT_DATE() should return a non-null date
+    var r2 = try db.exec("SELECT CURRENT_DATE()");
+    defer r2.close(testing.allocator);
+
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .date);
 }

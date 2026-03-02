@@ -5,8 +5,9 @@ const tui = sailor.tui;
 
 const Database = silica.engine.Database;
 const QueryResult = silica.engine.QueryResult;
-const Value = silica.executor.Value;
-const Row = silica.executor.Row;
+const executor = silica.executor;
+const Value = executor.Value;
+const Row = executor.Row;
 const Catalog = silica.catalog.Catalog;
 
 // ── Focus Pane ───────────────────────────────────────────────────────
@@ -365,6 +366,9 @@ fn formatColumnLabel(allocator: std.mem.Allocator, col: ColumnInfo) ![]const u8 
         .text => "TEXT",
         .blob => "BLOB",
         .boolean => "BOOLEAN",
+        .date => "DATE",
+        .time => "TIME",
+        .timestamp => "TIMESTAMP",
         .untyped => "",
     };
 
@@ -416,6 +420,9 @@ fn valueToString(allocator: std.mem.Allocator, val: Value) ![]const u8 {
             break :blk hex_buf;
         },
         .boolean => |v| try allocator.dupe(u8, if (v) "TRUE" else "FALSE"),
+        .date => |v| try executor.formatDate(allocator, v),
+        .time => |v| try executor.formatTime(allocator, v),
+        .timestamp => |v| try executor.formatTimestamp(allocator, v),
         .null_value => try allocator.dupe(u8, "NULL"),
     };
 }

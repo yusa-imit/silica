@@ -21,6 +21,9 @@ pub const DataType = enum {
     type_blob,
     type_boolean,
     type_varchar,
+    type_date,
+    type_time,
+    type_timestamp,
 };
 
 /// Column constraint in a CREATE TABLE statement.

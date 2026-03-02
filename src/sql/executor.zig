@@ -40,6 +40,145 @@ const AggFunc = planner_mod.AggFunc;
 const TupleHeader = mvcc_mod.TupleHeader;
 const Snapshot = mvcc_mod.Snapshot;
 
+// ── Date/Time Constants & Utilities ───────────────────────────────────────
+
+const MICROS_PER_SECOND: i64 = 1_000_000;
+const MICROS_PER_MINUTE: i64 = 60 * MICROS_PER_SECOND;
+const MICROS_PER_HOUR: i64 = 60 * MICROS_PER_MINUTE;
+const MICROS_PER_DAY: i64 = 24 * MICROS_PER_HOUR;
+
+fn isLeapYear(year: i32) bool {
+    return (@mod(year, 4) == 0 and @mod(year, 100) != 0) or (@mod(year, 400) == 0);
+}
+
+fn daysInMonth(month: u8, year: i32) u8 {
+    const days = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (month == 2 and isLeapYear(year)) return 29;
+    return days[month - 1];
+}
+
+/// Convert year/month/day to days since Unix epoch (1970-01-01).
+/// Uses the civil_from_days algorithm.
+fn dateToDays(year: i32, month: u8, day: u8) i32 {
+    const year_adj: i32 = if (month <= 2) 1 else 0;
+    const y = year - year_adj;
+    const era = @divFloor(y, 400);
+    const yoe: i32 = y - era * 400;
+    const m_adj: i32 = if (month > 2) -3 else 9;
+    const m = @as(i32, month) + m_adj;
+    const doy = @divFloor((153 * m + 2), 5) + @as(i32, day) - 1;
+    const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/// Convert days since epoch to year/month/day.
+fn daysToDate(days: i32) struct { year: i32, month: u8, day: u8 } {
+    const z = days + 719468;
+    const era = @divFloor(z, 146097);
+    const doe: i32 = z - era * 146097;
+    const yoe = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
+    const y = yoe + era * 400;
+    const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+    const mp = @divFloor(5 * doy + 2, 153);
+    const d = @as(u8, @intCast(doy - @divFloor((153 * mp + 2), 5) + 1));
+    const m_adj: i32 = if (mp < 10) 3 else -9;
+    const m = @as(u8, @intCast(mp + m_adj));
+    const year_adj: i32 = if (m <= 2) 1 else 0;
+    return .{ .year = y + year_adj, .month = m, .day = d };
+}
+
+/// Parse 'YYYY-MM-DD' format into days since epoch.
+fn parseDateString(s: []const u8) ?i32 {
+    if (s.len < 10) return null;
+    const year = std.fmt.parseInt(i32, s[0..4], 10) catch return null;
+    if (s[4] != '-') return null;
+    const month = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
+    if (s[7] != '-') return null;
+    const day = std.fmt.parseInt(u8, s[8..10], 10) catch return null;
+    if (month < 1 or month > 12) return null;
+    if (day < 1 or day > daysInMonth(month, year)) return null;
+    return dateToDays(year, month, day);
+}
+
+/// Parse 'HH:MM:SS' or 'HH:MM:SS.ffffff' format into microseconds since midnight.
+fn parseTimeString(s: []const u8) ?i64 {
+    if (s.len < 8) return null;
+    const hour = std.fmt.parseInt(u8, s[0..2], 10) catch return null;
+    if (s[2] != ':') return null;
+    const minute = std.fmt.parseInt(u8, s[3..5], 10) catch return null;
+    if (s[5] != ':') return null;
+
+    var second: u8 = 0;
+    var micros: i64 = 0;
+
+    if (s.len >= 8) {
+        second = std.fmt.parseInt(u8, s[6..8], 10) catch return null;
+    }
+
+    if (s.len > 8 and s[8] == '.') {
+        // Parse fractional seconds
+        var frac_str: [6]u8 = [_]u8{'0'} ** 6;
+        const frac_len = @min(s.len - 9, 6);
+        @memcpy(frac_str[0..frac_len], s[9..][0..frac_len]);
+        const frac = std.fmt.parseInt(u32, &frac_str, 10) catch return null;
+        micros = @as(i64, frac);
+    }
+
+    if (hour > 23 or minute > 59 or second > 59) return null;
+
+    return @as(i64, hour) * MICROS_PER_HOUR +
+           @as(i64, minute) * MICROS_PER_MINUTE +
+           @as(i64, second) * MICROS_PER_SECOND + micros;
+}
+
+/// Parse 'YYYY-MM-DD HH:MM:SS' format into microseconds since epoch.
+fn parseTimestampString(s: []const u8) ?i64 {
+    if (s.len < 19) return null;
+    const days = parseDateString(s[0..10]) orelse return null;
+    if (s[10] != ' ') return null;
+    const time_micros = parseTimeString(s[11..]) orelse return null;
+    return @as(i64, days) * MICROS_PER_DAY + time_micros;
+}
+
+/// Format days since epoch as 'YYYY-MM-DD'.
+pub fn formatDate(allocator: Allocator, days: i32) ![]u8 {
+    const date = daysToDate(days);
+    // Handle year carefully - format as signed for negative years, but don't show + for positive
+    if (date.year < 0) {
+        return std.fmt.allocPrint(allocator, "{d:0>5}-{d:0>2}-{d:0>2}", .{ date.year, @as(u32, date.month), @as(u32, date.day) });
+    } else {
+        return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day) });
+    }
+}
+
+/// Format microseconds since midnight as 'HH:MM:SS'.
+pub fn formatTime(allocator: Allocator, micros: i64) ![]u8 {
+    const total_secs = @divTrunc(micros, MICROS_PER_SECOND);
+    const hour = @as(u32, @intCast(@divTrunc(total_secs, 3600)));
+    const minute = @as(u32, @intCast(@divTrunc(@mod(total_secs, 3600), 60)));
+    const second = @as(u32, @intCast(@mod(total_secs, 60)));
+    return std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}:{d:0>2}", .{ hour, minute, second });
+}
+
+/// Format microseconds since epoch as 'YYYY-MM-DD HH:MM:SS'.
+pub fn formatTimestamp(allocator: Allocator, micros: i64) ![]u8 {
+    const days: i32 = @intCast(@divTrunc(micros, MICROS_PER_DAY));
+    const time_micros = @mod(micros, MICROS_PER_DAY);
+    const date = daysToDate(days);
+    const total_secs = @divTrunc(time_micros, MICROS_PER_SECOND);
+    const hour = @as(u32, @intCast(@divTrunc(total_secs, 3600)));
+    const minute = @as(u32, @intCast(@divTrunc(@mod(total_secs, 3600), 60)));
+    const second = @as(u32, @intCast(@mod(total_secs, 60)));
+    // Handle year carefully - format as unsigned for positive years
+    if (date.year < 0) {
+        return std.fmt.allocPrint(allocator, "{d:0>5}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
+            .{ date.year, @as(u32, date.month), @as(u32, date.day), hour, minute, second });
+    } else {
+        return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
+            .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day), hour, minute, second });
+    }
+}
+
 // ── MVCC Context ──────────────────────────────────────────────────────────
 
 /// MVCC context passed to scan operators for visibility filtering.
@@ -64,6 +203,9 @@ pub const Value = union(enum) {
     text: []const u8,
     blob: []const u8,
     boolean: bool,
+    date: i32, // days since epoch (1970-01-01)
+    time: i64, // microseconds since midnight
+    timestamp: i64, // microseconds since epoch
     null_value,
 
     /// Compare two values. Returns .lt, .eq, or .gt.
@@ -102,6 +244,28 @@ pub const Value = union(enum) {
                 },
                 else => .gt,
             },
+            .date => |av| switch (b) {
+                .date => |bv| std.math.order(av, bv),
+                .timestamp => |bv| {
+                    // Convert date to timestamp (midnight) and compare
+                    const a_ts = @as(i64, av) * MICROS_PER_DAY;
+                    return std.math.order(a_ts, bv);
+                },
+                else => .lt, // dates < time/text/blob/bool
+            },
+            .time => |av| switch (b) {
+                .time => |bv| std.math.order(av, bv),
+                else => .lt, // time < text/blob/bool
+            },
+            .timestamp => |av| switch (b) {
+                .timestamp => |bv| std.math.order(av, bv),
+                .date => |bv| {
+                    // Convert date to timestamp (midnight) and compare
+                    const b_ts = @as(i64, bv) * MICROS_PER_DAY;
+                    return std.math.order(av, b_ts);
+                },
+                else => .lt, // timestamps < text/blob/bool
+            },
             .null_value => unreachable,
         };
     }
@@ -119,6 +283,7 @@ pub const Value = union(enum) {
             .text => |v| v.len > 0,
             .blob => |v| v.len > 0,
             .boolean => |v| v,
+            .date, .time, .timestamp => true, // temporal values are always truthy
             .null_value => false,
         };
     }
@@ -130,6 +295,8 @@ pub const Value = union(enum) {
             .real => |v| @intFromFloat(v),
             .boolean => |v| if (v) @as(i64, 1) else 0,
             .text => |v| std.fmt.parseInt(i64, v, 10) catch null,
+            .date => |v| @as(i64, v), // days as integer
+            .time, .timestamp => |v| v, // microseconds as integer
             else => null,
         };
     }
@@ -141,6 +308,8 @@ pub const Value = union(enum) {
             .real => |v| v,
             .boolean => |v| if (v) @as(f64, 1.0) else 0.0,
             .text => |v| std.fmt.parseFloat(f64, v) catch null,
+            .date => |v| @floatFromInt(v),
+            .time, .timestamp => |v| @floatFromInt(v),
             else => null,
         };
     }
@@ -250,6 +419,9 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
             .text => |t| size += 4 + t.len,
             .blob => |b| size += 4 + b.len,
             .boolean => size += 1,
+            .date => size += 4,
+            .time => size += 8,
+            .timestamp => size += 8,
             .null_value => {},
         }
     }
@@ -296,6 +468,24 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
                 pos += 1;
                 buf[pos] = if (b) 1 else 0;
                 pos += 1;
+            },
+            .date => |d| {
+                buf[pos] = 0x06;
+                pos += 1;
+                std.mem.writeInt(i32, buf[pos..][0..4], d, .little);
+                pos += 4;
+            },
+            .time => |t| {
+                buf[pos] = 0x07;
+                pos += 1;
+                std.mem.writeInt(i64, buf[pos..][0..8], t, .little);
+                pos += 8;
+            },
+            .timestamp => |ts| {
+                buf[pos] = 0x08;
+                pos += 1;
+                std.mem.writeInt(i64, buf[pos..][0..8], ts, .little);
+                pos += 8;
             },
             .null_value => {
                 buf[pos] = 0x00;
@@ -359,6 +549,21 @@ pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
                 if (pos >= data.len) return error.InvalidRowData;
                 v.* = .{ .boolean = data[pos] != 0 };
                 pos += 1;
+            },
+            0x06 => { // date
+                if (pos + 4 > data.len) return error.InvalidRowData;
+                v.* = .{ .date = std.mem.readInt(i32, data[pos..][0..4], .little) };
+                pos += 4;
+            },
+            0x07 => { // time
+                if (pos + 8 > data.len) return error.InvalidRowData;
+                v.* = .{ .time = std.mem.readInt(i64, data[pos..][0..8], .little) };
+                pos += 8;
+            },
+            0x08 => { // timestamp
+                if (pos + 8 > data.len) return error.InvalidRowData;
+                v.* = .{ .timestamp = std.mem.readInt(i64, data[pos..][0..8], .little) };
+                pos += 8;
             },
             0x00 => { // null
                 v.* = .null_value;
@@ -633,7 +838,19 @@ fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Valu
 const ArithOp = enum { add, sub, mul, div };
 
 fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
-    // Try integer arithmetic first
+    // Date/timestamp arithmetic
+    if (left == .date and right == .integer) {
+        if (op == .add) return .{ .date = left.date +% @as(i32, @intCast(right.integer)) };
+        if (op == .sub) return .{ .date = left.date -% @as(i32, @intCast(right.integer)) };
+    }
+    if (left == .date and right == .date and op == .sub) {
+        return .{ .integer = @as(i64, left.date) - @as(i64, right.date) };
+    }
+    if (left == .timestamp and right == .timestamp and op == .sub) {
+        return .{ .integer = left.timestamp - right.timestamp };
+    }
+
+    // Try integer arithmetic
     if (left == .integer and right == .integer) {
         const a = left.integer;
         const b = right.integer;
@@ -666,6 +883,9 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 .real => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
                 .boolean => |v| (allocator.dupe(u8, if (v) "true" else "false") catch return EvalError.OutOfMemory),
                 .text => |v| (allocator.dupe(u8, v) catch return EvalError.OutOfMemory),
+                .date => |v| formatDate(allocator, v) catch return EvalError.OutOfMemory,
+                .time => |v| formatTime(allocator, v) catch return EvalError.OutOfMemory,
+                .timestamp => |v| formatTimestamp(allocator, v) catch return EvalError.OutOfMemory,
                 .null_value => return .null_value,
                 .blob => return .null_value,
             };
@@ -673,6 +893,32 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
         },
         .type_boolean => .{ .boolean = val.isTruthy() },
         .type_blob => .null_value,
+        .type_date => blk: {
+            const days = switch (val) {
+                .text => |v| parseDateString(v) orelse return .null_value,
+                .timestamp => |v| @as(i32, @intCast(@divTrunc(v, MICROS_PER_DAY))),
+                .date => |v| v,
+                else => return .null_value,
+            };
+            break :blk Value{ .date = days };
+        },
+        .type_time => blk: {
+            const micros = switch (val) {
+                .text => |v| parseTimeString(v) orelse return .null_value,
+                .time => |v| v,
+                else => return .null_value,
+            };
+            break :blk Value{ .time = micros };
+        },
+        .type_timestamp => blk: {
+            const ts = switch (val) {
+                .text => |v| parseTimestampString(v) orelse return .null_value,
+                .date => |v| @as(i64, v) * MICROS_PER_DAY, // date at midnight
+                .timestamp => |v| v,
+                else => return .null_value,
+            };
+            break :blk Value{ .timestamp = ts };
+        },
     };
 }
 
@@ -757,10 +1003,30 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .text => "text",
             .blob => "blob",
             .boolean => "boolean",
+            .date => "date",
+            .time => "time",
+            .timestamp => "timestamp",
             .null_value => "null",
         };
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };
     }
+
+    // Temporal functions
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_date")) {
+        const now = std.time.timestamp();
+        const days: i32 = @intCast(@divTrunc(now, 86400)); // seconds per day
+        return Value{ .date = days };
+    }
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_time")) {
+        const now = std.time.timestamp();
+        const micros_today = @mod(now, 86400) * MICROS_PER_SECOND;
+        return Value{ .time = micros_today };
+    }
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_timestamp") or std.ascii.eqlIgnoreCase(fc.name, "now")) {
+        const now = std.time.timestamp();
+        return Value{ .timestamp = now * MICROS_PER_SECOND };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -4520,4 +4786,153 @@ test "Row.getQualifiedColumn falls back to unqualified" {
     const val = row.getQualifiedColumn("t", "id");
     try std.testing.expect(val != null);
     try std.testing.expectEqual(@as(i64, 5), val.?.integer);
+}
+
+test "Date parsing and formatting" {
+    const allocator = std.testing.allocator;
+
+    // Parse valid date
+    const days1 = parseDateString("2024-03-15");
+    try std.testing.expect(days1 != null);
+
+    // Format it back
+    const s1 = try formatDate(allocator, days1.?);
+    defer allocator.free(s1);
+    try std.testing.expectEqualStrings("2024-03-15", s1);
+
+    // Test epoch
+    const epoch = parseDateString("1970-01-01");
+    try std.testing.expect(epoch != null);
+    try std.testing.expectEqual(@as(i32, 0), epoch.?);
+
+    // Test invalid dates
+    try std.testing.expect(parseDateString("2024-13-01") == null); // invalid month
+    try std.testing.expect(parseDateString("2024-02-30") == null); // invalid day
+    try std.testing.expect(parseDateString("not-a-date") == null);
+}
+
+test "Time parsing and formatting" {
+    const allocator = std.testing.allocator;
+
+    // Parse valid time
+    const micros1 = parseTimeString("14:30:45");
+    try std.testing.expect(micros1 != null);
+
+    // Format it back
+    const s1 = try formatTime(allocator, micros1.?);
+    defer allocator.free(s1);
+    try std.testing.expectEqualStrings("14:30:45", s1);
+
+    // Test midnight
+    const midnight = parseTimeString("00:00:00");
+    try std.testing.expect(midnight != null);
+    try std.testing.expectEqual(@as(i64, 0), midnight.?);
+
+    // Test with fractional seconds
+    const with_frac = parseTimeString("12:34:56.123456");
+    try std.testing.expect(with_frac != null);
+    const expected = 12 * MICROS_PER_HOUR + 34 * MICROS_PER_MINUTE + 56 * MICROS_PER_SECOND + 123456;
+    try std.testing.expectEqual(expected, with_frac.?);
+}
+
+test "Timestamp parsing and formatting" {
+    const allocator = std.testing.allocator;
+
+    // Parse valid timestamp
+    const micros1 = parseTimestampString("2024-03-15 14:30:45");
+    try std.testing.expect(micros1 != null);
+
+    // Format it back
+    const s1 = try formatTimestamp(allocator, micros1.?);
+    defer allocator.free(s1);
+    try std.testing.expectEqualStrings("2024-03-15 14:30:45", s1);
+}
+
+test "Date arithmetic" {
+    // date + integer
+    const base = Value{ .date = 100 };
+    const add_result = evalArithmetic(base, Value{ .integer = 5 }, .add);
+    try std.testing.expectEqual(Value{ .date = 105 }, add_result);
+
+    // date - integer
+    const sub_result = evalArithmetic(base, Value{ .integer = 10 }, .sub);
+    try std.testing.expectEqual(Value{ .date = 90 }, sub_result);
+
+    // date - date
+    const date1 = Value{ .date = 100 };
+    const date2 = Value{ .date = 95 };
+    const diff = evalArithmetic(date1, date2, .sub);
+    try std.testing.expectEqual(Value{ .integer = 5 }, diff);
+}
+
+test "CAST with temporal types" {
+    const allocator = std.testing.allocator;
+
+    // CAST text to date
+    const text_date = Value{ .text = "2024-03-15" };
+    const date_val = try evalCast(allocator, text_date, .type_date);
+    try std.testing.expect(date_val == .date);
+
+    // CAST date to text
+    const date_val2 = Value{ .date = parseDateString("2024-03-15").? };
+    const text_val = try evalCast(allocator, date_val2, .type_text);
+    defer text_val.free(allocator);
+    try std.testing.expectEqualStrings("2024-03-15", text_val.text);
+
+    // CAST timestamp to date
+    const ts = parseTimestampString("2024-03-15 14:30:45").?;
+    const ts_val = Value{ .timestamp = ts };
+    const date_from_ts = try evalCast(allocator, ts_val, .type_date);
+    try std.testing.expect(date_from_ts == .date);
+
+    // CAST date to timestamp
+    const date_to_ts = try evalCast(allocator, date_val2, .type_timestamp);
+    try std.testing.expect(date_to_ts == .timestamp);
+}
+
+test "Serialize and deserialize temporal types" {
+    const allocator = std.testing.allocator;
+
+    const values = [_]Value{
+        Value{ .date = 19800 },
+        Value{ .time = 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE },
+        Value{ .timestamp = 1710508245000000 },
+    };
+
+    const serialized = try serializeRow(allocator, &values);
+    defer allocator.free(serialized);
+
+    const deserialized = try deserializeRow(allocator, serialized);
+    defer {
+        for (deserialized) |v| v.free(allocator);
+        allocator.free(deserialized);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), deserialized.len);
+    try std.testing.expectEqual(Value{ .date = 19800 }, deserialized[0]);
+    try std.testing.expectEqual(Value{ .time = 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE }, deserialized[1]);
+    try std.testing.expectEqual(Value{ .timestamp = 1710508245000000 }, deserialized[2]);
+}
+
+test "Value comparison with temporal types" {
+    // date comparison
+    const d1 = Value{ .date = 100 };
+    const d2 = Value{ .date = 200 };
+    try std.testing.expectEqual(std.math.Order.lt, d1.compare(d2));
+    try std.testing.expectEqual(std.math.Order.eq, d1.compare(d1));
+
+    // time comparison
+    const t1 = Value{ .time = 1000 };
+    const t2 = Value{ .time = 2000 };
+    try std.testing.expectEqual(std.math.Order.lt, t1.compare(t2));
+
+    // timestamp comparison
+    const ts1 = Value{ .timestamp = 1000000 };
+    const ts2 = Value{ .timestamp = 2000000 };
+    try std.testing.expectEqual(std.math.Order.lt, ts1.compare(ts2));
+
+    // date vs timestamp comparison
+    const date = Value{ .date = 1 }; // 1 day = 86400000000 microseconds
+    const ts = Value{ .timestamp = MICROS_PER_DAY }; // same as 1 day
+    try std.testing.expectEqual(std.math.Order.eq, date.compare(ts));
 }
