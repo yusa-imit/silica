@@ -290,6 +290,8 @@ pub const EngineError = error{
     LockConflict,
     SavepointNotFound,
     SerializationFailure,
+    CheckOptionViolation,
+    ViewNotUpdatable,
 };
 
 /// A named savepoint within a transaction.
@@ -1502,8 +1504,35 @@ pub const Database = struct {
             else => return EngineError.ExecutionError,
         };
 
-        // Look up table to get data root page ID and column info
-        var table_info = self.catalog.getTable(values_node.table) catch return EngineError.TableNotFound;
+        // Try direct table lookup first; if not found, check for updatable view
+        var view_arena_storage: ?AstArena = null;
+        var view_infra_storage: ?std.heap.ArenaAllocator = null;
+        defer if (view_arena_storage) |*va| va.deinit();
+        defer if (view_infra_storage) |*vi| vi.deinit();
+
+        var view_check_where: ?*const ast_mod.Expr = null;
+
+        var actual_table: []const u8 = values_node.table;
+        if (self.catalog.getTable(values_node.table)) |_| {} else |_| {
+            // Table not found — check for updatable view
+            view_arena_storage = AstArena.init(self.allocator);
+            view_infra_storage = std.heap.ArenaAllocator.init(self.allocator);
+            if (self.resolveUpdatableView(
+                &view_arena_storage.?,
+                &view_infra_storage.?,
+                values_node.table,
+            )) |uvi| {
+                actual_table = uvi.base_table;
+                if (uvi.check_option != 0 and uvi.where_clause != null) {
+                    view_check_where = uvi.where_clause;
+                }
+            } else {
+                return EngineError.TableNotFound;
+            }
+        }
+
+        // Look up the actual base table
+        var table_info = self.catalog.getTable(actual_table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
 
         // Register SSI write for SERIALIZABLE transactions
@@ -1511,6 +1540,17 @@ pub const Database = struct {
 
         var tree = BTree.init(self.pool, table_info.data_root_page_id);
         const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
+
+        // Build column names for check option evaluation
+        var check_col_names: ?[]const []const u8 = null;
+        defer if (check_col_names) |ccn| self.allocator.free(ccn);
+        if (view_check_where != null) {
+            const names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+            for (table_info.columns, 0..) |col, i| {
+                names[i] = col.name;
+            }
+            check_col_names = names;
+        }
 
         // Find the next available row key by scanning to the end
         var next_key: u64 = self.findNextRowKey(&tree) catch return EngineError.StorageError;
@@ -1528,6 +1568,15 @@ pub const Database = struct {
             for (row_exprs, 0..) |expr, i| {
                 vals[i] = evalExpr(self.allocator, expr, &empty_row) catch return EngineError.ExecutionError;
                 inited += 1;
+            }
+
+            // WITH CHECK OPTION: validate that the inserted row satisfies the view's WHERE
+            if (view_check_where) |where_expr| {
+                if (check_col_names) |col_names| {
+                    if (!self.checkViewCondition(where_expr, col_names, vals)) {
+                        return EngineError.CheckOptionViolation;
+                    }
+                }
             }
 
             // Serialize the row (with MVCC header if in a transaction)
@@ -1560,19 +1609,19 @@ pub const Database = struct {
 
             // Update root page ID in case of B+Tree split
             if (tree.root_page_id != table_info.data_root_page_id) {
-                self.updateTableRootPage(values_node.table, tree.root_page_id) catch return EngineError.StorageError;
+                self.updateTableRootPage(actual_table, tree.root_page_id) catch return EngineError.StorageError;
                 table_info.data_root_page_id = tree.root_page_id;
             }
 
             // Maintain secondary indexes
-            self.insertIndexEntries(values_node.table, &table_info, vals, &key_buf) catch return EngineError.StorageError;
+            self.insertIndexEntries(actual_table, &table_info, vals, &key_buf) catch return EngineError.StorageError;
 
             rows_inserted += 1;
         }
 
         // Track inserts for auto-vacuum
         if (rows_inserted > 0) {
-            self.auto_vacuum.recordModification(values_node.table, rows_inserted, 0, 0) catch {};
+            self.auto_vacuum.recordModification(actual_table, rows_inserted, 0, 0) catch {};
         }
 
         return .{
@@ -1723,8 +1772,48 @@ pub const Database = struct {
             }
         }
 
+        // Updatable view resolution
+        var view_arena_storage: ?AstArena = null;
+        var view_infra_storage: ?std.heap.ArenaAllocator = null;
+        defer if (view_arena_storage) |*va| va.deinit();
+        defer if (view_infra_storage) |*vi| vi.deinit();
+
+        var view_check_where: ?*const ast_mod.Expr = null;
+        var actual_table: []const u8 = scan_table;
+
+        if (self.catalog.getTable(scan_table)) |_| {} else |_| {
+            view_arena_storage = AstArena.init(self.allocator);
+            view_infra_storage = std.heap.ArenaAllocator.init(self.allocator);
+            if (self.resolveUpdatableView(
+                &view_arena_storage.?,
+                &view_infra_storage.?,
+                scan_table,
+            )) |uvi| {
+                actual_table = uvi.base_table;
+                // Merge view's WHERE with the UPDATE's predicate
+                if (uvi.where_clause) |vw| {
+                    if (predicate) |existing_pred| {
+                        // AND them together
+                        const combined = arena.create(ast_mod.Expr, .{ .binary_op = .{
+                            .op = .@"and",
+                            .left = vw,
+                            .right = existing_pred,
+                        } }) catch return EngineError.OutOfMemory;
+                        predicate = combined;
+                    } else {
+                        predicate = vw;
+                    }
+                }
+                if (uvi.check_option != 0 and uvi.where_clause != null) {
+                    view_check_where = uvi.where_clause;
+                }
+            } else {
+                return EngineError.TableNotFound;
+            }
+        }
+
         // Look up table
-        var table_info = self.catalog.getTable(scan_table) catch return EngineError.TableNotFound;
+        var table_info = self.catalog.getTable(actual_table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
 
         // Register SSI read+write for SERIALIZABLE transactions (UPDATE reads then writes)
@@ -1877,6 +1966,17 @@ pub const Database = struct {
                 if (!found) new_val.free(self.allocator);
             }
 
+            // WITH CHECK OPTION: validate updated row still satisfies view's WHERE
+            if (view_check_where) |where_expr| {
+                if (!self.checkViewCondition(where_expr, col_names, row.values)) {
+                    for (old_values) |ov| ov.free(self.allocator);
+                    self.allocator.free(old_values);
+                    for (row.values) |v| v.free(self.allocator);
+                    self.allocator.free(row.values);
+                    return EngineError.CheckOptionViolation;
+                }
+            }
+
             // Re-serialize (with MVCC header if in a transaction)
             const new_data = if (self.current_txn) |txn| blk: {
                 const cid = self.tm.getCurrentCid(txn.xid) catch {
@@ -1944,17 +2044,17 @@ pub const Database = struct {
                 for (new_values) |v| v.free(self.allocator);
                 self.allocator.free(new_values);
             }
-            self.insertIndexEntries(scan_table, &table_info, new_values, item.key) catch {};
+            self.insertIndexEntries(actual_table, &table_info, new_values, item.key) catch {};
         }
 
         // Update root page if needed
         if (tree.root_page_id != table_info.data_root_page_id) {
-            self.updateTableRootPage(scan_table, tree.root_page_id) catch {};
+            self.updateTableRootPage(actual_table, tree.root_page_id) catch {};
         }
 
         // Track updates for auto-vacuum (each update creates a dead tuple)
         if (rows_updated > 0) {
-            self.auto_vacuum.recordModification(scan_table, 0, @intCast(rows_updated), 0) catch {};
+            self.auto_vacuum.recordModification(actual_table, 0, @intCast(rows_updated), 0) catch {};
         }
 
         return .{
@@ -1990,7 +2090,42 @@ pub const Database = struct {
             }
         }
 
-        var table_info = self.catalog.getTable(scan_table) catch return EngineError.TableNotFound;
+        // Updatable view resolution for DELETE
+        var view_arena_storage: ?AstArena = null;
+        var view_infra_storage: ?std.heap.ArenaAllocator = null;
+        defer if (view_arena_storage) |*va| va.deinit();
+        defer if (view_infra_storage) |*vi| vi.deinit();
+
+        var actual_table: []const u8 = scan_table;
+
+        if (self.catalog.getTable(scan_table)) |_| {} else |_| {
+            view_arena_storage = AstArena.init(self.allocator);
+            view_infra_storage = std.heap.ArenaAllocator.init(self.allocator);
+            if (self.resolveUpdatableView(
+                &view_arena_storage.?,
+                &view_infra_storage.?,
+                scan_table,
+            )) |uvi| {
+                actual_table = uvi.base_table;
+                // Merge view's WHERE with the DELETE's predicate
+                if (uvi.where_clause) |vw| {
+                    if (predicate) |existing_pred| {
+                        const combined = arena.create(ast_mod.Expr, .{ .binary_op = .{
+                            .op = .@"and",
+                            .left = vw,
+                            .right = existing_pred,
+                        } }) catch return EngineError.OutOfMemory;
+                        predicate = combined;
+                    } else {
+                        predicate = vw;
+                    }
+                }
+            } else {
+                return EngineError.TableNotFound;
+            }
+        }
+
+        var table_info = self.catalog.getTable(actual_table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
 
         // Register SSI read+write for SERIALIZABLE transactions (DELETE reads then writes)
@@ -2126,12 +2261,12 @@ pub const Database = struct {
         }
 
         if (tree.root_page_id != table_info.data_root_page_id) {
-            self.updateTableRootPage(scan_table, tree.root_page_id) catch {};
+            self.updateTableRootPage(actual_table, tree.root_page_id) catch {};
         }
 
         // Track deletes for auto-vacuum (each delete creates a dead tuple)
         if (rows_deleted > 0) {
-            self.auto_vacuum.recordModification(scan_table, 0, 0, @intCast(rows_deleted)) catch {};
+            self.auto_vacuum.recordModification(actual_table, 0, 0, @intCast(rows_deleted)) catch {};
         }
 
         return .{
@@ -2535,6 +2670,155 @@ pub const Database = struct {
     fn catalogTableExists(self: *Database, name: []const u8) bool {
         if (self.catalog.tableExists(name) catch false) return true;
         return self.catalog.viewExists(name) catch false;
+    }
+
+    // ── Updatable View Support ──────────────────────────────────────
+
+    /// Info extracted from an updatable view definition.
+    const UpdatableViewInfo = struct {
+        /// The single base table name.
+        base_table: []const u8,
+        /// The view's WHERE clause (null if no filter).
+        where_clause: ?*const ast_mod.Expr,
+        /// View column names → base table column names mapping.
+        /// For simple views (SELECT * or SELECT col1, col2), these are
+        /// the column expressions from the SELECT.
+        view_columns: []const ast_mod.ResultColumn,
+        /// WITH CHECK OPTION type (0=none, 1=local, 2=cascaded).
+        check_option: u8,
+    };
+
+    /// Check if a view name refers to an updatable view and return info about it.
+    /// An updatable view must:
+    /// - Reference exactly one base table (no JOINs)
+    /// - Have no aggregates (GROUP BY, HAVING, aggregate functions)
+    /// - Have no DISTINCT
+    /// - Have no set operations (UNION/INTERSECT/EXCEPT)
+    /// - Have no subqueries in FROM
+    /// Returns null if the name is not a view or the view is not updatable.
+    fn resolveUpdatableView(
+        self: *Database,
+        view_arena: *AstArena,
+        infra_arena: *std.heap.ArenaAllocator,
+        view_name: []const u8,
+    ) ?UpdatableViewInfo {
+        const view_info = self.catalog.getView(view_name) catch return null;
+        defer view_info.deinit();
+
+        var p = Parser.init(infra_arena.allocator(), view_info.sql, view_arena) catch return null;
+        defer p.deinit();
+
+        const stmt = (p.parseStatement() catch return null) orelse return null;
+
+        const view_select = switch (stmt) {
+            .create_view => |cv| cv.select,
+            .select => |s| s,
+            else => return null,
+        };
+
+        // Must not have DISTINCT
+        if (view_select.distinct) return null;
+        if (view_select.distinct_on.len > 0) return null;
+
+        // Must not have GROUP BY / HAVING
+        if (view_select.group_by.len > 0) return null;
+        if (view_select.having != null) return null;
+
+        // Must not have set operations
+        if (view_select.set_operation != null) return null;
+
+        // Must not have CTEs
+        if (view_select.ctes.len > 0) return null;
+
+        // Must not have JOINs
+        if (view_select.joins.len > 0) return null;
+
+        // Must have a FROM clause with a simple table name (not a subquery)
+        const from = view_select.from orelse return null;
+        const base_table = switch (from.*) {
+            .table_name => |tn| tn.name,
+            .subquery => return null,
+        };
+
+        // Verify the base table actually exists (not another view — for simplicity)
+        if (!(self.catalog.tableExists(base_table) catch false)) return null;
+
+        // Check for aggregate functions in column expressions
+        for (view_select.columns) |col| {
+            switch (col) {
+                .expr => |e| {
+                    if (containsAggregateFunction(e.value)) return null;
+                },
+                .all_columns, .table_all_columns => {},
+            }
+        }
+
+        return .{
+            .base_table = base_table,
+            .where_clause = view_select.where,
+            .view_columns = view_select.columns,
+            .check_option = view_info.check_option,
+        };
+    }
+
+    /// Check if an expression tree contains aggregate function calls.
+    fn containsAggregateFunction(expr: *const ast_mod.Expr) bool {
+        return switch (expr.*) {
+            .function_call => |fc| {
+                const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "count_star", "group_concat" };
+                for (agg_names) |name| {
+                    if (std.ascii.eqlIgnoreCase(fc.name, name)) return true;
+                }
+                for (fc.args) |arg| {
+                    if (containsAggregateFunction(arg)) return true;
+                }
+                return false;
+            },
+            .binary_op => |bo| containsAggregateFunction(bo.left) or containsAggregateFunction(bo.right),
+            .unary_op => |uo| containsAggregateFunction(uo.operand),
+            .paren => |p| containsAggregateFunction(p),
+            .between => |b| containsAggregateFunction(b.expr) or containsAggregateFunction(b.low) or containsAggregateFunction(b.high),
+            .in_list => |il| blk: {
+                if (containsAggregateFunction(il.expr)) break :blk true;
+                for (il.list) |item| {
+                    if (containsAggregateFunction(item)) break :blk true;
+                }
+                break :blk false;
+            },
+            .is_null => |isn| containsAggregateFunction(isn.expr),
+            .like => |l| containsAggregateFunction(l.expr) or containsAggregateFunction(l.pattern),
+            .case_expr => |ce| blk: {
+                if (ce.operand) |op| {
+                    if (containsAggregateFunction(op)) break :blk true;
+                }
+                for (ce.when_clauses) |wc| {
+                    if (containsAggregateFunction(wc.condition) or containsAggregateFunction(wc.result)) break :blk true;
+                }
+                if (ce.else_expr) |ee| {
+                    if (containsAggregateFunction(ee)) break :blk true;
+                }
+                break :blk false;
+            },
+            .cast => |c| containsAggregateFunction(c.expr),
+            else => false,
+        };
+    }
+
+    /// Evaluate the view's WHERE clause against a set of values to check WITH CHECK OPTION.
+    /// Returns true if the row satisfies the view's WHERE, false otherwise.
+    fn checkViewCondition(self: *Database, where_expr: *const ast_mod.Expr, col_names: []const []const u8, values: []Value) bool {
+        const row = Row{
+            .columns = col_names,
+            .values = values,
+            .allocator = self.allocator,
+        };
+        const result = evalExpr(self.allocator, where_expr, &row) catch return false;
+        defer result.free(self.allocator);
+        return switch (result) {
+            .boolean => |b| b,
+            .integer => |i| i != 0,
+            else => false,
+        };
     }
 };
 
