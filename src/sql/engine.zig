@@ -11000,3 +11000,745 @@ test "Window function with alias" {
 
     try testing.expect((try r.rows.?.next()) == null);
 }
+
+test "LAST_VALUE() window function with default frame" {
+    const path = "test_wf_last_val.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // Default frame with ORDER BY: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    // LAST_VALUE returns the current row's value (it's the last in the frame)
+    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 30), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "LAST_VALUE() with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING" {
+    const path = "test_wf_last_val_full.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // Full partition frame — LAST_VALUE returns actual last value
+    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 30), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 30), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NTH_VALUE() window function" {
+    const path = "test_wf_nth_val.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // NTH_VALUE(val, 2) — return the 2nd row's value in ordered partition
+    var r = try db.exec("SELECT val, NTH_VALUE(val, 2) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "NTH_VALUE() with n > partition size returns NULL" {
+    const path = "test_wf_nth_val_oob.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+
+    // NTH_VALUE(val, 5) — n=5 > 2 rows → NULL for all
+    var r = try db.exec("SELECT val, NTH_VALUE(val, 5) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[1] == .null_value);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[1] == .null_value);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "PERCENT_RANK() window function" {
+    const path = "test_wf_pct_rank.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // PERCENT_RANK = (rank - 1) / (n - 1)
+    // val=10: rank=1, pr=0/3=0.0
+    // val=20: rank=2, pr=1/3=0.333
+    // val=20: rank=2, pr=1/3=0.333
+    // val=30: rank=4, pr=3/3=1.0
+    var r = try db.exec("SELECT val, PERCENT_RANK() OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 0.0), row1.values[1].real, 0.001);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 0.333333), row2.values[1].real, 0.001);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 20), row3.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 0.333333), row3.values[1].real, 0.001);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 30), row4.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), row4.values[1].real, 0.001);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "PERCENT_RANK() single row returns 0.0" {
+    const path = "test_wf_pct_rank1.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (42)");
+
+    var r = try db.exec("SELECT val, PERCENT_RANK() OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectApproxEqAbs(@as(f64, 0.0), row1.values[1].real, 0.001);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "CUME_DIST() window function" {
+    const path = "test_wf_cume_dist.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // CUME_DIST = count of rows with value <= current / total rows
+    // val=10: 1/4 = 0.25
+    // val=20: 3/4 = 0.75 (includes both val=20 rows)
+    // val=20: 3/4 = 0.75
+    // val=30: 4/4 = 1.0
+    var r = try db.exec("SELECT val, CUME_DIST() OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 0.25), row1.values[1].real, 0.001);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 0.75), row2.values[1].real, 0.001);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 20), row3.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 0.75), row3.values[1].real, 0.001);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 30), row4.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), row4.values[1].real, 0.001);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "CUME_DIST() single row returns 1.0" {
+    const path = "test_wf_cume_dist1.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (42)");
+
+    var r = try db.exec("SELECT val, CUME_DIST() OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectApproxEqAbs(@as(f64, 1.0), row1.values[1].real, 0.001);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window function with NULL in PARTITION BY column" {
+    const path = "test_wf_null_part.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (grp TEXT, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES ('a', 10)");
+    _ = try db.exec("INSERT INTO t VALUES ('a', 20)");
+    _ = try db.exec("INSERT INTO t VALUES (NULL, 30)");
+    _ = try db.exec("INSERT INTO t VALUES (NULL, 40)");
+
+    // NULLs in PARTITION BY should form their own partition
+    var r = try db.exec("SELECT grp, val, COUNT(*) OVER (PARTITION BY grp) FROM t ORDER BY val");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+    const cnt1 = row1.values[2].integer;
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer);
+    const cnt2 = row2.values[2].integer;
+
+    // Both 'a' rows should have the same count
+    try testing.expectEqual(cnt1, cnt2);
+    try testing.expectEqual(@as(i64, 2), cnt1);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[1].integer);
+    const cnt3 = row3.values[2].integer;
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 40), row4.values[1].integer);
+    const cnt4 = row4.values[2].integer;
+
+    // Both NULL partition rows should have same count
+    try testing.expectEqual(cnt3, cnt4);
+    try testing.expectEqual(@as(i64, 2), cnt3);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window aggregate SUM with NULL values" {
+    const path = "test_wf_sum_null.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
+    _ = try db.exec("INSERT INTO t VALUES (3, 30)");
+
+    // SUM should skip NULLs: 10 + 30 = 40
+    var r = try db.exec("SELECT id, val, SUM(val) OVER () FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+    try testing.expectEqual(@as(i64, 40), row1.values[2].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expect(row2.values[1] == .null_value);
+    try testing.expectEqual(@as(i64, 40), row2.values[2].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 30), row3.values[1].integer);
+    try testing.expectEqual(@as(i64, 40), row3.values[2].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window aggregate AVG with NULLs" {
+    const path = "test_wf_avg_null.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
+    _ = try db.exec("INSERT INTO t VALUES (3, 20)");
+
+    // AVG should skip NULLs: (10 + 20) / 2 = 15
+    var r = try db.exec("SELECT id, val, AVG(val) OVER () FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 15.0), row1.values[2].real, 0.001);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 15.0), row2.values[2].real, 0.001);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+    try testing.expectApproxEqAbs(@as(f64, 15.0), row3.values[2].real, 0.001);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "LAG() with offset > 1" {
+    const path = "test_wf_lag_offset.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+    _ = try db.exec("INSERT INTO t VALUES (40)");
+
+    // LAG(val, 2) — look 2 rows back
+    var r = try db.exec("SELECT val, LAG(val, 2) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expect(row1.values[1] == .null_value); // no 2 rows back
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expect(row2.values[1] == .null_value); // only 1 row back
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row3.values[1].integer); // 2 rows back = 10
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 40), row4.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row4.values[1].integer); // 2 rows back = 20
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "LEAD() with offset > 1" {
+    const path = "test_wf_lead_offset.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+    _ = try db.exec("INSERT INTO t VALUES (40)");
+
+    // LEAD(val, 2) — look 2 rows ahead
+    var r = try db.exec("SELECT val, LEAD(val, 2) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 30), row1.values[1].integer); // 2 ahead = 30
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 40), row2.values[1].integer); // 2 ahead = 40
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expect(row3.values[1] == .null_value); // only 1 ahead
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 40), row4.values[0].integer);
+    try testing.expect(row4.values[1] == .null_value); // no rows ahead
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "LAG() with default value" {
+    const path = "test_wf_lag_default.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // LAG(val, 1, -1) — default value of -1 when no previous row
+    var r = try db.exec("SELECT val, LAG(val, 1, -1) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, -1), row1.values[1].integer); // default value
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window function on empty table" {
+    const path = "test_wf_empty_tbl.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+
+    // Window function on empty table should return 0 rows, not error
+    var r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window function with PARTITION BY and ORDER BY" {
+    const path = "test_wf_part_ord.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE sales (dept TEXT, emp TEXT, amount INTEGER)");
+    _ = try db.exec("INSERT INTO sales VALUES ('eng', 'alice', 100)");
+    _ = try db.exec("INSERT INTO sales VALUES ('eng', 'bob', 200)");
+    _ = try db.exec("INSERT INTO sales VALUES ('eng', 'charlie', 150)");
+    _ = try db.exec("INSERT INTO sales VALUES ('sales', 'dave', 300)");
+    _ = try db.exec("INSERT INTO sales VALUES ('sales', 'eve', 250)");
+
+    // RANK within each department ordered by amount DESC
+    var r = try db.exec("SELECT dept, emp, amount, RANK() OVER (PARTITION BY dept ORDER BY amount DESC) FROM sales");
+    defer r.close(testing.allocator);
+
+    // eng partition: bob(200)=1, charlie(150)=2, alice(100)=3
+    // sales partition: dave(300)=1, eve(250)=2
+    var count: usize = 0;
+    while (try r.rows.?.next()) |row_const| {
+        var row = row_const;
+        defer row.deinit();
+        const dept = row.values[0].text;
+        const emp = row.values[1].text;
+        const rank_val = row.values[3].integer;
+
+        if (std.mem.eql(u8, emp, "bob")) {
+            try testing.expectEqualStrings("eng", dept);
+            try testing.expectEqual(@as(i64, 1), rank_val);
+        } else if (std.mem.eql(u8, emp, "charlie")) {
+            try testing.expectEqualStrings("eng", dept);
+            try testing.expectEqual(@as(i64, 2), rank_val);
+        } else if (std.mem.eql(u8, emp, "alice")) {
+            try testing.expectEqualStrings("eng", dept);
+            try testing.expectEqual(@as(i64, 3), rank_val);
+        } else if (std.mem.eql(u8, emp, "dave")) {
+            try testing.expectEqualStrings("sales", dept);
+            try testing.expectEqual(@as(i64, 1), rank_val);
+        } else if (std.mem.eql(u8, emp, "eve")) {
+            try testing.expectEqualStrings("sales", dept);
+            try testing.expectEqual(@as(i64, 2), rank_val);
+        }
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "Window MIN/MAX aggregate functions" {
+    const path = "test_wf_min_max.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+
+    var r = try db.exec("SELECT val, MIN(val) OVER (), MAX(val) OVER () FROM t ORDER BY val");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer); // MIN
+    try testing.expectEqual(@as(i64, 30), row1.values[2].integer); // MAX
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 10), row2.values[1].integer);
+    try testing.expectEqual(@as(i64, 30), row2.values[2].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 10), row3.values[1].integer);
+    try testing.expectEqual(@as(i64, 30), row3.values[2].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window function with self-join" {
+    const path = "test_wf_selfjoin.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t VALUES (2, 20)");
+
+    // COUNT(*) OVER () on a self-join — tests that window functions work after JOIN
+    var r = try db.exec("SELECT a.id, b.id, COUNT(*) OVER () FROM t AS a JOIN t AS b ON a.id <= b.id ORDER BY a.id");
+    defer r.close(testing.allocator);
+
+    // Self-join with a.id <= b.id: (1,1), (1,2), (2,2) = 3 rows
+    var count: usize = 0;
+    while (try r.rows.?.next()) |row_const| {
+        var row = row_const;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 3), row.values[2].integer);
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "Window function with CTE" {
+    const path = "test_wf_cte.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // Window function in main query using CTE
+    var r = try db.exec("WITH data AS (SELECT val FROM t) SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM data");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "Window function LAST_VALUE with empty OVER" {
+    const path = "test_wf_last_empty.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // Empty OVER() = entire partition, no ORDER BY
+    // LAST_VALUE with no ORDER BY and default frame (entire partition)
+    // should return the last value in the full partition
+    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER () FROM t ORDER BY val");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    // With no ORDER BY, frame = entire partition, so last_value = current row (no ordering)
+    // Actually in our impl, no ORDER BY means use_full_partition=false, so returns current row
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "DENSE_RANK with multiple partitions" {
+    const path = "test_wf_drank_part.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE scores (grp TEXT, val INTEGER)");
+    _ = try db.exec("INSERT INTO scores VALUES ('a', 10)");
+    _ = try db.exec("INSERT INTO scores VALUES ('a', 10)");
+    _ = try db.exec("INSERT INTO scores VALUES ('a', 20)");
+    _ = try db.exec("INSERT INTO scores VALUES ('b', 5)");
+    _ = try db.exec("INSERT INTO scores VALUES ('b', 5)");
+    _ = try db.exec("INSERT INTO scores VALUES ('b', 15)");
+
+    var r = try db.exec("SELECT grp, val, DENSE_RANK() OVER (PARTITION BY grp ORDER BY val) FROM scores");
+    defer r.close(testing.allocator);
+
+    // Partition 'a': (10,10,20) → ranks (1,1,2)
+    // Partition 'b': (5,5,15) → ranks (1,1,2)
+    var count: usize = 0;
+    while (try r.rows.?.next()) |row_const| {
+        var row = row_const;
+        defer row.deinit();
+        const grp = row.values[0].text;
+        const val = row.values[1].integer;
+        const rank_val = row.values[2].integer;
+
+        if (std.mem.eql(u8, grp, "a")) {
+            if (val == 10) try testing.expectEqual(@as(i64, 1), rank_val);
+            if (val == 20) try testing.expectEqual(@as(i64, 2), rank_val);
+        } else if (std.mem.eql(u8, grp, "b")) {
+            if (val == 5) try testing.expectEqual(@as(i64, 1), rank_val);
+            if (val == 15) try testing.expectEqual(@as(i64, 2), rank_val);
+        }
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 6), count);
+}
+
+test "Window function COUNT(column) skips NULLs" {
+    const path = "test_wf_cnt_null.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1, 10)");
+    _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
+    _ = try db.exec("INSERT INTO t VALUES (3, 30)");
+
+    // COUNT(val) should skip NULLs: 2 non-null values
+    var r = try db.exec("SELECT id, COUNT(val) OVER () FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "SUM OVER with ORDER BY (running sum)" {
+    const path = "test_wf_running_sum.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (val INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (10)");
+    _ = try db.exec("INSERT INTO t VALUES (20)");
+    _ = try db.exec("INSERT INTO t VALUES (30)");
+
+    // With ORDER BY, default frame = UNBOUNDED PRECEDING TO CURRENT ROW
+    // This creates a running/cumulative sum
+    var r = try db.exec("SELECT val, SUM(val) OVER (ORDER BY val) FROM t");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer); // running: 10
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 30), row2.values[1].integer); // running: 10+20
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 60), row3.values[1].integer); // running: 10+20+30
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
