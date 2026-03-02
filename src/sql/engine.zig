@@ -3058,6 +3058,50 @@ test "SELECT with ORDER BY" {
     }
 }
 
+test "ORDER BY on non-selected column" {
+    const path = "test_eng_order_noselect.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE items (name TEXT, priority INTEGER, category TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO items VALUES ('c_low', 3, 'tools'), ('a_high', 1, 'food'), ('b_mid', 2, 'food')");
+    defer r2.close(testing.allocator);
+
+    // ORDER BY priority (not in SELECT list)
+    var r3 = try db.execSQL("SELECT name FROM items ORDER BY priority");
+    defer r3.close(testing.allocator);
+
+    var row1 = (try r3.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("a_high", row1.values[0].text); // priority 1
+
+    var row2 = (try r3.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("b_mid", row2.values[0].text); // priority 2
+
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("c_low", row3.values[0].text); // priority 3
+
+    // ORDER BY two non-selected columns
+    var r4 = try db.execSQL("SELECT name FROM items ORDER BY category, priority");
+    defer r4.close(testing.allocator);
+
+    var row4 = (try r4.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqualStrings("a_high", row4.values[0].text); // food, priority 1
+
+    var row5 = (try r4.rows.?.next()).?;
+    defer row5.deinit();
+    try testing.expectEqualStrings("b_mid", row5.values[0].text); // food, priority 2
+
+    var row6 = (try r4.rows.?.next()).?;
+    defer row6.deinit();
+    try testing.expectEqualStrings("c_low", row6.values[0].text); // tools, priority 3
+}
+
 test "SELECT with LIMIT" {
     const path = "test_eng_sel_limit.db";
     defer std.fs.cwd().deleteFile(path) catch {};
