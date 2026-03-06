@@ -736,11 +736,11 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
   - Checkbox for query options (EXPLAIN, ANALYZE, transaction mode)
   - RadioGroup for format selection (table, csv, json, jsonl)
   - Input masks for date/time column entry, numeric constraints
-- [ ] `build.zig.zon`에 sailor v1.4.0 의존성 업데이트
+- [x] `build.zig.zon`에 sailor v1.4.0 의존성 업데이트
 - [ ] (Recommended) Implement connection editor using Form widget with validation
 - [ ] (Recommended) Add visual query builder using Select/Checkbox widgets
 - [ ] Add table/column name validation using validators module
 - [ ] Add format selector using RadioGroup (replace .mode command)
-- [ ] 기존 테스트 전체 통과 확인
+- [x] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Form features enable interactive connection editor and visual query builder for SQL shell TUI.
