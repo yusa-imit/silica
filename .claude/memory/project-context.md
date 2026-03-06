@@ -6,22 +6,36 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 1 — Storage Foundation (Weeks 1-6)
+## Current Phase: Phase 5 — Advanced SQL (Milestone 10 in progress)
 
-### Milestone 1 — Page Manager & File Format (Weeks 1-2)
-- [x] Utilities: CRC32C (src/util/checksum.zig), varint (src/util/varint.zig)
-- [x] Database file header (Page 0) — Magic: "SLCA"
-- [x] Page read/write with CRC32C checksums
-- [x] Freelist management (allocate/free pages)
-- [x] Basic test suite: create DB, write pages, reopen and verify
+### Completed Phases
+- **Phase 1**: Storage Foundation ✅ (v0.1.0)
+- **Phase 2**: SQL Layer ✅ (Tokenizer, Parser, AST, Analyzer, Catalog, Planner, Optimizer, Executor, Engine)
+- **Phase 3**: WAL & Basic Transactions ✅
+- **Phase 4**: MVCC & Full Transactions ✅
+  - Milestone 6: MVCC Core ✅ (TupleHeader, TransactionManager, Snapshot, visibility, locks)
+  - Milestone 7: VACUUM & SSI ✅ (VACUUM, Auto-vacuum, Savepoints, FSM, Deadlock Detection, SSI)
 
-### Milestone 2 — B+Tree & Buffer Pool (Weeks 3-6)
-- [x] LRU buffer pool with dirty page tracking (2A)
-- [x] B+Tree insert, delete, point lookup with leaf/internal splits (2B)
-- [x] Leaf/internal merges, underflow handling, root shrink (2C)
-- [x] Range scan cursors (forward/backward) with seek (2D)
-- [x] Overflow pages for large values (2E)
-- [x] Comprehensive B+Tree fuzz tests (2F)
+### Current: Phase 5 — Advanced SQL
+- **Milestone 8**: Views & CTEs ✅
+  - Regular/materialized/updatable views
+  - CTEs (WITH, WITH RECURSIVE)
+  - Set operations (UNION/INTERSECT/EXCEPT)
+  - DISTINCT/DISTINCT ON
+- **Milestone 9**: Window Functions ✅
+  - All ranking/value/distribution functions
+  - WINDOW clause named definitions
+  - 36 integration tests
+- **Milestone 10**: Advanced Data Types (IN PROGRESS)
+  - [x] DATE/TIME/TIMESTAMP types
+  - [x] INTERVAL type
+  - [x] NUMERIC/DECIMAL fixed-point
+  - [x] UUID type
+  - [x] SERIAL/BIGSERIAL types
+  - [x] ENUM types (CREATE TYPE AS ENUM, DROP TYPE)
+  - [ ] ARRAY type operations (constructor/subscript implemented, need INSERT/UPDATE integration)
+  - [ ] Domain types (custom constraints on base types)
+  - [ ] Type coercion matrix completion
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -30,6 +44,12 @@
 4. Transaction Manager (WAL, Locks, MVCC future)
 5. Storage Engine (B+Tree, Page Manager, Buffer Pool)
 6. OS Layer (File I/O, mmap optional, fsync)
+
+## Test Coverage Status (as of 2026-03-06)
+- Total tests: 1209 (all passing)
+- Recent additions: 11 new ENUM edge case tests in catalog.zig
+- catalog.zig: 48 tests (includes comprehensive ENUM validation)
+- Memory safety: Fixed errdefer bug in getEnumType (tracked allocated_count)
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
