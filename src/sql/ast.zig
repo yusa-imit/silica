@@ -236,6 +236,18 @@ pub const Expr = union(enum) {
         array: *const Expr,
         index: *const Expr,
     },
+    /// expr op ANY(array) — true if comparison holds for any array element
+    any: struct {
+        expr: *const Expr,
+        op: BinaryOp,
+        array: *const Expr,
+    },
+    /// expr op ALL(array) — true if comparison holds for all array elements
+    all: struct {
+        expr: *const Expr,
+        op: BinaryOp,
+        array: *const Expr,
+    },
     /// Bind parameter: ?
     bind_parameter: u32,
 };

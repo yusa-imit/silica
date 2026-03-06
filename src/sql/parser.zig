@@ -1307,6 +1307,33 @@ pub const Parser = struct {
 
             const op = self.currentBinaryOp() orelse break;
             _ = self.advance();
+
+            // Check for ANY/ALL after comparison operator
+            if (self.check(.kw_any)) {
+                _ = self.advance(); // consume ANY
+                _ = try self.expect(.left_paren);
+                const array = try self.parseExpr(0);
+                _ = try self.expect(.right_paren);
+                left = self.arena.create(ast.Expr, .{ .any = .{
+                    .expr = left,
+                    .op = op,
+                    .array = array,
+                } }) catch return error.OutOfMemory;
+                continue;
+            }
+            if (self.check(.kw_all)) {
+                _ = self.advance(); // consume ALL
+                _ = try self.expect(.left_paren);
+                const array = try self.parseExpr(0);
+                _ = try self.expect(.right_paren);
+                left = self.arena.create(ast.Expr, .{ .all = .{
+                    .expr = left,
+                    .op = op,
+                    .array = array,
+                } }) catch return error.OutOfMemory;
+                continue;
+            }
+
             const right = try self.parseExpr(prec + 1);
             left = self.arena.create(ast.Expr, .{ .binary_op = .{
                 .op = op,
@@ -2986,6 +3013,41 @@ test "parse CAST to ARRAY" {
     const expr = r.stmt.select.columns[0].expr.value;
     try std.testing.expect(expr.* == .cast);
     try std.testing.expectEqual(ast.DataType.type_array, expr.cast.target_type);
+}
+
+test "parse ANY with array" {
+    var r = try testParseWithArena("SELECT 5 = ANY(ARRAY[1, 2, 5]) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .any);
+    const any_expr = expr.any;
+    try std.testing.expect(any_expr.expr.* == .integer_literal);
+    try std.testing.expectEqual(@as(i64, 5), any_expr.expr.integer_literal);
+    try std.testing.expectEqual(ast.BinaryOp.equal, any_expr.op);
+    try std.testing.expect(any_expr.array.* == .array_constructor);
+}
+
+test "parse ALL with array" {
+    var r = try testParseWithArena("SELECT x > ALL(ARRAY[1, 2, 3]) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .all);
+    const all_expr = expr.all;
+    try std.testing.expect(all_expr.expr.* == .column_ref);
+    try std.testing.expectEqual(ast.BinaryOp.greater_than, all_expr.op);
+    try std.testing.expect(all_expr.array.* == .array_constructor);
+}
+
+test "parse ANY with column array" {
+    var r = try testParseWithArena("SELECT 'foo' = ANY(tags) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .any);
+    const any_expr = expr.any;
+    try std.testing.expect(any_expr.expr.* == .string_literal);
+    try std.testing.expectEqualStrings("foo", any_expr.expr.string_literal);
+    try std.testing.expect(any_expr.array.* == .column_ref);
+    try std.testing.expectEqualStrings("tags", any_expr.array.column_ref.name);
 }
 
 // ── ENUM type tests ───────────────────────────────────────────

@@ -1414,6 +1414,46 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
             return arr[@intCast(idx - 1)].dupe(allocator) catch return EvalError.OutOfMemory;
         },
 
+        .any => |any_expr| {
+            const lhs = try evalExpr(allocator, any_expr.expr, row);
+            defer lhs.free(allocator);
+            const arr_val = try evalExpr(allocator, any_expr.array, row);
+            defer arr_val.free(allocator);
+
+            const arr = switch (arr_val) {
+                .array => |a| a,
+                else => return .null_value, // ANY on non-array returns NULL
+            };
+
+            // ANY: true if comparison holds for at least one element
+            for (arr) |elem| {
+                const cmp_result = try evalBinaryOp(allocator, any_expr.op, lhs, elem);
+                defer cmp_result.free(allocator);
+                if (cmp_result.isTruthy()) return Value{ .boolean = true };
+            }
+            return Value{ .boolean = false };
+        },
+
+        .all => |all_expr| {
+            const lhs = try evalExpr(allocator, all_expr.expr, row);
+            defer lhs.free(allocator);
+            const arr_val = try evalExpr(allocator, all_expr.array, row);
+            defer arr_val.free(allocator);
+
+            const arr = switch (arr_val) {
+                .array => |a| a,
+                else => return .null_value, // ALL on non-array returns NULL
+            };
+
+            // ALL: true if comparison holds for all elements
+            for (arr) |elem| {
+                const cmp_result = try evalBinaryOp(allocator, all_expr.op, lhs, elem);
+                defer cmp_result.free(allocator);
+                if (!cmp_result.isTruthy()) return Value{ .boolean = false };
+            }
+            return Value{ .boolean = true };
+        },
+
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
         .subquery,
@@ -6729,4 +6769,134 @@ test "ARRAY CAST to text" {
         allocator.free(elems);
     }
     try std.testing.expectEqualStrings("{1,2,3}", result.text);
+}
+
+test "evalExpr ANY operator with array" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Create ARRAY[1, 2, 5]
+    const arr_elements = try aa.alloc(*const ast.Expr, 3);
+    for (0..3) |i| {
+        const e = try aa.create(ast.Expr);
+        if (i == 2) {
+            e.* = ast.Expr{ .integer_literal = 5 };
+        } else {
+            e.* = ast.Expr{ .integer_literal = @intCast(i + 1) };
+        }
+        arr_elements[i] = e;
+    }
+
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = arr_elements };
+
+    const lhs_expr = try aa.create(ast.Expr);
+    lhs_expr.* = ast.Expr{ .integer_literal = 5 };
+
+    // 5 = ANY(ARRAY[1, 2, 5])
+    const any_expr = ast.Expr{
+        .any = .{
+            .expr = lhs_expr,
+            .op = .equal,
+            .array = arr_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &any_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean);
+}
+
+test "evalExpr ALL operator with array" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Create ARRAY[1, 2, 3]
+    const arr_elements = try aa.alloc(*const ast.Expr, 3);
+    for (0..3) |i| {
+        const e = try aa.create(ast.Expr);
+        e.* = ast.Expr{ .integer_literal = @intCast(i + 1) };
+        arr_elements[i] = e;
+    }
+
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = arr_elements };
+
+    const lhs_expr = try aa.create(ast.Expr);
+    lhs_expr.* = ast.Expr{ .integer_literal = 5 };
+
+    // 5 > ALL(ARRAY[1, 2, 3])
+    const all_expr = ast.Expr{
+        .all = .{
+            .expr = lhs_expr,
+            .op = .greater_than,
+            .array = arr_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &all_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean);
+}
+
+test "evalExpr ANY returns false when no match" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Create ARRAY[1, 2, 3]
+    const arr_elements = try aa.alloc(*const ast.Expr, 3);
+    for (0..3) |i| {
+        const e = try aa.create(ast.Expr);
+        e.* = ast.Expr{ .integer_literal = @intCast(i + 1) };
+        arr_elements[i] = e;
+    }
+
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = arr_elements };
+
+    const lhs_expr = try aa.create(ast.Expr);
+    lhs_expr.* = ast.Expr{ .integer_literal = 10 };
+
+    // 10 = ANY(ARRAY[1, 2, 3])
+    const any_expr = ast.Expr{
+        .any = .{
+            .expr = lhs_expr,
+            .op = .equal,
+            .array = arr_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &any_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(!result.boolean);
 }

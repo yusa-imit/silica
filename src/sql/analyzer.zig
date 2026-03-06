@@ -704,6 +704,14 @@ pub const Analyzer = struct {
                 self.analyzeExpr(sub.array);
                 self.analyzeExpr(sub.index);
             },
+            .any => |any_expr| {
+                self.analyzeExpr(any_expr.expr);
+                self.analyzeExpr(any_expr.array);
+            },
+            .all => |all_expr| {
+                self.analyzeExpr(all_expr.expr);
+                self.analyzeExpr(all_expr.array);
+            },
             .subquery => {
                 // Subqueries have their own scope — skip deep analysis for now
             },

@@ -13105,3 +13105,74 @@ test "DROP TYPE nonexistent error" {
     const r = db.exec("DROP TYPE nonexistent");
     try testing.expectError(EngineError.TableNotFound, r);
 }
+
+test "ANY operator with array literal" {
+    const path = "test_any_array.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.exec("SELECT 5 = ANY(ARRAY[1, 2, 5])");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .boolean);
+    try testing.expect(row1.values[0].boolean);
+
+    var r2 = try db.exec("SELECT 10 = ANY(ARRAY[1, 2, 5])");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(!row2.values[0].boolean);
+}
+
+test "ALL operator with array literal" {
+    const path = "test_all_array.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.exec("SELECT 10 > ALL(ARRAY[1, 2, 3])");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .boolean);
+    try testing.expect(row1.values[0].boolean);
+
+    var r2 = try db.exec("SELECT 2 > ALL(ARRAY[1, 2, 3])");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(!row2.values[0].boolean);
+}
+
+test "ANY with array column" {
+    const path = "test_any_column.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE products (name TEXT, tags ARRAY)");
+    _ = try db.exec("INSERT INTO products VALUES ('Widget', ARRAY['sale', 'popular'])");
+
+    var r = try db.exec("SELECT name FROM products WHERE 'sale' = ANY(tags)");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualStrings("Widget", row.values[0].text);
+}
+
+test "ALL with comparison operators" {
+    const path = "test_all_ops.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.exec("SELECT 5 >= ALL(ARRAY[1, 2, 3, 4, 5])");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0].boolean);
+
+    var r2 = try db.exec("SELECT 4 >= ALL(ARRAY[1, 2, 3, 4, 5])");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(!row2.values[0].boolean);
+}
