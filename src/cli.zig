@@ -580,6 +580,12 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .drop_view => |v| {
             writer.print("Parsed: DROP VIEW {s}\n", .{v.name}) catch {};
         },
+        .create_type => |t| {
+            writer.print("Parsed: CREATE TYPE {s} AS ENUM ({d} values)\n", .{ t.name, t.values.len }) catch {};
+        },
+        .drop_type => |t| {
+            writer.print("Parsed: DROP TYPE {s}\n", .{t.name}) catch {};
+        },
     }
 }
 

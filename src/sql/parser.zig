@@ -674,8 +674,11 @@ pub const Parser = struct {
         if (self.check(.kw_table) or self.check(.kw_temp) or self.check(.kw_temporary)) {
             return .{ .create_table = try self.parseCreateTable() };
         }
+        if (self.check(.kw_type)) {
+            return .{ .create_type = try self.parseCreateType() };
+        }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, or INDEX after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, or TYPE after CREATE");
         return error.ParseFailed;
     }
 
@@ -1046,7 +1049,8 @@ pub const Parser = struct {
         if (self.check(.kw_table)) return .{ .drop_table = try self.parseDropTable() };
         if (self.check(.kw_view)) return .{ .drop_view = try self.parseDropView() };
         if (self.check(.kw_index)) return .{ .drop_index = try self.parseDropIndex() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, or INDEX after DROP");
+        if (self.check(.kw_type)) return .{ .drop_type = try self.parseDropType() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, or TYPE after DROP");
         return error.ParseFailed;
     }
 
@@ -1143,6 +1147,46 @@ pub const Parser = struct {
 
     fn parseDropView(self: *Parser) Error!ast.DropViewStmt {
         _ = try self.expect(.kw_view);
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+        return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    // ── CREATE TYPE / DROP TYPE ───────────────────────────────────
+
+    fn parseCreateType(self: *Parser) Error!ast.CreateTypeStmt {
+        const a = self.alloc();
+        _ = try self.expect(.kw_type);
+        const name = try self.expectIdentifier();
+        _ = try self.expect(.kw_as);
+        _ = try self.expect(.kw_enum);
+        _ = try self.expect(.left_paren);
+
+        var values = std.ArrayListUnmanaged([]const u8){};
+
+        // Parse enum values (string literals)
+        while (true) {
+            const tok = self.peek();
+            if (tok.type != .string_literal) {
+                try self.addError(tok, "expected string literal for enum value");
+                return error.ParseFailed;
+            }
+            values.append(a, tok.lexeme(self.source)) catch return error.OutOfMemory;
+            _ = self.advance();
+
+            if (!self.match(.comma)) break;
+        }
+
+        _ = try self.expect(.right_paren);
+
+        return .{ .name = name, .values = values.toOwnedSlice(a) catch return error.OutOfMemory };
+    }
+
+    fn parseDropType(self: *Parser) Error!ast.DropTypeStmt {
+        _ = try self.expect(.kw_type);
         var if_exists = false;
         if (self.match(.kw_if)) {
             _ = try self.expect(.kw_exists);
@@ -2942,4 +2986,42 @@ test "parse CAST to ARRAY" {
     const expr = r.stmt.select.columns[0].expr.value;
     try std.testing.expect(expr.* == .cast);
     try std.testing.expectEqual(ast.DataType.type_array, expr.cast.target_type);
+}
+
+// ── ENUM type tests ───────────────────────────────────────────
+
+test "parse CREATE TYPE AS ENUM" {
+    var r = try testParseWithArena("CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')");
+    defer r.deinit();
+    const ct = r.stmt.create_type;
+    try std.testing.expectEqualStrings("mood", ct.name);
+    try std.testing.expectEqual(@as(usize, 3), ct.values.len);
+    try std.testing.expectEqualStrings("'happy'", ct.values[0]);
+    try std.testing.expectEqualStrings("'sad'", ct.values[1]);
+    try std.testing.expectEqualStrings("'neutral'", ct.values[2]);
+}
+
+test "parse CREATE TYPE with single enum value" {
+    var r = try testParseWithArena("CREATE TYPE status AS ENUM ('active')");
+    defer r.deinit();
+    const ct = r.stmt.create_type;
+    try std.testing.expectEqualStrings("status", ct.name);
+    try std.testing.expectEqual(@as(usize, 1), ct.values.len);
+    try std.testing.expectEqualStrings("'active'", ct.values[0]);
+}
+
+test "parse DROP TYPE" {
+    var r = try testParseWithArena("DROP TYPE mood");
+    defer r.deinit();
+    const dt = r.stmt.drop_type;
+    try std.testing.expectEqualStrings("mood", dt.name);
+    try std.testing.expect(!dt.if_exists);
+}
+
+test "parse DROP TYPE IF EXISTS" {
+    var r = try testParseWithArena("DROP TYPE IF EXISTS mood");
+    defer r.deinit();
+    const dt = r.stmt.drop_type;
+    try std.testing.expectEqualStrings("mood", dt.name);
+    try std.testing.expect(dt.if_exists);
 }

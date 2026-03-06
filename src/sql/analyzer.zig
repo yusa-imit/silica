@@ -228,6 +228,8 @@ pub const Analyzer = struct {
             .vacuum => {},
             .create_view => |s| self.analyzeSelect(&s.select),
             .drop_view => {},
+            .create_type => {},
+            .drop_type => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

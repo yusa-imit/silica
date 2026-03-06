@@ -480,6 +480,19 @@ pub const DropViewStmt = struct {
     if_exists: bool = false,
 };
 
+/// CREATE TYPE AS ENUM statement.
+pub const CreateTypeStmt = struct {
+    name: []const u8,
+    /// The enum values (e.g., 'happy', 'sad').
+    values: []const []const u8,
+};
+
+/// DROP TYPE statement.
+pub const DropTypeStmt = struct {
+    name: []const u8,
+    if_exists: bool = false,
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -495,6 +508,8 @@ pub const Stmt = union(enum) {
     vacuum: VacuumStmt,
     create_view: CreateViewStmt,
     drop_view: DropViewStmt,
+    create_type: CreateTypeStmt,
+    drop_type: DropTypeStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;

@@ -280,6 +280,8 @@ pub const Planner = struct {
             .vacuum => self.planTransaction(), // handled early in engine, should never reach planner
             .create_view => self.planTransaction(), // handled early in engine
             .drop_view => self.planTransaction(), // handled early in engine
+            .create_type => self.planTransaction(), // handled early in engine
+            .drop_type => self.planTransaction(), // handled early in engine
             .explain => |s| self.planExplain(s),
         };
     }
