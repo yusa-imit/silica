@@ -709,8 +709,11 @@ pub const Parser = struct {
         if (self.check(.kw_type)) {
             return .{ .create_type = try self.parseCreateType() };
         }
+        if (self.check(.kw_domain)) {
+            return .{ .create_domain = try self.parseCreateDomain() };
+        }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, or TYPE after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, or DOMAIN after CREATE");
         return error.ParseFailed;
     }
 
@@ -1082,7 +1085,8 @@ pub const Parser = struct {
         if (self.check(.kw_view)) return .{ .drop_view = try self.parseDropView() };
         if (self.check(.kw_index)) return .{ .drop_index = try self.parseDropIndex() };
         if (self.check(.kw_type)) return .{ .drop_type = try self.parseDropType() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, or TYPE after DROP");
+        if (self.check(.kw_domain)) return .{ .drop_domain = try self.parseDropDomain() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, or DOMAIN after DROP");
         return error.ParseFailed;
     }
 
@@ -1219,6 +1223,36 @@ pub const Parser = struct {
 
     fn parseDropType(self: *Parser) Error!ast.DropTypeStmt {
         _ = try self.expect(.kw_type);
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+        return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    fn parseCreateDomain(self: *Parser) Error!ast.CreateDomainStmt {
+        _ = try self.expect(.kw_domain);
+        const name = try self.expectIdentifier();
+        _ = try self.expect(.kw_as);
+        const base_type = self.parseDataType() orelse {
+            try self.addError(self.peek(), "expected data type after AS");
+            return error.ParseFailed;
+        };
+
+        var constraint: ?*ast.Expr = null;
+        if (self.match(.kw_check)) {
+            _ = try self.expect(.left_paren);
+            const expr = try self.parseExpr(0);
+            constraint = @constCast(expr);
+            _ = try self.expect(.right_paren);
+        }
+
+        return .{ .name = name, .base_type = base_type, .constraint = constraint };
+    }
+
+    fn parseDropDomain(self: *Parser) Error!ast.DropDomainStmt {
+        _ = try self.expect(.kw_domain);
         var if_exists = false;
         if (self.match(.kw_if)) {
             _ = try self.expect(.kw_exists);
@@ -3118,4 +3152,38 @@ test "parse DROP TYPE IF EXISTS" {
     const dt = r.stmt.drop_type;
     try std.testing.expectEqualStrings("mood", dt.name);
     try std.testing.expect(dt.if_exists);
+}
+
+test "parse CREATE DOMAIN with constraint" {
+    var r = try testParseWithArena("CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)");
+    defer r.deinit();
+    const cd = r.stmt.create_domain;
+    try std.testing.expectEqualStrings("positive_int", cd.name);
+    try std.testing.expectEqual(ast.DataType.type_integer, cd.base_type);
+    try std.testing.expect(cd.constraint != null);
+}
+
+test "parse CREATE DOMAIN without constraint" {
+    var r = try testParseWithArena("CREATE DOMAIN email_address AS TEXT");
+    defer r.deinit();
+    const cd = r.stmt.create_domain;
+    try std.testing.expectEqualStrings("email_address", cd.name);
+    try std.testing.expectEqual(ast.DataType.type_text, cd.base_type);
+    try std.testing.expect(cd.constraint == null);
+}
+
+test "parse DROP DOMAIN" {
+    var r = try testParseWithArena("DROP DOMAIN positive_int");
+    defer r.deinit();
+    const dd = r.stmt.drop_domain;
+    try std.testing.expectEqualStrings("positive_int", dd.name);
+    try std.testing.expect(!dd.if_exists);
+}
+
+test "parse DROP DOMAIN IF EXISTS" {
+    var r = try testParseWithArena("DROP DOMAIN IF EXISTS positive_int");
+    defer r.deinit();
+    const dd = r.stmt.drop_domain;
+    try std.testing.expectEqualStrings("positive_int", dd.name);
+    try std.testing.expect(dd.if_exists);
 }

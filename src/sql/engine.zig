@@ -2629,6 +2629,43 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "DROP TYPE" };
             },
+            .create_domain => |cd| {
+                // Serialize constraint expression to text if present
+                var constraint_text: ?[]const u8 = null;
+                if (cd.constraint) |expr| {
+                    // For now, we'll store a placeholder. Full constraint validation
+                    // requires expression serialization which is beyond this PR.
+                    // TODO: Implement expression-to-text serialization for proper constraint storage
+                    constraint_text = try arena.?.allocator().dupe(u8, "VALUE CHECK");
+                    _ = expr; // Suppress unused warning
+                }
+
+                self.catalog.createDomain(cd.name, cd.base_type, constraint_text) catch |err| {
+                    return switch (err) {
+                        error.TypeAlreadyExists => EngineError.TableAlreadyExists,
+                        error.TableAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE DOMAIN" };
+            },
+            .drop_domain => |dd| {
+                self.catalog.dropDomain(dd.name, dd.if_exists) catch |err| {
+                    return switch (err) {
+                        error.TypeNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP DOMAIN" };
+            },
             else => {},
         }
 
@@ -4391,7 +4428,7 @@ test "index scan: multiple inserts then PK lookup" {
     while (ins_idx < 20) : (ins_idx += 1) {
         const sql = try std.fmt.allocPrint(testing.allocator, "INSERT INTO products (id, name, price) VALUES ({d}, 'product_{d}', {d});", .{ ins_idx + 1, ins_idx + 1, (ins_idx + 1) * 10 });
         defer testing.allocator.free(sql);
-        var r = try db.execSQL(sql);
+        const r = try db.execSQL(sql);
         r.close(testing.allocator);
     }
 
@@ -4742,7 +4779,7 @@ test "WAL mode: data persistence across close and reopen" {
         var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
         defer db.close();
 
-        var r = try db.execSQL("SELECT id, name FROM users ORDER BY id");
+        const r = try db.execSQL("SELECT id, name FROM users ORDER BY id");
         defer r.close(testing.allocator);
         var count: usize = 0;
         while (try r.rows.?.next()) |*row_ptr| {
@@ -4903,7 +4940,7 @@ test "WAL mode: large batch insert" {
     while (idx < 50) : (idx += 1) {
         var buf: [128]u8 = undefined;
         const sql = std.fmt.bufPrint(&buf, "INSERT INTO nums (id, val) VALUES ({d}, {d})", .{ idx + 1, (idx + 1) * 10 }) catch unreachable;
-        var r = try db.execSQL(sql);
+        const r = try db.execSQL(sql);
         r.close(testing.allocator);
     }
 
@@ -5012,7 +5049,7 @@ test "DROP TABLE IF EXISTS on non-existent table succeeds" {
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
-    var r = try db.execSQL("DROP TABLE IF EXISTS nonexistent");
+    const r = try db.execSQL("DROP TABLE IF EXISTS nonexistent");
     r.close(testing.allocator);
     try testing.expect(std.mem.eql(u8, "DROP TABLE", r.message));
 }
@@ -5789,7 +5826,7 @@ test "MVCC: sequential transactions with increasing XIDs" {
         try testing.expectEqual(expected_xid, db.current_txn.?.xid);
         expected_xid += 1;
 
-        var r = try db.execSQL("INSERT INTO t (id) VALUES (1)");
+        const r = try db.execSQL("INSERT INTO t (id) VALUES (1)");
         r.close(testing.allocator);
         try db.commitTransaction();
     }
@@ -6050,18 +6087,18 @@ test "Lock: INSERT acquires row locks in transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
 
     {
-        var r = try db.exec("INSERT INTO items VALUES (1, 'a')");
+        const r = try db.exec("INSERT INTO items VALUES (1, 'a')");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (2, 'b')");
+        const r = try db.exec("INSERT INTO items VALUES (2, 'b')");
         r.close(testing.allocator);
     }
 
@@ -6081,13 +6118,13 @@ test "Lock: locks released on rollback" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO items VALUES (1)");
+        const r = try db.exec("INSERT INTO items VALUES (1)");
         r.close(testing.allocator);
     }
     try testing.expect(db.lock_manager.activeRowLockCount() > 0);
@@ -6103,17 +6140,17 @@ test "Lock: UPDATE acquires row locks" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (1, 'old')");
+        const r = try db.exec("INSERT INTO items VALUES (1, 'old')");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("UPDATE items SET name = 'new' WHERE id = 1");
+        const r = try db.exec("UPDATE items SET name = 'new' WHERE id = 1");
         r.close(testing.allocator);
     }
 
@@ -6131,17 +6168,17 @@ test "Lock: DELETE acquires row locks" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (1)");
+        const r = try db.exec("INSERT INTO items VALUES (1)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("DELETE FROM items WHERE id = 1");
+        const r = try db.exec("DELETE FROM items WHERE id = 1");
         r.close(testing.allocator);
     }
 
@@ -6158,11 +6195,11 @@ test "Lock: no locks in auto-commit mode" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (1)");
+        const r = try db.exec("INSERT INTO items VALUES (1)");
         r.close(testing.allocator);
     }
 
@@ -6177,22 +6214,22 @@ test "Lock: multiple rows same transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER, val TEXT)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER, val TEXT)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
 
     {
-        var r = try db.exec("INSERT INTO items VALUES (1, 'a')");
+        const r = try db.exec("INSERT INTO items VALUES (1, 'a')");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (2, 'b')");
+        const r = try db.exec("INSERT INTO items VALUES (2, 'b')");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (3, 'c')");
+        const r = try db.exec("INSERT INTO items VALUES (3, 'c')");
         r.close(testing.allocator);
     }
 
@@ -6208,13 +6245,13 @@ test "Lock: Database.close releases locks from active transaction" {
     var db = try createTestDb(testing.allocator, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO items VALUES (1)");
+        const r = try db.exec("INSERT INTO items VALUES (1)");
         r.close(testing.allocator);
     }
 
@@ -6230,7 +6267,7 @@ test "error recovery: exec succeeds after previous exec error" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER, name TEXT)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER, name TEXT)");
         r.close(testing.allocator);
     }
 
@@ -6241,13 +6278,13 @@ test "error recovery: exec succeeds after previous exec error" {
 
     // Next exec should work fine — engine recovered from the error
     {
-        var r = try db.exec("INSERT INTO t VALUES (1, 'hello')");
+        const r = try db.exec("INSERT INTO t VALUES (1, 'hello')");
         r.close(testing.allocator);
     }
 
     // Verify the successful insert
     {
-        var r = try db.exec("SELECT * FROM t");
+        const r = try db.exec("SELECT * FROM t");
         defer r.close(testing.allocator);
         var count: usize = 0;
         while (try r.rows.?.next()) |*row_ptr| {
@@ -6268,25 +6305,25 @@ test "MVCC: transaction commit after successful DML is atomic" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE accounts (id INTEGER, balance INTEGER)");
+        const r = try db.exec("CREATE TABLE accounts (id INTEGER, balance INTEGER)");
         r.close(testing.allocator);
     }
 
     // Insert in transaction
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO accounts VALUES (1, 100)");
+        const r = try db.exec("INSERT INTO accounts VALUES (1, 100)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO accounts VALUES (2, 200)");
+        const r = try db.exec("INSERT INTO accounts VALUES (2, 200)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
 
     // Both rows should be visible after commit
     {
-        var r = try db.exec("SELECT COUNT(*) FROM accounts");
+        const r = try db.exec("SELECT COUNT(*) FROM accounts");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6303,20 +6340,20 @@ test "MVCC: transaction rollback makes DML invisible" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
         r.close(testing.allocator);
     }
 
     // Insert one row in auto-commit (visible)
     {
-        var r = try db.exec("INSERT INTO items VALUES (1, 'visible')");
+        const r = try db.exec("INSERT INTO items VALUES (1, 'visible')");
         r.close(testing.allocator);
     }
 
     // Insert in transaction then rollback (should be invisible)
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO items VALUES (2, 'invisible')");
+        const r = try db.exec("INSERT INTO items VALUES (2, 'invisible')");
         r.close(testing.allocator);
     }
     try db.rollbackTransaction();
@@ -6325,7 +6362,7 @@ test "MVCC: transaction rollback makes DML invisible" {
     // (auto-commit mode doesn't apply MVCC filtering, so we must check in a txn)
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM items");
+        const r = try db.exec("SELECT COUNT(*) FROM items");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6347,24 +6384,24 @@ test "MVCC: UPDATE within transaction is visible" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE data (id INTEGER, val INTEGER)");
+        const r = try db.exec("CREATE TABLE data (id INTEGER, val INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO data VALUES (1, 10)");
+        const r = try db.exec("INSERT INTO data VALUES (1, 10)");
         r.close(testing.allocator);
     }
 
     // Update within transaction should be visible in same transaction
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("UPDATE data SET val = 999 WHERE id = 1");
+        const r = try db.exec("UPDATE data SET val = 999 WHERE id = 1");
         r.close(testing.allocator);
     }
 
     // Within transaction, should see updated value
     {
-        var r = try db.exec("SELECT val FROM data WHERE id = 1");
+        const r = try db.exec("SELECT val FROM data WHERE id = 1");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6384,29 +6421,29 @@ test "MVCC: DELETE within transaction removes row" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE things (id INTEGER)");
+        const r = try db.exec("CREATE TABLE things (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO things VALUES (1)");
+        const r = try db.exec("INSERT INTO things VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO things VALUES (2)");
+        const r = try db.exec("INSERT INTO things VALUES (2)");
         r.close(testing.allocator);
     }
 
     // Delete within transaction
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("DELETE FROM things WHERE id = 1");
+        const r = try db.exec("DELETE FROM things WHERE id = 1");
         r.close(testing.allocator);
         try testing.expectEqual(@as(u64, 1), r.rows_affected);
     }
 
     // Within transaction, only one row should remain
     {
-        var r = try db.exec("SELECT COUNT(*) FROM things");
+        const r = try db.exec("SELECT COUNT(*) FROM things");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6430,20 +6467,20 @@ test "WAL mode: transaction rollback preserves committed data" {
     }
 
     {
-        var r = try db.exec("CREATE TABLE wal_test (id INTEGER, data TEXT)");
+        const r = try db.exec("CREATE TABLE wal_test (id INTEGER, data TEXT)");
         r.close(testing.allocator);
     }
 
     // Auto-commit insert (should persist)
     {
-        var r = try db.exec("INSERT INTO wal_test VALUES (1, 'persisted')");
+        const r = try db.exec("INSERT INTO wal_test VALUES (1, 'persisted')");
         r.close(testing.allocator);
     }
 
     // Transaction insert then rollback
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO wal_test VALUES (2, 'rolled_back')");
+        const r = try db.exec("INSERT INTO wal_test VALUES (2, 'rolled_back')");
         r.close(testing.allocator);
     }
     try db.rollbackTransaction();
@@ -6451,7 +6488,7 @@ test "WAL mode: transaction rollback preserves committed data" {
     // Only auto-committed row should be visible (check in explicit txn for MVCC filtering)
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM wal_test");
+        const r = try db.exec("SELECT COUNT(*) FROM wal_test");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6469,14 +6506,14 @@ test "MVCC: sequential transactions see each other's committed results" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE seq (id INTEGER)");
+        const r = try db.exec("CREATE TABLE seq (id INTEGER)");
         r.close(testing.allocator);
     }
 
     // Transaction 1: insert row
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO seq VALUES (100)");
+        const r = try db.exec("INSERT INTO seq VALUES (100)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -6484,7 +6521,7 @@ test "MVCC: sequential transactions see each other's committed results" {
     // Transaction 2: should see row from tx1
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT * FROM seq WHERE id = 100");
+        const r = try db.exec("SELECT * FROM seq WHERE id = 100");
         defer r.close(testing.allocator);
         var found = false;
         while (try r.rows.?.next()) |*row_ptr| {
@@ -6498,14 +6535,14 @@ test "MVCC: sequential transactions see each other's committed results" {
 
     // Transaction 2: insert another row and commit
     {
-        var r = try db.exec("INSERT INTO seq VALUES (200)");
+        const r = try db.exec("INSERT INTO seq VALUES (200)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
 
     // Auto-commit query should see both
     {
-        var r = try db.exec("SELECT COUNT(*) FROM seq");
+        const r = try db.exec("SELECT COUNT(*) FROM seq");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6522,7 +6559,7 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE lifecycle (id INTEGER, status TEXT)");
+        const r = try db.exec("CREATE TABLE lifecycle (id INTEGER, status TEXT)");
         r.close(testing.allocator);
     }
 
@@ -6530,19 +6567,19 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
 
     // Insert
     {
-        var r = try db.exec("INSERT INTO lifecycle VALUES (1, 'created')");
+        const r = try db.exec("INSERT INTO lifecycle VALUES (1, 'created')");
         r.close(testing.allocator);
     }
 
     // Update
     {
-        var r = try db.exec("UPDATE lifecycle SET status = 'updated' WHERE id = 1");
+        const r = try db.exec("UPDATE lifecycle SET status = 'updated' WHERE id = 1");
         r.close(testing.allocator);
     }
 
     // Verify within txn
     {
-        var r = try db.exec("SELECT status FROM lifecycle WHERE id = 1");
+        const r = try db.exec("SELECT status FROM lifecycle WHERE id = 1");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6553,13 +6590,13 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
 
     // Delete
     {
-        var r = try db.exec("DELETE FROM lifecycle WHERE id = 1");
+        const r = try db.exec("DELETE FROM lifecycle WHERE id = 1");
         r.close(testing.allocator);
     }
 
     // Verify deleted within txn
     {
-        var r = try db.exec("SELECT COUNT(*) FROM lifecycle");
+        const r = try db.exec("SELECT COUNT(*) FROM lifecycle");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6572,7 +6609,7 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
 
     // After commit, row should still be gone
     {
-        var r = try db.exec("SELECT COUNT(*) FROM lifecycle");
+        const r = try db.exec("SELECT COUNT(*) FROM lifecycle");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6591,28 +6628,28 @@ test "VACUUM: basic VACUUM command" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (1, 'alpha')");
+        const r = try db.exec("INSERT INTO items VALUES (1, 'alpha')");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (2, 'beta')");
+        const r = try db.exec("INSERT INTO items VALUES (2, 'beta')");
         r.close(testing.allocator);
     }
 
     // VACUUM should succeed without error
     {
-        var r = try db.exec("VACUUM");
+        const r = try db.exec("VACUUM");
         try testing.expectEqualStrings("VACUUM", r.message);
         r.close(testing.allocator);
     }
 
     // Data should still be intact
     {
-        var r = try db.exec("SELECT COUNT(*) FROM items");
+        const r = try db.exec("SELECT COUNT(*) FROM items");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6629,24 +6666,24 @@ test "VACUUM: VACUUM specific table" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (x INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (x INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 VALUES (1)");
         r.close(testing.allocator);
     }
 
     // VACUUM specific table
     {
-        var r = try db.exec("VACUUM t1");
+        const r = try db.exec("VACUUM t1");
         try testing.expectEqualStrings("VACUUM", r.message);
         r.close(testing.allocator);
     }
 
     // Data should still be intact
     {
-        var r = try db.exec("SELECT x FROM t1");
+        const r = try db.exec("SELECT x FROM t1");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6663,7 +6700,7 @@ test "VACUUM: error when inside transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER)");
         r.close(testing.allocator);
     }
 
@@ -6689,18 +6726,18 @@ test "VACUUM: cleans aborted transaction rows" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (val INTEGER)");
+        const r = try db.exec("CREATE TABLE items (val INTEGER)");
         r.close(testing.allocator);
     }
 
     // Insert in committed transaction
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO items VALUES (1)");
+        const r = try db.exec("INSERT INTO items VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items VALUES (2)");
+        const r = try db.exec("INSERT INTO items VALUES (2)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -6708,21 +6745,21 @@ test "VACUUM: cleans aborted transaction rows" {
     // Insert in aborted transaction
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO items VALUES (999)");
+        const r = try db.exec("INSERT INTO items VALUES (999)");
         r.close(testing.allocator);
     }
     try db.rollbackTransaction();
 
     // VACUUM should clean up the aborted row
     {
-        var r = try db.exec("VACUUM items");
+        const r = try db.exec("VACUUM items");
         r.close(testing.allocator);
     }
 
     // Verify: only committed rows remain visible
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM items");
+        const r = try db.exec("SELECT COUNT(*) FROM items");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6740,27 +6777,27 @@ test "VACUUM: freezes old committed tuples" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE frozen_test (id INTEGER)");
+        const r = try db.exec("CREATE TABLE frozen_test (id INTEGER)");
         r.close(testing.allocator);
     }
 
     // Insert in a transaction and commit
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO frozen_test VALUES (42)");
+        const r = try db.exec("INSERT INTO frozen_test VALUES (42)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
 
     // VACUUM should freeze the committed row
     {
-        var r = try db.exec("VACUUM frozen_test");
+        const r = try db.exec("VACUUM frozen_test");
         r.close(testing.allocator);
     }
 
     // Data should still be readable
     {
-        var r = try db.exec("SELECT id FROM frozen_test");
+        const r = try db.exec("SELECT id FROM frozen_test");
         defer r.close(testing.allocator);
         if (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -6779,13 +6816,13 @@ test "SAVEPOINT: basic savepoint creation via SQL" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE sp_test (val INTEGER)");
+        const r = try db.exec("CREATE TABLE sp_test (val INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("SAVEPOINT", r.message);
     }
@@ -6799,17 +6836,17 @@ test "SAVEPOINT: release savepoint" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE sp_rel (val INTEGER)");
+        const r = try db.exec("CREATE TABLE sp_rel (val INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("RELEASE SAVEPOINT s1");
+        const r = try db.exec("RELEASE SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("RELEASE", r.message);
     }
@@ -6823,7 +6860,7 @@ test "SAVEPOINT: rollback to savepoint" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE sp_rb (val INTEGER)");
+        const r = try db.exec("CREATE TABLE sp_rb (val INTEGER)");
         r.close(testing.allocator);
     }
 
@@ -6831,24 +6868,24 @@ test "SAVEPOINT: rollback to savepoint" {
 
     // Insert before savepoint
     {
-        var r = try db.exec("INSERT INTO sp_rb VALUES (1)");
+        const r = try db.exec("INSERT INTO sp_rb VALUES (1)");
         r.close(testing.allocator);
     }
 
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
 
     // Insert after savepoint
     {
-        var r = try db.exec("INSERT INTO sp_rb VALUES (2)");
+        const r = try db.exec("INSERT INTO sp_rb VALUES (2)");
         r.close(testing.allocator);
     }
 
     // Rollback to savepoint
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ROLLBACK", r.message);
     }
@@ -6865,7 +6902,7 @@ test "SAVEPOINT: error outside transaction" {
 
     // SAVEPOINT outside transaction returns error message
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
     }
@@ -6879,7 +6916,7 @@ test "SAVEPOINT: release nonexistent savepoint" {
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("RELEASE SAVEPOINT nonexistent");
+        const r = try db.exec("RELEASE SAVEPOINT nonexistent");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
     }
@@ -6894,7 +6931,7 @@ test "SAVEPOINT: rollback to nonexistent savepoint" {
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT nonexistent");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT nonexistent");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
     }
@@ -6908,42 +6945,42 @@ test "SAVEPOINT: nested savepoints" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE sp_nest (val INTEGER)");
+        const r = try db.exec("CREATE TABLE sp_nest (val INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
 
     {
-        var r = try db.exec("INSERT INTO sp_nest VALUES (1)");
+        const r = try db.exec("INSERT INTO sp_nest VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO sp_nest VALUES (2)");
+        const r = try db.exec("INSERT INTO sp_nest VALUES (2)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT s2");
+        const r = try db.exec("SAVEPOINT s2");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO sp_nest VALUES (3)");
+        const r = try db.exec("INSERT INTO sp_nest VALUES (3)");
         r.close(testing.allocator);
     }
 
     // Rollback to s1 should discard s2 as well
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT s1");
         r.close(testing.allocator);
     }
 
     // s2 should no longer exist
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT s2");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT s2");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
     }
@@ -6958,37 +6995,37 @@ test "SAVEPOINT: replace same-name savepoint" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE sp_rep (val INTEGER)");
+        const r = try db.exec("CREATE TABLE sp_rep (val INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.read_committed);
 
     {
-        var r = try db.exec("INSERT INTO sp_rep VALUES (1)");
+        const r = try db.exec("INSERT INTO sp_rep VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO sp_rep VALUES (2)");
+        const r = try db.exec("INSERT INTO sp_rep VALUES (2)");
         r.close(testing.allocator);
     }
     // Creating savepoint with same name replaces it at the new CID position
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO sp_rep VALUES (3)");
+        const r = try db.exec("INSERT INTO sp_rep VALUES (3)");
         r.close(testing.allocator);
     }
 
     // ROLLBACK TO s1 should only roll back the insert of 3, not 2
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT s1");
         r.close(testing.allocator);
     }
 
@@ -7003,15 +7040,15 @@ test "SAVEPOINT: transaction commit cleans up savepoints" {
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT s2");
+        const r = try db.exec("SAVEPOINT s2");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT s3");
+        const r = try db.exec("SAVEPOINT s3");
         r.close(testing.allocator);
     }
     // Commit should clean up all savepoints without leaking
@@ -7020,7 +7057,7 @@ test "SAVEPOINT: transaction commit cleans up savepoints" {
     // Start new transaction — previous savepoints should not exist
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
     }
@@ -7035,11 +7072,11 @@ test "SAVEPOINT: transaction rollback cleans up savepoints" {
 
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT s2");
+        const r = try db.exec("SAVEPOINT s2");
         r.close(testing.allocator);
     }
     // Rollback should clean up all savepoints without leaking
@@ -7053,14 +7090,14 @@ test "MVCC isolation: aborted INSERT invisible after rollback via new transactio
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
         r.close(testing.allocator);
     }
 
     // Insert in transaction then rollback
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'ghost')");
+        const r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'ghost')");
         r.close(testing.allocator);
     }
     try db.rollbackTransaction();
@@ -7068,7 +7105,7 @@ test "MVCC isolation: aborted INSERT invisible after rollback via new transactio
     // Start new transaction — aborted row must be invisible
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM t");
+        const r = try db.exec("SELECT COUNT(*) FROM t");
         var count: i64 = -1;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7088,14 +7125,14 @@ test "MVCC isolation: committed INSERT visible to subsequent transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
         r.close(testing.allocator);
     }
 
     // Insert and commit
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'real')");
+        const r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'real')");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7103,7 +7140,7 @@ test "MVCC isolation: committed INSERT visible to subsequent transaction" {
     // New transaction should see the committed row
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT id, val FROM t");
+        const r = try db.exec("SELECT id, val FROM t");
         var count: usize = 0;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7125,14 +7162,14 @@ test "MVCC isolation: INSERT then commit then DELETE then commit makes row invis
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER)");
         r.close(testing.allocator);
     }
 
     // Insert and commit a row
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id) VALUES (42)");
+        const r = try db.exec("INSERT INTO t (id) VALUES (42)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7140,7 +7177,7 @@ test "MVCC isolation: INSERT then commit then DELETE then commit makes row invis
     // Delete and commit
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("DELETE FROM t WHERE id = 42");
+        const r = try db.exec("DELETE FROM t WHERE id = 42");
         r.close(testing.allocator);
         try testing.expectEqual(@as(u64, 1), r.rows_affected);
     }
@@ -7149,7 +7186,7 @@ test "MVCC isolation: INSERT then commit then DELETE then commit makes row invis
     // Row should be invisible after committed delete
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM t");
+        const r = try db.exec("SELECT COUNT(*) FROM t");
         var count: i64 = -1;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7169,14 +7206,14 @@ test "MVCC isolation: UPDATE then commit reflects new value" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
         r.close(testing.allocator);
     }
 
     // Insert and commit
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'original')");
+        const r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'original')");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7184,7 +7221,7 @@ test "MVCC isolation: UPDATE then commit reflects new value" {
     // Update and commit
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("UPDATE t SET val = 'modified' WHERE id = 1");
+        const r = try db.exec("UPDATE t SET val = 'modified' WHERE id = 1");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7192,7 +7229,7 @@ test "MVCC isolation: UPDATE then commit reflects new value" {
     // Value should be 'modified'
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT val FROM t WHERE id = 1");
+        const r = try db.exec("SELECT val FROM t WHERE id = 1");
         var found = false;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7242,7 +7279,7 @@ test "MVCC: nested BEGIN returns error" {
 
     // Nested BEGIN via SQL should report error
     {
-        var r = try db.exec("BEGIN");
+        const r = try db.exec("BEGIN");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: already in a transaction", r.message);
     }
@@ -7257,7 +7294,7 @@ test "SAVEPOINT: create and release within transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER)");
         r.close(testing.allocator);
     }
 
@@ -7265,29 +7302,29 @@ test "SAVEPOINT: create and release within transaction" {
 
     // Insert row 1
     {
-        var r = try db.exec("INSERT INTO t (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // Create and release savepoint
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("SAVEPOINT", r.message);
     }
     {
-        var r = try db.exec("INSERT INTO t (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t (id) VALUES (2)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("RELEASE SAVEPOINT s1");
+        const r = try db.exec("RELEASE SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("RELEASE", r.message);
     }
 
     // After release, savepoint s1 should no longer exist
     {
-        var r = try db.exec("ROLLBACK TO SAVEPOINT s1");
+        const r = try db.exec("ROLLBACK TO SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: savepoint not found", r.message);
     }
@@ -7297,7 +7334,7 @@ test "SAVEPOINT: create and release within transaction" {
     // Both rows should be visible
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM t");
+        const r = try db.exec("SELECT COUNT(*) FROM t");
         var count: i64 = -1;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7317,7 +7354,7 @@ test "SAVEPOINT: outside transaction returns error" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("SAVEPOINT s1");
+        const r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
     }
@@ -7330,14 +7367,14 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t (id INTEGER)");
         r.close(testing.allocator);
     }
 
     // Transaction 1: insert row 1
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t (id) VALUES (1)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7345,7 +7382,7 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
     // Transaction 2: insert row 2
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t (id) VALUES (2)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7353,7 +7390,7 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
     // Transaction 3: insert row 3
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO t (id) VALUES (3)");
+        const r = try db.exec("INSERT INTO t (id) VALUES (3)");
         r.close(testing.allocator);
     }
     try db.commitTransaction();
@@ -7361,7 +7398,7 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
     // Verify all 3 rows visible
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT COUNT(*) FROM t");
+        const r = try db.exec("SELECT COUNT(*) FROM t");
         var count: i64 = -1;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7383,17 +7420,17 @@ test "SSI: single serializable transaction commits successfully" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE accounts (id INTEGER, balance INTEGER)");
+        const r = try db.exec("CREATE TABLE accounts (id INTEGER, balance INTEGER)");
         r.close(testing.allocator);
     }
 
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("INSERT INTO accounts (id, balance) VALUES (1, 100)");
+        const r = try db.exec("INSERT INTO accounts (id, balance) VALUES (1, 100)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SELECT * FROM accounts");
+        const r = try db.exec("SELECT * FROM accounts");
         var count: usize = 0;
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
@@ -7413,18 +7450,18 @@ test "SSI: non-conflicting serializable transactions both commit" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t2 (id INTEGER)");
         r.close(testing.allocator);
     }
 
     // T1: reads/writes t1 only
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
     const saved_txn1 = db.current_txn;
@@ -7433,7 +7470,7 @@ test "SSI: non-conflicting serializable transactions both commit" {
     // T2: reads/writes t2 only — no overlap with T1
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     try db.commitTransaction(); // T2 should commit fine
@@ -7451,26 +7488,26 @@ test "SSI: write skew detection (classic)" {
 
     // Setup: two tables representing accounts
     {
-        var r = try db.exec("CREATE TABLE acct_a (id INTEGER, balance INTEGER)");
+        const r = try db.exec("CREATE TABLE acct_a (id INTEGER, balance INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("CREATE TABLE acct_b (id INTEGER, balance INTEGER)");
+        const r = try db.exec("CREATE TABLE acct_b (id INTEGER, balance INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO acct_a (id, balance) VALUES (1, 100)");
+        const r = try db.exec("INSERT INTO acct_a (id, balance) VALUES (1, 100)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO acct_b (id, balance) VALUES (1, 100)");
+        const r = try db.exec("INSERT INTO acct_b (id, balance) VALUES (1, 100)");
         r.close(testing.allocator);
     }
 
     // T1 begins: reads acct_a (check balance), will write acct_b
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM acct_a");
+        const r = try db.exec("SELECT * FROM acct_a");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7483,7 +7520,7 @@ test "SSI: write skew detection (classic)" {
     // T2 begins: reads acct_b (check balance), writes acct_a
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM acct_b");
+        const r = try db.exec("SELECT * FROM acct_b");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7492,7 +7529,7 @@ test "SSI: write skew detection (classic)" {
     }
     // T2 writes to acct_a (T1 read acct_a → rw-edge: T1 →rw→ T2)
     {
-        var r = try db.exec("UPDATE acct_a SET balance = 50 WHERE id = 1");
+        const r = try db.exec("UPDATE acct_a SET balance = 50 WHERE id = 1");
         r.close(testing.allocator);
     }
     const saved_txn2 = db.current_txn;
@@ -7501,7 +7538,7 @@ test "SSI: write skew detection (classic)" {
     // T1 writes to acct_b (T2 read acct_b → rw-edge: T2 →rw→ T1)
     db.current_txn = saved_txn1;
     {
-        var r = try db.exec("UPDATE acct_b SET balance = 50 WHERE id = 1");
+        const r = try db.exec("UPDATE acct_b SET balance = 50 WHERE id = 1");
         r.close(testing.allocator);
     }
 
@@ -7520,18 +7557,18 @@ test "SSI: one-way dependency allows both commits" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // T1 reads t1
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7544,7 +7581,7 @@ test "SSI: one-way dependency allows both commits" {
     // T2 writes t1 (creates T1 →rw→ T2, but no reverse edge)
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     try db.commitTransaction(); // T2: rw-in only, no rw-out → safe
@@ -7561,26 +7598,26 @@ test "SSI: serialization failure auto-aborts transaction" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t2 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // Create write skew
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7592,7 +7629,7 @@ test "SSI: serialization failure auto-aborts transaction" {
 
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t2");
+        const r = try db.exec("SELECT * FROM t2");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7600,7 +7637,7 @@ test "SSI: serialization failure auto-aborts transaction" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     const saved_txn2 = db.current_txn;
@@ -7608,7 +7645,7 @@ test "SSI: serialization failure auto-aborts transaction" {
 
     db.current_txn = saved_txn1;
     {
-        var r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
         r.close(testing.allocator);
     }
 
@@ -7629,18 +7666,18 @@ test "SSI: read-committed transactions are not tracked by SSI" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // RC transaction: should not be tracked by SSI
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7648,7 +7685,7 @@ test "SSI: read-committed transactions are not tracked by SSI" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     // SSI tracker should have no tracked transactions
@@ -7663,26 +7700,26 @@ test "SSI: DELETE creates write dependency" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t2 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // T1: reads t1, will delete from t2
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7695,7 +7732,7 @@ test "SSI: DELETE creates write dependency" {
     // T2: reads t2, deletes from t1
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t2");
+        const r = try db.exec("SELECT * FROM t2");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7703,7 +7740,7 @@ test "SSI: DELETE creates write dependency" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("DELETE FROM t1 WHERE id = 1");
+        const r = try db.exec("DELETE FROM t1 WHERE id = 1");
         r.close(testing.allocator);
     }
     const saved_txn2 = db.current_txn;
@@ -7712,7 +7749,7 @@ test "SSI: DELETE creates write dependency" {
     // T1: deletes from t2 (creates reverse rw-edge → write skew)
     db.current_txn = saved_txn1;
     {
-        var r = try db.exec("DELETE FROM t2 WHERE id = 1");
+        const r = try db.exec("DELETE FROM t2 WHERE id = 1");
         r.close(testing.allocator);
     }
     try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
@@ -7729,22 +7766,22 @@ test "SSI: UPDATE creates rw-antidependency (read + write)" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE items (id INTEGER, qty INTEGER)");
+        const r = try db.exec("CREATE TABLE items (id INTEGER, qty INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items (id, qty) VALUES (1, 10)");
+        const r = try db.exec("INSERT INTO items (id, qty) VALUES (1, 10)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items (id, qty) VALUES (2, 20)");
+        const r = try db.exec("INSERT INTO items (id, qty) VALUES (2, 20)");
         r.close(testing.allocator);
     }
 
     // T1: reads items, will update items
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM items");
+        const r = try db.exec("SELECT * FROM items");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7757,7 +7794,7 @@ test "SSI: UPDATE creates rw-antidependency (read + write)" {
     // T2: updates items (creates T1 →rw→ T2)
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("UPDATE items SET qty = 15 WHERE id = 1");
+        const r = try db.exec("UPDATE items SET qty = 15 WHERE id = 1");
         r.close(testing.allocator);
     }
     const saved_txn2 = db.current_txn;
@@ -7766,7 +7803,7 @@ test "SSI: UPDATE creates rw-antidependency (read + write)" {
     // T1: updates items (creates T2 →rw→ T1 since UPDATE reads+writes)
     db.current_txn = saved_txn1;
     {
-        var r = try db.exec("UPDATE items SET qty = 25 WHERE id = 2");
+        const r = try db.exec("UPDATE items SET qty = 25 WHERE id = 2");
         r.close(testing.allocator);
     }
 
@@ -7785,18 +7822,18 @@ test "SSI: repeatable-read transactions are not tracked by SSI" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // RR transaction should not be tracked
     try db.beginTransaction(.repeatable_read);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7804,7 +7841,7 @@ test "SSI: repeatable-read transactions are not tracked by SSI" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     try testing.expectEqual(@as(usize, 0), db.ssi_tracker.trackedTxnCount());
@@ -7818,14 +7855,14 @@ test "SSI: sequential serializable transactions succeed" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
 
     // T1: read + write, commit
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7833,7 +7870,7 @@ test "SSI: sequential serializable transactions succeed" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
     try db.commitTransaction(); // committed, SSI state cleaned up
@@ -7841,7 +7878,7 @@ test "SSI: sequential serializable transactions succeed" {
     // T2: same table, no conflict since T1 already committed
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7849,7 +7886,7 @@ test "SSI: sequential serializable transactions succeed" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     try db.commitTransaction(); // should succeed — no concurrent conflict
@@ -7862,26 +7899,26 @@ test "SSI: savepoint rollback preserves SSI tracking" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("CREATE TABLE t2 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t2 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t2 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // T1: reads t1, creates savepoint, reads t2, rolls back savepoint
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7889,11 +7926,11 @@ test "SSI: savepoint rollback preserves SSI tracking" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SAVEPOINT sp1");
+        const r = try db.exec("SAVEPOINT sp1");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SELECT * FROM t2");
+        const r = try db.exec("SELECT * FROM t2");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7901,7 +7938,7 @@ test "SSI: savepoint rollback preserves SSI tracking" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("ROLLBACK TO sp1");
+        const r = try db.exec("ROLLBACK TO sp1");
         r.close(testing.allocator);
     }
     // SSI read on t1 should still be tracked even after savepoint rollback
@@ -7912,11 +7949,11 @@ test "SSI: savepoint rollback preserves SSI tracking" {
     // T2: writes t1 (creates T1→rw→T2) and reads t2
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("SELECT * FROM t2");
+        const r = try db.exec("SELECT * FROM t2");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -7929,7 +7966,7 @@ test "SSI: savepoint rollback preserves SSI tracking" {
     // T1: writes t2 (creates T2→rw→T1, making T1 a pivot)
     db.current_txn = saved_txn1;
     {
-        var r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
+        const r = try db.exec("INSERT INTO t2 (id) VALUES (2)");
         r.close(testing.allocator);
     }
     try testing.expectError(EngineError.SerializationFailure, db.commitTransaction());
@@ -7945,18 +7982,18 @@ test "SSI: abort cleans up SSI state" {
     defer cleanupTestDb(&db, path);
 
     {
-        var r = try db.exec("CREATE TABLE t1 (id INTEGER)");
+        const r = try db.exec("CREATE TABLE t1 (id INTEGER)");
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
+        const r = try db.exec("INSERT INTO t1 (id) VALUES (1)");
         r.close(testing.allocator);
     }
 
     // Start a serializable transaction, do some reads
     try db.beginTransaction(.serializable);
     {
-        var r = try db.exec("SELECT * FROM t1");
+        const r = try db.exec("SELECT * FROM t1");
         while (try r.rows.?.next()) |*row_ptr| {
             var row = row_ptr.*;
             defer row.deinit();
@@ -8361,7 +8398,7 @@ test "view reflects underlying table changes" {
 
     // Empty initially
     {
-        var r = try db.execSQL("SELECT * FROM v1");
+        const r = try db.execSQL("SELECT * FROM v1");
         defer r.close(testing.allocator);
         var count: usize = 0;
         while (try r.rows.?.next()) |row_data| {
@@ -8378,7 +8415,7 @@ test "view reflects underlying table changes" {
 
     // View should now reflect new data
     {
-        var r = try db.execSQL("SELECT * FROM v1");
+        const r = try db.execSQL("SELECT * FROM v1");
         defer r.close(testing.allocator);
         var count: usize = 0;
         while (try r.rows.?.next()) |row_data| {
@@ -8496,7 +8533,7 @@ test "CTE: simple CTE from table" {
     var r2 = try db.execSQL("INSERT INTO vals VALUES (42)");
     defer r2.close(testing.allocator);
 
-    var r = try db.execSQL("WITH cte AS (SELECT x FROM vals) SELECT * FROM cte");
+    const r = try db.execSQL("WITH cte AS (SELECT x FROM vals) SELECT * FROM cte");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -8547,7 +8584,7 @@ test "CTE: CTE with column aliases" {
     var r2 = try db.execSQL("INSERT INTO nums VALUES (10, 20)");
     defer r2.close(testing.allocator);
 
-    var r = try db.execSQL("WITH cte(a, b) AS (SELECT x, y FROM nums) SELECT a, b FROM cte");
+    const r = try db.execSQL("WITH cte(a, b) AS (SELECT x, y FROM nums) SELECT a, b FROM cte");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -8576,7 +8613,7 @@ test "CTE: multiple CTEs" {
     var r4 = try db.execSQL("INSERT INTO t2 VALUES (2)");
     defer r4.close(testing.allocator);
 
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH a AS (SELECT x FROM t1), b AS (SELECT y FROM t2) SELECT * FROM a",
     );
     defer r.close(testing.allocator);
@@ -9191,7 +9228,7 @@ test "CTE: CTE referencing another CTE" {
     defer r2.close(testing.allocator);
 
     // cte2 references cte1
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH cte1 AS (SELECT n FROM nums WHERE n > 10), cte2 AS (SELECT n FROM cte1 WHERE n < 30) SELECT * FROM cte2",
     );
     defer r.close(testing.allocator);
@@ -9220,7 +9257,7 @@ test "CTE: CTE with JOIN to real table" {
     defer r4.close(testing.allocator);
 
     // CTE joined with real table — use unique column names to avoid ambiguity
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH eng AS (SELECT dept_id, emp_name FROM employees WHERE dept_id = 1) SELECT emp_name, dept_name FROM eng JOIN departments ON eng.dept_id = departments.id",
     );
     defer r.close(testing.allocator);
@@ -9248,7 +9285,7 @@ test "CTE: CTE with GROUP BY and aggregate" {
     var r2 = try db.execSQL("INSERT INTO orders VALUES ('A', 10), ('B', 20), ('A', 30), ('B', 40)");
     defer r2.close(testing.allocator);
 
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH totals AS (SELECT product, SUM(amount) AS total FROM orders GROUP BY product) SELECT * FROM totals ORDER BY product",
     );
     defer r.close(testing.allocator);
@@ -9279,7 +9316,7 @@ test "CTE: CTE with LIMIT" {
     defer r2.close(testing.allocator);
 
     // CTE produces all rows, then main query limits
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH data AS (SELECT val FROM t ORDER BY val) SELECT * FROM data LIMIT 3",
     );
     defer r.close(testing.allocator);
@@ -9303,7 +9340,7 @@ test "recursive CTE: counting sequence" {
     defer cleanupTestDb(&db, path);
 
     // Generate numbers 1..5
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE cnt(x) AS (" ++
             "SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5" ++
             ") SELECT x FROM cnt",
@@ -9329,7 +9366,7 @@ test "recursive CTE: fibonacci sequence" {
     defer cleanupTestDb(&db, path);
 
     // Fibonacci: 1, 1, 2, 3, 5, 8
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE fib(a, b) AS (" ++
             "SELECT 1, 1 UNION ALL SELECT b, a + b FROM fib WHERE b < 8" ++
             ") SELECT a FROM fib",
@@ -9364,7 +9401,7 @@ test "recursive CTE: tree traversal" {
     defer r2.close(testing.allocator);
 
     // Find all reports under CEO (id=1)
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE reports(id, name, lvl) AS (" ++
             "SELECT id, name, 0 FROM org WHERE id = 1 " ++
             "UNION ALL " ++
@@ -9390,7 +9427,7 @@ test "recursive CTE: single anchor row, no recursion" {
     defer cleanupTestDb(&db, path);
 
     // Anchor produces 100, recursive part produces nothing (WHERE false)
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE s(x) AS (" ++
             "SELECT 100 UNION ALL SELECT x + 1 FROM s WHERE x < 100" ++
             ") SELECT x FROM s",
@@ -9413,7 +9450,7 @@ test "recursive CTE: powers of 2" {
     defer cleanupTestDb(&db, path);
 
     // Powers of 2: 1, 2, 4, 8, 16, 32, 64
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE pow2(x) AS (" ++
             "SELECT 1 UNION ALL SELECT x * 2 FROM pow2 WHERE x < 64" ++
             ") SELECT x FROM pow2",
@@ -9440,7 +9477,7 @@ test "recursive CTE: with main query filter" {
     defer cleanupTestDb(&db, path);
 
     // Generate 1..10, then filter for even numbers
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE nums(n) AS (" ++
             "SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 10" ++
             ") SELECT n FROM nums WHERE n % 2 = 0 ORDER BY n",
@@ -9467,7 +9504,7 @@ test "recursive CTE: with aggregate on result" {
     defer cleanupTestDb(&db, path);
 
     // Sum of 1..10 = 55
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE nums(n) AS (" ++
             "SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 10" ++
             ") SELECT SUM(n) AS total FROM nums",
@@ -9488,7 +9525,7 @@ test "recursive CTE: count result" {
     defer cleanupTestDb(&db, path);
 
     // COUNT of 1..20 = 20
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE nums(n) AS (" ++
             "SELECT 1 UNION ALL SELECT n + 1 FROM nums WHERE n < 20" ++
             ") SELECT COUNT(*) AS cnt FROM nums",
@@ -9523,7 +9560,7 @@ test "view with JOIN query" {
     var rv = try db.execSQL("CREATE VIEW item_categories AS SELECT title, cat_name FROM items JOIN categories ON items.cat_id = categories.id");
     defer rv.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM item_categories ORDER BY title");
+    const r = try db.execSQL("SELECT * FROM item_categories ORDER BY title");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9553,7 +9590,7 @@ test "view with aggregate query" {
     var rv = try db.execSQL("CREATE VIEW player_totals AS SELECT player, SUM(points) AS total FROM scores GROUP BY player");
     defer rv.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM player_totals ORDER BY player");
+    const r = try db.execSQL("SELECT * FROM player_totals ORDER BY player");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9584,7 +9621,7 @@ test "view with ORDER BY and LIMIT in definition" {
     var rv = try db.execSQL("CREATE VIEW cheap_products AS SELECT name, price FROM products WHERE price < 25 ORDER BY price");
     defer rv.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM cheap_products");
+    const r = try db.execSQL("SELECT * FROM cheap_products");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9616,7 +9653,7 @@ test "view queried with additional WHERE" {
     defer rv.close(testing.allocator);
 
     // Query the view with an additional WHERE filter
-    var r = try db.execSQL("SELECT * FROM all_items WHERE id > 1 ORDER BY id");
+    const r = try db.execSQL("SELECT * FROM all_items WHERE id > 1 ORDER BY id");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9645,7 +9682,7 @@ test "view with NULL values" {
     var rv = try db.execSQL("CREATE VIEW nullable_view AS SELECT id, optional FROM t");
     defer rv.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM nullable_view WHERE optional IS NULL");
+    const r = try db.execSQL("SELECT * FROM nullable_view WHERE optional IS NULL");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9674,7 +9711,7 @@ test "UNION ALL with NULL values" {
     var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (2)");
     defer r4.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM t1 UNION ALL SELECT * FROM t2");
+    const r = try db.execSQL("SELECT * FROM t1 UNION ALL SELECT * FROM t2");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9705,7 +9742,7 @@ test "UNION deduplicates NULL values" {
     var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (1)");
     defer r4.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM t1 UNION SELECT * FROM t2");
+    const r = try db.execSQL("SELECT * FROM t1 UNION SELECT * FROM t2");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9737,7 +9774,7 @@ test "INTERSECT with NULL values" {
     var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (2), (3)");
     defer r4.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM t1 INTERSECT SELECT * FROM t2");
+    const r = try db.execSQL("SELECT * FROM t1 INTERSECT SELECT * FROM t2");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9772,7 +9809,7 @@ test "EXCEPT with NULL values" {
     var r4 = try db.execSQL("INSERT INTO t2 VALUES (NULL), (2)");
     defer r4.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM t1 EXCEPT SELECT * FROM t2");
+    const r = try db.execSQL("SELECT * FROM t1 EXCEPT SELECT * FROM t2");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9802,7 +9839,7 @@ test "UNION with aggregate queries" {
     var r4 = try db.execSQL("INSERT INTO t2 VALUES ('B', 30), ('B', 40)");
     defer r4.close(testing.allocator);
 
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "SELECT category, SUM(val) AS total FROM t1 GROUP BY category UNION ALL SELECT category, SUM(val) AS total FROM t2 GROUP BY category ORDER BY category",
     );
     defer r.close(testing.allocator);
@@ -9839,7 +9876,7 @@ test "set operation with DISTINCT on left side" {
     // DISTINCT on the left side deduplicates t1, then UNION ALL adds t2
     // In Silica's implementation, DISTINCT applies to the full set op result:
     // {1, 2, 3, 4} = 4 distinct values
-    var r = try db.execSQL("SELECT DISTINCT val FROM t1 UNION ALL SELECT val FROM t2 ORDER BY val");
+    const r = try db.execSQL("SELECT DISTINCT val FROM t1 UNION ALL SELECT val FROM t2 ORDER BY val");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9868,7 +9905,7 @@ test "CTE with set operation" {
     defer r4.close(testing.allocator);
 
     // CTE defined, then used in both sides of INTERSECT
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH combined AS (SELECT val FROM t1 UNION ALL SELECT val FROM t2) SELECT DISTINCT val FROM combined ORDER BY val",
     );
     defer r.close(testing.allocator);
@@ -9905,7 +9942,7 @@ test "view with multiple columns and WHERE" {
     var rv = try db.execSQL("CREATE VIEW high_vals AS SELECT id, category, val FROM t WHERE val > 15");
     defer rv.close(testing.allocator);
 
-    var r = try db.execSQL("SELECT * FROM high_vals ORDER BY id");
+    const r = try db.execSQL("SELECT * FROM high_vals ORDER BY id");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -9948,7 +9985,7 @@ test "view persistence across close and reopen" {
         var db = try Database.open(testing.allocator, path, .{});
         defer db.close();
 
-        var r = try db.execSQL("SELECT * FROM v ORDER BY name");
+        const r = try db.execSQL("SELECT * FROM v ORDER BY name");
         defer r.close(testing.allocator);
 
         try testing.expect(r.rows != null);
@@ -9977,7 +10014,7 @@ test "recursive CTE: depth limit caps at 1000 iterations" {
     // Recursive CTE with no termination condition — relies on depth limit.
     // Each iteration produces one row: n+1. Without limit, infinite.
     // With limit of 1000, we get anchor (1) + 1000 recursive rows = 1001 total.
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE inf(n) AS (" ++
             "SELECT 1 UNION ALL SELECT n + 1 FROM inf" ++
             ") SELECT COUNT(*) AS cnt FROM inf",
@@ -9999,7 +10036,7 @@ test "recursive CTE: single anchor row with immediate termination" {
     defer cleanupTestDb(&db, path);
 
     // Recursive part produces 0 rows immediately (WHERE false equivalent)
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE cnt(x) AS (" ++
             "SELECT 100 UNION ALL SELECT x + 1 FROM cnt WHERE x < 100" ++
             ") SELECT * FROM cnt",
@@ -10020,7 +10057,7 @@ test "recursive CTE: with ORDER BY on result" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL(
+    const r = try db.execSQL(
         "WITH RECURSIVE seq(n) AS (" ++
             "SELECT 5 UNION ALL SELECT n - 1 FROM seq WHERE n > 1" ++
             ") SELECT * FROM seq ORDER BY n",
@@ -10057,7 +10094,7 @@ test "INSERT through updatable view" {
     _ = try db.exec("INSERT INTO v1 VALUES (2, 'Bob', 'inactive')");
 
     // Verify data landed in the base table
-    var r = try db.exec("SELECT id, name, status FROM t1 ORDER BY id");
+    const r = try db.exec("SELECT id, name, status FROM t1 ORDER BY id");
     defer r.close(testing.allocator);
     try testing.expect(r.rows != null);
 
@@ -10090,7 +10127,7 @@ test "UPDATE through updatable view" {
     try testing.expectEqual(@as(u64, 1), ur.rows_affected);
 
     // Verify in base table
-    var r = try db.exec("SELECT val FROM t1 WHERE id = 2");
+    const r = try db.exec("SELECT val FROM t1 WHERE id = 2");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -10115,7 +10152,7 @@ test "DELETE through updatable view" {
     try testing.expectEqual(@as(u64, 1), dr.rows_affected);
 
     // Verify row is gone from base table
-    var r = try db.exec("SELECT id FROM t1 ORDER BY id");
+    const r = try db.exec("SELECT id FROM t1 ORDER BY id");
     defer r.close(testing.allocator);
     var row1 = (try r.rows.?.next()).?;
     defer row1.deinit();
@@ -10145,7 +10182,7 @@ test "DELETE through updatable view with WHERE merging" {
     try testing.expectEqual(@as(u64, 1), dr.rows_affected);
 
     // Row 2 (inactive) should still exist, row 3 (active) too
-    var r = try db.exec("SELECT id FROM t1 ORDER BY id");
+    const r = try db.exec("SELECT id FROM t1 ORDER BY id");
     defer r.close(testing.allocator);
     var row1 = (try r.rows.?.next()).?;
     defer row1.deinit();
@@ -10175,7 +10212,7 @@ test "UPDATE through updatable view with WHERE merging" {
     try testing.expectEqual(@as(u64, 2), ur.rows_affected);
 
     // Row 2 (inactive) should be unchanged
-    var r = try db.exec("SELECT id, val FROM t1 ORDER BY id");
+    const r = try db.exec("SELECT id, val FROM t1 ORDER BY id");
     defer r.close(testing.allocator);
     var row1 = (try r.rows.?.next()).?;
     defer row1.deinit();
@@ -10204,7 +10241,7 @@ test "WITH CHECK OPTION blocks INSERT violating view condition" {
     try testing.expectError(EngineError.CheckOptionViolation, result);
 
     // Only the valid row should exist
-    var r = try db.exec("SELECT id FROM t1");
+    const r = try db.exec("SELECT id FROM t1");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -10229,7 +10266,7 @@ test "WITH CHECK OPTION blocks UPDATE violating view condition" {
     try testing.expectError(EngineError.CheckOptionViolation, result);
 
     // Row should still be active
-    var r = try db.exec("SELECT id, status FROM t1");
+    const r = try db.exec("SELECT id, status FROM t1");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -10261,7 +10298,7 @@ test "view without CHECK OPTION allows any INSERT" {
     // Without CHECK OPTION, INSERT of non-matching rows should succeed
     _ = try db.exec("INSERT INTO v1 VALUES (1, 'inactive')");
 
-    var r = try db.exec("SELECT status FROM t1");
+    const r = try db.exec("SELECT status FROM t1");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -10315,7 +10352,7 @@ test "INSERT through updatable view with star columns" {
 
     _ = try db.exec("INSERT INTO v1 VALUES (1, 'test')");
 
-    var r = try db.exec("SELECT id, name FROM t1");
+    const r = try db.exec("SELECT id, name FROM t1");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -10337,7 +10374,7 @@ test "DELETE all rows through updatable view" {
     defer dr.close(testing.allocator);
     try testing.expectEqual(@as(u64, 2), dr.rows_affected);
 
-    var r = try db.exec("SELECT id FROM t1");
+    const r = try db.exec("SELECT id FROM t1");
     defer r.close(testing.allocator);
     try testing.expect((try r.rows.?.next()) == null);
 }
@@ -10370,7 +10407,7 @@ test "LIKE with underscore wildcard" {
     _ = try db.exec("INSERT INTO t VALUES ('cart')");
 
     // c_t matches 3-char strings: cat, cut — NOT ct (too short) or cart (too long)
-    var r = try db.exec("SELECT name FROM t WHERE name LIKE 'c_t' ORDER BY name");
+    const r = try db.exec("SELECT name FROM t WHERE name LIKE 'c_t' ORDER BY name");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -10396,7 +10433,7 @@ test "LIKE with percent in middle" {
     _ = try db.exec("INSERT INTO t VALUES ('axyz')");
 
     // a%c matches: abc, aXYZc, ac — NOT axyz (doesn't end with c)
-    var r = try db.exec("SELECT val FROM t WHERE val LIKE 'a%c' ORDER BY val");
+    const r = try db.exec("SELECT val FROM t WHERE val LIKE 'a%c' ORDER BY val");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -10425,7 +10462,7 @@ test "NOT LIKE filters matching rows" {
     _ = try db.exec("INSERT INTO t VALUES ('apricot')");
 
     // NOT LIKE 'ap%' should return only banana
-    var r = try db.exec("SELECT name FROM t WHERE name NOT LIKE 'ap%'");
+    const r = try db.exec("SELECT name FROM t WHERE name NOT LIKE 'ap%'");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -10446,7 +10483,7 @@ test "LIKE with no wildcard is exact match" {
     _ = try db.exec("INSERT INTO t VALUES ('HELLO')");
 
     // LIKE without wildcards = case-insensitive exact match
-    var r = try db.exec("SELECT v FROM t WHERE v LIKE 'hello'");
+    const r = try db.exec("SELECT v FROM t WHERE v LIKE 'hello'");
     defer r.close(testing.allocator);
 
     var count: usize = 0;
@@ -10470,7 +10507,7 @@ test "NULL AND FALSE yields FALSE" {
     _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
 
     // WHERE NULL AND FALSE should yield FALSE (row excluded)
-    var r = try db.exec("SELECT id FROM t WHERE val > 5 AND 1 = 0");
+    const r = try db.exec("SELECT id FROM t WHERE val > 5 AND 1 = 0");
     defer r.close(testing.allocator);
     try testing.expect((try r.rows.?.next()) == null);
 }
@@ -10485,7 +10522,7 @@ test "NULL OR TRUE yields TRUE" {
 
     // WHERE (val > 5) OR (1 = 1): val > 5 is NULL (val is NULL), 1=1 is TRUE
     // NULL OR TRUE = TRUE → row included
-    var r = try db.exec("SELECT id FROM t WHERE val > 5 OR 1 = 1");
+    const r = try db.exec("SELECT id FROM t WHERE val > 5 OR 1 = 1");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -10503,7 +10540,7 @@ test "NULL AND TRUE yields NULL (row excluded)" {
 
     // WHERE (val > 5) AND (1 = 1): val > 5 is NULL, 1=1 is TRUE
     // NULL AND TRUE = NULL → treated as FALSE (row excluded)
-    var r = try db.exec("SELECT id FROM t WHERE val > 5 AND 1 = 1");
+    const r = try db.exec("SELECT id FROM t WHERE val > 5 AND 1 = 1");
     defer r.close(testing.allocator);
     try testing.expect((try r.rows.?.next()) == null);
 }
@@ -10517,7 +10554,7 @@ test "NULL OR FALSE yields NULL (row excluded)" {
     _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
 
     // WHERE (val > 5) OR (1 = 0): NULL OR FALSE = NULL → row excluded
-    var r = try db.exec("SELECT id FROM t WHERE val > 5 OR 1 = 0");
+    const r = try db.exec("SELECT id FROM t WHERE val > 5 OR 1 = 0");
     defer r.close(testing.allocator);
     try testing.expect((try r.rows.?.next()) == null);
 }
@@ -10589,7 +10626,7 @@ test "UNION ALL with both sides empty" {
     _ = try db.exec("CREATE TABLE t1 (id INTEGER)");
     _ = try db.exec("CREATE TABLE t2 (id INTEGER)");
 
-    var r = try db.exec("SELECT id FROM t1 UNION ALL SELECT id FROM t2");
+    const r = try db.exec("SELECT id FROM t1 UNION ALL SELECT id FROM t2");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -10606,7 +10643,7 @@ test "INTERSECT with one side empty returns empty" {
     _ = try db.exec("INSERT INTO t1 VALUES (1)");
     _ = try db.exec("INSERT INTO t1 VALUES (2)");
 
-    var r = try db.exec("SELECT id FROM t1 INTERSECT SELECT id FROM t2");
+    const r = try db.exec("SELECT id FROM t1 INTERSECT SELECT id FROM t2");
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
@@ -10623,7 +10660,7 @@ test "EXCEPT with empty right side returns all left rows" {
     _ = try db.exec("INSERT INTO t1 VALUES (1)");
     _ = try db.exec("INSERT INTO t1 VALUES (2)");
 
-    var r = try db.exec("SELECT id FROM t1 EXCEPT SELECT id FROM t2 ORDER BY id");
+    const r = try db.exec("SELECT id FROM t1 EXCEPT SELECT id FROM t2 ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -10646,7 +10683,7 @@ test "EXPLAIN SELECT returns OK message" {
 
     _ = try db.exec("CREATE TABLE t (id INTEGER)");
 
-    var r = try db.exec("EXPLAIN SELECT id FROM t");
+    const r = try db.exec("EXPLAIN SELECT id FROM t");
     defer r.close(testing.allocator);
 
     // EXPLAIN currently returns OK message (known limitation)
@@ -10664,7 +10701,7 @@ test "integer arithmetic in SELECT expressions" {
     _ = try db.exec("CREATE TABLE t (a INTEGER, b INTEGER)");
     _ = try db.exec("INSERT INTO t VALUES (10, 3)");
 
-    var r = try db.exec("SELECT a + b, a - b, a * b, a / b FROM t");
+    const r = try db.exec("SELECT a + b, a - b, a * b, a / b FROM t");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -10718,7 +10755,7 @@ test "CASE WHEN with NULL comparison" {
     _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
     _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
 
-    var r = try db.exec("SELECT id, CASE WHEN status = 'active' THEN 'yes' ELSE 'no' END AS label FROM t ORDER BY id");
+    const r = try db.exec("SELECT id, CASE WHEN status = 'active' THEN 'yes' ELSE 'no' END AS label FROM t ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -10746,7 +10783,7 @@ test "IN list with multiple matches" {
     _ = try db.exec("INSERT INTO t VALUES (3, 'charlie')");
     _ = try db.exec("INSERT INTO t VALUES (4, 'dave')");
 
-    var r = try db.exec("SELECT name FROM t WHERE id IN (1, 3) ORDER BY name");
+    const r = try db.exec("SELECT name FROM t WHERE id IN (1, 3) ORDER BY name");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -10772,7 +10809,7 @@ test "NOT BETWEEN excludes range" {
     _ = try db.exec("INSERT INTO t VALUES (5)");
     _ = try db.exec("INSERT INTO t VALUES (10)");
 
-    var r = try db.exec("SELECT id FROM t WHERE id NOT BETWEEN 2 AND 8 ORDER BY id");
+    const r = try db.exec("SELECT id FROM t WHERE id NOT BETWEEN 2 AND 8 ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -10798,7 +10835,7 @@ test "ROW_NUMBER() OVER (ORDER BY ...)" {
     _ = try db.exec("INSERT INTO emp VALUES (2, 'bob', 60000)");
     _ = try db.exec("INSERT INTO emp VALUES (3, 'charlie', 55000)");
 
-    var r = try db.exec("SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) FROM emp ORDER BY name");
+    const r = try db.exec("SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) FROM emp ORDER BY name");
     defer r.close(testing.allocator);
 
     // Rows come out ordered by name: alice, bob, charlie
@@ -10831,7 +10868,7 @@ test "RANK() with ties" {
     _ = try db.exec("INSERT INTO scores VALUES ('bob', 90)");
     _ = try db.exec("INSERT INTO scores VALUES ('charlie', 80)");
 
-    var r = try db.exec("SELECT name, RANK() OVER (ORDER BY score DESC) FROM scores");
+    const r = try db.exec("SELECT name, RANK() OVER (ORDER BY score DESC) FROM scores");
     defer r.close(testing.allocator);
 
     // alice and bob tie at rank 1, charlie at rank 3
@@ -10861,7 +10898,7 @@ test "DENSE_RANK() with ties" {
     _ = try db.exec("INSERT INTO scores VALUES ('bob', 90)");
     _ = try db.exec("INSERT INTO scores VALUES ('charlie', 80)");
 
-    var r = try db.exec("SELECT name, DENSE_RANK() OVER (ORDER BY score DESC) FROM scores");
+    const r = try db.exec("SELECT name, DENSE_RANK() OVER (ORDER BY score DESC) FROM scores");
     defer r.close(testing.allocator);
 
     // alice and bob tie at rank 1, charlie at rank 2 (dense — no gap)
@@ -10892,7 +10929,7 @@ test "ROW_NUMBER() with PARTITION BY" {
     _ = try db.exec("INSERT INTO emp VALUES ('sales', 'charlie', 55000)");
     _ = try db.exec("INSERT INTO emp VALUES ('sales', 'dave', 45000)");
 
-    var r = try db.exec("SELECT dept, name, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp");
+    const r = try db.exec("SELECT dept, name, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp");
     defer r.close(testing.allocator);
 
     // eng partition: alice=1, bob=2; sales partition: charlie=1, dave=2
@@ -10933,7 +10970,7 @@ test "SUM() OVER (aggregate as window function)" {
     _ = try db.exec("INSERT INTO sales VALUES ('b', 20)");
     _ = try db.exec("INSERT INTO sales VALUES ('c', 30)");
 
-    var r = try db.exec("SELECT item, amount, SUM(amount) OVER () FROM sales ORDER BY item");
+    const r = try db.exec("SELECT item, amount, SUM(amount) OVER () FROM sales ORDER BY item");
     defer r.close(testing.allocator);
 
     // SUM over entire result set = 60 for every row
@@ -10965,7 +11002,7 @@ test "COUNT(*) OVER (PARTITION BY ...)" {
     _ = try db.exec("INSERT INTO emp VALUES ('eng', 'bob')");
     _ = try db.exec("INSERT INTO emp VALUES ('sales', 'charlie')");
 
-    var r = try db.exec("SELECT dept, name, COUNT(*) OVER (PARTITION BY dept) FROM emp");
+    const r = try db.exec("SELECT dept, name, COUNT(*) OVER (PARTITION BY dept) FROM emp");
     defer r.close(testing.allocator);
 
     // eng=2 for both, sales=1
@@ -10997,7 +11034,7 @@ test "LAG() window function" {
     _ = try db.exec("INSERT INTO t VALUES (20)");
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
-    var r = try db.exec("SELECT val, LAG(val, 1) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, LAG(val, 1) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     // First row has no lag → NULL
@@ -11029,7 +11066,7 @@ test "LEAD() window function" {
     _ = try db.exec("INSERT INTO t VALUES (20)");
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
-    var r = try db.exec("SELECT val, LEAD(val, 1) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, LEAD(val, 1) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11060,7 +11097,7 @@ test "FIRST_VALUE() window function" {
     _ = try db.exec("INSERT INTO t VALUES (20)");
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
-    var r = try db.exec("SELECT val, FIRST_VALUE(val) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, FIRST_VALUE(val) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     // FIRST_VALUE is always 10 (first in order)
@@ -11090,7 +11127,7 @@ test "NTILE() window function" {
     _ = try db.exec("INSERT INTO t VALUES (30)");
     _ = try db.exec("INSERT INTO t VALUES (40)");
 
-    var r = try db.exec("SELECT val, NTILE(2) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, NTILE(2) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     // 4 rows, 2 tiles: rows 1-2 in tile 1, rows 3-4 in tile 2
@@ -11127,7 +11164,7 @@ test "Multiple window functions in single SELECT" {
     _ = try db.exec("INSERT INTO t VALUES (20)");
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
-    var r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val), SUM(val) OVER () FROM t");
+    const r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val), SUM(val) OVER () FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11160,7 +11197,7 @@ test "Window function with empty OVER()" {
     _ = try db.exec("INSERT INTO t VALUES (5)");
     _ = try db.exec("INSERT INTO t VALUES (15)");
 
-    var r = try db.exec("SELECT val, ROW_NUMBER() OVER () FROM t ORDER BY val");
+    const r = try db.exec("SELECT val, ROW_NUMBER() OVER () FROM t ORDER BY val");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11185,7 +11222,7 @@ test "Window function with alias" {
     _ = try db.exec("INSERT INTO t VALUES (1)");
     _ = try db.exec("INSERT INTO t VALUES (2)");
 
-    var r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val) AS rn FROM t");
+    const r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val) AS rn FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11213,7 +11250,7 @@ test "LAST_VALUE() window function with default frame" {
 
     // Default frame with ORDER BY: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     // LAST_VALUE returns the current row's value (it's the last in the frame)
-    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11245,7 +11282,7 @@ test "LAST_VALUE() with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
     // Full partition frame — LAST_VALUE returns actual last value
-    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM t");
+    const r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11274,7 +11311,7 @@ test "NTH_VALUE() window function" {
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
     // NTH_VALUE(val, 2) — return the 2nd row's value in ordered partition
-    var r = try db.exec("SELECT val, NTH_VALUE(val, 2) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, NTH_VALUE(val, 2) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11305,7 +11342,7 @@ test "NTH_VALUE() with n > partition size returns NULL" {
     _ = try db.exec("INSERT INTO t VALUES (20)");
 
     // NTH_VALUE(val, 5) — n=5 > 2 rows → NULL for all
-    var r = try db.exec("SELECT val, NTH_VALUE(val, 5) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, NTH_VALUE(val, 5) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11335,7 +11372,7 @@ test "PERCENT_RANK() window function" {
     // val=20: rank=2, pr=1/3=0.333
     // val=20: rank=2, pr=1/3=0.333
     // val=30: rank=4, pr=3/3=1.0
-    var r = try db.exec("SELECT val, PERCENT_RANK() OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, PERCENT_RANK() OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11369,7 +11406,7 @@ test "PERCENT_RANK() single row returns 0.0" {
     _ = try db.exec("CREATE TABLE t (val INTEGER)");
     _ = try db.exec("INSERT INTO t VALUES (42)");
 
-    var r = try db.exec("SELECT val, PERCENT_RANK() OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, PERCENT_RANK() OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11395,7 +11432,7 @@ test "CUME_DIST() window function" {
     // val=20: 3/4 = 0.75 (includes both val=20 rows)
     // val=20: 3/4 = 0.75
     // val=30: 4/4 = 1.0
-    var r = try db.exec("SELECT val, CUME_DIST() OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, CUME_DIST() OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11429,7 +11466,7 @@ test "CUME_DIST() single row returns 1.0" {
     _ = try db.exec("CREATE TABLE t (val INTEGER)");
     _ = try db.exec("INSERT INTO t VALUES (42)");
 
-    var r = try db.exec("SELECT val, CUME_DIST() OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, CUME_DIST() OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11451,7 +11488,7 @@ test "Window function with NULL in PARTITION BY column" {
     _ = try db.exec("INSERT INTO t VALUES (NULL, 40)");
 
     // NULLs in PARTITION BY should form their own partition
-    var r = try db.exec("SELECT grp, val, COUNT(*) OVER (PARTITION BY grp) FROM t ORDER BY val");
+    const r = try db.exec("SELECT grp, val, COUNT(*) OVER (PARTITION BY grp) FROM t ORDER BY val");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11496,7 +11533,7 @@ test "Window aggregate SUM with NULL values" {
     _ = try db.exec("INSERT INTO t VALUES (3, 30)");
 
     // SUM should skip NULLs: 10 + 30 = 40
-    var r = try db.exec("SELECT id, val, SUM(val) OVER () FROM t ORDER BY id");
+    const r = try db.exec("SELECT id, val, SUM(val) OVER () FROM t ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11531,7 +11568,7 @@ test "Window aggregate AVG with NULLs" {
     _ = try db.exec("INSERT INTO t VALUES (3, 20)");
 
     // AVG should skip NULLs: (10 + 20) / 2 = 15
-    var r = try db.exec("SELECT id, val, AVG(val) OVER () FROM t ORDER BY id");
+    const r = try db.exec("SELECT id, val, AVG(val) OVER () FROM t ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11564,7 +11601,7 @@ test "LAG() with offset > 1" {
     _ = try db.exec("INSERT INTO t VALUES (40)");
 
     // LAG(val, 2) — look 2 rows back
-    var r = try db.exec("SELECT val, LAG(val, 2) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, LAG(val, 2) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11602,7 +11639,7 @@ test "LEAD() with offset > 1" {
     _ = try db.exec("INSERT INTO t VALUES (40)");
 
     // LEAD(val, 2) — look 2 rows ahead
-    var r = try db.exec("SELECT val, LEAD(val, 2) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, LEAD(val, 2) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11639,7 +11676,7 @@ test "LAG() with default value" {
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
     // LAG(val, 1, -1) — default value of -1 when no previous row
-    var r = try db.exec("SELECT val, LAG(val, 1, -1) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, LAG(val, 1, -1) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11668,7 +11705,7 @@ test "Window function on empty table" {
     _ = try db.exec("CREATE TABLE t (val INTEGER)");
 
     // Window function on empty table should return 0 rows, not error
-    var r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     try testing.expect((try r.rows.?.next()) == null);
@@ -11687,7 +11724,7 @@ test "Window function with PARTITION BY and ORDER BY" {
     _ = try db.exec("INSERT INTO sales VALUES ('sales', 'eve', 250)");
 
     // RANK within each department ordered by amount DESC
-    var r = try db.exec("SELECT dept, emp, amount, RANK() OVER (PARTITION BY dept ORDER BY amount DESC) FROM sales");
+    const r = try db.exec("SELECT dept, emp, amount, RANK() OVER (PARTITION BY dept ORDER BY amount DESC) FROM sales");
     defer r.close(testing.allocator);
 
     // eng partition: bob(200)=1, charlie(150)=2, alice(100)=3
@@ -11731,7 +11768,7 @@ test "Window MIN/MAX aggregate functions" {
     _ = try db.exec("INSERT INTO t VALUES (10)");
     _ = try db.exec("INSERT INTO t VALUES (20)");
 
-    var r = try db.exec("SELECT val, MIN(val) OVER (), MAX(val) OVER () FROM t ORDER BY val");
+    const r = try db.exec("SELECT val, MIN(val) OVER (), MAX(val) OVER () FROM t ORDER BY val");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11763,7 +11800,7 @@ test "Window function with self-join" {
     _ = try db.exec("INSERT INTO t VALUES (2, 20)");
 
     // COUNT(*) OVER () on a self-join — tests that window functions work after JOIN
-    var r = try db.exec("SELECT a.id, b.id, COUNT(*) OVER () FROM t AS a JOIN t AS b ON a.id <= b.id ORDER BY a.id");
+    const r = try db.exec("SELECT a.id, b.id, COUNT(*) OVER () FROM t AS a JOIN t AS b ON a.id <= b.id ORDER BY a.id");
     defer r.close(testing.allocator);
 
     // Self-join with a.id <= b.id: (1,1), (1,2), (2,2) = 3 rows
@@ -11788,7 +11825,7 @@ test "Window function with CTE" {
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
     // Window function in main query using CTE
-    var r = try db.exec("WITH data AS (SELECT val FROM t) SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM data");
+    const r = try db.exec("WITH data AS (SELECT val FROM t) SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM data");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11822,7 +11859,7 @@ test "Window function LAST_VALUE with empty OVER" {
     // Empty OVER() = entire partition, no ORDER BY
     // LAST_VALUE with no ORDER BY and default frame (entire partition)
     // should return the last value in the full partition
-    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER () FROM t ORDER BY val");
+    const r = try db.exec("SELECT val, LAST_VALUE(val) OVER () FROM t ORDER BY val");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11853,7 +11890,7 @@ test "DENSE_RANK with multiple partitions" {
     _ = try db.exec("INSERT INTO scores VALUES ('b', 5)");
     _ = try db.exec("INSERT INTO scores VALUES ('b', 15)");
 
-    var r = try db.exec("SELECT grp, val, DENSE_RANK() OVER (PARTITION BY grp ORDER BY val) FROM scores");
+    const r = try db.exec("SELECT grp, val, DENSE_RANK() OVER (PARTITION BY grp ORDER BY val) FROM scores");
     defer r.close(testing.allocator);
 
     // Partition 'a': (10,10,20) → ranks (1,1,2)
@@ -11889,7 +11926,7 @@ test "Window function COUNT(column) skips NULLs" {
     _ = try db.exec("INSERT INTO t VALUES (3, 30)");
 
     // COUNT(val) should skip NULLs: 2 non-null values
-    var r = try db.exec("SELECT id, COUNT(val) OVER () FROM t ORDER BY id");
+    const r = try db.exec("SELECT id, COUNT(val) OVER () FROM t ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11922,7 +11959,7 @@ test "SUM OVER with ORDER BY (running sum)" {
 
     // With ORDER BY, default frame = UNBOUNDED PRECEDING TO CURRENT ROW
     // This creates a running/cumulative sum
-    var r = try db.exec("SELECT val, SUM(val) OVER (ORDER BY val) FROM t");
+    const r = try db.exec("SELECT val, SUM(val) OVER (ORDER BY val) FROM t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -11954,7 +11991,7 @@ test "WINDOW clause: named window with ROW_NUMBER and RANK" {
     _ = try db.exec("INSERT INTO emp VALUES ('charlie', 'sales', 150)");
 
     // Use WINDOW clause to define a named window, referenced by two functions
-    var r = try db.exec("SELECT name, ROW_NUMBER() OVER w, RANK() OVER w FROM emp WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)");
+    const r = try db.exec("SELECT name, ROW_NUMBER() OVER w, RANK() OVER w FROM emp WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)");
     defer r.close(testing.allocator);
 
     // eng partition: bob(200) rn=1 rank=1, alice(100) rn=2 rank=2
@@ -11979,7 +12016,7 @@ test "WINDOW clause: named window with aggregate-as-window SUM" {
     _ = try db.exec("INSERT INTO nums VALUES (30)");
 
     // Named window with ORDER BY → running sum
-    var r = try db.exec("SELECT val, SUM(val) OVER w FROM nums WINDOW w AS (ORDER BY val)");
+    const r = try db.exec("SELECT val, SUM(val) OVER w FROM nums WINDOW w AS (ORDER BY val)");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12011,7 +12048,7 @@ test "WINDOW clause: multiple named windows" {
     _ = try db.exec("INSERT INTO items VALUES ('b', 30)");
 
     // Two different named windows
-    var r = try db.exec("SELECT cat, price, ROW_NUMBER() OVER w1, SUM(price) OVER w2 FROM items WINDOW w1 AS (PARTITION BY cat ORDER BY price), w2 AS (ORDER BY price)");
+    const r = try db.exec("SELECT cat, price, ROW_NUMBER() OVER w1, SUM(price) OVER w2 FROM items WINDOW w1 AS (PARTITION BY cat ORDER BY price), w2 AS (ORDER BY price)");
     defer r.close(testing.allocator);
 
     var count: usize = 0;
@@ -12032,7 +12069,7 @@ test "DATE type: CREATE TABLE, INSERT, SELECT with CAST" {
     _ = try db.exec("INSERT INTO events VALUES ('launch', CAST('2024-03-15' AS DATE))");
     _ = try db.exec("INSERT INTO events VALUES ('update', CAST('2024-06-01' AS DATE))");
 
-    var r = try db.exec("SELECT name, CAST(event_date AS TEXT) FROM events ORDER BY event_date");
+    const r = try db.exec("SELECT name, CAST(event_date AS TEXT) FROM events ORDER BY event_date");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12057,7 +12094,7 @@ test "TIMESTAMP type: CREATE TABLE, INSERT, SELECT" {
     _ = try db.exec("INSERT INTO logs VALUES ('start', CAST('2024-01-15 08:30:00' AS TIMESTAMP))");
     _ = try db.exec("INSERT INTO logs VALUES ('stop', CAST('2024-01-15 17:45:00' AS TIMESTAMP))");
 
-    var r = try db.exec("SELECT msg, CAST(created_at AS TEXT) FROM logs ORDER BY created_at");
+    const r = try db.exec("SELECT msg, CAST(created_at AS TEXT) FROM logs ORDER BY created_at");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12082,7 +12119,7 @@ test "DATE arithmetic: date + integer, date - date" {
     _ = try db.exec("INSERT INTO d VALUES (CAST('2024-01-01' AS DATE))");
 
     // date + 30 days
-    var r = try db.exec("SELECT CAST(val + 30 AS TEXT) FROM d");
+    const r = try db.exec("SELECT CAST(val + 30 AS TEXT) FROM d");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12098,7 +12135,7 @@ test "NOW() and CURRENT_DATE() functions" {
     defer cleanupTestDb(&db, path);
 
     // NOW() should return a non-null timestamp
-    var r = try db.exec("SELECT NOW()");
+    const r = try db.exec("SELECT NOW()");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12560,7 +12597,7 @@ test "NUMERIC type: CREATE TABLE, INSERT, SELECT with CAST" {
     _ = try db.exec("INSERT INTO products VALUES ('Budget', CAST('5.00' AS NUMERIC))");
 
     // Select with ORDER BY on numeric column
-    var r = try db.exec("SELECT name, CAST(price AS TEXT) FROM products ORDER BY price");
+    const r = try db.exec("SELECT name, CAST(price AS TEXT) FROM products ORDER BY price");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12624,7 +12661,7 @@ test "NUMERIC type: comparison in WHERE clause" {
     _ = try db.exec("INSERT INTO items VALUES ('expensive', CAST('99.99' AS NUMERIC))");
 
     // Filter with numeric comparison
-    var r = try db.exec("SELECT name FROM items WHERE cost > CAST('20.00' AS NUMERIC) ORDER BY cost");
+    const r = try db.exec("SELECT name FROM items WHERE cost > CAST('20.00' AS NUMERIC) ORDER BY cost");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12662,7 +12699,7 @@ test "NUMERIC type: CAST integer to numeric" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(42 AS NUMERIC)");
+    const r = try db.execSQL("SELECT CAST(42 AS NUMERIC)");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -12676,7 +12713,7 @@ test "NUMERIC type: CAST numeric to integer (truncation)" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('99.99' AS NUMERIC) AS INTEGER)");
+    const r = try db.execSQL("SELECT CAST(CAST('99.99' AS NUMERIC) AS INTEGER)");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -12692,7 +12729,7 @@ test "DECIMAL type: alias for NUMERIC" {
     _ = try db.exec("CREATE TABLE wages (amount DECIMAL(8,2))");
     _ = try db.exec("INSERT INTO wages VALUES (CAST('1234.56' AS DECIMAL))");
 
-    var r = try db.exec("SELECT CAST(amount AS TEXT) FROM wages");
+    const r = try db.exec("SELECT CAST(amount AS TEXT) FROM wages");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -12705,7 +12742,7 @@ test "NUMERIC type: typeof function" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT typeof(CAST('1.5' AS NUMERIC))");
+    const r = try db.execSQL("SELECT typeof(CAST('1.5' AS NUMERIC))");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -12718,7 +12755,7 @@ test "NUMERIC type: mixed scale arithmetic" {
     defer cleanupTestDb(&db, path);
 
     // Adding values with different scales: 1.5 (scale=1) + 2.25 (scale=2) = 3.75
-    var r = try db.execSQL("SELECT CAST(CAST('1.5' AS NUMERIC) + CAST('2.25' AS NUMERIC) AS TEXT)");
+    const r = try db.execSQL("SELECT CAST(CAST('1.5' AS NUMERIC) + CAST('2.25' AS NUMERIC) AS TEXT)");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -12730,7 +12767,7 @@ test "NUMERIC type: negative arithmetic" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('10.00' AS NUMERIC) - CAST('15.50' AS NUMERIC) AS TEXT)");
+    const r = try db.execSQL("SELECT CAST(CAST('10.00' AS NUMERIC) - CAST('15.50' AS NUMERIC) AS TEXT)");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -12748,7 +12785,7 @@ test "UUID type: CREATE TABLE, INSERT, SELECT" {
     _ = try db.exec("INSERT INTO users VALUES (CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID), 'Alice')");
     _ = try db.exec("INSERT INTO users VALUES (CAST('6ba7b810-9dad-11d1-80b4-00c04fd430c8' AS UUID), 'Bob')");
 
-    var r = try db.exec("SELECT CAST(id AS TEXT), name FROM users ORDER BY name");
+    const r = try db.exec("SELECT CAST(id AS TEXT), name FROM users ORDER BY name");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12769,7 +12806,7 @@ test "UUID type: gen_random_uuid() function" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(gen_random_uuid() AS TEXT)");
+    const r = try db.execSQL("SELECT CAST(gen_random_uuid() AS TEXT)");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -12791,7 +12828,7 @@ test "UUID type: CAST roundtrip text→uuid→text" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID) AS TEXT)");
+    const r = try db.execSQL("SELECT CAST(CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID) AS TEXT)");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -12804,7 +12841,7 @@ test "UUID type: typeof function" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT typeof(CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID))");
+    const r = try db.execSQL("SELECT typeof(CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID))");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -12822,7 +12859,7 @@ test "UUID type: comparison in WHERE clause" {
     _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000002' AS UUID), 'second')");
     _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000003' AS UUID), 'third')");
 
-    var r = try db.exec("SELECT label FROM records WHERE id = CAST('00000000-0000-0000-0000-000000000002' AS UUID)");
+    const r = try db.exec("SELECT label FROM records WHERE id = CAST('00000000-0000-0000-0000-000000000002' AS UUID)");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -12842,7 +12879,7 @@ test "UUID type: ORDER BY" {
     _ = try db.exec("INSERT INTO items VALUES (CAST('00000000-0000-0000-0000-000000000000' AS UUID), 'first')");
     _ = try db.exec("INSERT INTO items VALUES (CAST('80000000-0000-0000-0000-000000000000' AS UUID), 'middle')");
 
-    var r = try db.exec("SELECT name FROM items ORDER BY id");
+    const r = try db.exec("SELECT name FROM items ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12888,7 +12925,7 @@ test "UUID type: INSERT with gen_random_uuid" {
     _ = try db.exec("INSERT INTO events VALUES (gen_random_uuid(), 'event1')");
     _ = try db.exec("INSERT INTO events VALUES (gen_random_uuid(), 'event2')");
 
-    var r = try db.exec("SELECT CAST(id AS TEXT), name FROM events ORDER BY name");
+    const r = try db.exec("SELECT CAST(id AS TEXT), name FROM events ORDER BY name");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12914,7 +12951,7 @@ test "SERIAL type: CREATE TABLE and INSERT" {
     _ = try db.exec("INSERT INTO counters VALUES (1, 'first')");
     _ = try db.exec("INSERT INTO counters VALUES (2, 'second')");
 
-    var r = try db.exec("SELECT id, name FROM counters ORDER BY id");
+    const r = try db.exec("SELECT id, name FROM counters ORDER BY id");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12938,7 +12975,7 @@ test "BIGSERIAL type: CREATE TABLE and INSERT" {
     _ = try db.exec("CREATE TABLE events (id BIGSERIAL, payload TEXT)");
     _ = try db.exec("INSERT INTO events VALUES (100, 'event_a')");
 
-    var r = try db.exec("SELECT id, payload FROM events");
+    const r = try db.exec("SELECT id, payload FROM events");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12952,7 +12989,7 @@ test "SERIAL type: CAST to SERIAL" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST('42' AS SERIAL)");
+    const r = try db.execSQL("SELECT CAST('42' AS SERIAL)");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12970,7 +13007,7 @@ test "NUMERIC type: negative values" {
     _ = try db.exec("INSERT INTO ledger VALUES (CAST('0.00' AS NUMERIC))");
     _ = try db.exec("INSERT INTO ledger VALUES (CAST('999.99' AS NUMERIC))");
 
-    var r = try db.exec("SELECT CAST(amount AS TEXT) FROM ledger ORDER BY amount");
+    const r = try db.exec("SELECT CAST(amount AS TEXT) FROM ledger ORDER BY amount");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -12993,7 +13030,7 @@ test "NUMERIC type: arithmetic operations" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('10.5' AS NUMERIC) + CAST('3.2' AS NUMERIC) AS TEXT)");
+    const r = try db.execSQL("SELECT CAST(CAST('10.5' AS NUMERIC) + CAST('3.2' AS NUMERIC) AS TEXT)");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13009,7 +13046,7 @@ test "UUID type: case-insensitive parsing" {
     _ = try db.exec("CREATE TABLE items (id UUID)");
     _ = try db.exec("INSERT INTO items VALUES (CAST('550E8400-E29B-41D4-A716-446655440000' AS UUID))");
 
-    var r = try db.exec("SELECT CAST(id AS TEXT) FROM items");
+    const r = try db.exec("SELECT CAST(id AS TEXT) FROM items");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13027,7 +13064,7 @@ test "TIMESTAMP type: microsecond precision" {
     _ = try db.exec("INSERT INTO logs VALUES (CAST('2024-06-15 10:30:45' AS TIMESTAMP), 'event1')");
     _ = try db.exec("INSERT INTO logs VALUES (CAST('2024-06-15 10:30:46' AS TIMESTAMP), 'event2')");
 
-    var r = try db.exec("SELECT CAST(ts AS TEXT), msg FROM logs ORDER BY ts");
+    const r = try db.exec("SELECT CAST(ts AS TEXT), msg FROM logs ORDER BY ts");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13052,7 +13089,7 @@ test "DATE type: comparison operators" {
     _ = try db.exec("INSERT INTO events VALUES (CAST('2024-12-25' AS DATE), 'dec')");
 
     // Test >= filter
-    var r = try db.exec("SELECT name FROM events WHERE dt >= CAST('2024-06-01' AS DATE) ORDER BY dt");
+    const r = try db.exec("SELECT name FROM events WHERE dt >= CAST('2024-06-01' AS DATE) ORDER BY dt");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13075,7 +13112,7 @@ test "TIME type: basic operations" {
     _ = try db.exec("INSERT INTO schedule VALUES (CAST('09:00:00' AS TIME), 'standup')");
     _ = try db.exec("INSERT INTO schedule VALUES (CAST('14:30:00' AS TIME), 'review')");
 
-    var r = try db.exec("SELECT CAST(t AS TEXT), task FROM schedule ORDER BY t");
+    const r = try db.exec("SELECT CAST(t AS TEXT), task FROM schedule ORDER BY t");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13094,7 +13131,7 @@ test "INTERVAL type: negative days formatting" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('-3 days' AS INTERVAL) AS TEXT)");
+    const r = try db.execSQL("SELECT CAST(CAST('-3 days' AS INTERVAL) AS TEXT)");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13110,7 +13147,7 @@ test "INTERVAL type: date plus interval in table" {
     _ = try db.exec("CREATE TABLE deadlines (start_date DATE, offset INTERVAL)");
     _ = try db.exec("INSERT INTO deadlines VALUES (CAST('2024-01-01' AS DATE), CAST('30 days' AS INTERVAL))");
 
-    var r = try db.exec("SELECT CAST(start_date + offset AS TEXT) FROM deadlines");
+    const r = try db.exec("SELECT CAST(start_date + offset AS TEXT) FROM deadlines");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13125,7 +13162,7 @@ test "CREATE TYPE AS ENUM basic" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.exec("CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')");
+    const r = try db.exec("CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')");
     defer r.close(testing.allocator);
     try testing.expectEqualStrings("CREATE TYPE", r.message);
 }
@@ -13136,7 +13173,7 @@ test "DROP TYPE basic" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TYPE status AS ENUM ('active', 'inactive')");
-    var r = try db.exec("DROP TYPE status");
+    const r = try db.exec("DROP TYPE status");
     defer r.close(testing.allocator);
     try testing.expectEqualStrings("DROP TYPE", r.message);
 }
@@ -13146,7 +13183,7 @@ test "DROP TYPE IF EXISTS no error" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.exec("DROP TYPE IF EXISTS nonexistent");
+    const r = try db.exec("DROP TYPE IF EXISTS nonexistent");
     defer r.close(testing.allocator);
     try testing.expectEqualStrings("DROP TYPE", r.message);
 }
@@ -13216,7 +13253,7 @@ test "ANY with array column" {
     _ = try db.exec("CREATE TABLE products (name TEXT, tags ARRAY)");
     _ = try db.exec("INSERT INTO products VALUES ('Widget', ARRAY['sale', 'popular'])");
 
-    var r = try db.exec("SELECT name FROM products WHERE 'sale' = ANY(tags)");
+    const r = try db.exec("SELECT name FROM products WHERE 'sale' = ANY(tags)");
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
@@ -13247,7 +13284,7 @@ test "unnest() with integer array" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT * FROM unnest(ARRAY[1, 2, 3])");
+    const r = try db.exec("SELECT * FROM unnest(ARRAY[1, 2, 3])");
     defer r.close(testing.allocator);
 
     // Should have 3 rows
@@ -13270,7 +13307,7 @@ test "unnest() with text array" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT * FROM unnest(ARRAY['hello', 'world'])");
+    const r = try db.exec("SELECT * FROM unnest(ARRAY['hello', 'world'])");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13288,7 +13325,7 @@ test "unnest() with single-element array" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT * FROM unnest(ARRAY[42])");
+    const r = try db.exec("SELECT * FROM unnest(ARRAY[42])");
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -13302,7 +13339,7 @@ test "unnest() column name default" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT unnest FROM unnest(ARRAY[1, 2])");
+    const r = try db.exec("SELECT unnest FROM unnest(ARRAY[1, 2])");
     defer r.close(testing.allocator);
 
     // Should be able to reference the column by its default name "unnest"
@@ -13315,7 +13352,7 @@ test "unnest() with alias" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT value FROM unnest(ARRAY[10, 20]) AS value");
+    const r = try db.exec("SELECT value FROM unnest(ARRAY[10, 20]) AS value");
     defer r.close(testing.allocator);
 
     // Should be able to reference the column by its alias "value"
@@ -13328,7 +13365,7 @@ test "unnest() with array of booleans" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT * FROM unnest(ARRAY[true, false, true])");
+    const r = try db.exec("SELECT * FROM unnest(ARRAY[true, false, true])");
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -13350,7 +13387,7 @@ test "unnest() with WHERE clause" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT * FROM unnest(ARRAY[1, 2, 3, 4, 5]) WHERE unnest > 3");
+    const r = try db.exec("SELECT * FROM unnest(ARRAY[1, 2, 3, 4, 5]) WHERE unnest > 3");
     defer r.close(testing.allocator);
 
     // Should filter to only values > 3
@@ -13369,7 +13406,7 @@ test "unnest() with ORDER BY" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT * FROM unnest(ARRAY[3, 1, 2]) ORDER BY unnest DESC");
+    const r = try db.exec("SELECT * FROM unnest(ARRAY[3, 1, 2]) ORDER BY unnest DESC");
     defer r.close(testing.allocator);
 
     // Should be ordered descending
@@ -13386,4 +13423,62 @@ test "unnest() with ORDER BY" {
     try testing.expectEqual(@as(i64, 1), row3.values[0].integer);
 
     try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "CREATE DOMAIN basic" {
+    const path = "test_domain_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const r = try db.exec("CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)");
+    try testing.expectEqualStrings("CREATE DOMAIN", r.message);
+
+    // Verify domain exists in catalog
+    try testing.expect(try db.catalog.domainExists("positive_int"));
+}
+
+test "CREATE DOMAIN without constraint" {
+    const path = "test_domain_no_constraint.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const r = try db.exec("CREATE DOMAIN email AS TEXT");
+    try testing.expectEqualStrings("CREATE DOMAIN", r.message);
+
+    const info = try db.catalog.getDomain("email");
+    defer info.deinit();
+    try testing.expectEqual(ast_mod.DataType.type_text, info.base_type);
+    try testing.expect(info.constraint == null);
+}
+
+test "DROP DOMAIN basic" {
+    const path = "test_drop_domain.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)");
+
+    const r = try db.exec("DROP DOMAIN positive_int");
+    try testing.expectEqualStrings("DROP DOMAIN", r.message);
+
+    try testing.expect(!try db.catalog.domainExists("positive_int"));
+}
+
+test "DROP DOMAIN IF EXISTS" {
+    const path = "test_drop_domain_if_exists.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const r = try db.exec("DROP DOMAIN IF EXISTS nonexistent");
+    try testing.expectEqualStrings("DROP DOMAIN", r.message);
+}
+
+test "CREATE DOMAIN duplicate error" {
+    const path = "test_domain_duplicate.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)");
+    const r = db.exec("CREATE DOMAIN positive_int AS TEXT");
+    try testing.expectError(EngineError.TableAlreadyExists, r);
 }
