@@ -961,8 +961,9 @@ pub const Catalog = struct {
         offset += 2;
 
         const values = try self.allocator.alloc([]const u8, value_count);
+        var allocated_count: usize = 0;
         errdefer {
-            for (values[0..value_count]) |v| self.allocator.free(v);
+            for (values[0..allocated_count]) |v| self.allocator.free(v);
             self.allocator.free(values);
         }
 
@@ -972,6 +973,7 @@ pub const Catalog = struct {
             offset += 2;
             if (offset + len > value.len) return CatalogError.InvalidSchemaData;
             values[i] = try self.allocator.dupe(u8, value[offset..][0..len]);
+            allocated_count += 1;
             offset += len;
         }
 
@@ -1823,4 +1825,240 @@ test "Catalog createEnumType name collision with table" {
 
     const values = [_][]const u8{"'active'"};
     try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createEnumType("t1", &values));
+}
+
+test "Catalog createEnumType with empty values array" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_empty.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const empty_values: []const []const u8 = &.{};
+    try tc.catalog.createEnumType("empty_enum", empty_values);
+
+    const info = try tc.catalog.getEnumType("empty_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), info.values.len);
+}
+
+test "Catalog createEnumType with single value" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_single.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{"only"};
+    try tc.catalog.createEnumType("single_enum", &values);
+
+    const info = try tc.catalog.getEnumType("single_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), info.values.len);
+    try std.testing.expectEqualStrings("only", info.values[0]);
+}
+
+test "Catalog createEnumType with many values" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_many.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create 100 enum values
+    var values_buf: [100][]const u8 = undefined;
+    var owned_values = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (owned_values.items) |v| allocator.free(v);
+        owned_values.deinit(allocator);
+    }
+
+    for (0..100) |i| {
+        const s = try std.fmt.allocPrint(allocator, "{d}", .{i});
+        try owned_values.append(allocator, s);
+        values_buf[i] = s;
+    }
+
+    try tc.catalog.createEnumType("many_enum", &values_buf);
+
+    const info = try tc.catalog.getEnumType("many_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 100), info.values.len);
+    try std.testing.expectEqualStrings("0", info.values[0]);
+    try std.testing.expectEqualStrings("99", info.values[99]);
+}
+
+test "Catalog createEnumType with long value names" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_long.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create a value that's 1000 characters long
+    const long_value = try allocator.alloc(u8, 1000);
+    defer allocator.free(long_value);
+    @memset(long_value, 'a');
+
+    const values = [_][]const u8{long_value};
+    try tc.catalog.createEnumType("long_enum", &values);
+
+    const info = try tc.catalog.getEnumType("long_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), info.values.len);
+    try std.testing.expectEqual(@as(usize, 1000), info.values[0].len);
+    try std.testing.expect(std.mem.allEqual(u8, info.values[0], 'a'));
+}
+
+test "Catalog createEnumType with duplicate values" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_dup_vals.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Duplicate values should be allowed (validation is semantic, not at storage level)
+    const values = [_][]const u8{ "active", "active", "inactive" };
+    try tc.catalog.createEnumType("dup_enum", &values);
+
+    const info = try tc.catalog.getEnumType("dup_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), info.values.len);
+    try std.testing.expectEqualStrings("active", info.values[0]);
+    try std.testing.expectEqualStrings("active", info.values[1]);
+    try std.testing.expectEqualStrings("inactive", info.values[2]);
+}
+
+test "Catalog createEnumType with empty string value" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_empty_str.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{ "", "active", "" };
+    try tc.catalog.createEnumType("empty_str_enum", &values);
+
+    const info = try tc.catalog.getEnumType("empty_str_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), info.values.len);
+    try std.testing.expectEqualStrings("", info.values[0]);
+    try std.testing.expectEqualStrings("active", info.values[1]);
+    try std.testing.expectEqualStrings("", info.values[2]);
+}
+
+test "Catalog createEnumType with special characters" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_special.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{ "hello\nworld", "tab\there", "emoji😀", "quote\"here", "null\x00byte" };
+    try tc.catalog.createEnumType("special_enum", &values);
+
+    const info = try tc.catalog.getEnumType("special_enum");
+    defer info.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), info.values.len);
+    try std.testing.expectEqualStrings("hello\nworld", info.values[0]);
+    try std.testing.expectEqualStrings("tab\there", info.values[1]);
+    try std.testing.expectEqualStrings("emoji😀", info.values[2]);
+    try std.testing.expectEqualStrings("quote\"here", info.values[3]);
+    try std.testing.expectEqualStrings("null\x00byte", info.values[4]);
+}
+
+test "Catalog getEnumType with corrupted data - truncated count" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_corrupt1.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Manually insert corrupted data with only 1 byte (should be at least 2)
+    const key = try tc.catalog.makeTypeKey("corrupt1");
+    defer allocator.free(key);
+
+    const bad_data = [_]u8{0x01}; // Only 1 byte
+    try tc.catalog.tree.insert(key, &bad_data);
+
+    try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getEnumType("corrupt1"));
+}
+
+test "Catalog getEnumType with corrupted data - truncated value length" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_corrupt2.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create data with value_count=1 but no value length field
+    const key = try tc.catalog.makeTypeKey("corrupt2");
+    defer allocator.free(key);
+
+    const bad_data = [_]u8{ 0x01, 0x00 }; // count=1, but missing value length+data
+    try tc.catalog.tree.insert(key, &bad_data);
+
+    try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getEnumType("corrupt2"));
+}
+
+test "Catalog getEnumType with corrupted data - truncated value data" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_corrupt3.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create data with value_count=1, length=10, but only 5 bytes of data
+    const key = try tc.catalog.makeTypeKey("corrupt3");
+    defer allocator.free(key);
+
+    const bad_data = [_]u8{ 0x01, 0x00, 0x0A, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 }; // count=1, len=10, but only 5 bytes
+    try tc.catalog.tree.insert(key, &bad_data);
+
+    try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getEnumType("corrupt3"));
+}
+
+test "Catalog listEnumTypes excludes tables and views" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_list_filter.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create table and view
+    try tc.catalog.createTable("my_table", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    }, &.{}, 0);
+
+    const empty_cols: []const []const u8 = &.{};
+    try tc.catalog.createView("my_view", "SELECT 1", false, false, empty_cols, 0);
+
+    // Create enum types
+    const values1 = [_][]const u8{ "a", "b" };
+    try tc.catalog.createEnumType("enum1", &values1);
+
+    const values2 = [_][]const u8{ "x", "y" };
+    try tc.catalog.createEnumType("enum2", &values2);
+
+    const types = try tc.catalog.listEnumTypes(allocator);
+    defer {
+        for (types) |t| allocator.free(t);
+        allocator.free(types);
+    }
+
+    // Should only list the 2 enum types, not table or view
+    try std.testing.expectEqual(@as(usize, 2), types.len);
+
+    // Check that returned names are enum types
+    const has_enum1 = std.mem.eql(u8, types[0], "enum1") or std.mem.eql(u8, types[1], "enum1");
+    const has_enum2 = std.mem.eql(u8, types[0], "enum2") or std.mem.eql(u8, types[1], "enum2");
+    try std.testing.expect(has_enum1);
+    try std.testing.expect(has_enum2);
 }
