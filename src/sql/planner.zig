@@ -102,6 +102,8 @@ pub const AggFunc = enum {
 pub const PlanNode = union(enum) {
     /// Table scan — read all rows from a table.
     scan: Scan,
+    /// Table function scan — generate rows from a table-valued function (e.g., unnest).
+    table_function_scan: TableFunctionScan,
     /// Filter — apply a predicate (WHERE clause).
     filter: Filter,
     /// Project — select/compute output columns.
@@ -135,6 +137,12 @@ pub const PlanNode = union(enum) {
         table: []const u8,
         alias: ?[]const u8 = null,
         columns: []const ColumnRef = &.{},
+    };
+
+    pub const TableFunctionScan = struct {
+        function_name: []const u8,
+        args: []const *const ast.Expr,
+        alias: ?[]const u8 = null,
     };
 
     pub const Filter = struct {
@@ -505,6 +513,16 @@ pub const Planner = struct {
                 const sub_plan = try self.planSelect(sq.select.*);
                 return sub_plan.root;
             },
+            .table_function => |tf| {
+                // Table function call — create a special scan node for table-valued functions
+                // For now, we'll use a scan node with table name as the function name
+                // and store the args for executor to process
+                return self.createNode(.{ .table_function_scan = .{
+                    .function_name = tf.name,
+                    .args = tf.args,
+                    .alias = tf.alias,
+                } });
+            },
         };
     }
 
@@ -787,6 +805,11 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
         .scan => |s| {
             try writer.print("Scan: {s}", .{s.table});
             if (s.alias) |a| try writer.print(" AS {s}", .{a});
+            try writer.writeAll("\n");
+        },
+        .table_function_scan => |tfs| {
+            try writer.print("TableFunction: {s}({d} args)", .{ tfs.function_name, tfs.args.len });
+            if (tfs.alias) |a| try writer.print(" AS {s}", .{a});
             try writer.writeAll("\n");
         },
         .filter => |f| {

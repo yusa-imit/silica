@@ -631,6 +631,13 @@ pub const Analyzer = struct {
             .subquery => {
                 // Subqueries create their own scope — skip for now
             },
+            .table_function => |tf| {
+                // Table functions (e.g., unnest) produce rows, analyze args
+                for (tf.args) |arg| {
+                    self.analyzeExpr(arg);
+                }
+                // TODO: register table function columns in scope (requires schema introspection)
+            },
         }
     }
 

@@ -122,6 +122,12 @@ pub const TableRef = union(enum) {
         select: *const SelectStmt,
         alias: []const u8,
     },
+    /// Table function call: func(args...) with optional alias
+    table_function: struct {
+        name: []const u8,
+        args: []const *const Expr,
+        alias: ?[]const u8 = null,
+    },
 };
 
 /// SELECT result column.

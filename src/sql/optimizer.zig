@@ -50,7 +50,7 @@ pub const Optimizer = struct {
                 } });
             },
             // Leaf nodes — no optimization
-            .scan, .values, .empty => node,
+            .scan, .table_function_scan, .values, .empty => node,
         };
     }
 

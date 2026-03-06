@@ -506,6 +506,38 @@ pub const Parser = struct {
         }
 
         const name = try self.expectIdentifier();
+
+        // Check for function call: name(...)
+        if (self.match(.left_paren)) {
+            var args = std.ArrayListUnmanaged(*const ast.Expr){};
+            const a = self.arena.allocator();
+
+            if (!self.check(.right_paren)) {
+                while (true) {
+                    const arg = try self.parseExpr(0);
+                    args.append(a, arg) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+            }
+            _ = try self.expect(.right_paren);
+
+            var alias: ?[]const u8 = null;
+            if (self.match(.kw_as)) {
+                alias = try self.expectIdentifier();
+            } else if (self.peek().type == .identifier and !self.peekIsClauseKeyword()) {
+                alias = self.lexeme(self.advance());
+            }
+
+            return self.arena.create(ast.TableRef, .{
+                .table_function = .{
+                    .name = name,
+                    .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
+                    .alias = alias,
+                },
+            }) catch return error.OutOfMemory;
+        }
+
+        // Regular table name
         var alias: ?[]const u8 = null;
         if (self.match(.kw_as)) {
             alias = try self.expectIdentifier();
