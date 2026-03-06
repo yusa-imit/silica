@@ -86,7 +86,6 @@ pub const TokenType = enum {
     kw_cascaded,
     kw_type,
     kw_enum,
-    kw_domain,
 
     // Keywords — DML
     kw_select,
@@ -640,7 +639,6 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "cascaded", .kw_cascaded },
         .{ "type", .kw_type },
         .{ "enum", .kw_enum },
-        .{ "domain", .kw_domain },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1320,27 +1318,5 @@ test "CREATE TYPE AS ENUM tokens" {
         .kw_create,     .kw_type,   .identifier, .kw_as,
         .kw_enum,       .left_paren, .string_literal, .comma,
         .string_literal, .right_paren,
-    });
-}
-
-test "tokenize DOMAIN keyword" {
-    try expectSingleToken("domain", .kw_domain, "domain");
-    try expectSingleToken("DOMAIN", .kw_domain, "DOMAIN");
-}
-
-test "tokenize CREATE DOMAIN statement" {
-    const sql = "CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)";
-    try expectTokens(sql, &.{
-        .kw_create,
-        .kw_domain,
-        .identifier,
-        .kw_as,
-        .identifier,
-        .kw_check,
-        .left_paren,
-        .identifier,
-        .greater_than,
-        .integer_literal,
-        .right_paren,
     });
 }

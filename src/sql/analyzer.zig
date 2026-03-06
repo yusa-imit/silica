@@ -278,8 +278,6 @@ pub const Analyzer = struct {
             .drop_view => {},
             .create_type => {},
             .drop_type => {},
-            .create_domain => {},
-            .drop_domain => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

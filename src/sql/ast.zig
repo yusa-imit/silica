@@ -511,20 +511,6 @@ pub const DropTypeStmt = struct {
     if_exists: bool = false,
 };
 
-/// CREATE DOMAIN statement.
-pub const CreateDomainStmt = struct {
-    name: []const u8,
-    base_type: DataType,
-    /// Optional constraint expression (e.g., VALUE > 0).
-    constraint: ?*Expr = null,
-};
-
-/// DROP DOMAIN statement.
-pub const DropDomainStmt = struct {
-    name: []const u8,
-    if_exists: bool = false,
-};
-
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -542,8 +528,6 @@ pub const Stmt = union(enum) {
     drop_view: DropViewStmt,
     create_type: CreateTypeStmt,
     drop_type: DropTypeStmt,
-    create_domain: CreateDomainStmt,
-    drop_domain: DropDomainStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
