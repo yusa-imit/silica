@@ -565,6 +565,119 @@ fn generateUuidV4() [16]u8 {
     return bytes;
 }
 
+/// Format an array value as PostgreSQL-compatible text: {elem1,elem2,...}
+pub fn formatArray(allocator: Allocator, elements: []const Value) ![]u8 {
+    var list = std.ArrayListUnmanaged(u8){};
+    errdefer list.deinit(allocator);
+    try list.append(allocator, '{');
+    for (elements, 0..) |elem, i| {
+        if (i > 0) try list.append(allocator, ',');
+        switch (elem) {
+            .null_value => try list.appendSlice(allocator, "NULL"),
+            .integer => |v| {
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{v});
+                defer allocator.free(s);
+                try list.appendSlice(allocator, s);
+            },
+            .real => |v| {
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{v});
+                defer allocator.free(s);
+                try list.appendSlice(allocator, s);
+            },
+            .boolean => |v| try list.appendSlice(allocator, if (v) "true" else "false"),
+            .text => |v| {
+                try list.append(allocator, '"');
+                for (v) |c| {
+                    if (c == '"' or c == '\\') try list.append(allocator, '\\');
+                    try list.append(allocator, c);
+                }
+                try list.append(allocator, '"');
+            },
+            .array => |v| {
+                const nested = try formatArray(allocator, v);
+                defer allocator.free(nested);
+                try list.appendSlice(allocator, nested);
+            },
+            else => {
+                try list.appendSlice(allocator, "?");
+            },
+        }
+    }
+    try list.append(allocator, '}');
+    return list.toOwnedSlice(allocator);
+}
+
+/// Parse a PostgreSQL-compatible array string: '{1,2,3}' or '{hello,world}'
+fn parseArrayString(allocator: Allocator, s: []const u8) ?[]Value {
+    if (s.len < 2 or s[0] != '{' or s[s.len - 1] != '}') return null;
+    const inner = s[1 .. s.len - 1];
+    if (inner.len == 0) {
+        return allocator.alloc(Value, 0) catch return null;
+    }
+
+    var elems = std.ArrayListUnmanaged(Value){};
+    defer {
+        for (elems.items) |e| e.free(allocator);
+        elems.deinit(allocator);
+    }
+
+    var i: usize = 0;
+    while (i < inner.len) {
+        // Skip whitespace
+        while (i < inner.len and inner[i] == ' ') i += 1;
+        if (i >= inner.len) break;
+
+        if (inner[i] == '"') {
+            // Quoted string element
+            i += 1; // skip opening quote
+            var str_buf = std.ArrayListUnmanaged(u8){};
+            defer str_buf.deinit(allocator);
+            while (i < inner.len and inner[i] != '"') {
+                if (inner[i] == '\\' and i + 1 < inner.len) {
+                    i += 1; // skip escape char
+                }
+                str_buf.append(allocator, inner[i]) catch return null;
+                i += 1;
+            }
+            if (i < inner.len) i += 1; // skip closing quote
+            const owned = str_buf.toOwnedSlice(allocator) catch return null;
+            elems.append(allocator, Value{ .text = owned }) catch {
+                allocator.free(owned);
+                return null;
+            };
+        } else if (inner.len - i >= 4 and std.ascii.eqlIgnoreCase(inner[i..][0..4], "NULL")) {
+            elems.append(allocator, Value.null_value) catch return null;
+            i += 4;
+        } else {
+            // Unquoted element — try integer, then text
+            const start = i;
+            while (i < inner.len and inner[i] != ',') i += 1;
+            const token = std.mem.trimRight(u8, inner[start..i], " ");
+            if (std.fmt.parseInt(i64, token, 10)) |int_val| {
+                elems.append(allocator, Value{ .integer = int_val }) catch return null;
+            } else |_| {
+                if (std.fmt.parseFloat(f64, token)) |float_val| {
+                    elems.append(allocator, Value{ .real = float_val }) catch return null;
+                } else |_| {
+                    const t = allocator.dupe(u8, token) catch return null;
+                    elems.append(allocator, Value{ .text = t }) catch {
+                        allocator.free(t);
+                        return null;
+                    };
+                }
+            }
+        }
+
+        // Skip comma
+        while (i < inner.len and inner[i] == ' ') i += 1;
+        if (i < inner.len and inner[i] == ',') i += 1;
+    }
+
+    const result = allocator.dupe(Value, elems.items) catch return null;
+    elems.clearAndFree(allocator);
+    return result;
+}
+
 // ── MVCC Context ──────────────────────────────────────────────────────────
 
 /// MVCC context passed to scan operators for visibility filtering.
@@ -595,6 +708,7 @@ pub const Value = union(enum) {
     interval: Interval, // composite: months + days + microseconds
     numeric: Numeric, // fixed-point decimal
     uuid: [16]u8, // 128-bit UUID
+    array: []const Value, // variable-length typed array
     null_value,
 
     pub const Interval = struct {
@@ -690,6 +804,18 @@ pub const Value = union(enum) {
                 .uuid => |bv| std.mem.order(u8, &av, &bv),
                 else => .lt,
             },
+            .array => |av| switch (b) {
+                .array => |bv| {
+                    // Element-wise comparison (lexicographic)
+                    const min_len = @min(av.len, bv.len);
+                    for (0..min_len) |i| {
+                        const cmp = av[i].compare(bv[i]);
+                        if (cmp != .eq) return cmp;
+                    }
+                    return std.math.order(av.len, bv.len);
+                },
+                else => .gt, // arrays > all scalar types
+            },
             .null_value => unreachable,
         };
     }
@@ -710,6 +836,7 @@ pub const Value = union(enum) {
             .date, .time, .timestamp, .interval => true, // temporal values are always truthy
             .numeric => |v| v.value != 0,
             .uuid => true, // UUID values are always truthy
+            .array => |v| v.len > 0,
             .null_value => false,
         };
     }
@@ -744,11 +871,18 @@ pub const Value = union(enum) {
         };
     }
 
-    /// Duplicate a value, allocating copies of text/blob data.
+    /// Duplicate a value, allocating copies of text/blob/array data.
     pub fn dupe(self: Value, allocator: Allocator) !Value {
         return switch (self) {
             .text => |v| .{ .text = try allocator.dupe(u8, v) },
             .blob => |v| .{ .blob = try allocator.dupe(u8, v) },
+            .array => |v| {
+                const elems = try allocator.alloc(Value, v.len);
+                for (v, 0..) |elem, i| {
+                    elems[i] = try elem.dupe(allocator);
+                }
+                return .{ .array = elems };
+            },
             else => self,
         };
     }
@@ -758,6 +892,10 @@ pub const Value = union(enum) {
         switch (self) {
             .text => |v| allocator.free(v),
             .blob => |v| allocator.free(v),
+            .array => |v| {
+                for (v) |elem| elem.free(allocator);
+                allocator.free(v);
+            },
             else => {},
         }
     }
@@ -839,24 +977,131 @@ pub const Row = struct {
 ///   blob: [len: u32][bytes...]
 ///   boolean: 1 byte (0 or 1)
 ///   null: 0 bytes (tag only)
+fn serializedValueSize(v: Value) usize {
+    var s: usize = 1; // type tag
+    switch (v) {
+        .integer => s += 8,
+        .real => s += 8,
+        .text => |t| s += 4 + t.len,
+        .blob => |b| s += 4 + b.len,
+        .boolean => s += 1,
+        .date => s += 4,
+        .time => s += 8,
+        .timestamp => s += 8,
+        .interval => s += 16,
+        .numeric => s += 17,
+        .uuid => s += 16,
+        .array => |arr| {
+            s += 4; // element count (u32)
+            for (arr) |elem| {
+                s += serializedValueSize(elem);
+            }
+        },
+        .null_value => {},
+    }
+    return s;
+}
+
+fn serializeValue(buf: []u8, start: usize, v: Value) usize {
+    var pos = start;
+    switch (v) {
+        .integer => |i| {
+            buf[pos] = 0x01;
+            pos += 1;
+            std.mem.writeInt(i64, buf[pos..][0..8], i, .little);
+            pos += 8;
+        },
+        .real => |r| {
+            buf[pos] = 0x02;
+            pos += 1;
+            std.mem.writeInt(u64, buf[pos..][0..8], @bitCast(r), .little);
+            pos += 8;
+        },
+        .text => |t| {
+            buf[pos] = 0x03;
+            pos += 1;
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(t.len), .little);
+            pos += 4;
+            @memcpy(buf[pos..][0..t.len], t);
+            pos += t.len;
+        },
+        .blob => |b| {
+            buf[pos] = 0x04;
+            pos += 1;
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(b.len), .little);
+            pos += 4;
+            @memcpy(buf[pos..][0..b.len], b);
+            pos += b.len;
+        },
+        .boolean => |b| {
+            buf[pos] = 0x05;
+            pos += 1;
+            buf[pos] = if (b) 1 else 0;
+            pos += 1;
+        },
+        .date => |d| {
+            buf[pos] = 0x06;
+            pos += 1;
+            std.mem.writeInt(i32, buf[pos..][0..4], d, .little);
+            pos += 4;
+        },
+        .time => |t| {
+            buf[pos] = 0x07;
+            pos += 1;
+            std.mem.writeInt(i64, buf[pos..][0..8], t, .little);
+            pos += 8;
+        },
+        .timestamp => |ts| {
+            buf[pos] = 0x08;
+            pos += 1;
+            std.mem.writeInt(i64, buf[pos..][0..8], ts, .little);
+            pos += 8;
+        },
+        .interval => |iv| {
+            buf[pos] = 0x09;
+            pos += 1;
+            std.mem.writeInt(i32, buf[pos..][0..4], iv.months, .little);
+            pos += 4;
+            std.mem.writeInt(i32, buf[pos..][0..4], iv.days, .little);
+            pos += 4;
+            std.mem.writeInt(i64, buf[pos..][0..8], iv.micros, .little);
+            pos += 8;
+        },
+        .numeric => |n| {
+            buf[pos] = 0x0A;
+            pos += 1;
+            buf[pos] = n.scale;
+            pos += 1;
+            std.mem.writeInt(i128, buf[pos..][0..16], n.value, .little);
+            pos += 16;
+        },
+        .uuid => |u| {
+            buf[pos] = 0x0B;
+            pos += 1;
+            @memcpy(buf[pos..][0..16], &u);
+            pos += 16;
+        },
+        .array => |arr| {
+            buf[pos] = 0x0C;
+            pos += 1;
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(arr.len), .little);
+            pos += 4;
+            for (arr) |elem| {
+                pos = serializeValue(buf, pos, elem);
+            }
+        },
+        .null_value => {
+            buf[pos] = 0x00;
+            pos += 1;
+        },
+    }
+    return pos;
+}
+
 pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
     var size: usize = 2; // col_count
     for (values) |v| {
-        size += 1; // type tag
-        switch (v) {
-            .integer => size += 8,
-            .real => size += 8,
-            .text => |t| size += 4 + t.len,
-            .blob => |b| size += 4 + b.len,
-            .boolean => size += 1,
-            .date => size += 4,
-            .time => size += 8,
-            .timestamp => size += 8,
-            .interval => size += 16, // months(4) + days(4) + micros(8)
-            .numeric => size += 17, // scale(1) + value(16)
-            .uuid => size += 16, // 128-bit UUID
-            .null_value => {},
-        }
+        size += serializedValueSize(v);
     }
 
     const buf = try allocator.alloc(u8, size);
@@ -867,88 +1112,7 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
     pos += 2;
 
     for (values) |v| {
-        switch (v) {
-            .integer => |i| {
-                buf[pos] = 0x01;
-                pos += 1;
-                std.mem.writeInt(i64, buf[pos..][0..8], i, .little);
-                pos += 8;
-            },
-            .real => |r| {
-                buf[pos] = 0x02;
-                pos += 1;
-                std.mem.writeInt(u64, buf[pos..][0..8], @bitCast(r), .little);
-                pos += 8;
-            },
-            .text => |t| {
-                buf[pos] = 0x03;
-                pos += 1;
-                std.mem.writeInt(u32, buf[pos..][0..4], @intCast(t.len), .little);
-                pos += 4;
-                @memcpy(buf[pos..][0..t.len], t);
-                pos += t.len;
-            },
-            .blob => |b| {
-                buf[pos] = 0x04;
-                pos += 1;
-                std.mem.writeInt(u32, buf[pos..][0..4], @intCast(b.len), .little);
-                pos += 4;
-                @memcpy(buf[pos..][0..b.len], b);
-                pos += b.len;
-            },
-            .boolean => |b| {
-                buf[pos] = 0x05;
-                pos += 1;
-                buf[pos] = if (b) 1 else 0;
-                pos += 1;
-            },
-            .date => |d| {
-                buf[pos] = 0x06;
-                pos += 1;
-                std.mem.writeInt(i32, buf[pos..][0..4], d, .little);
-                pos += 4;
-            },
-            .time => |t| {
-                buf[pos] = 0x07;
-                pos += 1;
-                std.mem.writeInt(i64, buf[pos..][0..8], t, .little);
-                pos += 8;
-            },
-            .timestamp => |ts| {
-                buf[pos] = 0x08;
-                pos += 1;
-                std.mem.writeInt(i64, buf[pos..][0..8], ts, .little);
-                pos += 8;
-            },
-            .interval => |iv| {
-                buf[pos] = 0x09;
-                pos += 1;
-                std.mem.writeInt(i32, buf[pos..][0..4], iv.months, .little);
-                pos += 4;
-                std.mem.writeInt(i32, buf[pos..][0..4], iv.days, .little);
-                pos += 4;
-                std.mem.writeInt(i64, buf[pos..][0..8], iv.micros, .little);
-                pos += 8;
-            },
-            .numeric => |n| {
-                buf[pos] = 0x0A;
-                pos += 1;
-                buf[pos] = n.scale;
-                pos += 1;
-                std.mem.writeInt(i128, buf[pos..][0..16], n.value, .little);
-                pos += 16;
-            },
-            .uuid => |u| {
-                buf[pos] = 0x0B;
-                pos += 1;
-                @memcpy(buf[pos..][0..16], &u);
-                pos += 16;
-            },
-            .null_value => {
-                buf[pos] = 0x00;
-                pos += 1;
-            },
-        }
+        pos = serializeValue(buf, pos, v);
     }
 
     std.debug.assert(pos == size);
@@ -956,6 +1120,112 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
 }
 
 /// Deserialize a row's values from B+Tree storage bytes.
+const DeserializeResult = struct {
+    value: Value,
+    bytes_read: usize,
+};
+
+fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !DeserializeResult {
+    var pos = start;
+    if (pos >= data.len) return error.InvalidRowData;
+    const tag = data[pos];
+    pos += 1;
+
+    switch (tag) {
+        0x01 => { // integer
+            if (pos + 8 > data.len) return error.InvalidRowData;
+            const val = std.mem.readInt(i64, data[pos..][0..8], .little);
+            return .{ .value = .{ .integer = val }, .bytes_read = pos + 8 - start };
+        },
+        0x02 => { // real
+            if (pos + 8 > data.len) return error.InvalidRowData;
+            const val: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+            return .{ .value = .{ .real = val }, .bytes_read = pos + 8 - start };
+        },
+        0x03 => { // text
+            if (pos + 4 > data.len) return error.InvalidRowData;
+            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + len > data.len) return error.InvalidRowData;
+            const val = try allocator.dupe(u8, data[pos..][0..len]);
+            return .{ .value = .{ .text = val }, .bytes_read = pos + len - start };
+        },
+        0x04 => { // blob
+            if (pos + 4 > data.len) return error.InvalidRowData;
+            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + len > data.len) return error.InvalidRowData;
+            const val = try allocator.dupe(u8, data[pos..][0..len]);
+            return .{ .value = .{ .blob = val }, .bytes_read = pos + len - start };
+        },
+        0x05 => { // boolean
+            if (pos >= data.len) return error.InvalidRowData;
+            return .{ .value = .{ .boolean = data[pos] != 0 }, .bytes_read = pos + 1 - start };
+        },
+        0x06 => { // date
+            if (pos + 4 > data.len) return error.InvalidRowData;
+            const val = std.mem.readInt(i32, data[pos..][0..4], .little);
+            return .{ .value = .{ .date = val }, .bytes_read = pos + 4 - start };
+        },
+        0x07 => { // time
+            if (pos + 8 > data.len) return error.InvalidRowData;
+            const val = std.mem.readInt(i64, data[pos..][0..8], .little);
+            return .{ .value = .{ .time = val }, .bytes_read = pos + 8 - start };
+        },
+        0x08 => { // timestamp
+            if (pos + 8 > data.len) return error.InvalidRowData;
+            const val = std.mem.readInt(i64, data[pos..][0..8], .little);
+            return .{ .value = .{ .timestamp = val }, .bytes_read = pos + 8 - start };
+        },
+        0x09 => { // interval
+            if (pos + 16 > data.len) return error.InvalidRowData;
+            const months = std.mem.readInt(i32, data[pos..][0..4], .little);
+            pos += 4;
+            const days = std.mem.readInt(i32, data[pos..][0..4], .little);
+            pos += 4;
+            const micros = std.mem.readInt(i64, data[pos..][0..8], .little);
+            pos += 8;
+            return .{ .value = .{ .interval = .{ .months = months, .days = days, .micros = micros } }, .bytes_read = pos - start };
+        },
+        0x0A => { // numeric
+            if (pos + 17 > data.len) return error.InvalidRowData;
+            const scale = data[pos];
+            pos += 1;
+            const value = std.mem.readInt(i128, data[pos..][0..16], .little);
+            pos += 16;
+            return .{ .value = .{ .numeric = .{ .value = value, .scale = scale } }, .bytes_read = pos - start };
+        },
+        0x0B => { // uuid
+            if (pos + 16 > data.len) return error.InvalidRowData;
+            var uuid_bytes: [16]u8 = undefined;
+            @memcpy(&uuid_bytes, data[pos..][0..16]);
+            return .{ .value = .{ .uuid = uuid_bytes }, .bytes_read = pos + 16 - start };
+        },
+        0x0C => { // array
+            if (pos + 4 > data.len) return error.InvalidRowData;
+            const elem_count = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            const elems = try allocator.alloc(Value, elem_count);
+            var inited_elems: usize = 0;
+            errdefer {
+                for (elems[0..inited_elems]) |ev| ev.free(allocator);
+                allocator.free(elems);
+            }
+            for (elems) |*e| {
+                const result = try deserializeValue(allocator, data, pos);
+                e.* = result.value;
+                pos += result.bytes_read;
+                inited_elems += 1;
+            }
+            return .{ .value = .{ .array = elems }, .bytes_read = pos - start };
+        },
+        0x00 => { // null
+            return .{ .value = .null_value, .bytes_read = 1 };
+        },
+        else => return error.InvalidRowData,
+    }
+}
+
 pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
     if (data.len < 2) return error.InvalidRowData;
     var pos: usize = 0;
@@ -971,87 +1241,9 @@ pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
     }
 
     for (values) |*v| {
-        if (pos >= data.len) return error.InvalidRowData;
-        const tag = data[pos];
-        pos += 1;
-
-        switch (tag) {
-            0x01 => { // integer
-                if (pos + 8 > data.len) return error.InvalidRowData;
-                v.* = .{ .integer = std.mem.readInt(i64, data[pos..][0..8], .little) };
-                pos += 8;
-            },
-            0x02 => { // real
-                if (pos + 8 > data.len) return error.InvalidRowData;
-                v.* = .{ .real = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little)) };
-                pos += 8;
-            },
-            0x03 => { // text
-                if (pos + 4 > data.len) return error.InvalidRowData;
-                const len = std.mem.readInt(u32, data[pos..][0..4], .little);
-                pos += 4;
-                if (pos + len > data.len) return error.InvalidRowData;
-                v.* = .{ .text = try allocator.dupe(u8, data[pos..][0..len]) };
-                pos += len;
-            },
-            0x04 => { // blob
-                if (pos + 4 > data.len) return error.InvalidRowData;
-                const len = std.mem.readInt(u32, data[pos..][0..4], .little);
-                pos += 4;
-                if (pos + len > data.len) return error.InvalidRowData;
-                v.* = .{ .blob = try allocator.dupe(u8, data[pos..][0..len]) };
-                pos += len;
-            },
-            0x05 => { // boolean
-                if (pos >= data.len) return error.InvalidRowData;
-                v.* = .{ .boolean = data[pos] != 0 };
-                pos += 1;
-            },
-            0x06 => { // date
-                if (pos + 4 > data.len) return error.InvalidRowData;
-                v.* = .{ .date = std.mem.readInt(i32, data[pos..][0..4], .little) };
-                pos += 4;
-            },
-            0x07 => { // time
-                if (pos + 8 > data.len) return error.InvalidRowData;
-                v.* = .{ .time = std.mem.readInt(i64, data[pos..][0..8], .little) };
-                pos += 8;
-            },
-            0x08 => { // timestamp
-                if (pos + 8 > data.len) return error.InvalidRowData;
-                v.* = .{ .timestamp = std.mem.readInt(i64, data[pos..][0..8], .little) };
-                pos += 8;
-            },
-            0x09 => { // interval
-                if (pos + 16 > data.len) return error.InvalidRowData;
-                const months = std.mem.readInt(i32, data[pos..][0..4], .little);
-                pos += 4;
-                const days = std.mem.readInt(i32, data[pos..][0..4], .little);
-                pos += 4;
-                const micros = std.mem.readInt(i64, data[pos..][0..8], .little);
-                pos += 8;
-                v.* = .{ .interval = .{ .months = months, .days = days, .micros = micros } };
-            },
-            0x0A => { // numeric
-                if (pos + 17 > data.len) return error.InvalidRowData;
-                const scale = data[pos];
-                pos += 1;
-                const value = std.mem.readInt(i128, data[pos..][0..16], .little);
-                pos += 16;
-                v.* = .{ .numeric = .{ .value = value, .scale = scale } };
-            },
-            0x0B => { // uuid
-                if (pos + 16 > data.len) return error.InvalidRowData;
-                var uuid_bytes: [16]u8 = undefined;
-                @memcpy(&uuid_bytes, data[pos..][0..16]);
-                pos += 16;
-                v.* = .{ .uuid = uuid_bytes };
-            },
-            0x00 => { // null
-                v.* = .null_value;
-            },
-            else => return error.InvalidRowData,
-        }
+        const result = try deserializeValue(allocator, data, pos);
+        v.* = result.value;
+        pos += result.bytes_read;
         inited += 1;
     }
 
@@ -1192,6 +1384,35 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
         // When evalExpr encounters a window_function, the value should already be
         // in the row under the window function's alias/name.
         .window_function => return EvalError.UnsupportedExpression,
+
+        .array_constructor => |elements| {
+            const elems = allocator.alloc(Value, elements.len) catch return EvalError.OutOfMemory;
+            var inited: usize = 0;
+            errdefer {
+                for (elems[0..inited]) |e| e.free(allocator);
+                allocator.free(elems);
+            }
+            for (elements, 0..) |elem_expr, i| {
+                elems[i] = try evalExpr(allocator, elem_expr, row);
+                inited += 1;
+            }
+            return .{ .array = elems };
+        },
+
+        .array_subscript => |sub| {
+            const arr_val = try evalExpr(allocator, sub.array, row);
+            defer arr_val.free(allocator);
+            const idx_val = try evalExpr(allocator, sub.index, row);
+            defer idx_val.free(allocator);
+            const arr = switch (arr_val) {
+                .array => |a| a,
+                else => return .null_value, // subscript on non-array returns NULL
+            };
+            const idx = idx_val.toInteger() orelse return .null_value;
+            // 1-based indexing (PostgreSQL convention)
+            if (idx < 1 or idx > @as(i64, @intCast(arr.len))) return .null_value;
+            return arr[@intCast(idx - 1)].dupe(allocator) catch return EvalError.OutOfMemory;
+        },
 
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
@@ -1460,6 +1681,7 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 .interval => |v| formatInterval(allocator, v) catch return EvalError.OutOfMemory,
                 .numeric => |v| formatNumeric(allocator, v) catch return EvalError.OutOfMemory,
                 .uuid => |v| formatUuid(allocator, v) catch return EvalError.OutOfMemory,
+                .array => |v| formatArray(allocator, v) catch return EvalError.OutOfMemory,
                 .null_value => return .null_value,
                 .blob => return .null_value,
             };
@@ -1519,6 +1741,15 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 else => return .null_value,
             };
             break :blk Value{ .uuid = bytes };
+        },
+        .type_array => switch (val) {
+            .array => val,
+            .text => |v| blk: {
+                // Parse text like '{1,2,3}' into an array
+                const arr = parseArrayString(allocator, v) orelse return .null_value;
+                break :blk Value{ .array = arr };
+            },
+            else => .null_value,
         },
     };
 }
@@ -1610,6 +1841,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .interval => "interval",
             .numeric => "numeric",
             .uuid => "uuid",
+            .array => "array",
             .null_value => "null",
         };
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };
@@ -1634,6 +1866,49 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     // UUID generation
     if (std.ascii.eqlIgnoreCase(fc.name, "gen_random_uuid")) {
         return Value{ .uuid = generateUuidV4() };
+    }
+
+    // Array functions
+    if (std.ascii.eqlIgnoreCase(fc.name, "array_length")) {
+        if (fc.args.len < 1 or fc.args.len > 2) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row);
+        defer arg.free(allocator);
+        return switch (arg) {
+            .array => |a| Value{ .integer = @intCast(a.len) },
+            .null_value => .null_value,
+            else => .null_value,
+        };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "array_upper")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row);
+        defer arg.free(allocator);
+        return switch (arg) {
+            .array => |a| if (a.len == 0) .null_value else Value{ .integer = @intCast(a.len) },
+            else => .null_value,
+        };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "array_lower")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row);
+        defer arg.free(allocator);
+        return switch (arg) {
+            .array => |a| if (a.len == 0) .null_value else Value{ .integer = 1 },
+            else => .null_value,
+        };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "cardinality")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row);
+        defer arg.free(allocator);
+        return switch (arg) {
+            .array => |a| Value{ .integer = @intCast(a.len) },
+            .null_value => .null_value,
+            else => .null_value,
+        };
     }
 
     return EvalError.UnsupportedExpression;

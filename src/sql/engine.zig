@@ -250,6 +250,31 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             @memcpy(buf, &u);
             return buf;
         },
+        .array => |arr| {
+            // Serialize array elements as index key (format: element_count + concatenated element keys)
+            var total_size: usize = 4; // u32 element count
+            var elem_keys = std.ArrayListUnmanaged([]u8){};
+            defer {
+                for (elem_keys.items) |k| allocator.free(k);
+                elem_keys.deinit(allocator);
+            }
+            for (arr) |elem| {
+                const ek = try valueToIndexKey(allocator, elem);
+                total_size += 4 + ek.len; // u32 length prefix + key data
+                try elem_keys.append(allocator, ek);
+            }
+            const buf = try allocator.alloc(u8, total_size);
+            var pos: usize = 0;
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(arr.len), .big);
+            pos += 4;
+            for (elem_keys.items) |ek| {
+                std.mem.writeInt(u32, buf[pos..][0..4], @intCast(ek.len), .big);
+                pos += 4;
+                @memcpy(buf[pos..][0..ek.len], ek);
+                pos += ek.len;
+            }
+            return buf;
+        },
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };

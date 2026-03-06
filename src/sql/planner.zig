@@ -36,6 +36,7 @@ pub const ValueType = enum {
     interval,
     numeric,
     uuid,
+    array,
     null_type,
 
     pub fn fromColumnType(ct: ColumnType) ValueType {
@@ -51,6 +52,7 @@ pub const ValueType = enum {
             .interval => .interval,
             .numeric => .numeric,
             .uuid => .uuid,
+            .array => .array,
             .untyped => .text, // default untyped to text
         };
     }
@@ -68,6 +70,7 @@ pub const ValueType = enum {
             .interval => .interval,
             .numeric => .numeric,
             .uuid => .uuid,
+            .array => .array,
             .null_type => .untyped,
         };
     }

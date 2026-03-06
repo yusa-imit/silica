@@ -765,11 +765,18 @@ pub const Parser = struct {
             t == .kw_text or t == .kw_blob or t == .kw_boolean or t == .kw_varchar or
             t == .kw_date or t == .kw_time or t == .kw_timestamp or t == .kw_interval or
             t == .kw_numeric or t == .kw_decimal or t == .kw_uuid or
-            t == .kw_serial or t == .kw_bigserial;
+            t == .kw_serial or t == .kw_bigserial or t == .kw_array;
     }
 
     fn parseDataType(self: *Parser) ?ast.DataType {
         const t = self.peek().type;
+
+        // Standalone ARRAY keyword (e.g., column_name ARRAY)
+        if (t == .kw_array) {
+            _ = self.advance();
+            return .type_array;
+        }
+
         const dt: ?ast.DataType = switch (t) {
             .kw_integer => .type_integer,
             .kw_int => .type_int,
@@ -798,6 +805,16 @@ pub const Parser = struct {
                     _ = self.match(.integer_literal);
                 }
                 _ = self.match(.right_paren);
+            }
+            // Support INTEGER[] and INTEGER ARRAY syntax → maps to type_array
+            if (self.peek().type == .left_bracket) {
+                _ = self.advance(); // consume [
+                _ = self.match(.right_bracket); // consume ]
+                return .type_array;
+            }
+            if (self.peek().type == .kw_array) {
+                _ = self.advance(); // consume ARRAY
+                return .type_array;
             }
         }
         return dt;
@@ -1208,6 +1225,17 @@ pub const Parser = struct {
     fn parseExpr(self: *Parser, min_prec: u8) Error!*const ast.Expr {
         var left = try self.parsePrimary();
 
+        // Postfix subscript: expr[index]
+        while (self.check(.left_bracket)) {
+            _ = self.advance(); // consume [
+            const index = try self.parseExpr(0);
+            _ = try self.expect(.right_bracket);
+            left = self.arena.create(ast.Expr, .{ .array_subscript = .{
+                .array = left,
+                .index = index,
+            } }) catch return error.OutOfMemory;
+        }
+
         while (true) {
             const prec = self.currentPrecedence();
             if (prec < min_prec) break;
@@ -1323,6 +1351,7 @@ pub const Parser = struct {
                 _ = try self.expect(.right_paren);
                 return self.arena.create(ast.Expr, .{ .paren = inner }) catch return error.OutOfMemory;
             },
+            .kw_array => return self.parseArrayConstructor(),
             .kw_case => return self.parseCaseExpr(),
             .kw_cast => return self.parseCastExpr(),
             .kw_count, .kw_sum, .kw_avg, .kw_min, .kw_max => return self.parseFunctionCall(),
@@ -1573,6 +1602,26 @@ pub const Parser = struct {
             .when_clauses = when_clauses.toOwnedSlice(a) catch return error.OutOfMemory,
             .else_expr = else_expr,
         } }) catch return error.OutOfMemory;
+    }
+
+    fn parseArrayConstructor(self: *Parser) Error!*const ast.Expr {
+        _ = try self.expect(.kw_array);
+        _ = try self.expect(.left_bracket);
+
+        const a = self.alloc();
+        var elements = std.ArrayListUnmanaged(*const ast.Expr){};
+        defer elements.deinit(a);
+
+        if (!self.check(.right_bracket)) {
+            elements.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+            while (self.match(.comma)) {
+                elements.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+            }
+        }
+        _ = try self.expect(.right_bracket);
+
+        const elems = elements.toOwnedSlice(a) catch return error.OutOfMemory;
+        return self.arena.create(ast.Expr, .{ .array_constructor = elems }) catch return error.OutOfMemory;
     }
 
     fn parseCastExpr(self: *Parser) Error!*const ast.Expr {

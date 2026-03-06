@@ -311,6 +311,7 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             return buf;
         },
         .uuid => |u| try allocator.dupe(u8, &u),
+        .array => try allocator.alloc(u8, 0), // arrays not indexed in vacuum
         .null_value => try allocator.alloc(u8, 0),
         .blob => |b| try allocator.dupe(u8, b),
     };

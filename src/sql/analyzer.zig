@@ -695,6 +695,13 @@ pub const Analyzer = struct {
                 // Analyze ORDER BY expressions
                 for (wf.order_by) |ob| self.analyzeExpr(ob.expr);
             },
+            .array_constructor => |elements| {
+                for (elements) |elem| self.analyzeExpr(elem);
+            },
+            .array_subscript => |sub| {
+                self.analyzeExpr(sub.array);
+                self.analyzeExpr(sub.index);
+            },
             .subquery => {
                 // Subqueries have their own scope — skip deep analysis for now
             },

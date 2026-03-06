@@ -30,6 +30,7 @@ pub const DataType = enum {
     type_uuid,
     type_serial,
     type_bigserial,
+    type_array,
 };
 
 /// Column constraint in a CREATE TABLE statement.
@@ -228,6 +229,13 @@ pub const Expr = union(enum) {
     subquery: *const SelectStmt,
     /// Window function call: func(...) OVER (PARTITION BY ... ORDER BY ... frame)
     window_function: WindowFunctionExpr,
+    /// ARRAY[expr, expr, ...] constructor
+    array_constructor: []const *const Expr,
+    /// expr[index] — array subscript access (1-based)
+    array_subscript: struct {
+        array: *const Expr,
+        index: *const Expr,
+    },
     /// Bind parameter: ?
     bind_parameter: u32,
 };

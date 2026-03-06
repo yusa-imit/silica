@@ -34,6 +34,8 @@ pub const TokenType = enum {
     // Punctuation
     left_paren,
     right_paren,
+    left_bracket,
+    right_bracket,
     comma,
     semicolon,
     dot,
@@ -190,6 +192,7 @@ pub const TokenType = enum {
     kw_uuid,
     kw_serial,
     kw_bigserial,
+    kw_array,
 
     // Keywords — Values
     kw_true,
@@ -244,6 +247,8 @@ pub const Tokenizer = struct {
         switch (ch) {
             '(' => return self.singleChar(.left_paren),
             ')' => return self.singleChar(.right_paren),
+            '[' => return self.singleChar(.left_bracket),
+            ']' => return self.singleChar(.right_bracket),
             ',' => return self.singleChar(.comma),
             ';' => return self.singleChar(.semicolon),
             '.' => {
@@ -731,6 +736,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "uuid", .kw_uuid },
         .{ "serial", .kw_serial },
         .{ "bigserial", .kw_bigserial },
+        .{ "array", .kw_array },
         // Values
         .{ "true", .kw_true },
         .{ "false", .kw_false },
