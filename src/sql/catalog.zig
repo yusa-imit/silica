@@ -427,6 +427,8 @@ pub const CatalogError = error{
     OutOfMemory,
     ViewAlreadyExists,
     ViewNotFound,
+    TypeAlreadyExists,
+    TypeNotFound,
 };
 
 /// Schema catalog backed by a B+Tree on the schema root page (page 1).
@@ -786,6 +788,18 @@ pub const Catalog = struct {
         }
     };
 
+    pub const EnumTypeInfo = struct {
+        name: []const u8,
+        values: []const []const u8,
+        allocator: Allocator,
+
+        pub fn deinit(self: EnumTypeInfo) void {
+            self.allocator.free(self.name);
+            for (self.values) |v| self.allocator.free(v);
+            self.allocator.free(self.values);
+        }
+    };
+
     /// Look up a view by name. Caller must call ViewInfo.deinit().
     pub fn getView(self: *Catalog, name: []const u8) !ViewInfo {
         const key = try self.makeViewKey(name);
@@ -869,6 +883,152 @@ pub const Catalog = struct {
             {
                 const view_name = entry.key[VIEW_KEY_PREFIX.len..];
                 const name_copy = try allocator.dupe(u8, view_name);
+                errdefer allocator.free(name_copy);
+                try names.append(allocator, name_copy);
+            }
+        }
+
+        return names.toOwnedSlice(allocator);
+    }
+
+    // ── ENUM Types ──────────────────────────────────────────────────────
+
+    fn makeTypeKey(self: *Catalog, name: []const u8) ![]u8 {
+        const prefix = "type:";
+        const key = try self.allocator.alloc(u8, prefix.len + name.len);
+        @memcpy(key[0..prefix.len], prefix);
+        @memcpy(key[prefix.len..], name);
+        return key;
+    }
+
+    pub fn createEnumType(
+        self: *Catalog,
+        name: []const u8,
+        values: []const []const u8,
+    ) !void {
+        const key = try self.makeTypeKey(name);
+        defer self.allocator.free(key);
+
+        // Check if type already exists
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            return CatalogError.TypeAlreadyExists;
+        }
+
+        // Check if name collides with a table
+        if (try self.tableExists(name)) {
+            return CatalogError.TableAlreadyExists;
+        }
+
+        // Serialize: [value_count: u16][values...]
+        // Each value: [length: u16][text]
+        var total_size: usize = 2; // value_count
+        for (values) |v| {
+            total_size += 2 + v.len; // length prefix + text
+        }
+
+        const data = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(data);
+
+        var offset: usize = 0;
+        std.mem.writeInt(u16, data[offset..][0..2], @intCast(values.len), .little);
+        offset += 2;
+
+        for (values) |v| {
+            std.mem.writeInt(u16, data[offset..][0..2], @intCast(v.len), .little);
+            offset += 2;
+            @memcpy(data[offset..][0..v.len], v);
+            offset += v.len;
+        }
+
+        try self.tree.insert(key, data);
+    }
+
+    pub fn getEnumType(self: *Catalog, name: []const u8) !EnumTypeInfo {
+        const key = try self.makeTypeKey(name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key) orelse
+            return CatalogError.TypeNotFound;
+        defer self.allocator.free(value);
+
+        // Deserialize: [value_count: u16][values...]
+        if (value.len < 2) return CatalogError.InvalidSchemaData;
+
+        var offset: usize = 0;
+        const value_count = std.mem.readInt(u16, value[offset..][0..2], .little);
+        offset += 2;
+
+        const values = try self.allocator.alloc([]const u8, value_count);
+        errdefer {
+            for (values[0..value_count]) |v| self.allocator.free(v);
+            self.allocator.free(values);
+        }
+
+        for (0..value_count) |i| {
+            if (offset + 2 > value.len) return CatalogError.InvalidSchemaData;
+            const len = std.mem.readInt(u16, value[offset..][0..2], .little);
+            offset += 2;
+            if (offset + len > value.len) return CatalogError.InvalidSchemaData;
+            values[i] = try self.allocator.dupe(u8, value[offset..][0..len]);
+            offset += len;
+        }
+
+        return .{
+            .name = try self.allocator.dupe(u8, name),
+            .values = values,
+            .allocator = self.allocator,
+        };
+    }
+
+    pub fn dropEnumType(self: *Catalog, name: []const u8, if_exists: bool) !void {
+        const key = try self.makeTypeKey(name);
+        defer self.allocator.free(key);
+
+        const exists = try self.tree.get(self.allocator, key);
+        if (exists) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        } else {
+            if (!if_exists) return CatalogError.TypeNotFound;
+        }
+    }
+
+    pub fn enumTypeExists(self: *Catalog, name: []const u8) !bool {
+        const key = try self.makeTypeKey(name);
+        defer self.allocator.free(key);
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn listEnumTypes(self: *Catalog, allocator: Allocator) ![][]const u8 {
+        var cursor = Cursor.init(allocator, &self.tree);
+        defer cursor.deinit();
+
+        try cursor.seekFirst();
+
+        var names = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (names.items) |n| allocator.free(n);
+            names.deinit(allocator);
+        }
+
+        const TYPE_KEY_PREFIX = "type:";
+        while (try cursor.next()) |entry| {
+            defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            // Only include type entries (key starts with TYPE_KEY_PREFIX)
+            if (entry.key.len > TYPE_KEY_PREFIX.len and
+                std.mem.eql(u8, entry.key[0..TYPE_KEY_PREFIX.len], TYPE_KEY_PREFIX))
+            {
+                const type_name = entry.key[TYPE_KEY_PREFIX.len..];
+                const name_copy = try allocator.dupe(u8, type_name);
                 errdefer allocator.free(name_copy);
                 try names.append(allocator, name_copy);
             }
@@ -1547,4 +1707,120 @@ test "Catalog view serialization roundtrip with many columns" {
         try std.testing.expectEqualStrings(expected, info.column_names[i]);
     }
     try std.testing.expectEqualStrings(sql, info.sql);
+}
+
+// ── ENUM Type Tests ─────────────────────────────────────────────────────
+
+test "Catalog createEnumType and getEnumType" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_create.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{ "'happy'", "'sad'", "'neutral'" };
+    try tc.catalog.createEnumType("mood", &values);
+
+    const info = try tc.catalog.getEnumType("mood");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("mood", info.name);
+    try std.testing.expectEqual(@as(usize, 3), info.values.len);
+    try std.testing.expectEqualStrings("'happy'", info.values[0]);
+    try std.testing.expectEqualStrings("'sad'", info.values[1]);
+    try std.testing.expectEqualStrings("'neutral'", info.values[2]);
+}
+
+test "Catalog createEnumType duplicate error" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_dup.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{"'active'"};
+    try tc.catalog.createEnumType("status", &values);
+    try std.testing.expectError(CatalogError.TypeAlreadyExists, tc.catalog.createEnumType("status", &values));
+}
+
+test "Catalog dropEnumType" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_drop.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{"'active'"};
+    try tc.catalog.createEnumType("status", &values);
+    try std.testing.expect(try tc.catalog.enumTypeExists("status"));
+
+    try tc.catalog.dropEnumType("status", false);
+    try std.testing.expect(!try tc.catalog.enumTypeExists("status"));
+}
+
+test "Catalog dropEnumType nonexistent error" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_drop_ne.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropEnumType("ghost", false));
+    try tc.catalog.dropEnumType("ghost", true); // IF EXISTS — no error
+}
+
+test "Catalog enumTypeExists" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expect(!try tc.catalog.enumTypeExists("mood"));
+
+    const values = [_][]const u8{"'happy'"};
+    try tc.catalog.createEnumType("mood", &values);
+    try std.testing.expect(try tc.catalog.enumTypeExists("mood"));
+}
+
+test "Catalog listEnumTypes" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_list.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // No types initially
+    const empty = try tc.catalog.listEnumTypes(allocator);
+    defer allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+
+    // Create types
+    const vals1 = [_][]const u8{"'happy'"};
+    const vals2 = [_][]const u8{"'active'"};
+    try tc.catalog.createEnumType("mood", &vals1);
+    try tc.catalog.createEnumType("status", &vals2);
+
+    const types = try tc.catalog.listEnumTypes(allocator);
+    defer {
+        for (types) |t| allocator.free(t);
+        allocator.free(types);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), types.len);
+}
+
+test "Catalog createEnumType name collision with table" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_enum_collision.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createTable("t1", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    }, &.{}, 0);
+
+    const values = [_][]const u8{"'active'"};
+    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createEnumType("t1", &values));
 }
