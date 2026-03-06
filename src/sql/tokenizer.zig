@@ -86,6 +86,7 @@ pub const TokenType = enum {
     kw_cascaded,
     kw_type,
     kw_enum,
+    kw_domain,
 
     // Keywords — DML
     kw_select,
@@ -639,6 +640,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "cascaded", .kw_cascaded },
         .{ "type", .kw_type },
         .{ "enum", .kw_enum },
+        .{ "domain", .kw_domain },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },

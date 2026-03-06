@@ -800,6 +800,18 @@ pub const Catalog = struct {
         }
     };
 
+    pub const DomainTypeInfo = struct {
+        name: []const u8,
+        base_type: ast.DataType,
+        constraint: ?[]const u8 = null,
+        allocator: Allocator,
+
+        pub fn deinit(self: DomainTypeInfo) void {
+            self.allocator.free(self.name);
+            if (self.constraint) |c| self.allocator.free(c);
+        }
+    };
+
     /// Look up a view by name. Caller must call ViewInfo.deinit().
     pub fn getView(self: *Catalog, name: []const u8) !ViewInfo {
         const key = try self.makeViewKey(name);

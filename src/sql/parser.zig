@@ -709,8 +709,11 @@ pub const Parser = struct {
         if (self.check(.kw_type)) {
             return .{ .create_type = try self.parseCreateType() };
         }
+        if (self.check(.kw_domain)) {
+            return .{ .create_domain = try self.parseCreateDomain() };
+        }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, or TYPE after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, or DOMAIN after CREATE");
         return error.ParseFailed;
     }
 
@@ -1082,7 +1085,8 @@ pub const Parser = struct {
         if (self.check(.kw_view)) return .{ .drop_view = try self.parseDropView() };
         if (self.check(.kw_index)) return .{ .drop_index = try self.parseDropIndex() };
         if (self.check(.kw_type)) return .{ .drop_type = try self.parseDropType() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, or TYPE after DROP");
+        if (self.check(.kw_domain)) return .{ .drop_domain = try self.parseDropDomain() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, or DOMAIN after DROP");
         return error.ParseFailed;
     }
 
@@ -1219,6 +1223,35 @@ pub const Parser = struct {
 
     fn parseDropType(self: *Parser) Error!ast.DropTypeStmt {
         _ = try self.expect(.kw_type);
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+        return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    fn parseCreateDomain(self: *Parser) Error!ast.CreateDomainStmt {
+        _ = try self.expect(.kw_domain);
+        const name = try self.expectIdentifier();
+        _ = try self.expect(.kw_as);
+        const base_type = self.parseDataType() orelse {
+            try self.addError(self.peek(), "expected data type after AS");
+            return error.ParseFailed;
+        };
+
+        var constraint: ?*const ast.Expr = null;
+        if (self.match(.kw_check)) {
+            _ = try self.expect(.left_paren);
+            constraint = try self.parseExpr(0);
+            _ = try self.expect(.right_paren);
+        }
+
+        return .{ .name = name, .base_type = base_type, .constraint = constraint };
+    }
+
+    fn parseDropDomain(self: *Parser) Error!ast.DropDomainStmt {
+        _ = try self.expect(.kw_domain);
         var if_exists = false;
         if (self.match(.kw_if)) {
             _ = try self.expect(.kw_exists);
