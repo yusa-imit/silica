@@ -13241,12 +13241,149 @@ test "ALL with comparison operators" {
     try testing.expect(!row2.values[0].boolean);
 }
 
-// NOTE: unnest() implementation is complete but requires analyzer scope registration
-// for table functions to work with SELECT *. This will be implemented in a future commit.
-// The following tests are commented out until analyzer support is added:
-//
-// test "unnest() with integer array" - requires column inference from table functions
-// test "unnest() with text array" - requires column inference from table functions
-// test "unnest() with single-element array" - requires column inference from table functions
-// test "unnest() column name default" - requires column inference from table functions
-// test "unnest() with array of booleans" - requires column inference from table functions
+// ── unnest() Table Function Tests ──────────────────────────────────
+
+test "unnest() with integer array" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[1, 2, 3])");
+    defer r.close(testing.allocator);
+
+    // Should have 3 rows
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() with text array" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY['hello', 'world'])");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("hello", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("world", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() with single-element array" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[42])");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 42), row.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() column name default" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT unnest FROM unnest(ARRAY[1, 2])");
+    defer r.close(testing.allocator);
+
+    // Should be able to reference the column by its default name "unnest"
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+}
+
+test "unnest() with alias" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM unnest(ARRAY[10, 20]) AS value");
+    defer r.close(testing.allocator);
+
+    // Should be able to reference the column by its alias "value"
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 10), row.values[0].integer);
+}
+
+test "unnest() with array of booleans" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[true, false, true])");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0].boolean);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(!row2.values[0].boolean);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expect(row3.values[0].boolean);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() with WHERE clause" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[1, 2, 3, 4, 5]) WHERE unnest > 3");
+    defer r.close(testing.allocator);
+
+    // Should filter to only values > 3
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 4), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 5), row2.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() with ORDER BY" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[3, 1, 2]) ORDER BY unnest DESC");
+    defer r.close(testing.allocator);
+
+    // Should be ordered descending
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 3), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 1), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}

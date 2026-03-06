@@ -160,6 +160,54 @@ pub const Analyzer = struct {
         return true;
     }
 
+    /// Register a table function's output columns in scope.
+    /// Currently supports unnest() which produces a single column.
+    fn addTableFunctionToScope(self: *Analyzer, ref: *const ast.TableRef) void {
+        const tf = ref.table_function;
+
+        // Determine the visible name for the table function
+        const func_alias = tf.alias orelse tf.name;
+
+        // Check for duplicate alias
+        for (self.scope_tables.items) |st| {
+            if (std.ascii.eqlIgnoreCase(st.alias, func_alias)) {
+                self.addError(.duplicate_alias, "duplicate table alias: '{s}'", .{func_alias});
+                return;
+            }
+        }
+
+        // Currently only unnest() is supported
+        if (std.mem.eql(u8, tf.name, "unnest")) {
+            // unnest() produces a single column
+            // Column name: alias if provided, otherwise "unnest"
+            const col_name = tf.alias orelse "unnest";
+
+            // Allocate column info in arena
+            const arena = self.arena.allocator();
+            const cols = arena.alloc(ColumnInfo, 1) catch {
+                self.addError(.invalid_expression, "out of memory", .{});
+                return;
+            };
+
+            // For now, use blob type since we don't have full type inference
+            // In the future, this could inspect the array argument's element type
+            cols[0] = .{
+                .name = col_name,
+                .column_type = .blob,
+                .flags = .{},
+            };
+
+            self.scope_tables.append(self.allocator, .{
+                .alias = func_alias,
+                .table_name = tf.name,
+                .columns = cols,
+            }) catch {};
+        } else {
+            // Unknown table function
+            self.addError(.table_not_found, "unknown table function: '{s}'", .{tf.name});
+        }
+    }
+
     /// Resolve a column reference to the table it belongs to.
     fn resolveColumn(self: *Analyzer, name: ast.Name) ?ResolvedColumn {
         if (name.prefix) |prefix| {
@@ -636,7 +684,8 @@ pub const Analyzer = struct {
                 for (tf.args) |arg| {
                     self.analyzeExpr(arg);
                 }
-                // TODO: register table function columns in scope (requires schema introspection)
+                // Register table function columns in scope
+                self.addTableFunctionToScope(ref);
             },
         }
     }
