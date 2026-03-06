@@ -1264,3 +1264,37 @@ test "SERIAL in CREATE TABLE context" {
         .identifier, .kw_text, .right_paren,
     });
 }
+
+test "ARRAY keyword" {
+    try expectSingleToken("array", .kw_array, "array");
+    try expectSingleToken("ARRAY", .kw_array, "ARRAY");
+}
+
+test "array brackets" {
+    try expectSingleToken("[", .left_bracket, "[");
+    try expectSingleToken("]", .right_bracket, "]");
+}
+
+test "ARRAY constructor expression tokens" {
+    const sql = "ARRAY[1,2,3]";
+    try expectTokens(sql, &.{
+        .kw_array, .left_bracket, .integer_literal, .comma,
+        .integer_literal, .comma, .integer_literal, .right_bracket,
+    });
+}
+
+test "array subscript expression tokens" {
+    const sql = "col[1]";
+    try expectTokens(sql, &.{
+        .identifier, .left_bracket, .integer_literal, .right_bracket,
+    });
+}
+
+test "CREATE TABLE with ARRAY column type" {
+    const sql = "CREATE TABLE t (tags INTEGER[])";
+    try expectTokens(sql, &.{
+        .kw_create, .kw_table, .identifier, .left_paren,
+        .identifier, .kw_integer, .left_bracket, .right_bracket,
+        .right_paren,
+    });
+}

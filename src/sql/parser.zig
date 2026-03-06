@@ -2875,3 +2875,71 @@ test "parse CAST to SERIAL" {
     try std.testing.expect(expr.* == .cast);
     try std.testing.expectEqual(ast.DataType.type_serial, expr.cast.target_type);
 }
+
+test "parse ARRAY[1, 2, 3] constructor" {
+    var r = try testParseWithArena("SELECT ARRAY[1, 2, 3] FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .array_constructor);
+    const elements = expr.array_constructor;
+    try std.testing.expectEqual(@as(usize, 3), elements.len);
+    try std.testing.expectEqual(@as(i64, 1), elements[0].integer_literal);
+    try std.testing.expectEqual(@as(i64, 2), elements[1].integer_literal);
+    try std.testing.expectEqual(@as(i64, 3), elements[2].integer_literal);
+}
+
+test "parse array subscript col[1]" {
+    var r = try testParseWithArena("SELECT col[1] FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .array_subscript);
+    const sub = expr.array_subscript;
+    try std.testing.expect(sub.array.* == .column_ref);
+    try std.testing.expectEqualStrings("col", sub.array.column_ref.name);
+    try std.testing.expect(sub.index.* == .integer_literal);
+    try std.testing.expectEqual(@as(i64, 1), sub.index.integer_literal);
+}
+
+test "parse CREATE TABLE with INTEGER[] array column" {
+    var r = try testParseWithArena("CREATE TABLE t (tags INTEGER[])");
+    defer r.deinit();
+    const ct = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 1), ct.columns.len);
+    try std.testing.expectEqual(ast.DataType.type_array, ct.columns[0].data_type.?);
+}
+
+test "parse CREATE TABLE with INTEGER ARRAY column" {
+    var r = try testParseWithArena("CREATE TABLE t (tags INTEGER ARRAY)");
+    defer r.deinit();
+    const ct = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 1), ct.columns.len);
+    try std.testing.expectEqual(ast.DataType.type_array, ct.columns[0].data_type.?);
+}
+
+test "parse nested array constructor ARRAY[ARRAY[1,2], ARRAY[3,4]]" {
+    var r = try testParseWithArena("SELECT ARRAY[ARRAY[1,2], ARRAY[3,4]] FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .array_constructor);
+    const elements = expr.array_constructor;
+    try std.testing.expectEqual(@as(usize, 2), elements.len);
+    try std.testing.expect(elements[0].* == .array_constructor);
+    try std.testing.expect(elements[1].* == .array_constructor);
+}
+
+test "parse array subscript with expression index col[id + 1]" {
+    var r = try testParseWithArena("SELECT col[id + 1] FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .array_subscript);
+    const sub = expr.array_subscript;
+    try std.testing.expect(sub.index.* == .binary_op);
+}
+
+test "parse CAST to ARRAY" {
+    var r = try testParseWithArena("SELECT CAST(x AS ARRAY) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .cast);
+    try std.testing.expectEqual(ast.DataType.type_array, expr.cast.target_type);
+}

@@ -6111,3 +6111,622 @@ test "UUID isTruthy" {
     const v = Value{ .uuid = parseUuidString("550e8400-e29b-41d4-a716-446655440000").? };
     try std.testing.expect(v.isTruthy());
 }
+
+// ── ARRAY Unit Tests ──────────────────────────────────────────────────────
+
+test "ARRAY serialization roundtrip simple integers" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 3);
+    defer allocator.free(elems);
+    elems[0] = Value{ .integer = 1 };
+    elems[1] = Value{ .integer = 2 };
+    elems[2] = Value{ .integer = 3 };
+
+    const row = [_]Value{Value{ .array = elems }};
+    const data = try serializeRow(allocator, &row);
+    defer allocator.free(data);
+
+    const deserialized = try deserializeRow(allocator, data);
+    defer {
+        for (deserialized) |v| v.free(allocator);
+        allocator.free(deserialized);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), deserialized.len);
+    try std.testing.expect(deserialized[0] == .array);
+    const arr = deserialized[0].array;
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqual(@as(i64, 1), arr[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), arr[1].integer);
+    try std.testing.expectEqual(@as(i64, 3), arr[2].integer);
+}
+
+test "ARRAY serialization roundtrip mixed types" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 4);
+    defer {
+        for (elems) |e| e.free(allocator);
+        allocator.free(elems);
+    }
+    elems[0] = Value{ .integer = 42 };
+    elems[1] = Value{ .text = try allocator.dupe(u8, "hello") };
+    elems[2] = .null_value;
+    elems[3] = Value{ .boolean = true };
+
+    const row = [_]Value{Value{ .array = elems }};
+    const data = try serializeRow(allocator, &row);
+    defer allocator.free(data);
+
+    const deserialized = try deserializeRow(allocator, data);
+    defer {
+        for (deserialized) |v| v.free(allocator);
+        allocator.free(deserialized);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), deserialized.len);
+    const arr = deserialized[0].array;
+    try std.testing.expectEqual(@as(usize, 4), arr.len);
+    try std.testing.expectEqual(@as(i64, 42), arr[0].integer);
+    try std.testing.expectEqualStrings("hello", arr[1].text);
+    try std.testing.expect(arr[2] == .null_value);
+    try std.testing.expectEqual(true, arr[3].boolean);
+}
+
+test "ARRAY serialization roundtrip empty array" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 0);
+    defer allocator.free(elems);
+
+    const row = [_]Value{Value{ .array = elems }};
+    const data = try serializeRow(allocator, &row);
+    defer allocator.free(data);
+
+    const deserialized = try deserializeRow(allocator, data);
+    defer {
+        for (deserialized) |v| v.free(allocator);
+        allocator.free(deserialized);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), deserialized.len);
+    try std.testing.expect(deserialized[0] == .array);
+    try std.testing.expectEqual(@as(usize, 0), deserialized[0].array.len);
+}
+
+test "ARRAY comparison equal arrays" {
+    const allocator = std.testing.allocator;
+    const elems1 = try allocator.alloc(Value, 3);
+    defer allocator.free(elems1);
+    elems1[0] = Value{ .integer = 1 };
+    elems1[1] = Value{ .integer = 2 };
+    elems1[2] = Value{ .integer = 3 };
+
+    const elems2 = try allocator.alloc(Value, 3);
+    defer allocator.free(elems2);
+    elems2[0] = Value{ .integer = 1 };
+    elems2[1] = Value{ .integer = 2 };
+    elems2[2] = Value{ .integer = 3 };
+
+    const a = Value{ .array = elems1 };
+    const b = Value{ .array = elems2 };
+
+    try std.testing.expectEqual(std.math.Order.eq, a.compare(b));
+}
+
+test "ARRAY comparison less than by first element" {
+    const allocator = std.testing.allocator;
+    const elems1 = try allocator.alloc(Value, 2);
+    defer allocator.free(elems1);
+    elems1[0] = Value{ .integer = 1 };
+    elems1[1] = Value{ .integer = 5 };
+
+    const elems2 = try allocator.alloc(Value, 2);
+    defer allocator.free(elems2);
+    elems2[0] = Value{ .integer = 2 };
+    elems2[1] = Value{ .integer = 3 };
+
+    const a = Value{ .array = elems1 };
+    const b = Value{ .array = elems2 };
+
+    try std.testing.expectEqual(std.math.Order.lt, a.compare(b));
+}
+
+test "ARRAY comparison different lengths" {
+    const allocator = std.testing.allocator;
+    const elems1 = try allocator.alloc(Value, 2);
+    defer allocator.free(elems1);
+    elems1[0] = Value{ .integer = 1 };
+    elems1[1] = Value{ .integer = 2 };
+
+    const elems2 = try allocator.alloc(Value, 3);
+    defer allocator.free(elems2);
+    elems2[0] = Value{ .integer = 1 };
+    elems2[1] = Value{ .integer = 2 };
+    elems2[2] = Value{ .integer = 3 };
+
+    const a = Value{ .array = elems1 };
+    const b = Value{ .array = elems2 };
+
+    try std.testing.expectEqual(std.math.Order.lt, a.compare(b));
+}
+
+test "ARRAY comparison vs scalar" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 1);
+    defer allocator.free(elems);
+    elems[0] = Value{ .integer = 1 };
+
+    const a = Value{ .array = elems };
+    const b = Value{ .integer = 100 };
+
+    // arrays > all scalar types
+    try std.testing.expectEqual(std.math.Order.gt, a.compare(b));
+}
+
+test "formatArray simple integers" {
+    const allocator = std.testing.allocator;
+    const elems = [_]Value{
+        Value{ .integer = 1 },
+        Value{ .integer = 2 },
+        Value{ .integer = 3 },
+    };
+    const result = try formatArray(allocator, &elems);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("{1,2,3}", result);
+}
+
+test "formatArray with NULL" {
+    const allocator = std.testing.allocator;
+    const elems = [_]Value{
+        Value{ .integer = 1 },
+        .null_value,
+        Value{ .integer = 3 },
+    };
+    const result = try formatArray(allocator, &elems);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("{1,NULL,3}", result);
+}
+
+test "formatArray with text elements" {
+    const allocator = std.testing.allocator;
+    const elems = [_]Value{
+        Value{ .text = "hello" },
+        Value{ .text = "world" },
+    };
+    const result = try formatArray(allocator, &elems);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("{\"hello\",\"world\"}", result);
+}
+
+test "formatArray with escaped text" {
+    const allocator = std.testing.allocator;
+    const elems = [_]Value{
+        Value{ .text = "he\"llo" },
+        Value{ .text = "wo\\rld" },
+    };
+    const result = try formatArray(allocator, &elems);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("{\"he\\\"llo\",\"wo\\\\rld\"}", result);
+}
+
+test "formatArray empty" {
+    const allocator = std.testing.allocator;
+    const elems = [_]Value{};
+    const result = try formatArray(allocator, &elems);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("{}", result);
+}
+
+test "formatArray nested arrays" {
+    const allocator = std.testing.allocator;
+    const inner1 = try allocator.alloc(Value, 2);
+    defer allocator.free(inner1);
+    inner1[0] = Value{ .integer = 1 };
+    inner1[1] = Value{ .integer = 2 };
+
+    const inner2 = try allocator.alloc(Value, 2);
+    defer allocator.free(inner2);
+    inner2[0] = Value{ .integer = 3 };
+    inner2[1] = Value{ .integer = 4 };
+
+    const elems = [_]Value{
+        Value{ .array = inner1 },
+        Value{ .array = inner2 },
+    };
+    const result = try formatArray(allocator, &elems);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("{{1,2},{3,4}}", result);
+}
+
+test "parseArrayString simple integers" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "{1,2,3}");
+    try std.testing.expect(result != null);
+    const arr = result.?;
+    defer {
+        for (arr) |v| v.free(allocator);
+        allocator.free(arr);
+    }
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqual(@as(i64, 1), arr[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), arr[1].integer);
+    try std.testing.expectEqual(@as(i64, 3), arr[2].integer);
+}
+
+test "parseArrayString with whitespace" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "{ 1 , 2 , 3 }");
+    try std.testing.expect(result != null);
+    const arr = result.?;
+    defer {
+        for (arr) |v| v.free(allocator);
+        allocator.free(arr);
+    }
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+}
+
+test "parseArrayString empty" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "{}");
+    try std.testing.expect(result != null);
+    const arr = result.?;
+    defer allocator.free(arr);
+    try std.testing.expectEqual(@as(usize, 0), arr.len);
+}
+
+test "parseArrayString with text elements" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "{\"hello\",\"world\"}");
+    try std.testing.expect(result != null);
+    const arr = result.?;
+    defer {
+        for (arr) |v| v.free(allocator);
+        allocator.free(arr);
+    }
+    try std.testing.expectEqual(@as(usize, 2), arr.len);
+    try std.testing.expectEqualStrings("hello", arr[0].text);
+    try std.testing.expectEqualStrings("world", arr[1].text);
+}
+
+test "parseArrayString with NULL" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "{1,NULL,3}");
+    try std.testing.expect(result != null);
+    const arr = result.?;
+    defer {
+        for (arr) |v| v.free(allocator);
+        allocator.free(arr);
+    }
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqual(@as(i64, 1), arr[0].integer);
+    try std.testing.expect(arr[1] == .null_value);
+    try std.testing.expectEqual(@as(i64, 3), arr[2].integer);
+}
+
+test "parseArrayString invalid format no braces" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "1,2,3");
+    try std.testing.expect(result == null);
+}
+
+test "parseArrayString invalid format missing closing brace" {
+    const allocator = std.testing.allocator;
+    const result = parseArrayString(allocator, "{1,2,3");
+    try std.testing.expect(result == null);
+}
+
+test "evalExpr array_constructor simple" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 10 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .integer_literal = 20 };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 30 };
+
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+
+    const expr = ast.Expr{ .array_constructor = elements };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .array);
+    const arr = result.array;
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqual(@as(i64, 10), arr[0].integer);
+    try std.testing.expectEqual(@as(i64, 20), arr[1].integer);
+    try std.testing.expectEqual(@as(i64, 30), arr[2].integer);
+}
+
+test "evalExpr array_subscript valid 1-based index" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Create array ARRAY[10, 20, 30]
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 10 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .integer_literal = 20 };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 30 };
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = elements };
+
+    // Create subscript [2]
+    const idx_expr = try aa.create(ast.Expr);
+    idx_expr.* = ast.Expr{ .integer_literal = 2 };
+
+    const subscript_expr = ast.Expr{
+        .array_subscript = .{
+            .array = arr_expr,
+            .index = idx_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 20), result.integer); // 1-based: [2] = second element
+}
+
+test "evalExpr array_subscript index 1 returns first element" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 100 };
+    const elements = try aa.alloc(*const ast.Expr, 1);
+    elements[0] = elem1;
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = elements };
+
+    const idx_expr = try aa.create(ast.Expr);
+    idx_expr.* = ast.Expr{ .integer_literal = 1 };
+
+    const subscript_expr = ast.Expr{
+        .array_subscript = .{
+            .array = arr_expr,
+            .index = idx_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expectEqual(@as(i64, 100), result.integer);
+}
+
+test "evalExpr array_subscript out of bounds returns null" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 10 };
+    const elements = try aa.alloc(*const ast.Expr, 1);
+    elements[0] = elem1;
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = elements };
+
+    const idx_expr = try aa.create(ast.Expr);
+    idx_expr.* = ast.Expr{ .integer_literal = 10 }; // out of bounds
+
+    const subscript_expr = ast.Expr{
+        .array_subscript = .{
+            .array = arr_expr,
+            .index = idx_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "evalExpr array_subscript zero index returns null" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 10 };
+    const elements = try aa.alloc(*const ast.Expr, 1);
+    elements[0] = elem1;
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = elements };
+
+    const idx_expr = try aa.create(ast.Expr);
+    idx_expr.* = ast.Expr{ .integer_literal = 0 }; // 0-based would be valid, but we use 1-based
+
+    const subscript_expr = ast.Expr{
+        .array_subscript = .{
+            .array = arr_expr,
+            .index = idx_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value); // index 0 is invalid (1-based)
+}
+
+test "evalExpr array_subscript negative index returns null" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 10 };
+    const elements = try aa.alloc(*const ast.Expr, 1);
+    elements[0] = elem1;
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = elements };
+
+    const idx_expr = try aa.create(ast.Expr);
+    idx_expr.* = ast.Expr{ .integer_literal = -1 };
+
+    const subscript_expr = ast.Expr{
+        .array_subscript = .{
+            .array = arr_expr,
+            .index = idx_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "evalExpr array_subscript on non-array returns null" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .integer_literal = 42 }; // not an array
+
+    const idx_expr = try aa.create(ast.Expr);
+    idx_expr.* = ast.Expr{ .integer_literal = 1 };
+
+    const subscript_expr = ast.Expr{
+        .array_subscript = .{
+            .array = arr_expr,
+            .index = idx_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "ARRAY isTruthy non-empty array" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 1);
+    defer allocator.free(elems);
+    elems[0] = Value{ .integer = 1 };
+
+    const v = Value{ .array = elems };
+    try std.testing.expect(v.isTruthy());
+}
+
+test "ARRAY isTruthy empty array" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 0);
+    defer allocator.free(elems);
+
+    const v = Value{ .array = elems };
+    try std.testing.expect(!v.isTruthy());
+}
+
+test "ARRAY CAST from text" {
+    const allocator = std.testing.allocator;
+    const result = try evalCast(allocator, Value{ .text = "{1,2,3}" }, .type_array);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    try std.testing.expectEqual(@as(i64, 1), result.array[0].integer);
+}
+
+test "ARRAY CAST from array is identity" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 2);
+    defer allocator.free(elems);
+    elems[0] = Value{ .integer = 10 };
+    elems[1] = Value{ .integer = 20 };
+
+    const input = Value{ .array = elems };
+    const result = try evalCast(allocator, input, .type_array);
+    // Note: evalCast returns the same array value, not a copy
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+}
+
+test "ARRAY CAST from non-array non-text returns null" {
+    const allocator = std.testing.allocator;
+    const result = try evalCast(allocator, Value{ .integer = 42 }, .type_array);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "ARRAY CAST to text" {
+    const allocator = std.testing.allocator;
+    const elems = try allocator.alloc(Value, 3);
+    elems[0] = Value{ .integer = 1 };
+    elems[1] = Value{ .integer = 2 };
+    elems[2] = Value{ .integer = 3 };
+
+    const input = Value{ .array = elems };
+    const result = try evalCast(allocator, input, .type_text);
+    defer {
+        result.free(allocator);
+        allocator.free(elems);
+    }
+    try std.testing.expectEqualStrings("{1,2,3}", result.text);
+}
