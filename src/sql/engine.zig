@@ -2539,6 +2539,33 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "DROP VIEW" };
             },
+            .create_type => |ct| {
+                self.catalog.createEnumType(ct.name, ct.values) catch |err| {
+                    return switch (err) {
+                        error.TypeAlreadyExists => EngineError.TableAlreadyExists,
+                        error.TableAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE TYPE" };
+            },
+            .drop_type => |dt| {
+                self.catalog.dropEnumType(dt.name, dt.if_exists) catch |err| {
+                    return switch (err) {
+                        error.TypeNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP TYPE" };
+            },
             else => {},
         }
 
@@ -13025,4 +13052,56 @@ test "INTERVAL type: date plus interval in table" {
     var row1 = (try r.rows.?.next()).?;
     defer row1.deinit();
     try testing.expectEqualStrings("2024-01-31", row1.values[0].text);
+}
+
+// ── ENUM Type Tests ─────────────────────────────────────────────────────
+
+test "CREATE TYPE AS ENUM basic" {
+    const path = "test_enum_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.exec("CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TYPE", r.message);
+}
+
+test "DROP TYPE basic" {
+    const path = "test_enum_drop.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TYPE status AS ENUM ('active', 'inactive')");
+    var r = try db.exec("DROP TYPE status");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("DROP TYPE", r.message);
+}
+
+test "DROP TYPE IF EXISTS no error" {
+    const path = "test_enum_drop_ifexists.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.exec("DROP TYPE IF EXISTS nonexistent");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("DROP TYPE", r.message);
+}
+
+test "CREATE TYPE duplicate name error" {
+    const path = "test_enum_duplicate.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TYPE mood AS ENUM ('happy', 'sad')");
+    const r = db.exec("CREATE TYPE mood AS ENUM ('good', 'bad')");
+    try testing.expectError(EngineError.TableAlreadyExists, r);
+}
+
+test "DROP TYPE nonexistent error" {
+    const path = "test_enum_drop_nonexistent.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const r = db.exec("DROP TYPE nonexistent");
+    try testing.expectError(EngineError.TableNotFound, r);
 }
