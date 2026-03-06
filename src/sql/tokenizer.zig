@@ -84,6 +84,8 @@ pub const TokenType = enum {
     kw_materialized,
     kw_local,
     kw_cascaded,
+    kw_type,
+    kw_enum,
 
     // Keywords — DML
     kw_select,
@@ -634,6 +636,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "materialized", .kw_materialized },
         .{ "local", .kw_local },
         .{ "cascaded", .kw_cascaded },
+        .{ "type", .kw_type },
+        .{ "enum", .kw_enum },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1296,5 +1300,21 @@ test "CREATE TABLE with ARRAY column type" {
         .kw_create, .kw_table, .identifier, .left_paren,
         .identifier, .kw_integer, .left_bracket, .right_bracket,
         .right_paren,
+    });
+}
+
+test "TYPE and ENUM keywords" {
+    try expectSingleToken("type", .kw_type, "type");
+    try expectSingleToken("TYPE", .kw_type, "TYPE");
+    try expectSingleToken("enum", .kw_enum, "enum");
+    try expectSingleToken("ENUM", .kw_enum, "ENUM");
+}
+
+test "CREATE TYPE AS ENUM tokens" {
+    const sql = "CREATE TYPE mood AS ENUM ('happy', 'sad')";
+    try expectTokens(sql, &.{
+        .kw_create,     .kw_type,   .identifier, .kw_as,
+        .kw_enum,       .left_paren, .string_literal, .comma,
+        .string_literal, .right_paren,
     });
 }
