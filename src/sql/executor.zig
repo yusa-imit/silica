@@ -6900,3 +6900,75 @@ test "evalExpr ANY returns false when no match" {
     try std.testing.expect(result == .boolean);
     try std.testing.expect(!result.boolean);
 }
+
+test "evalExpr ANY with empty array returns false" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Create empty ARRAY[]
+    const arr_elements = try aa.alloc(*const ast.Expr, 0);
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = arr_elements };
+
+    const lhs_expr = try aa.create(ast.Expr);
+    lhs_expr.* = ast.Expr{ .integer_literal = 5 };
+
+    // 5 = ANY(ARRAY[]) should return false (no elements to match)
+    const any_expr = ast.Expr{
+        .any = .{
+            .expr = lhs_expr,
+            .op = .equal,
+            .array = arr_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &any_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(!result.boolean); // Empty array → false for ANY
+}
+
+test "evalExpr ALL with empty array returns true" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Create empty ARRAY[]
+    const arr_elements = try aa.alloc(*const ast.Expr, 0);
+    const arr_expr = try aa.create(ast.Expr);
+    arr_expr.* = ast.Expr{ .array_constructor = arr_elements };
+
+    const lhs_expr = try aa.create(ast.Expr);
+    lhs_expr.* = ast.Expr{ .integer_literal = 5 };
+
+    // 5 > ALL(ARRAY[]) should return true (vacuous truth)
+    const all_expr = ast.Expr{
+        .all = .{
+            .expr = lhs_expr,
+            .op = .greater_than,
+            .array = arr_expr,
+        },
+    };
+
+    const empty_row = Row{
+        .columns = &.{},
+        .values = &.{},
+        .allocator = allocator,
+    };
+
+    const result = try evalExpr(allocator, &all_expr, &empty_row);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean); // Empty array → true for ALL (vacuous truth)
+}
