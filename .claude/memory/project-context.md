@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 5 — Advanced SQL (Milestone 10 in progress)
+## Current Phase: Phase 6 — JSON & Full-Text Search (Milestone 11 in progress)
 
 ### Completed Phases
 - **Phase 1**: Storage Foundation ✅ (v0.1.0)
@@ -26,16 +26,29 @@
   - All ranking/value/distribution functions
   - WINDOW clause named definitions
   - 36 integration tests
-- **Milestone 10**: Advanced Data Types (IN PROGRESS)
+- **Milestone 10**: Advanced Data Types ✅
   - [x] DATE/TIME/TIMESTAMP types
   - [x] INTERVAL type
   - [x] NUMERIC/DECIMAL fixed-point
   - [x] UUID type
   - [x] SERIAL/BIGSERIAL types
   - [x] ENUM types (CREATE TYPE AS ENUM, DROP TYPE)
-  - [ ] ARRAY type operations (constructor/subscript implemented, need INSERT/UPDATE integration)
-  - [ ] Domain types (custom constraints on base types)
-  - [ ] Type coercion matrix completion
+  - [x] ARRAY type (constructor, subscript, ANY/ALL operators, unnest())
+  - [x] DOMAIN types (CREATE DOMAIN with constraints)
+  - [x] Type coercion (all types castable to/from text)
+
+### Current: Phase 6 — JSON & Full-Text Search
+- **Milestone 11**: JSON/JSONB (IN PROGRESS)
+  - [x] JSON/JSONB keywords in tokenizer
+  - [x] type_json/type_jsonb in AST DataType
+  - [x] .json/.jsonb in catalog ColumnType (tags 0x0D, 0x0E)
+  - [x] JSON/JSONB type in parser (CREATE TABLE, CAST)
+  - [x] Basic CAST support (text-based, no validation yet)
+  - [ ] JSON validation (std.json.parseFromSlice)
+  - [ ] JSONB binary storage format
+  - [ ] JSON operators (->, ->>, #>, #>>, @>, <@, ?, ?|, ?&, ||, -, #-)
+  - [ ] JSON functions (jsonb_build_object, jsonb_build_array, etc.)
+  - [ ] GIN index for JSONB
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -45,11 +58,12 @@
 5. Storage Engine (B+Tree, Page Manager, Buffer Pool)
 6. OS Layer (File I/O, mmap optional, fsync)
 
-## Test Coverage Status (as of 2026-03-06)
-- Total tests: 1209 (all passing)
-- Recent additions: 11 new ENUM edge case tests in catalog.zig
-- catalog.zig: 48 tests (includes comprehensive ENUM validation)
-- Memory safety: Fixed errdefer bug in getEnumType (tracked allocated_count)
+## Test Coverage Status (as of 2026-03-07)
+- Total tests: 1344 (all passing)
+- Recent additions: 4 new JSON/JSONB parser tests (CREATE TABLE, CAST)
+- tokenizer.zig: 68 tests (includes JSON/JSONB keywords)
+- parser.zig: 138 tests (includes JSON/JSONB type parsing)
+- All type system exhaustive switches updated for JSON/JSONB
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
