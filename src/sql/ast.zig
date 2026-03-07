@@ -299,6 +299,18 @@ pub const BinaryOp = enum {
     bitwise_or,
     left_shift,
     right_shift,
+
+    // JSON operators
+    json_extract, // ->
+    json_extract_text, // ->>
+    json_contains, // @>
+    json_contained_by, // <@
+    json_key_exists, // ?
+    json_any_key_exists, // ?|
+    json_all_keys_exist, // ?&
+    json_path_extract, // #>
+    json_path_extract_text, // #>>
+    json_delete_path, // #-
 };
 
 /// Window frame mode: ROWS, RANGE, or GROUPS.
@@ -809,4 +821,38 @@ test "ColumnConstraint variants" {
         .unique => {},
         else => unreachable,
     }
+}
+
+test "JSON binary operators" {
+    // Verify JSON operators are valid BinaryOp variants by using them in a switch
+    const op: BinaryOp = .json_extract;
+    switch (op) {
+        .json_extract,
+        .json_extract_text,
+        .json_contains,
+        .json_contained_by,
+        .json_key_exists,
+        .json_any_key_exists,
+        .json_all_keys_exist,
+        .json_path_extract,
+        .json_path_extract_text,
+        .json_delete_path,
+        => {},
+        else => {},
+    }
+
+    // Test that all JSON operators can be assigned
+    const ops = [_]BinaryOp{
+        .json_extract,
+        .json_extract_text,
+        .json_contains,
+        .json_contained_by,
+        .json_key_exists,
+        .json_any_key_exists,
+        .json_all_keys_exist,
+        .json_path_extract,
+        .json_path_extract_text,
+        .json_delete_path,
+    };
+    try std.testing.expectEqual(@as(usize, 10), ops.len);
 }
