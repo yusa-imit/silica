@@ -4864,6 +4864,66 @@ test "evalExpr CAST" {
     try std.testing.expectEqualStrings("42", v.text);
 }
 
+test "evalExpr CAST to JSON/JSONB" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // CAST text to JSON
+    {
+        const text_val = ast.Expr{ .string_literal = "{\"key\": \"value\"}" };
+        const cast_expr = ast.Expr{ .cast = .{ .expr = &text_val, .target_type = .type_json } };
+        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        defer v.free(allocator);
+        try std.testing.expectEqualStrings("{\"key\": \"value\"}", v.text);
+    }
+
+    // CAST integer to JSON (converts to numeric string)
+    {
+        const int_val = ast.Expr{ .integer_literal = 42 };
+        const cast_expr = ast.Expr{ .cast = .{ .expr = &int_val, .target_type = .type_json } };
+        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        defer v.free(allocator);
+        try std.testing.expectEqualStrings("42", v.text);
+    }
+
+    // CAST real to JSON
+    {
+        const real_val = ast.Expr{ .float_literal = 3.14 };
+        const cast_expr = ast.Expr{ .cast = .{ .expr = &real_val, .target_type = .type_json } };
+        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        defer v.free(allocator);
+        // Should produce "3.14" or "3.14e0" format
+        try std.testing.expect(v == .text);
+    }
+
+    // CAST boolean to JSON
+    {
+        const bool_val = ast.Expr{ .boolean_literal = true };
+        const cast_expr = ast.Expr{ .cast = .{ .expr = &bool_val, .target_type = .type_json } };
+        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        defer v.free(allocator);
+        try std.testing.expectEqualStrings("true", v.text);
+    }
+
+    // CAST NULL to JSON (should return NULL)
+    {
+        const null_val = ast.Expr{ .null_literal = {} };
+        const cast_expr = ast.Expr{ .cast = .{ .expr = &null_val, .target_type = .type_json } };
+        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        defer v.free(allocator);
+        try std.testing.expect(v == .null_value);
+    }
+
+    // CAST text to JSONB (same behavior for now)
+    {
+        const text_val = ast.Expr{ .string_literal = "[1, 2, 3]" };
+        const cast_expr = ast.Expr{ .cast = .{ .expr = &text_val, .target_type = .type_jsonb } };
+        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        defer v.free(allocator);
+        try std.testing.expectEqualStrings("[1, 2, 3]", v.text);
+    }
+}
+
 // ── Test Helper: In-Memory Row Source ───────────────────────────────────
 
 /// A simple in-memory row source for testing operators without storage.

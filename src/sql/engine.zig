@@ -13048,6 +13048,108 @@ test "UUID type: case-insensitive parsing" {
     try testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", row1.values[0].text);
 }
 
+test "JSON type: CREATE TABLE, INSERT, SELECT" {
+    const path = "test_json_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE documents (id INTEGER, data JSON)");
+    _ = try db.exec("INSERT INTO documents VALUES (1, CAST('{\"key\": \"value\"}' AS JSON))");
+    _ = try db.exec("INSERT INTO documents VALUES (2, CAST('[1, 2, 3]' AS JSON))");
+
+    var r = try db.exec("SELECT id, data FROM documents ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("{\"key\": \"value\"}", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("[1, 2, 3]", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "JSONB type: CREATE TABLE, INSERT, SELECT" {
+    const path = "test_jsonb_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE metadata (id INTEGER, config JSONB)");
+    _ = try db.exec("INSERT INTO metadata VALUES (1, CAST('{\"enabled\": true}' AS JSONB))");
+    _ = try db.exec("INSERT INTO metadata VALUES (2, CAST('null' AS JSONB))");
+
+    var r = try db.exec("SELECT id, config FROM metadata ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("{\"enabled\": true}", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("null", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "JSON type: CAST from various types" {
+    const path = "test_json_cast.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // CAST integer to JSON
+    var r1 = try db.exec("SELECT CAST(42 AS JSON)");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("42", row1.values[0].text);
+
+    // CAST boolean to JSON
+    var r2 = try db.exec("SELECT CAST(true AS JSON)");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("true", row2.values[0].text);
+
+    // CAST NULL to JSON
+    var r3 = try db.exec("SELECT CAST(NULL AS JSON)");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expect(row3.values[0] == .null_value);
+}
+
+test "JSON/JSONB type: NULL handling" {
+    const path = "test_json_null.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE items (id INTEGER, data JSON, metadata JSONB)");
+    _ = try db.exec("INSERT INTO items VALUES (1, NULL, NULL)");
+    _ = try db.exec("INSERT INTO items VALUES (2, CAST('{}' AS JSON), CAST('[]' AS JSONB))");
+
+    var r = try db.exec("SELECT id, data, metadata FROM items ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expect(row1.values[1] == .null_value);
+    try testing.expect(row1.values[2] == .null_value);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("{}", row2.values[1].text);
+    try testing.expectEqualStrings("[]", row2.values[2].text);
+}
+
 test "TIMESTAMP type: microsecond precision" {
     const path = "test_ts_precision.db";
     var db = try createTestDb(testing.allocator, path);

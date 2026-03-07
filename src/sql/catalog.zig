@@ -1280,6 +1280,42 @@ test "deserialize invalid data" {
     try std.testing.expectError(error.InvalidSchemaData, deserializeTable(allocator, "bad", &.{ 0, 0, 0, 0, 0 }));
 }
 
+test "serialize and deserialize JSON/JSONB columns" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "data", .column_type = .json, .flags = .{} },
+        .{ .name = "metadata", .column_type = .jsonb, .flags = .{ .not_null = true } },
+        .{ .name = "config", .column_type = .json, .flags = .{} },
+    };
+
+    const data = try serializeTable(allocator, &columns, &.{}, 123);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "documents", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqualStrings("documents", table.name);
+    try std.testing.expectEqual(@as(u32, 123), table.data_root_page_id);
+    try std.testing.expectEqual(@as(usize, 4), table.columns.len);
+
+    // Verify column types
+    try std.testing.expectEqualStrings("id", table.columns[0].name);
+    try std.testing.expectEqual(ColumnType.integer, table.columns[0].column_type);
+
+    try std.testing.expectEqualStrings("data", table.columns[1].name);
+    try std.testing.expectEqual(ColumnType.json, table.columns[1].column_type);
+    try std.testing.expect(!table.columns[1].flags.not_null);
+
+    try std.testing.expectEqualStrings("metadata", table.columns[2].name);
+    try std.testing.expectEqual(ColumnType.jsonb, table.columns[2].column_type);
+    try std.testing.expect(table.columns[2].flags.not_null);
+
+    try std.testing.expectEqualStrings("config", table.columns[3].name);
+    try std.testing.expectEqual(ColumnType.json, table.columns[3].column_type);
+}
+
 // Helper: create a test Catalog backed by a temp file.
 const TestCatalog = struct {
     pager: *Pager,
