@@ -1865,6 +1865,11 @@ pub const Parser = struct {
             .plus, .minus => 8,
             .star, .slash, .percent => 9,
             .concat => 10,
+            // JSON operators have high precedence (11) - similar to member access
+            .json_extract, .json_extract_text => 11,
+            .json_contains, .json_contained_by => 11,
+            .json_key_exists, .json_any_key_exists, .json_all_keys_exist => 11,
+            .json_path_extract, .json_path_extract_text, .json_delete_path => 11,
             else => 0,
         };
     }
@@ -1889,6 +1894,17 @@ pub const Parser = struct {
             .bitwise_or => .bitwise_or,
             .left_shift => .left_shift,
             .right_shift => .right_shift,
+            // JSON operators
+            .json_extract => .json_extract,
+            .json_extract_text => .json_extract_text,
+            .json_contains => .json_contains,
+            .json_contained_by => .json_contained_by,
+            .json_key_exists => .json_key_exists,
+            .json_any_key_exists => .json_any_key_exists,
+            .json_all_keys_exist => .json_all_keys_exist,
+            .json_path_extract => .json_path_extract,
+            .json_path_extract_text => .json_path_extract_text,
+            .json_delete_path => .json_delete_path,
             else => null,
         };
     }
@@ -3188,4 +3204,95 @@ test "parse CAST to JSONB" {
     const expr = r.stmt.select.columns[0].expr.value;
     try std.testing.expect(expr.* == .cast);
     try std.testing.expectEqual(ast.DataType.type_jsonb, expr.cast.target_type);
+}
+
+test "parse JSON extract operator (->)" {
+    var r = try testParseWithArena("SELECT data -> 'name' FROM users");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_extract, expr.binary_op.op);
+}
+
+test "parse JSON extract text operator (->>)" {
+    var r = try testParseWithArena("SELECT data ->> 'name' FROM users");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_extract_text, expr.binary_op.op);
+}
+
+test "parse JSON contains operator (@>)" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE data @> '{\"age\":30}'");
+    defer r.deinit();
+    const where_expr = r.stmt.select.where.?;
+    try std.testing.expect(where_expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_contains, where_expr.binary_op.op);
+}
+
+test "parse JSON contained by operator (<@)" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE '{\"a\":1}' <@ data");
+    defer r.deinit();
+    const where_expr = r.stmt.select.where.?;
+    try std.testing.expect(where_expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_contained_by, where_expr.binary_op.op);
+}
+
+test "parse JSON key exists operator (?)" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE data ? 'name'");
+    defer r.deinit();
+    const where_expr = r.stmt.select.where.?;
+    try std.testing.expect(where_expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_key_exists, where_expr.binary_op.op);
+}
+
+test "parse JSON any key exists operator (?|)" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE data ?| ARRAY['a','b']");
+    defer r.deinit();
+    const where_expr = r.stmt.select.where.?;
+    try std.testing.expect(where_expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_any_key_exists, where_expr.binary_op.op);
+}
+
+test "parse JSON all keys exist operator (?&)" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE data ?& ARRAY['a','b']");
+    defer r.deinit();
+    const where_expr = r.stmt.select.where.?;
+    try std.testing.expect(where_expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_all_keys_exist, where_expr.binary_op.op);
+}
+
+test "parse JSON path extract operator (#>)" {
+    var r = try testParseWithArena("SELECT data #> '{a,b}' FROM users");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_path_extract, expr.binary_op.op);
+}
+
+test "parse JSON path extract text operator (#>>)" {
+    var r = try testParseWithArena("SELECT data #>> '{a,b}' FROM users");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_path_extract_text, expr.binary_op.op);
+}
+
+test "parse JSON delete path operator (#-)" {
+    var r = try testParseWithArena("SELECT data #- '{a}' FROM users");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_delete_path, expr.binary_op.op);
+}
+
+test "parse chained JSON operators" {
+    var r = try testParseWithArena("SELECT data -> 'user' ->> 'name' FROM users");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    // Should parse as: (data -> 'user') ->> 'name'
+    try std.testing.expect(expr.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_extract_text, expr.binary_op.op);
+    try std.testing.expect(expr.binary_op.left.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.json_extract, expr.binary_op.left.binary_op.op);
 }
