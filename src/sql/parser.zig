@@ -803,7 +803,8 @@ pub const Parser = struct {
             t == .kw_text or t == .kw_blob or t == .kw_boolean or t == .kw_varchar or
             t == .kw_date or t == .kw_time or t == .kw_timestamp or t == .kw_interval or
             t == .kw_numeric or t == .kw_decimal or t == .kw_uuid or
-            t == .kw_serial or t == .kw_bigserial or t == .kw_array;
+            t == .kw_serial or t == .kw_bigserial or t == .kw_array or
+            t == .kw_json or t == .kw_jsonb;
     }
 
     fn parseDataType(self: *Parser) ?ast.DataType {
@@ -832,6 +833,8 @@ pub const Parser = struct {
             .kw_uuid => .type_uuid,
             .kw_serial => .type_serial,
             .kw_bigserial => .type_bigserial,
+            .kw_json => .type_json,
+            .kw_jsonb => .type_jsonb,
             else => null,
         };
         if (dt != null) {
@@ -3151,4 +3154,38 @@ test "parse DROP TYPE IF EXISTS" {
     const dt = r.stmt.drop_type;
     try std.testing.expectEqualStrings("mood", dt.name);
     try std.testing.expect(dt.if_exists);
+}
+
+// ── JSON type tests ───────────────────────────────────────────
+
+test "parse CREATE TABLE with JSON column" {
+    var r = try testParseWithArena("CREATE TABLE t (data JSON)");
+    defer r.deinit();
+    const ct = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 1), ct.columns.len);
+    try std.testing.expectEqual(ast.DataType.type_json, ct.columns[0].data_type.?);
+}
+
+test "parse CREATE TABLE with JSONB column" {
+    var r = try testParseWithArena("CREATE TABLE t (metadata JSONB)");
+    defer r.deinit();
+    const ct = r.stmt.create_table;
+    try std.testing.expectEqual(@as(usize, 1), ct.columns.len);
+    try std.testing.expectEqual(ast.DataType.type_jsonb, ct.columns[0].data_type.?);
+}
+
+test "parse CAST to JSON" {
+    var r = try testParseWithArena("SELECT CAST('{}' AS JSON) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .cast);
+    try std.testing.expectEqual(ast.DataType.type_json, expr.cast.target_type);
+}
+
+test "parse CAST to JSONB" {
+    var r = try testParseWithArena("SELECT CAST('[1,2,3]' AS JSONB) FROM t");
+    defer r.deinit();
+    const expr = r.stmt.select.columns[0].expr.value;
+    try std.testing.expect(expr.* == .cast);
+    try std.testing.expectEqual(ast.DataType.type_jsonb, expr.cast.target_type);
 }

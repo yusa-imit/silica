@@ -31,6 +31,8 @@ pub const DataType = enum {
     type_serial,
     type_bigserial,
     type_array,
+    type_json,
+    type_jsonb,
 };
 
 /// Column constraint in a CREATE TABLE statement.

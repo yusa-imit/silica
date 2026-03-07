@@ -37,6 +37,8 @@ pub const ValueType = enum {
     numeric,
     uuid,
     array,
+    json,
+    jsonb,
     null_type,
 
     pub fn fromColumnType(ct: ColumnType) ValueType {
@@ -53,6 +55,8 @@ pub const ValueType = enum {
             .numeric => .numeric,
             .uuid => .uuid,
             .array => .array,
+            .json => .json,
+            .jsonb => .jsonb,
             .untyped => .text, // default untyped to text
         };
     }
@@ -71,6 +75,8 @@ pub const ValueType = enum {
             .numeric => .numeric,
             .uuid => .uuid,
             .array => .array,
+            .json => .json,
+            .jsonb => .jsonb,
             .null_type => .untyped,
         };
     }

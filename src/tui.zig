@@ -373,6 +373,8 @@ fn formatColumnLabel(allocator: std.mem.Allocator, col: ColumnInfo) ![]const u8 
         .numeric => "NUMERIC",
         .uuid => "UUID",
         .array => "ARRAY",
+        .json => "JSON",
+        .jsonb => "JSONB",
         .untyped => "",
     };
 

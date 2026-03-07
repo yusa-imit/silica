@@ -51,6 +51,8 @@ pub const ColumnType = enum(u8) {
     numeric = 0x0A,
     uuid = 0x0B,
     array = 0x0C,
+    json = 0x0D,
+    jsonb = 0x0E,
     /// Column has no explicit type declaration.
     untyped = 0x00,
 };
@@ -72,6 +74,8 @@ pub fn columnTypeFromAst(dt: ?ast.DataType) ColumnType {
         .type_uuid => .uuid,
         .type_serial, .type_bigserial => .integer,
         .type_array => .array,
+        .type_json => .json,
+        .type_jsonb => .jsonb,
     };
 }
 

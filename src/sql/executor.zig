@@ -1791,6 +1791,19 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
             },
             else => .null_value,
         },
+        .type_json, .type_jsonb => blk: {
+            // For now, treat JSON/JSONB as text.
+            // TODO: Add JSON validation and JSONB binary format in later commits.
+            const json_text = switch (val) {
+                .text => |v| allocator.dupe(u8, v) catch return EvalError.OutOfMemory,
+                .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
+                .real => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
+                .boolean => |v| allocator.dupe(u8, if (v) "true" else "false") catch return EvalError.OutOfMemory,
+                .null_value => return .null_value,
+                else => return .null_value,
+            };
+            break :blk Value{ .text = json_text };
+        },
     };
 }
 
