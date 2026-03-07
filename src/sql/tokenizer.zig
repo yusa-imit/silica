@@ -30,6 +30,16 @@ pub const TokenType = enum {
     bitwise_not, // ~
     left_shift, // <<
     right_shift, // >>
+    json_extract, // ->
+    json_extract_text, // ->>
+    json_contains, // @>
+    json_contained_by, // <@
+    json_key_exists, // ?
+    json_any_key_exists, // ?|
+    json_all_keys_exist, // ?&
+    json_path_extract, // #>
+    json_path_extract_text, // #>>
+    json_delete_path, // #-
 
     // Punctuation
     left_paren,
@@ -265,7 +275,18 @@ pub const Tokenizer = struct {
                 return self.singleChar(.dot);
             },
             '+' => return self.singleChar(.plus),
-            '-' => return self.singleChar(.minus),
+            '-' => {
+                self.pos += 1;
+                if (self.pos < self.source.len and self.source[self.pos] == '>') {
+                    self.pos += 1;
+                    if (self.pos < self.source.len and self.source[self.pos] == '>') {
+                        self.pos += 1;
+                        return .{ .type = .json_extract_text, .start = start, .len = 3 };
+                    }
+                    return .{ .type = .json_extract, .start = start, .len = 2 };
+                }
+                return .{ .type = .minus, .start = start, .len = 1 };
+            },
             '*' => return self.singleChar(.star),
             '/' => return self.singleChar(.slash),
             '%' => return self.singleChar(.percent),
@@ -303,10 +324,22 @@ pub const Tokenizer = struct {
                             self.pos += 1;
                             return .{ .type = .left_shift, .start = start, .len = 2 };
                         },
+                        '@' => {
+                            self.pos += 1;
+                            return .{ .type = .json_contained_by, .start = start, .len = 2 };
+                        },
                         else => {},
                     }
                 }
                 return .{ .type = .less_than, .start = start, .len = 1 };
+            },
+            '@' => {
+                self.pos += 1;
+                if (self.pos < self.source.len and self.source[self.pos] == '>') {
+                    self.pos += 1;
+                    return .{ .type = .json_contains, .start = start, .len = 2 };
+                }
+                return .{ .type = .invalid, .start = start, .len = 1 };
             },
             '>' => {
                 self.pos += 1;
@@ -332,6 +365,44 @@ pub const Tokenizer = struct {
                     return .{ .type = .concat, .start = start, .len = 2 };
                 }
                 return .{ .type = .bitwise_or, .start = start, .len = 1 };
+            },
+            '?' => {
+                self.pos += 1;
+                if (self.pos < self.source.len) {
+                    switch (self.source[self.pos]) {
+                        '|' => {
+                            self.pos += 1;
+                            return .{ .type = .json_any_key_exists, .start = start, .len = 2 };
+                        },
+                        '&' => {
+                            self.pos += 1;
+                            return .{ .type = .json_all_keys_exist, .start = start, .len = 2 };
+                        },
+                        else => {},
+                    }
+                }
+                return .{ .type = .json_key_exists, .start = start, .len = 1 };
+            },
+            '#' => {
+                self.pos += 1;
+                if (self.pos < self.source.len) {
+                    switch (self.source[self.pos]) {
+                        '>' => {
+                            self.pos += 1;
+                            if (self.pos < self.source.len and self.source[self.pos] == '>') {
+                                self.pos += 1;
+                                return .{ .type = .json_path_extract_text, .start = start, .len = 3 };
+                            }
+                            return .{ .type = .json_path_extract, .start = start, .len = 2 };
+                        },
+                        '-' => {
+                            self.pos += 1;
+                            return .{ .type = .json_delete_path, .start = start, .len = 2 };
+                        },
+                        else => {},
+                    }
+                }
+                return .{ .type = .invalid, .start = start, .len = 1 };
             },
             '\'' => return self.scanString(),
             '"' => return self.scanQuotedIdentifier(),
@@ -1340,5 +1411,75 @@ test "CREATE TABLE with JSON column type" {
         .kw_create, .kw_table, .identifier, .left_paren,
         .identifier, .kw_json, .comma,
         .identifier, .kw_jsonb, .right_paren,
+    });
+}
+
+test "JSON navigation operators" {
+    // -> operator
+    try expectSingleToken("->", .json_extract, "->");
+    // ->> operator
+    try expectSingleToken("->>", .json_extract_text, "->>");
+    // Mixed with identifiers
+    const sql = "data -> 'key'";
+    try expectTokens(sql, &.{ .identifier, .json_extract, .string_literal });
+    const sql2 = "data ->> 'key'";
+    try expectTokens(sql2, &.{ .identifier, .json_extract_text, .string_literal });
+}
+
+test "JSON containment operators" {
+    // @> operator
+    try expectSingleToken("@>", .json_contains, "@>");
+    // <@ operator
+    try expectSingleToken("<@", .json_contained_by, "<@");
+    // Mixed with identifiers
+    const sql = "data @> '{\"key\":1}'";
+    try expectTokens(sql, &.{ .identifier, .json_contains, .string_literal });
+    const sql2 = "data <@ '{\"key\":1}'";
+    try expectTokens(sql2, &.{ .identifier, .json_contained_by, .string_literal });
+}
+
+test "JSON existence operators" {
+    // ? operator
+    try expectSingleToken("?", .json_key_exists, "?");
+    // ?| operator
+    try expectSingleToken("?|", .json_any_key_exists, "?|");
+    // ?& operator
+    try expectSingleToken("?&", .json_all_keys_exist, "?&");
+    // Mixed with identifiers
+    const sql = "data ? 'key'";
+    try expectTokens(sql, &.{ .identifier, .json_key_exists, .string_literal });
+    const sql2 = "data ?| ARRAY['a','b']";
+    try expectTokens(sql2, &.{ .identifier, .json_any_key_exists, .kw_array, .left_bracket, .string_literal, .comma, .string_literal, .right_bracket });
+}
+
+test "JSON path operators" {
+    // #> operator
+    try expectSingleToken("#>", .json_path_extract, "#>");
+    // #>> operator
+    try expectSingleToken("#>>", .json_path_extract_text, "#>>");
+    // #- operator
+    try expectSingleToken("#-", .json_delete_path, "#-");
+    // Mixed with identifiers
+    const sql = "data #> '{a,b}'";
+    try expectTokens(sql, &.{ .identifier, .json_path_extract, .string_literal });
+    const sql2 = "data #>> '{a,b}'";
+    try expectTokens(sql2, &.{ .identifier, .json_path_extract_text, .string_literal });
+    const sql3 = "data #- '{a}'";
+    try expectTokens(sql3, &.{ .identifier, .json_delete_path, .string_literal });
+}
+
+test "JSON operators in SELECT queries" {
+    const sql = "SELECT data -> 'name' FROM users WHERE data @> '{\"age\":30}'";
+    try expectTokens(sql, &.{
+        .kw_select,
+        .identifier,
+        .json_extract,
+        .string_literal,
+        .kw_from,
+        .identifier,
+        .kw_where,
+        .identifier,
+        .json_contains,
+        .string_literal,
     });
 }
