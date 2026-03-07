@@ -744,3 +744,25 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [x] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Form features enable interactive connection editor and visual query builder for SQL shell TUI.
+
+### v1.5.0 — State Management & Testing (status: READY)
+
+**sailor v1.5.0 released** (2026-03-07) — Testing utilities and state management
+
+- **New features**:
+  - Widget snapshot testing: assertSnapshot() method for pixel-perfect verification
+  - Example test suite: 10 comprehensive integration test patterns
+  - Previously released: Event bus, Command pattern, MockTerminal, EventSimulator
+- **Impact on silica**: HIGH — Critical for SQL shell testing
+  - MockTerminal enables comprehensive shell rendering tests
+  - assertSnapshot() verifies exact query result table output
+  - Example patterns guide silica's TUI test suite
+  - Event bus useful for shell component communication (results → pagination → export)
+  - Command pattern enables query history undo/redo (future feature)
+- [ ] `build.zig.zon`에 sailor v1.5.0 의존성 업데이트
+- [ ] Add snapshot tests for result table rendering
+- [ ] Add snapshot tests for query editor with syntax highlighting
+- [ ] Test command history with Command pattern
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Testing utilities dramatically improve test coverage for SQL shell rendering quality and correctness.
