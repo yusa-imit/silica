@@ -197,6 +197,8 @@ pub const TokenType = enum {
     kw_serial,
     kw_bigserial,
     kw_array,
+    kw_json,
+    kw_jsonb,
 
     // Keywords — Values
     kw_true,
@@ -745,6 +747,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "serial", .kw_serial },
         .{ "bigserial", .kw_bigserial },
         .{ "array", .kw_array },
+        .{ "json", .kw_json },
+        .{ "jsonb", .kw_jsonb },
         // Values
         .{ "true", .kw_true },
         .{ "false", .kw_false },
@@ -1320,5 +1324,21 @@ test "CREATE TYPE AS ENUM tokens" {
         .kw_create,     .kw_type,   .identifier, .kw_as,
         .kw_enum,       .left_paren, .string_literal, .comma,
         .string_literal, .right_paren,
+    });
+}
+
+test "JSON and JSONB keywords" {
+    try expectSingleToken("json", .kw_json, "json");
+    try expectSingleToken("JSON", .kw_json, "JSON");
+    try expectSingleToken("jsonb", .kw_jsonb, "jsonb");
+    try expectSingleToken("JSONB", .kw_jsonb, "JSONB");
+}
+
+test "CREATE TABLE with JSON column type" {
+    const sql = "CREATE TABLE t (data JSON, metadata JSONB)";
+    try expectTokens(sql, &.{
+        .kw_create, .kw_table, .identifier, .left_paren,
+        .identifier, .kw_json, .comma,
+        .identifier, .kw_jsonb, .right_paren,
     });
 }
