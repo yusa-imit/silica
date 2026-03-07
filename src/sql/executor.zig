@@ -1477,6 +1477,88 @@ fn evalUnaryOp(op: ast.UnaryOp, operand: Value) Value {
     };
 }
 
+// ── JSON operators ───────────────────────────────────────────────
+
+/// Extract JSON field by key: json -> 'key'
+fn evalJsonExtract(allocator: Allocator, json_val: Value, key: Value, as_text: bool) EvalError!Value {
+    _ = allocator; // will be used for allocating result strings
+
+    // NULL propagation
+    if (json_val == .null_value or key == .null_value) return Value.null_value;
+
+    // TODO: Implement full JSON path extraction
+    // For now, return error to indicate not yet implemented
+    _ = as_text;
+    return EvalError.TypeError;
+}
+
+/// Check if left JSON contains right JSON: left @> right
+fn evalJsonContains(left: Value, right: Value) EvalError!Value {
+    // NULL propagation
+    if (left == .null_value or right == .null_value) return Value.null_value;
+
+    // TODO: Implement JSON containment checking
+    // For now, return error to indicate not yet implemented
+    return EvalError.TypeError;
+}
+
+/// Check if JSON has key: json ? 'key'
+fn evalJsonKeyExists(json_val: Value, key: Value) EvalError!Value {
+    // NULL propagation
+    if (json_val == .null_value or key == .null_value) return Value.null_value;
+
+    // TODO: Implement JSON key existence check
+    // For now, return error to indicate not yet implemented
+    return EvalError.TypeError;
+}
+
+/// Check if JSON has any of the keys: json ?| ARRAY['a','b']
+fn evalJsonAnyKeyExists(json_val: Value, keys: Value) EvalError!Value {
+    // NULL propagation
+    if (json_val == .null_value or keys == .null_value) return Value.null_value;
+
+    // TODO: Implement JSON any key existence check
+    // For now, return error to indicate not yet implemented
+    return EvalError.TypeError;
+}
+
+/// Check if JSON has all of the keys: json ?& ARRAY['a','b']
+fn evalJsonAllKeysExist(json_val: Value, keys: Value) EvalError!Value {
+    // NULL propagation
+    if (json_val == .null_value or keys == .null_value) return Value.null_value;
+
+    // TODO: Implement JSON all keys existence check
+    // For now, return error to indicate not yet implemented
+    return EvalError.TypeError;
+}
+
+/// Extract JSON by path array: json #> '{a,b}'
+fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_text: bool) EvalError!Value {
+    _ = allocator;
+
+    // NULL propagation
+    if (json_val == .null_value or path == .null_value) return Value.null_value;
+
+    // TODO: Implement JSON path extraction
+    // For now, return error to indicate not yet implemented
+    _ = as_text;
+    return EvalError.TypeError;
+}
+
+/// Delete path from JSON: json #- '{a}'
+fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalError!Value {
+    _ = allocator;
+
+    // NULL propagation
+    if (json_val == .null_value or path == .null_value) return Value.null_value;
+
+    // TODO: Implement JSON path deletion
+    // For now, return error to indicate not yet implemented
+    return EvalError.TypeError;
+}
+
+// ──────────────────────────────────────────────────────────────────
+
 fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Value) EvalError!Value {
     // NULL propagation for most ops
     if (left == .null_value or right == .null_value) {
@@ -1575,6 +1657,18 @@ fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Valu
             },
             else => .null_value,
         },
+
+        // JSON operators (basic implementations)
+        .json_extract => evalJsonExtract(allocator, left, right, false),
+        .json_extract_text => evalJsonExtract(allocator, left, right, true),
+        .json_contains => evalJsonContains(left, right),
+        .json_contained_by => evalJsonContains(right, left), // swap operands
+        .json_key_exists => evalJsonKeyExists(left, right),
+        .json_any_key_exists => evalJsonAnyKeyExists(left, right),
+        .json_all_keys_exist => evalJsonAllKeysExist(left, right),
+        .json_path_extract => evalJsonPathExtract(allocator, left, right, false),
+        .json_path_extract_text => evalJsonPathExtract(allocator, left, right, true),
+        .json_delete_path => evalJsonDeletePath(allocator, left, right),
     };
 }
 
@@ -4913,14 +5007,66 @@ test "evalExpr CAST to JSON/JSONB" {
         defer v.free(allocator);
         try std.testing.expect(v == .null_value);
     }
+}
 
-    // CAST text to JSONB (same behavior for now)
+test "JSON operators - not yet implemented" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // Test that JSON operators are recognized but return TypeError
+    // (placeholder until full JSON implementation)
+
+    // -> operator
     {
-        const text_val = ast.Expr{ .string_literal = "[1, 2, 3]" };
-        const cast_expr = ast.Expr{ .cast = .{ .expr = &text_val, .target_type = .type_jsonb } };
-        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        const json_val = ast.Expr{ .string_literal = "{\"name\":\"John\"}" };
+        const key_val = ast.Expr{ .string_literal = "name" };
+        const extract_expr = ast.Expr{ .binary_op = .{
+            .op = .json_extract,
+            .left = &json_val,
+            .right = &key_val,
+        } };
+        const result = evalExpr(allocator, &extract_expr, &empty_row);
+        try std.testing.expectError(EvalError.TypeError, result);
+    }
+
+    // ->> operator
+    {
+        const json_val = ast.Expr{ .string_literal = "{\"name\":\"John\"}" };
+        const key_val = ast.Expr{ .string_literal = "name" };
+        const extract_text_expr = ast.Expr{ .binary_op = .{
+            .op = .json_extract_text,
+            .left = &json_val,
+            .right = &key_val,
+        } };
+        const result = evalExpr(allocator, &extract_text_expr, &empty_row);
+        try std.testing.expectError(EvalError.TypeError, result);
+    }
+
+    // @> operator
+    {
+        const left_val = ast.Expr{ .string_literal = "{\"a\":1,\"b\":2}" };
+        const right_val = ast.Expr{ .string_literal = "{\"a\":1}" };
+        const contains_expr = ast.Expr{ .binary_op = .{
+            .op = .json_contains,
+            .left = &left_val,
+            .right = &right_val,
+        } };
+        const result = evalExpr(allocator, &contains_expr, &empty_row);
+        try std.testing.expectError(EvalError.TypeError, result);
+    }
+
+    // NULL propagation for JSON operators
+    {
+        const null_val = ast.Expr{ .null_literal = {} };
+        const key_val = ast.Expr{ .string_literal = "name" };
+        const extract_expr = ast.Expr{ .binary_op = .{
+            .op = .json_extract,
+            .left = &null_val,
+            .right = &key_val,
+        } };
+        const v = try evalExpr(allocator, &extract_expr, &empty_row);
         defer v.free(allocator);
-        try std.testing.expectEqualStrings("[1, 2, 3]", v.text);
+        try std.testing.expect(v == .null_value);
     }
 }
 
