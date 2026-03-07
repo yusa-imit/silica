@@ -7945,3 +7945,247 @@ test "JSON extract nested object returns JSON" {
     try std.testing.expect(obj.contains("name"));
     try std.testing.expect(obj.contains("age"));
 }
+
+test "TSVECTOR value creation and comparison" {
+    const allocator = std.testing.allocator;
+
+    // Create tsvector values
+    const tv1 = Value{ .tsvector = "fat cat sat" };
+    const tv2 = Value{ .tsvector = "fat cat sat" };
+    const tv3 = Value{ .tsvector = "dog ran" };
+
+    // Test equality
+    try std.testing.expect(tv1.eql(tv2));
+    try std.testing.expect(!tv1.eql(tv3));
+
+    // Test comparison (lexicographic)
+    try std.testing.expectEqual(std.math.Order.eq, tv1.compare(tv2));
+    try std.testing.expectEqual(std.math.Order.lt, tv3.compare(tv1)); // "dog" < "fat"
+
+    // Test with NULL
+    const null_val: Value = .null_value;
+    try std.testing.expectEqual(std.math.Order.gt, null_val.compare(tv1));
+    try std.testing.expectEqual(std.math.Order.lt, tv1.compare(null_val));
+
+    // Test dupe and free
+    const duped = try tv1.dupe(allocator);
+    defer duped.free(allocator);
+    try std.testing.expect(duped == .tsvector);
+    try std.testing.expectEqualStrings(tv1.tsvector, duped.tsvector);
+    try std.testing.expect(tv1.tsvector.ptr != duped.tsvector.ptr);
+}
+
+test "TSQUERY value creation and comparison" {
+    const allocator = std.testing.allocator;
+
+    // Create tsquery values
+    const tq1 = Value{ .tsquery = "fat & cat" };
+    const tq2 = Value{ .tsquery = "fat & cat" };
+    const tq3 = Value{ .tsquery = "dog | cat" };
+
+    // Test equality
+    try std.testing.expect(tq1.eql(tq2));
+    try std.testing.expect(!tq1.eql(tq3));
+
+    // Test comparison (lexicographic)
+    try std.testing.expectEqual(std.math.Order.eq, tq1.compare(tq2));
+    try std.testing.expectEqual(std.math.Order.lt, tq3.compare(tq1)); // "dog" < "fat"
+
+    // Test with NULL
+    const null_val: Value = .null_value;
+    try std.testing.expectEqual(std.math.Order.gt, null_val.compare(tq1));
+    try std.testing.expectEqual(std.math.Order.lt, tq1.compare(null_val));
+
+    // Test dupe and free
+    const duped = try tq1.dupe(allocator);
+    defer duped.free(allocator);
+    try std.testing.expect(duped == .tsquery);
+    try std.testing.expectEqualStrings(tq1.tsquery, duped.tsquery);
+    try std.testing.expect(tq1.tsquery.ptr != duped.tsquery.ptr);
+}
+
+test "TSVECTOR isTruthy" {
+    // Non-empty tsvector is truthy
+    try std.testing.expect(Value.isTruthy(.{ .tsvector = "word" }));
+    try std.testing.expect(Value.isTruthy(.{ .tsvector = "multiple words" }));
+
+    // Empty tsvector is falsy
+    try std.testing.expect(!Value.isTruthy(.{ .tsvector = "" }));
+}
+
+test "TSQUERY isTruthy" {
+    // Non-empty tsquery is truthy
+    try std.testing.expect(Value.isTruthy(.{ .tsquery = "word" }));
+    try std.testing.expect(Value.isTruthy(.{ .tsquery = "word1 & word2" }));
+
+    // Empty tsquery is falsy
+    try std.testing.expect(!Value.isTruthy(.{ .tsquery = "" }));
+}
+
+test "TSVECTOR serialization and deserialization" {
+    const allocator = std.testing.allocator;
+
+    const original_text = "cat dog bird";
+    const original = Value{ .tsvector = original_text };
+
+    // Serialize
+    const values = [_]Value{original};
+    const serialized = try serializeRow(allocator, &values);
+    defer allocator.free(serialized);
+
+    // serializeRow format: [col_count:u16][values...]
+    // Verify tag 0x0F (tsvector) appears after col_count (2 bytes)
+    try std.testing.expectEqual(@as(u8, 0x0F), serialized[2]);
+
+    // Deserialize (skip col_count)
+    const result = try deserializeValue(allocator, serialized, 2);
+    defer result.value.free(allocator);
+
+    try std.testing.expect(result.value == .tsvector);
+    try std.testing.expectEqualStrings(original_text, result.value.tsvector);
+}
+
+test "TSQUERY serialization and deserialization" {
+    const allocator = std.testing.allocator;
+
+    const original_text = "cat & dog | bird";
+    const original = Value{ .tsquery = original_text };
+
+    // Serialize
+    const values = [_]Value{original};
+    const serialized = try serializeRow(allocator, &values);
+    defer allocator.free(serialized);
+
+    // serializeRow format: [col_count:u16][values...]
+    // Verify tag 0x10 (tsquery) appears after col_count (2 bytes)
+    try std.testing.expectEqual(@as(u8, 0x10), serialized[2]);
+
+    // Deserialize (skip col_count)
+    const result = try deserializeValue(allocator, serialized, 2);
+    defer result.value.free(allocator);
+
+    try std.testing.expect(result.value == .tsquery);
+    try std.testing.expectEqualStrings(original_text, result.value.tsquery);
+}
+
+test "CAST text to TSVECTOR" {
+    const allocator = std.testing.allocator;
+    var arena_impl = std.heap.ArenaAllocator.init(allocator);
+    defer arena_impl.deinit();
+    const arena = arena_impl.allocator();
+
+    const text_val = Value{ .text = "the quick brown fox" };
+    const target_type: ast.DataType = .type_tsvector;
+
+    const result = try evalCast(arena, text_val, target_type);
+    // Note: result is arena-allocated, no need to free individually
+
+    try std.testing.expect(result == .tsvector);
+    try std.testing.expectEqualStrings("the quick brown fox", result.tsvector);
+}
+
+test "CAST text to TSQUERY" {
+    const allocator = std.testing.allocator;
+    var arena_impl = std.heap.ArenaAllocator.init(allocator);
+    defer arena_impl.deinit();
+    const arena = arena_impl.allocator();
+
+    const text_val = Value{ .text = "cat & dog" };
+    const target_type: ast.DataType = .type_tsquery;
+
+    const result = try evalCast(arena, text_val, target_type);
+    // Note: result is arena-allocated, no need to free individually
+
+    try std.testing.expect(result == .tsquery);
+    try std.testing.expectEqualStrings("cat & dog", result.tsquery);
+}
+
+test "CAST TSVECTOR to TSVECTOR (identity)" {
+    const allocator = std.testing.allocator;
+    var arena_impl = std.heap.ArenaAllocator.init(allocator);
+    defer arena_impl.deinit();
+    const arena = arena_impl.allocator();
+
+    const tv_val = Value{ .tsvector = "word list" };
+    const target_type: ast.DataType = .type_tsvector;
+
+    const result = try evalCast(arena, tv_val, target_type);
+
+    try std.testing.expect(result == .tsvector);
+    try std.testing.expectEqualStrings("word list", result.tsvector);
+}
+
+test "CAST TSQUERY to TSQUERY (identity)" {
+    const allocator = std.testing.allocator;
+    var arena_impl = std.heap.ArenaAllocator.init(allocator);
+    defer arena_impl.deinit();
+    const arena = arena_impl.allocator();
+
+    const tq_val = Value{ .tsquery = "search & term" };
+    const target_type: ast.DataType = .type_tsquery;
+
+    const result = try evalCast(arena, tq_val, target_type);
+
+    try std.testing.expect(result == .tsquery);
+    try std.testing.expectEqualStrings("search & term", result.tsquery);
+}
+
+test "TSVECTOR serialized size calculation" {
+    const tv = Value{ .tsvector = "test vector" };
+    const size = serializedValueSize(tv);
+
+    // Format: tag (1 byte) + length prefix (4 bytes) + data
+    const expected = 1 + 4 + "test vector".len;
+    try std.testing.expectEqual(expected, size);
+}
+
+test "TSQUERY serialized size calculation" {
+    const tq = Value{ .tsquery = "search query" };
+    const size = serializedValueSize(tq);
+
+    // Format: tag (1 byte) + length prefix (4 bytes) + data
+    const expected = 1 + 4 + "search query".len;
+    try std.testing.expectEqual(expected, size);
+}
+
+test "TSVECTOR empty string handling" {
+    const allocator = std.testing.allocator;
+
+    const empty_tv = Value{ .tsvector = "" };
+
+    // Empty tsvector is falsy
+    try std.testing.expect(!Value.isTruthy(empty_tv));
+
+    // Can be serialized/deserialized
+    const values = [_]Value{empty_tv};
+    const serialized = try serializeRow(allocator, &values);
+    defer allocator.free(serialized);
+
+    // Deserialize (skip col_count)
+    const result = try deserializeValue(allocator, serialized, 2);
+    defer result.value.free(allocator);
+
+    try std.testing.expect(result.value == .tsvector);
+    try std.testing.expectEqualStrings("", result.value.tsvector);
+}
+
+test "TSQUERY empty string handling" {
+    const allocator = std.testing.allocator;
+
+    const empty_tq = Value{ .tsquery = "" };
+
+    // Empty tsquery is falsy
+    try std.testing.expect(!Value.isTruthy(empty_tq));
+
+    // Can be serialized/deserialized
+    const values = [_]Value{empty_tq};
+    const serialized = try serializeRow(allocator, &values);
+    defer allocator.free(serialized);
+
+    // Deserialize (skip col_count)
+    const result = try deserializeValue(allocator, serialized, 2);
+    defer result.value.free(allocator);
+
+    try std.testing.expect(result.value == .tsquery);
+    try std.testing.expectEqualStrings("", result.value.tsquery);
+}
