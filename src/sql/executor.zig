@@ -1541,7 +1541,7 @@ fn evalJsonExtract(allocator: Allocator, json_val: Value, key: Value, as_text: b
                 // For objects/arrays, serialize back to JSON
                 var buf = std.ArrayListUnmanaged(u8){};
                 defer buf.deinit(allocator);
-                std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
+                std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
                 break :blk allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
             },
         };
@@ -1550,7 +1550,7 @@ fn evalJsonExtract(allocator: Allocator, json_val: Value, key: Value, as_text: b
         // Return as text (JSON stored as text)
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(allocator);
-        std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
+        std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
         const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
         return Value{ .text = json_result };
     }
@@ -1962,7 +1962,7 @@ fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalEr
         const new_value = std.json.Value{ .object = new_obj };
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(allocator);
-        std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(new_value, .{})}) catch return EvalError.OutOfMemory;
+        std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(new_value, .{})}) catch return EvalError.OutOfMemory;
         const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
         return Value{ .text = json_result };
     } else {
@@ -5419,67 +5419,6 @@ test "evalExpr CAST to JSON/JSONB" {
         const null_val = ast.Expr{ .null_literal = {} };
         const cast_expr = ast.Expr{ .cast = .{ .expr = &null_val, .target_type = .type_json } };
         const v = try evalExpr(allocator, &cast_expr, &empty_row);
-        defer v.free(allocator);
-        try std.testing.expect(v == .null_value);
-    }
-}
-
-test "JSON operators - not yet implemented" {
-    const allocator = std.testing.allocator;
-    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
-
-    // Test that JSON operators are recognized but return TypeError
-    // (placeholder until full JSON implementation)
-
-    // -> operator
-    {
-        const json_val = ast.Expr{ .string_literal = "{\"name\":\"John\"}" };
-        const key_val = ast.Expr{ .string_literal = "name" };
-        const extract_expr = ast.Expr{ .binary_op = .{
-            .op = .json_extract,
-            .left = &json_val,
-            .right = &key_val,
-        } };
-        const result = evalExpr(allocator, &extract_expr, &empty_row);
-        try std.testing.expectError(EvalError.TypeError, result);
-    }
-
-    // ->> operator
-    {
-        const json_val = ast.Expr{ .string_literal = "{\"name\":\"John\"}" };
-        const key_val = ast.Expr{ .string_literal = "name" };
-        const extract_text_expr = ast.Expr{ .binary_op = .{
-            .op = .json_extract_text,
-            .left = &json_val,
-            .right = &key_val,
-        } };
-        const result = evalExpr(allocator, &extract_text_expr, &empty_row);
-        try std.testing.expectError(EvalError.TypeError, result);
-    }
-
-    // @> operator
-    {
-        const left_val = ast.Expr{ .string_literal = "{\"a\":1,\"b\":2}" };
-        const right_val = ast.Expr{ .string_literal = "{\"a\":1}" };
-        const contains_expr = ast.Expr{ .binary_op = .{
-            .op = .json_contains,
-            .left = &left_val,
-            .right = &right_val,
-        } };
-        const result = evalExpr(allocator, &contains_expr, &empty_row);
-        try std.testing.expectError(EvalError.TypeError, result);
-    }
-
-    // NULL propagation for JSON operators
-    {
-        const null_val = ast.Expr{ .null_literal = {} };
-        const key_val = ast.Expr{ .string_literal = "name" };
-        const extract_expr = ast.Expr{ .binary_op = .{
-            .op = .json_extract,
-            .left = &null_val,
-            .right = &key_val,
-        } };
-        const v = try evalExpr(allocator, &extract_expr, &empty_row);
         defer v.free(allocator);
         try std.testing.expect(v == .null_value);
     }
