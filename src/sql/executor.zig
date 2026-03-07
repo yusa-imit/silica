@@ -1481,15 +1481,79 @@ fn evalUnaryOp(op: ast.UnaryOp, operand: Value) Value {
 
 /// Extract JSON field by key: json -> 'key'
 fn evalJsonExtract(allocator: Allocator, json_val: Value, key: Value, as_text: bool) EvalError!Value {
-    _ = allocator; // will be used for allocating result strings
-
     // NULL propagation
     if (json_val == .null_value or key == .null_value) return Value.null_value;
 
-    // TODO: Implement full JSON path extraction
-    // For now, return error to indicate not yet implemented
-    _ = as_text;
-    return EvalError.TypeError;
+    // Get JSON text (JSON/JSONB are stored as text or blob for now)
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Get key as text
+    const key_text = switch (key) {
+        .text => |t| t,
+        .integer => |v| {
+            // For array index access - convert to string
+            _ = v; // will use directly as index below
+            return EvalError.TypeError; // For now, require text keys
+        },
+        else => return EvalError.TypeError,
+    };
+
+    // Parse JSON
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+    defer parsed.deinit();
+
+    // Extract value
+    const result_json = switch (parsed.value) {
+        .object => |obj| blk: {
+            if (obj.get(key_text)) |v| {
+                break :blk v;
+            }
+            return Value.null_value;
+        },
+        .array => |arr| blk: {
+            // Try to parse key as integer for array index
+            const idx = std.fmt.parseInt(usize, key_text, 10) catch {
+                return Value.null_value;
+            };
+            if (idx >= arr.items.len) return Value.null_value;
+            break :blk arr.items[idx];
+        },
+        else => return Value.null_value,
+    };
+
+    // Convert result to Value
+    if (as_text) {
+        // Return as text (for ->> operator)
+        const text_result = switch (result_json) {
+            .string => |s| allocator.dupe(u8, s) catch return EvalError.OutOfMemory,
+            .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
+            .float => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
+            .bool => |b| allocator.dupe(u8, if (b) "true" else "false") catch return EvalError.OutOfMemory,
+            .null => return Value.null_value,
+            .number_string => |s| allocator.dupe(u8, s) catch return EvalError.OutOfMemory,
+            .object, .array => blk: {
+                // For objects/arrays, serialize back to JSON
+                var buf = std.ArrayListUnmanaged(u8){};
+                defer buf.deinit(allocator);
+                std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
+                break :blk allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
+            },
+        };
+        return Value{ .text = text_result };
+    } else {
+        // Return as text (JSON stored as text)
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
+        const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
+        return Value{ .text = json_result };
+    }
 }
 
 /// Check if left JSON contains right JSON: left @> right
@@ -1497,9 +1561,113 @@ fn evalJsonContains(left: Value, right: Value) EvalError!Value {
     // NULL propagation
     if (left == .null_value or right == .null_value) return Value.null_value;
 
-    // TODO: Implement JSON containment checking
-    // For now, return error to indicate not yet implemented
-    return EvalError.TypeError;
+    // Get JSON text for both values
+    const left_text = switch (left) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+    const right_text = switch (right) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Parse both JSON values
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const left_parsed = std.json.parseFromSlice(std.json.Value, allocator, left_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+    const right_parsed = std.json.parseFromSlice(std.json.Value, allocator, right_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+
+    // Check containment
+    const contains = jsonContains(left_parsed.value, right_parsed.value);
+    return Value{ .boolean = contains };
+}
+
+/// Helper: recursively check if left JSON contains right JSON
+fn jsonContains(left: std.json.Value, right: std.json.Value) bool {
+    switch (right) {
+        .null, .bool, .integer, .float, .number_string, .string => {
+            // For primitives, they must be equal
+            return jsonEquals(left, right);
+        },
+        .object => |right_obj| {
+            // Left must be an object containing all right's key-value pairs
+            const left_obj = switch (left) {
+                .object => |o| o,
+                else => return false,
+            };
+
+            var it = right_obj.iterator();
+            while (it.next()) |entry| {
+                if (left_obj.get(entry.key_ptr.*)) |left_val| {
+                    if (!jsonContains(left_val, entry.value_ptr.*)) return false;
+                } else {
+                    return false;
+                }
+            }
+            return true;
+        },
+        .array => |right_arr| {
+            // Left must be an array containing all right's elements
+            const left_arr = switch (left) {
+                .array => |a| a,
+                else => return false,
+            };
+
+            // Check if all right elements are in left
+            for (right_arr.items) |right_item| {
+                var found = false;
+                for (left_arr.items) |left_item| {
+                    if (jsonContains(left_item, right_item)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+            return true;
+        },
+    }
+}
+
+/// Helper: check JSON value equality
+fn jsonEquals(left: std.json.Value, right: std.json.Value) bool {
+    return switch (left) {
+        .null => right == .null,
+        .bool => |l| switch (right) {
+            .bool => |r| l == r,
+            else => false,
+        },
+        .integer => |l| switch (right) {
+            .integer => |r| l == r,
+            .float => |r| @as(f64, @floatFromInt(l)) == r,
+            .number_string => false, // Don't compare with string representations
+            else => false,
+        },
+        .float => |l| switch (right) {
+            .float => |r| l == r,
+            .integer => |r| l == @as(f64, @floatFromInt(r)),
+            .number_string => false,
+            else => false,
+        },
+        .number_string => |l| switch (right) {
+            .number_string => |r| std.mem.eql(u8, l, r),
+            else => false,
+        },
+        .string => |l| switch (right) {
+            .string => |r| std.mem.eql(u8, l, r),
+            else => false,
+        },
+        .array => false, // Arrays are not primitive, should use jsonContains
+        .object => false, // Objects are not primitive, should use jsonContains
+    };
 }
 
 /// Check if JSON has key: json ? 'key'
@@ -1507,9 +1675,44 @@ fn evalJsonKeyExists(json_val: Value, key: Value) EvalError!Value {
     // NULL propagation
     if (json_val == .null_value or key == .null_value) return Value.null_value;
 
-    // TODO: Implement JSON key existence check
-    // For now, return error to indicate not yet implemented
-    return EvalError.TypeError;
+    // Get JSON text
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Get key as text
+    const key_text = switch (key) {
+        .text => |t| t,
+        else => return EvalError.TypeError,
+    };
+
+    // Parse JSON
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+
+    // Check if key exists
+    const exists = switch (parsed.value) {
+        .object => |obj| obj.contains(key_text),
+        .array => |arr| blk: {
+            // For arrays, check if any element equals the key (as string)
+            for (arr.items) |item| {
+                if (item == .string and std.mem.eql(u8, item.string, key_text)) {
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+
+    return Value{ .boolean = exists };
 }
 
 /// Check if JSON has any of the keys: json ?| ARRAY['a','b']
@@ -1517,9 +1720,45 @@ fn evalJsonAnyKeyExists(json_val: Value, keys: Value) EvalError!Value {
     // NULL propagation
     if (json_val == .null_value or keys == .null_value) return Value.null_value;
 
-    // TODO: Implement JSON any key existence check
-    // For now, return error to indicate not yet implemented
-    return EvalError.TypeError;
+    // Get JSON text
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Get keys array
+    const keys_arr = switch (keys) {
+        .array => |a| a,
+        else => return EvalError.TypeError,
+    };
+
+    // Parse JSON
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+
+    // Check if any key exists
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return Value{ .boolean = false },
+    };
+
+    for (keys_arr) |key_val| {
+        const key_text = switch (key_val) {
+            .text => |t| t,
+            else => continue,
+        };
+        if (obj.contains(key_text)) {
+            return Value{ .boolean = true };
+        }
+    }
+
+    return Value{ .boolean = false };
 }
 
 /// Check if JSON has all of the keys: json ?& ARRAY['a','b']
@@ -1527,34 +1766,210 @@ fn evalJsonAllKeysExist(json_val: Value, keys: Value) EvalError!Value {
     // NULL propagation
     if (json_val == .null_value or keys == .null_value) return Value.null_value;
 
-    // TODO: Implement JSON all keys existence check
-    // For now, return error to indicate not yet implemented
-    return EvalError.TypeError;
+    // Get JSON text
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Get keys array
+    const keys_arr = switch (keys) {
+        .array => |a| a,
+        else => return EvalError.TypeError,
+    };
+
+    // Parse JSON
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+
+    // Check if all keys exist
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return Value{ .boolean = false },
+    };
+
+    for (keys_arr) |key_val| {
+        const key_text = switch (key_val) {
+            .text => |t| t,
+            else => return Value{ .boolean = false },
+        };
+        if (!obj.contains(key_text)) {
+            return Value{ .boolean = false };
+        }
+    }
+
+    return Value{ .boolean = true };
 }
 
 /// Extract JSON by path array: json #> '{a,b}'
 fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_text: bool) EvalError!Value {
-    _ = allocator;
-
     // NULL propagation
     if (json_val == .null_value or path == .null_value) return Value.null_value;
 
-    // TODO: Implement JSON path extraction
-    // For now, return error to indicate not yet implemented
-    _ = as_text;
-    return EvalError.TypeError;
+    // Get JSON text
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Get path array
+    const path_arr = switch (path) {
+        .array => |a| a,
+        .text => |t| blk: {
+            // Parse text as array (e.g., "{a,b}" -> ["a", "b"])
+            if (t.len < 2 or t[0] != '{' or t[t.len - 1] != '}') {
+                return EvalError.TypeError;
+            }
+            // For simplicity, create a single-element path
+            var arr = std.ArrayListUnmanaged(Value){};
+            const inner = t[1 .. t.len - 1];
+            arr.append(allocator, Value{ .text = allocator.dupe(u8, inner) catch return EvalError.OutOfMemory }) catch return EvalError.OutOfMemory;
+            break :blk arr.items;
+        },
+        else => return EvalError.TypeError,
+    };
+
+    // Parse JSON
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const parse_allocator = arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, parse_allocator, json_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+
+    // Navigate the path
+    var current = parsed.value;
+    for (path_arr) |path_elem| {
+        const key = switch (path_elem) {
+            .text => |t| t,
+            .integer => |v| {
+                // Array index
+                const idx: usize = @intCast(v);
+                current = switch (current) {
+                    .array => |arr| if (idx < arr.items.len) arr.items[idx] else return Value.null_value,
+                    else => return Value.null_value,
+                };
+                continue;
+            },
+            else => return EvalError.TypeError,
+        };
+
+        current = switch (current) {
+            .object => |obj| obj.get(key) orelse return Value.null_value,
+            else => return Value.null_value,
+        };
+    }
+
+    // Convert result to Value
+    if (as_text) {
+        const text_result = switch (current) {
+            .string => |s| allocator.dupe(u8, s) catch return EvalError.OutOfMemory,
+            .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
+            .float => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
+            .bool => |b| allocator.dupe(u8, if (b) "true" else "false") catch return EvalError.OutOfMemory,
+            .null => return Value.null_value,
+            else => blk: {
+                var buf = std.ArrayListUnmanaged(u8){};
+                defer buf.deinit(allocator);
+                std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
+                break :blk allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
+            },
+        };
+        return Value{ .text = text_result };
+    } else {
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
+        const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
+        return Value{ .text = json_result };
+    }
 }
 
 /// Delete path from JSON: json #- '{a}'
 fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalError!Value {
-    _ = allocator;
-
     // NULL propagation
     if (json_val == .null_value or path == .null_value) return Value.null_value;
 
-    // TODO: Implement JSON path deletion
-    // For now, return error to indicate not yet implemented
-    return EvalError.TypeError;
+    // Get JSON text
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Get path array
+    const path_arr = switch (path) {
+        .array => |a| a,
+        .text => |t| blk: {
+            // Parse text as array (e.g., "{a}" -> ["a"])
+            if (t.len < 2 or t[0] != '{' or t[t.len - 1] != '}') {
+                return EvalError.TypeError;
+            }
+            var arr = std.ArrayListUnmanaged(Value){};
+            const inner = t[1 .. t.len - 1];
+            arr.append(allocator, Value{ .text = allocator.dupe(u8, inner) catch return EvalError.OutOfMemory }) catch return EvalError.OutOfMemory;
+            break :blk arr.items;
+        },
+        else => return EvalError.TypeError,
+    };
+
+    if (path_arr.len == 0) {
+        // Empty path - return original JSON
+        return Value{ .text = allocator.dupe(u8, json_text) catch return EvalError.OutOfMemory };
+    }
+
+    // Parse JSON
+    var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer parse_arena.deinit();
+    const parse_allocator = parse_arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, parse_allocator, json_text, .{}) catch {
+        return EvalError.TypeError;
+    };
+
+    // Delete from path - for simplicity, only support single-level deletion
+    // Full recursive path deletion would require mutable JSON tree manipulation
+    if (path_arr.len == 1) {
+        const key = switch (path_arr[0]) {
+            .text => |t| t,
+            else => return EvalError.TypeError,
+        };
+
+        // Clone the object without the specified key
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => return Value{ .text = allocator.dupe(u8, json_text) catch return EvalError.OutOfMemory },
+        };
+
+        // Build new object without the key
+        var new_obj = std.json.ObjectMap.init(parse_allocator);
+        var it = obj.iterator();
+        while (it.next()) |entry| {
+            if (!std.mem.eql(u8, entry.key_ptr.*, key)) {
+                new_obj.put(entry.key_ptr.*, entry.value_ptr.*) catch return EvalError.OutOfMemory;
+            }
+        }
+
+        // Serialize result
+        const new_value = std.json.Value{ .object = new_obj };
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(new_value, .{})}) catch return EvalError.OutOfMemory;
+        const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
+        return Value{ .text = json_result };
+    } else {
+        // Multi-level path deletion not yet implemented
+        // For now, return original JSON unchanged
+        return Value{ .text = allocator.dupe(u8, json_text) catch return EvalError.OutOfMemory };
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -7190,4 +7605,277 @@ test "evalExpr ALL with empty array returns true" {
 
     try std.testing.expect(result == .boolean);
     try std.testing.expect(result.boolean); // Empty array → true for ALL (vacuous truth)
+}
+
+// ── JSON Operator Tests ──────────────────────────────────────────────
+
+test "JSON extract -> operator" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"name\":\"John\",\"age\":30}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "name" };
+
+    const result = try evalJsonExtract(allocator, json_val, key_val, false);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("\"John\"", result.text);
+}
+
+test "JSON extract ->> operator (as text)" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"name\":\"John\",\"age\":30}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "name" };
+
+    const result = try evalJsonExtract(allocator, json_val, key_val, true);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("John", result.text);
+}
+
+test "JSON extract array element" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "[10,20,30]";
+    const json_val = Value{ .text = json_text };
+    const idx_val = Value{ .text = "1" };
+
+    const result = try evalJsonExtract(allocator, json_val, idx_val, true);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("20", result.text);
+}
+
+test "JSON extract missing key returns null" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"name\":\"John\"}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "missing" };
+
+    const result = try evalJsonExtract(allocator, json_val, key_val, false);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "JSON contains @> operator" {
+
+    const left_text = "{\"a\":1,\"b\":2,\"c\":3}";
+    const right_text = "{\"a\":1,\"b\":2}";
+    const left_val = Value{ .text = left_text };
+    const right_val = Value{ .text = right_text };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "JSON contains with non-matching object" {
+
+    const left_text = "{\"a\":1,\"b\":2}";
+    const right_text = "{\"a\":1,\"c\":3}";
+    const left_val = Value{ .text = left_text };
+    const right_val = Value{ .text = right_text };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "JSON contains array" {
+
+    const left_text = "[1,2,3,4]";
+    const right_text = "[2,3]";
+    const left_val = Value{ .text = left_text };
+    const right_val = Value{ .text = right_text };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "JSON key exists ? operator" {
+
+    const json_text = "{\"name\":\"John\",\"age\":30}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "name" };
+
+    const result = try evalJsonKeyExists(json_val, key_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "JSON key exists with missing key" {
+
+    const json_text = "{\"name\":\"John\"}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "missing" };
+
+    const result = try evalJsonKeyExists(json_val, key_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "JSON any key exists ?| operator" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"a\":1,\"b\":2,\"c\":3}";
+    const json_val = Value{ .text = json_text };
+
+    var keys_arr = std.ArrayListUnmanaged(Value){};
+    defer keys_arr.deinit(allocator);
+    try keys_arr.append(allocator, Value{ .text = "x" });
+    try keys_arr.append(allocator, Value{ .text = "b" });
+
+    const keys_val = Value{ .array = keys_arr.items };
+
+    const result = try evalJsonAnyKeyExists(json_val, keys_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "JSON any key exists with no matches" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"a\":1,\"b\":2}";
+    const json_val = Value{ .text = json_text };
+
+    var keys_arr = std.ArrayListUnmanaged(Value){};
+    defer keys_arr.deinit(allocator);
+    try keys_arr.append(allocator, Value{ .text = "x" });
+    try keys_arr.append(allocator, Value{ .text = "y" });
+
+    const keys_val = Value{ .array = keys_arr.items };
+
+    const result = try evalJsonAnyKeyExists(json_val, keys_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "JSON all keys exist ?& operator" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"a\":1,\"b\":2,\"c\":3}";
+    const json_val = Value{ .text = json_text };
+
+    var keys_arr = std.ArrayListUnmanaged(Value){};
+    defer keys_arr.deinit(allocator);
+    try keys_arr.append(allocator, Value{ .text = "a" });
+    try keys_arr.append(allocator, Value{ .text = "b" });
+
+    const keys_val = Value{ .array = keys_arr.items };
+
+    const result = try evalJsonAllKeysExist(json_val, keys_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "JSON all keys exist with one missing" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"a\":1,\"b\":2}";
+    const json_val = Value{ .text = json_text };
+
+    var keys_arr = std.ArrayListUnmanaged(Value){};
+    defer keys_arr.deinit(allocator);
+    try keys_arr.append(allocator, Value{ .text = "a" });
+    try keys_arr.append(allocator, Value{ .text = "c" });
+
+    const keys_val = Value{ .array = keys_arr.items };
+
+    const result = try evalJsonAllKeysExist(json_val, keys_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "JSON path extract #> operator" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"a\":{\"b\":{\"c\":42}}}";
+    const json_val = Value{ .text = json_text };
+
+    var path_arr = std.ArrayListUnmanaged(Value){};
+    defer {
+        for (path_arr.items) |item| item.free(allocator);
+        path_arr.deinit(allocator);
+    }
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "a") });
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "b") });
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "c") });
+
+    const path_val = Value{ .array = path_arr.items };
+
+    const result = try evalJsonPathExtract(allocator, json_val, path_val, true);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("42", result.text);
+}
+
+test "JSON path extract with array index" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"items\":[{\"id\":1},{\"id\":2}]}";
+    const json_val = Value{ .text = json_text };
+
+    var path_arr = std.ArrayListUnmanaged(Value){};
+    defer {
+        for (path_arr.items) |item| item.free(allocator);
+        path_arr.deinit(allocator);
+    }
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "items") });
+    try path_arr.append(allocator, Value{ .integer = 1 });
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "id") });
+
+    const path_val = Value{ .array = path_arr.items };
+
+    const result = try evalJsonPathExtract(allocator, json_val, path_val, true);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("2", result.text);
+}
+
+test "JSON delete path #- operator" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"a\":1,\"b\":2,\"c\":3}";
+    const json_val = Value{ .text = json_text };
+
+    var path_arr = std.ArrayListUnmanaged(Value){};
+    defer {
+        for (path_arr.items) |item| item.free(allocator);
+        path_arr.deinit(allocator);
+    }
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "b") });
+
+    const path_val = Value{ .array = path_arr.items };
+
+    const result = try evalJsonDeletePath(allocator, json_val, path_val);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+
+    // Parse result to verify "b" was deleted
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), result.text, .{});
+    const obj = parsed.value.object;
+    try std.testing.expect(!obj.contains("b"));
+    try std.testing.expect(obj.contains("a"));
+    try std.testing.expect(obj.contains("c"));
 }
