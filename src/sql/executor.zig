@@ -7818,3 +7818,56 @@ test "JSON delete path #- operator" {
     try std.testing.expect(obj.contains("a"));
     try std.testing.expect(obj.contains("c"));
 }
+
+test "JSON extract on invalid JSON returns error" {
+    const allocator = std.testing.allocator;
+
+    const invalid_json = Value{ .text = "{invalid json}" };
+    const key_val = Value{ .text = "name" };
+
+    const result = evalJsonExtract(allocator, invalid_json, key_val, false);
+    try std.testing.expectError(EvalError.TypeError, result);
+}
+
+test "JSON contains on invalid JSON returns error" {
+    const invalid_json = Value{ .text = "not json" };
+    const valid_json = Value{ .text = "{\"a\":1}" };
+
+    const result = evalJsonContains(invalid_json, valid_json);
+    try std.testing.expectError(EvalError.TypeError, result);
+}
+
+test "JSON extract with empty string key" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"\":\"empty key value\",\"normal\":\"value\"}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "" };
+
+    const result = try evalJsonExtract(allocator, json_val, key_val, true);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("empty key value", result.text);
+}
+
+test "JSON extract nested object returns JSON" {
+    const allocator = std.testing.allocator;
+
+    const json_text = "{\"user\":{\"name\":\"John\",\"age\":30}}";
+    const json_val = Value{ .text = json_text };
+    const key_val = Value{ .text = "user" };
+
+    const result = try evalJsonExtract(allocator, json_val, key_val, false);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+
+    // Verify it's valid JSON
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), result.text, .{});
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.contains("name"));
+    try std.testing.expect(obj.contains("age"));
+}
