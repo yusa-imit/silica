@@ -44,11 +44,14 @@
   - [x] .json/.jsonb in catalog ColumnType (tags 0x0D, 0x0E)
   - [x] JSON/JSONB type in parser (CREATE TABLE, CAST)
   - [x] Basic CAST support (text-based, no validation yet)
-  - [ ] JSON validation (std.json.parseFromSlice)
+  - [!] JSON validation — REVERTED in commit 50d388c due to DuplicateKey bug
+  - [!] JSON engine tests — REVERTED (multi-row INSERTs triggered GitHub #1)
   - [ ] JSONB binary storage format
   - [ ] JSON operators (->, ->>, #>, #>>, @>, <@, ?, ?|, ?&, ||, -, #-)
   - [ ] JSON functions (jsonb_build_object, jsonb_build_array, etc.)
   - [ ] GIN index for JSONB
+
+**Note**: Commit 0617467 reverted. JSON validation will be re-added after fixing DuplicateKey bug. See docs/KNOWN_ISSUES.md.
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -59,11 +62,11 @@
 6. OS Layer (File I/O, mmap optional, fsync)
 
 ## Test Coverage Status (as of 2026-03-07)
-- Total tests: 1344 (all passing)
-- Recent additions: 4 new JSON/JSONB parser tests (CREATE TABLE, CAST)
+- Total tests: 1301 (all passing after commit 50d388c)
+- JSON validation tests: REVERTED (4 tests removed)
 - tokenizer.zig: 68 tests (includes JSON/JSONB keywords)
 - parser.zig: 138 tests (includes JSON/JSONB type parsing)
-- All type system exhaustive switches updated for JSON/JSONB
+- JSON/JSONB type switches: DONE (engine valueToIndexKey updated)
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
