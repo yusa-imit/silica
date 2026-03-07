@@ -1357,4 +1357,16 @@ test "formatColumnLabel basic types and constraints" {
         defer allocator.free(label);
         try std.testing.expectEqualStrings("  data", label);
     }
+    {
+        const col = ColumnInfo{ .name = "config", .column_type = .json, .flags = .{} };
+        const label = try formatColumnLabel(allocator, col);
+        defer allocator.free(label);
+        try std.testing.expectEqualStrings("  config JSON", label);
+    }
+    {
+        const col = ColumnInfo{ .name = "metadata", .column_type = .jsonb, .flags = .{ .not_null = true } };
+        const label = try formatColumnLabel(allocator, col);
+        defer allocator.free(label);
+        try std.testing.expectEqualStrings("  metadata JSONB NN", label);
+    }
 }
