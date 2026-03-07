@@ -767,6 +767,29 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
 **Note**: Non-breaking upgrade. Testing utilities dramatically improve test coverage for SQL shell rendering quality and correctness.
 
+### v1.6.0 — Data Visualization & Advanced Charts (status: READY)
+
+**sailor v1.6.0 released** (2026-03-08) — Advanced data visualization widgets
+
+- **New features**:
+  - ScatterPlot: X-Y coordinate plotting with markers and multiple series
+  - Histogram: Frequency distribution bars (vertical/horizontal)
+  - TimeSeriesChart: Time-based line chart with Unix timestamp support
+  - Heatmap & PieChart (previously released)
+- **Impact on silica**: HIGH — Critical for query performance visualization
+  - Histogram for query execution time distribution
+  - TimeSeriesChart for database growth over time (table row count)
+  - ScatterPlot for index selectivity analysis (cardinality vs. scan cost)
+  - Heatmap for table access patterns (hot spots visualization)
+  - PieChart for storage distribution across tables
+- [ ] `build.zig.zon`에 sailor v1.6.0 의존성 업데이트
+- [ ] (Recommended) Add Histogram widget for query time distribution in TUI
+- [ ] (Recommended) Add TimeSeriesChart for monitoring table growth
+- [ ] (Recommended) Add ScatterPlot for index analysis dashboard
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Visualization widgets enable powerful performance monitoring and analytics features for SQL shell TUI.
+
 ---
 
 ## zuda Migration
