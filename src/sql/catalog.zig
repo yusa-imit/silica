@@ -1050,6 +1050,118 @@ pub const Catalog = struct {
 
         return names.toOwnedSlice(allocator);
     }
+
+    fn makeDomainKey(self: *Catalog, name: []const u8) ![]u8 {
+        const prefix = "domain:";
+        const key = try self.allocator.alloc(u8, prefix.len + name.len);
+        @memcpy(key[0..prefix.len], prefix);
+        @memcpy(key[prefix.len..], name);
+        return key;
+    }
+
+    pub fn createDomain(
+        self: *Catalog,
+        name: []const u8,
+        base_type: ast.DataType,
+        constraint: ?[]const u8,
+    ) !void {
+        const key = try self.makeDomainKey(name);
+        defer self.allocator.free(key);
+
+        // Check if domain already exists
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            return CatalogError.TypeAlreadyExists;
+        }
+
+        // Check if name collides with a table or enum type
+        if (try self.tableExists(name)) {
+            return CatalogError.TableAlreadyExists;
+        }
+        if (try self.enumTypeExists(name)) {
+            return CatalogError.TypeAlreadyExists;
+        }
+
+        // Serialize: [base_type: u8][has_constraint: u8][constraint_len: u16][constraint_text]
+        const has_constraint: u8 = if (constraint != null) 1 else 0;
+        const constraint_len: u16 = if (constraint) |c| @intCast(c.len) else 0;
+        const total_size: usize = 1 + 1 + 2 + constraint_len;
+
+        const data = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(data);
+
+        var offset: usize = 0;
+        data[offset] = @intFromEnum(base_type);
+        offset += 1;
+        data[offset] = has_constraint;
+        offset += 1;
+        std.mem.writeInt(u16, data[offset..][0..2], constraint_len, .little);
+        offset += 2;
+        if (constraint) |c| {
+            @memcpy(data[offset..][0..c.len], c);
+        }
+
+        try self.tree.insert(key, data);
+    }
+
+    pub fn getDomain(self: *Catalog, name: []const u8) !DomainTypeInfo {
+        const key = try self.makeDomainKey(name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key) orelse
+            return CatalogError.TypeNotFound;
+        defer self.allocator.free(value);
+
+        // Deserialize: [base_type: u8][has_constraint: u8][constraint_len: u16][constraint_text]
+        if (value.len < 4) return CatalogError.InvalidSchemaData;
+
+        var offset: usize = 0;
+        const base_type_byte = value[offset];
+        offset += 1;
+        const has_constraint = value[offset];
+        offset += 1;
+        const constraint_len = std.mem.readInt(u16, value[offset..][0..2], .little);
+        offset += 2;
+
+        if (offset + constraint_len > value.len) return CatalogError.InvalidSchemaData;
+
+        const constraint_opt = if (has_constraint == 1)
+            try self.allocator.dupe(u8, value[offset..][0..constraint_len])
+        else
+            null;
+
+        return .{
+            .name = try self.allocator.dupe(u8, name),
+            .base_type = @enumFromInt(base_type_byte),
+            .constraint = constraint_opt,
+            .allocator = self.allocator,
+        };
+    }
+
+    pub fn dropDomain(self: *Catalog, name: []const u8, if_exists: bool) !void {
+        const key = try self.makeDomainKey(name);
+        defer self.allocator.free(key);
+
+        const exists = try self.tree.get(self.allocator, key);
+        if (exists) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        } else {
+            if (!if_exists) return CatalogError.TypeNotFound;
+        }
+    }
+
+    pub fn domainExists(self: *Catalog, name: []const u8) !bool {
+        const key = try self.makeDomainKey(name);
+        defer self.allocator.free(key);
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
+    }
 };
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -2073,4 +2185,164 @@ test "Catalog listEnumTypes excludes tables and views" {
     const has_enum2 = std.mem.eql(u8, types[0], "enum2") or std.mem.eql(u8, types[1], "enum2");
     try std.testing.expect(has_enum1);
     try std.testing.expect(has_enum2);
+}
+
+test "Catalog createDomain basic" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_basic.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createDomain("pos_int", .type_integer, "VALUE > 0");
+
+    const info = try tc.catalog.getDomain("pos_int");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("pos_int", info.name);
+    try std.testing.expectEqual(ast.DataType.type_integer, info.base_type);
+    try std.testing.expect(info.constraint != null);
+    try std.testing.expectEqualStrings("VALUE > 0", info.constraint.?);
+}
+
+test "Catalog createDomain without constraint" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_no_constraint.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createDomain("email", .type_text, null);
+
+    const info = try tc.catalog.getDomain("email");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("email", info.name);
+    try std.testing.expectEqual(ast.DataType.type_text, info.base_type);
+    try std.testing.expect(info.constraint == null);
+}
+
+test "Catalog createDomain duplicate error" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_duplicate.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createDomain("my_domain", .type_integer, null);
+    try std.testing.expectError(CatalogError.TypeAlreadyExists, tc.catalog.createDomain("my_domain", .type_text, null));
+}
+
+test "Catalog createDomain conflicts with table" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_table_conflict.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const cols = [_]ColumnInfo{.{ .name = "id", .column_type = .integer, .flags = .{} }};
+    try tc.catalog.createTable("users", &cols, &[_]TableConstraintInfo{}, 0);
+
+    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createDomain("users", .type_integer, null));
+}
+
+test "Catalog createDomain conflicts with enum" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_enum_conflict.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const values = [_][]const u8{ "a", "b" };
+    try tc.catalog.createEnumType("status", &values);
+
+    try std.testing.expectError(CatalogError.TypeAlreadyExists, tc.catalog.createDomain("status", .type_text, null));
+}
+
+test "Catalog dropDomain basic" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_drop.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try tc.catalog.createDomain("temp_domain", .type_integer, null);
+    try std.testing.expect(try tc.catalog.domainExists("temp_domain"));
+
+    try tc.catalog.dropDomain("temp_domain", false);
+    try std.testing.expect(!try tc.catalog.domainExists("temp_domain"));
+}
+
+test "Catalog dropDomain if_exists" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_drop_if_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Should not error when if_exists=true and domain doesn't exist
+    try tc.catalog.dropDomain("nonexistent", true);
+
+    // Should error when if_exists=false and domain doesn't exist
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropDomain("nonexistent", false));
+}
+
+test "Catalog domainExists" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expect(!try tc.catalog.domainExists("my_domain"));
+
+    try tc.catalog.createDomain("my_domain", .type_integer, null);
+    try std.testing.expect(try tc.catalog.domainExists("my_domain"));
+
+    try tc.catalog.dropDomain("my_domain", false);
+    try std.testing.expect(!try tc.catalog.domainExists("my_domain"));
+}
+
+test "Catalog getDomain not found" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_not_found.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getDomain("nonexistent"));
+}
+
+test "Catalog getDomain with corrupted data" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_corrupt.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Manually insert corrupted data with only 3 bytes (should be at least 4)
+    const key = try tc.catalog.makeDomainKey("corrupt");
+    defer allocator.free(key);
+
+    const bad_data = [_]u8{ 0x01, 0x00, 0x01 }; // base_type, has_constraint, missing constraint_len
+    try tc.catalog.tree.insert(key, &bad_data);
+
+    try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getDomain("corrupt"));
+}
+
+test "Catalog getDomain with constraint length overflow" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_domain_corrupt_len.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const key = try tc.catalog.makeDomainKey("corrupt_len");
+    defer allocator.free(key);
+
+    // [base_type: 1][has_constraint: 1][constraint_len: 100 (but no data)]
+    const bad_data = [_]u8{ 0x01, 0x01, 0x64, 0x00 }; // constraint_len=100 but no data
+    try tc.catalog.tree.insert(key, &bad_data);
+
+    try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getDomain("corrupt_len"));
 }

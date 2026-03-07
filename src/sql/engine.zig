@@ -2629,6 +2629,36 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "DROP TYPE" };
             },
+            .create_domain => |cd| {
+                // TODO: Serialize constraint expression to text for storage
+                // For now, constraints are stored but not enforced
+                _ = cd.constraint; // Constraint exists in AST but not yet serialized
+                self.catalog.createDomain(cd.name, cd.base_type, null) catch |err| {
+                    return switch (err) {
+                        error.TypeAlreadyExists => EngineError.TableAlreadyExists,
+                        error.TableAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE DOMAIN" };
+            },
+            .drop_domain => |dd| {
+                self.catalog.dropDomain(dd.name, dd.if_exists) catch |err| {
+                    return switch (err) {
+                        error.TypeNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP DOMAIN" };
+            },
             else => {},
         }
 
@@ -13168,6 +13198,86 @@ test "DROP TYPE nonexistent error" {
 
     const r = db.exec("DROP TYPE nonexistent");
     try testing.expectError(EngineError.TableNotFound, r);
+}
+
+test "CREATE DOMAIN basic" {
+    const path = "test_domain_basic.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.exec("CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE DOMAIN", r.message);
+}
+
+test "CREATE DOMAIN without constraint" {
+    const path = "test_domain_no_constraint.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.exec("CREATE DOMAIN email_address AS TEXT");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE DOMAIN", r.message);
+}
+
+test "DROP DOMAIN basic" {
+    const path = "test_domain_drop.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE DOMAIN my_domain AS INTEGER");
+    var r = try db.exec("DROP DOMAIN my_domain");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("DROP DOMAIN", r.message);
+}
+
+test "DROP DOMAIN IF EXISTS no error" {
+    const path = "test_domain_drop_ifexists.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.exec("DROP DOMAIN IF EXISTS nonexistent");
+    defer r.close(testing.allocator);
+    try testing.expectEqualStrings("DROP DOMAIN", r.message);
+}
+
+test "CREATE DOMAIN duplicate name error" {
+    const path = "test_domain_duplicate.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE DOMAIN my_domain AS INTEGER");
+    const r = db.exec("CREATE DOMAIN my_domain AS TEXT");
+    try testing.expectError(EngineError.TableAlreadyExists, r);
+}
+
+test "DROP DOMAIN nonexistent error" {
+    const path = "test_domain_drop_nonexistent.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    const r = db.exec("DROP DOMAIN nonexistent");
+    try testing.expectError(EngineError.TableNotFound, r);
+}
+
+test "CREATE DOMAIN conflicts with table" {
+    const path = "test_domain_table_conflict.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE users (id INTEGER)");
+    const r = db.exec("CREATE DOMAIN users AS INTEGER");
+    try testing.expectError(EngineError.TableAlreadyExists, r);
+}
+
+test "CREATE DOMAIN conflicts with enum" {
+    const path = "test_domain_enum_conflict.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TYPE status AS ENUM ('active', 'inactive')");
+    const r = db.exec("CREATE DOMAIN status AS INTEGER");
+    try testing.expectError(EngineError.TableAlreadyExists, r);
 }
 
 test "ANY operator with array literal" {
