@@ -709,6 +709,8 @@ pub const Value = union(enum) {
     numeric: Numeric, // fixed-point decimal
     uuid: [16]u8, // 128-bit UUID
     array: []const Value, // variable-length typed array
+    tsvector: []const u8, // serialized text search vector
+    tsquery: []const u8, // serialized text search query
     null_value,
 
     pub const Interval = struct {
@@ -816,6 +818,14 @@ pub const Value = union(enum) {
                 },
                 else => .gt, // arrays > all scalar types
             },
+            .tsvector => |av| switch (b) {
+                .tsvector => |bv| std.mem.order(u8, av, bv),
+                else => .gt,
+            },
+            .tsquery => |av| switch (b) {
+                .tsquery => |bv| std.mem.order(u8, av, bv),
+                else => .gt,
+            },
             .null_value => unreachable,
         };
     }
@@ -837,6 +847,8 @@ pub const Value = union(enum) {
             .numeric => |v| v.value != 0,
             .uuid => true, // UUID values are always truthy
             .array => |v| v.len > 0,
+            .tsvector => |v| v.len > 0, // non-empty tsvector is truthy
+            .tsquery => |v| v.len > 0, // non-empty tsquery is truthy
             .null_value => false,
         };
     }
@@ -883,6 +895,8 @@ pub const Value = union(enum) {
                 }
                 return .{ .array = elems };
             },
+            .tsvector => |v| .{ .tsvector = try allocator.dupe(u8, v) },
+            .tsquery => |v| .{ .tsquery = try allocator.dupe(u8, v) },
             else => self,
         };
     }
@@ -896,6 +910,8 @@ pub const Value = union(enum) {
                 for (v) |elem| elem.free(allocator);
                 allocator.free(v);
             },
+            .tsvector => |v| allocator.free(v),
+            .tsquery => |v| allocator.free(v),
             else => {},
         }
     }
@@ -997,6 +1013,8 @@ fn serializedValueSize(v: Value) usize {
                 s += serializedValueSize(elem);
             }
         },
+        .tsvector => |t| s += 4 + t.len,
+        .tsquery => |t| s += 4 + t.len,
         .null_value => {},
     }
     return s;
@@ -1089,6 +1107,22 @@ fn serializeValue(buf: []u8, start: usize, v: Value) usize {
             for (arr) |elem| {
                 pos = serializeValue(buf, pos, elem);
             }
+        },
+        .tsvector => |t| {
+            buf[pos] = 0x0F;
+            pos += 1;
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(t.len), .little);
+            pos += 4;
+            @memcpy(buf[pos..][0..t.len], t);
+            pos += t.len;
+        },
+        .tsquery => |t| {
+            buf[pos] = 0x10;
+            pos += 1;
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(t.len), .little);
+            pos += 4;
+            @memcpy(buf[pos..][0..t.len], t);
+            pos += t.len;
         },
         .null_value => {
             buf[pos] = 0x00;
@@ -1218,6 +1252,22 @@ fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !Deser
                 inited_elems += 1;
             }
             return .{ .value = .{ .array = elems }, .bytes_read = pos - start };
+        },
+        0x0F => { // tsvector
+            if (pos + 4 > data.len) return error.InvalidRowData;
+            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + len > data.len) return error.InvalidRowData;
+            const val = try allocator.dupe(u8, data[pos..][0..len]);
+            return .{ .value = .{ .tsvector = val }, .bytes_read = pos + len - start };
+        },
+        0x10 => { // tsquery
+            if (pos + 4 > data.len) return error.InvalidRowData;
+            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + len > data.len) return error.InvalidRowData;
+            const val = try allocator.dupe(u8, data[pos..][0..len]);
+            return .{ .value = .{ .tsquery = val }, .bytes_read = pos + len - start };
         },
         0x00 => { // null
             return .{ .value = .null_value, .bytes_read = 1 };
@@ -2231,6 +2281,8 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 .numeric => |v| formatNumeric(allocator, v) catch return EvalError.OutOfMemory,
                 .uuid => |v| formatUuid(allocator, v) catch return EvalError.OutOfMemory,
                 .array => |v| formatArray(allocator, v) catch return EvalError.OutOfMemory,
+                .tsvector => |v| (allocator.dupe(u8, v) catch return EvalError.OutOfMemory),
+                .tsquery => |v| (allocator.dupe(u8, v) catch return EvalError.OutOfMemory),
                 .null_value => return .null_value,
                 .blob => return .null_value,
             };
@@ -2312,6 +2364,26 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
                 else => return .null_value,
             };
             break :blk Value{ .text = json_text };
+        },
+        .type_tsvector => blk: {
+            // For now, TSVECTOR accepts text input (will tokenize later)
+            const text = switch (val) {
+                .text => |v| allocator.dupe(u8, v) catch return EvalError.OutOfMemory,
+                .tsvector => |v| allocator.dupe(u8, v) catch return EvalError.OutOfMemory,
+                .null_value => return .null_value,
+                else => return .null_value,
+            };
+            break :blk Value{ .tsvector = text };
+        },
+        .type_tsquery => blk: {
+            // For now, TSQUERY accepts text input (will parse later)
+            const text = switch (val) {
+                .text => |v| allocator.dupe(u8, v) catch return EvalError.OutOfMemory,
+                .tsquery => |v| allocator.dupe(u8, v) catch return EvalError.OutOfMemory,
+                .null_value => return .null_value,
+                else => return .null_value,
+            };
+            break :blk Value{ .tsquery = text };
         },
     };
 }
@@ -2404,6 +2476,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .numeric => "numeric",
             .uuid => "uuid",
             .array => "array",
+            .tsvector => "tsvector",
+            .tsquery => "tsquery",
             .null_value => "null",
         };
         return Value{ .text = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory };

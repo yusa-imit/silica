@@ -209,6 +209,8 @@ pub const TokenType = enum {
     kw_array,
     kw_json,
     kw_jsonb,
+    kw_tsvector,
+    kw_tsquery,
 
     // Keywords — Values
     kw_true,
@@ -820,6 +822,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "array", .kw_array },
         .{ "json", .kw_json },
         .{ "jsonb", .kw_jsonb },
+        .{ "tsvector", .kw_tsvector },
+        .{ "tsquery", .kw_tsquery },
         // Values
         .{ "true", .kw_true },
         .{ "false", .kw_false },

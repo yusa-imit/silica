@@ -39,6 +39,8 @@ pub const ValueType = enum {
     array,
     json,
     jsonb,
+    tsvector,
+    tsquery,
     null_type,
 
     pub fn fromColumnType(ct: ColumnType) ValueType {
@@ -57,6 +59,8 @@ pub const ValueType = enum {
             .array => .array,
             .json => .json,
             .jsonb => .jsonb,
+            .tsvector => .tsvector,
+            .tsquery => .tsquery,
             .untyped => .text, // default untyped to text
         };
     }
@@ -77,6 +81,8 @@ pub const ValueType = enum {
             .array => .array,
             .json => .json,
             .jsonb => .jsonb,
+            .tsvector => .tsvector,
+            .tsquery => .tsquery,
             .null_type => .untyped,
         };
     }

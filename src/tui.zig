@@ -375,6 +375,8 @@ fn formatColumnLabel(allocator: std.mem.Allocator, col: ColumnInfo) ![]const u8 
         .array => "ARRAY",
         .json => "JSON",
         .jsonb => "JSONB",
+        .tsvector => "TSVECTOR",
+        .tsquery => "TSQUERY",
         .untyped => "",
     };
 
@@ -433,6 +435,8 @@ fn valueToString(allocator: std.mem.Allocator, val: Value) ![]const u8 {
         .numeric => |v| try executor.formatNumeric(allocator, v),
         .uuid => |v| try executor.formatUuid(allocator, v),
         .array => |v| try executor.formatArray(allocator, v),
+        .tsvector => |v| try allocator.dupe(u8, v),
+        .tsquery => |v| try allocator.dupe(u8, v),
         .null_value => try allocator.dupe(u8, "NULL"),
     };
 }

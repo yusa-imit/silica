@@ -33,6 +33,8 @@ pub const DataType = enum {
     type_array,
     type_json,
     type_jsonb,
+    type_tsvector,
+    type_tsquery,
 };
 
 /// Column constraint in a CREATE TABLE statement.

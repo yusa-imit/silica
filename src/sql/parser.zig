@@ -835,6 +835,8 @@ pub const Parser = struct {
             .kw_bigserial => .type_bigserial,
             .kw_json => .type_json,
             .kw_jsonb => .type_jsonb,
+            .kw_tsvector => .type_tsvector,
+            .kw_tsquery => .type_tsquery,
             else => null,
         };
         if (dt != null) {
