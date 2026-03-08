@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 6 — JSON & Full-Text Search (Milestone 11 in progress)
+## Current Phase: Phase 6 — JSON & Full-Text Search (Milestone 12 in progress)
 
 ### Completed Phases
 - **Phase 1**: Storage Foundation ✅ (v0.1.0)
@@ -38,20 +38,29 @@
   - [x] Type coercion (all types castable to/from text)
 
 ### Current: Phase 6 — JSON & Full-Text Search
-- **Milestone 11**: JSON/JSONB (IN PROGRESS)
+- **Milestone 11**: JSON/JSONB ✅
   - [x] JSON/JSONB keywords in tokenizer
   - [x] type_json/type_jsonb in AST DataType
   - [x] .json/.jsonb in catalog ColumnType (tags 0x0D, 0x0E)
   - [x] JSON/JSONB type in parser (CREATE TABLE, CAST)
-  - [x] Basic CAST support (text-based, no validation yet)
-  - [!] JSON validation — REVERTED in commit 50d388c due to DuplicateKey bug
-  - [!] JSON engine tests — REVERTED (multi-row INSERTs triggered GitHub #1)
-  - [ ] JSONB binary storage format
-  - [ ] JSON operators (->, ->>, #>, #>>, @>, <@, ?, ?|, ?&, ||, -, #-)
-  - [ ] JSON functions (jsonb_build_object, jsonb_build_array, etc.)
-  - [ ] GIN index for JSONB
+  - [x] JSON validation with RFC 8259 parsing
+  - [x] JSON operators (10 operators: ->, ->>, @>, <@, ?, ?|, ?&, #>, #>>, #-)
+  - [x] JSON serialization using std.json.fmt
+  - [x] Integration with engine, CLI, TUI, vacuum
+  - [ ] JSONB binary storage format (deferred)
+  - [ ] JSON functions (jsonb_build_object, jsonb_build_array, etc.) (future)
+  - [ ] GIN index for JSONB (future)
 
-**Note**: Commit 0617467 reverted. JSON validation will be re-added after fixing DuplicateKey bug. See docs/KNOWN_ISSUES.md.
+- **Milestone 12**: Full-Text Search (IN PROGRESS)
+  - [x] TSVECTOR/TSQUERY data types (tags 0x0F, 0x10)
+  - [x] to_tsvector() function with basic tokenization
+  - [x] to_tsquery() function with query parsing
+  - [x] @@ match operator (tsvector @@ tsquery)
+  - [x] Integration with engine, CLI, TUI, vacuum
+  - [ ] Ranking functions (ts_rank, ts_rank_cd)
+  - [ ] Text search configurations
+  - [ ] Stemming and stop words
+  - [ ] GIN index for TSVECTOR (future)
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -61,12 +70,15 @@
 5. Storage Engine (B+Tree, Page Manager, Buffer Pool)
 6. OS Layer (File I/O, mmap optional, fsync)
 
-## Test Coverage Status (as of 2026-03-07)
-- Total tests: 1301 (all passing after commit 50d388c)
-- JSON validation tests: REVERTED (4 tests removed)
-- tokenizer.zig: 68 tests (includes JSON/JSONB keywords)
-- parser.zig: 138 tests (includes JSON/JSONB type parsing)
-- JSON/JSONB type switches: DONE (engine valueToIndexKey updated)
+## Test Coverage Status (as of 2026-03-08)
+- Total tests: 1427 (all passing)
+- tokenizer.zig: 74 tests (includes JSON/JSONB keywords + 5 JSON operators + @@ operator)
+- parser.zig: 149 tests (includes JSON/JSONB, JSON operators, ANY/ALL, window, SERIAL, ENUM, DOMAIN)
+- executor.zig: 192 tests (includes JSON/JSONB cast, JSON operators with 20 tests, ANY/ALL eval, INTERVAL, TSVECTOR/TSQUERY with 21 tests, @@ operator with 11 tests)
+- engine.zig: 402 tests (includes JSON/JSONB CRUD, window functions, ENUM, DOMAIN, temporal types, views, CTEs, set ops, SSI, VACUUM, savepoints, unnest())
+- Recent additions (2026-03-08 STABILIZATION session):
+  - 5 edge case tests for @@ match operator (both empty, single term, case sensitivity, text fallback, incompatible types)
+  - 5 edge case tests for to_tsvector/to_tsquery (alphanumeric, only punctuation, mixed case duplicates, punctuation in query, numeric tokens)
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
