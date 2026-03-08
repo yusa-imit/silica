@@ -8477,6 +8477,57 @@ test "to_tsquery: multiple words" {
     try std.testing.expectEqualStrings("full & text & search", result);
 }
 
+test "to_tsvector: alphanumeric tokens" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "version 0.15.2 released");
+    defer allocator.free(result);
+
+    // Should extract all alphanumeric tokens: "0", "15", "2", "released", "version"
+    // (sorted and deduplicated)
+    try std.testing.expectEqualStrings("0 15 2 released version", result);
+}
+
+test "to_tsvector: only punctuation" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "!@#$%^&*()");
+    defer allocator.free(result);
+
+    // No alphanumeric tokens, should return empty
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "to_tsvector: mixed case with duplicates" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "The THE the");
+    defer allocator.free(result);
+
+    // Should lowercase and deduplicate
+    try std.testing.expectEqualStrings("the", result);
+}
+
+test "to_tsquery: with punctuation" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "hello, world!");
+    defer allocator.free(result);
+
+    // Should extract just the words, ignoring punctuation
+    try std.testing.expectEqualStrings("hello & world", result);
+}
+
+test "to_tsquery: numeric tokens" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "version 0.15.2");
+    defer allocator.free(result);
+
+    // Should extract all alphanumeric tokens
+    try std.testing.expectEqualStrings("version & 0 & 15 & 2", result);
+}
+
 test "@@ operator: basic match" {
     const tv = Value{ .tsvector = "brown fox quick the" };
     const tq = Value{ .tsquery = "fox & the" };
