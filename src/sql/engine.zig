@@ -13601,3 +13601,163 @@ test "unnest() with ORDER BY" {
 
     try testing.expect((try r.rows.?.next()) == null);
 }
+
+test "ts_rank: basic usage" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_rank(
+        \\  to_tsvector('the quick brown fox jumps over the lazy dog'),
+        \\  to_tsquery('fox & dog')
+        \\)
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .real);
+    try testing.expectEqual(@as(f64, 2.0), row.values[0].real); // 2 matches, no normalization
+}
+
+test "ts_rank: with normalization" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_rank(
+        \\  to_tsvector('brown fox jumps quick'),
+        \\  to_tsquery('fox & jumps'),
+        \\  1
+        \\)
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .real);
+    try testing.expectEqual(@as(f64, 0.5), row.values[0].real); // 2 matches / 4 tokens
+}
+
+test "ts_rank: no match returns zero" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_rank(
+        \\  to_tsvector('the quick brown fox'),
+        \\  to_tsquery('cat & dog')
+        \\)
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .real);
+    try testing.expectEqual(@as(f64, 0.0), row.values[0].real);
+}
+
+test "ts_rank: NULL propagation" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT ts_rank(NULL, to_tsquery('fox'))");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .null_value);
+}
+
+test "ts_rank_cd: basic usage" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_rank_cd(
+        \\  to_tsvector('the quick brown fox jumps over the lazy dog'),
+        \\  to_tsquery('fox & dog')
+        \\)
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .real);
+    try testing.expectEqual(@as(f64, 4.0), row.values[0].real); // 2 matches * 2 weight
+}
+
+test "ts_rank_cd: with normalization" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_rank_cd(
+        \\  to_tsvector('brown fox jumps quick'),
+        \\  to_tsquery('fox & jumps'),
+        \\  1
+        \\)
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .real);
+    try testing.expectEqual(@as(f64, 1.0), row.values[0].real); // 4 (2*2) / 4 tokens
+}
+
+test "ts_rank_cd: no match returns zero" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_rank_cd(
+        \\  to_tsvector('the quick brown fox'),
+        \\  to_tsquery('cat & dog')
+        \\)
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .real);
+    try testing.expectEqual(@as(f64, 0.0), row.values[0].real);
+}
+
+test "ts_rank comparison: multiple terms" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    // Single document with 2 query terms - should score 2.0
+    var r1 = try db.exec(
+        \\SELECT ts_rank(
+        \\  to_tsvector('the quick brown fox jumps'),
+        \\  to_tsquery('fox & jumps')
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(f64, 2.0), row1.values[0].real);
+
+    // Same document with 1 query term - should score 1.0
+    var r2 = try db.exec(
+        \\SELECT ts_rank(
+        \\  to_tsvector('the quick brown fox jumps'),
+        \\  to_tsquery('fox')
+        \\)
+    );
+    defer r2.close(testing.allocator);
+
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(f64, 1.0), row2.values[0].real);
+}

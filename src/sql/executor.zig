@@ -681,6 +681,111 @@ fn textToTsquery(allocator: Allocator, query: []const u8) ![]u8 {
     return result.toOwnedSlice(allocator);
 }
 
+/// Calculate relevance rank based on frequency of query terms in tsvector.
+/// normalization: 0 = none, 1 = divide by length, 2 = divide by log(length), etc.
+fn calculateRank(allocator: Allocator, tsvec: []const u8, tsquery: []const u8, normalization: i64) !f64 {
+    _ = allocator; // unused for now
+
+    if (tsvec.len == 0 or tsquery.len == 0) return 0.0;
+
+    // Parse tsvector tokens (space-separated)
+    var vec_tokens = std.mem.splitScalar(u8, tsvec, ' ');
+    var vec_count: usize = 0;
+    while (vec_tokens.next()) |_| vec_count += 1;
+    if (vec_count == 0) return 0.0;
+
+    // Parse tsquery tokens (split by " & ")
+    var query_tokens = std.mem.splitSequence(u8, tsquery, " & ");
+
+    // Count matches: for each query token, check if it exists in tsvector
+    var match_count: usize = 0;
+    while (query_tokens.next()) |qtoken| {
+        if (qtoken.len == 0) continue;
+
+        // Reset vec_tokens for each query token
+        var vec_iter = std.mem.splitScalar(u8, tsvec, ' ');
+        while (vec_iter.next()) |vtoken| {
+            if (std.mem.eql(u8, vtoken, qtoken)) {
+                match_count += 1;
+                break; // Count each unique match once
+            }
+        }
+    }
+
+    if (match_count == 0) return 0.0;
+
+    // Base rank is the number of matches
+    var rank: f64 = @floatFromInt(match_count);
+
+    // Apply normalization
+    const vec_len: f64 = @floatFromInt(vec_count);
+    switch (normalization) {
+        0 => {}, // no normalization
+        1 => rank = rank / vec_len, // divide by document length
+        2 => rank = rank / @log(vec_len + 1.0), // divide by log of length
+        4 => {
+            // divide by mean harmonic distance between extents
+            // simplified: just use length normalization for now
+            rank = rank / vec_len;
+        },
+        else => {}, // unknown normalization, treat as 0
+    }
+
+    return rank;
+}
+
+/// Calculate cover density rank (proximity-based ranking).
+/// This is a simplified version that considers token proximity.
+fn calculateRankCD(allocator: Allocator, tsvec: []const u8, tsquery: []const u8, normalization: i64) !f64 {
+    _ = allocator; // unused for now
+
+    if (tsvec.len == 0 or tsquery.len == 0) return 0.0;
+
+    // For basic implementation, use same logic as ts_rank but with different weighting
+    // In production, this would analyze positional information and calculate
+    // the smallest span covering all query terms
+
+    // Parse tokens
+    var vec_tokens = std.mem.splitScalar(u8, tsvec, ' ');
+    var vec_count: usize = 0;
+    while (vec_tokens.next()) |_| vec_count += 1;
+    if (vec_count == 0) return 0.0;
+
+    var query_tokens = std.mem.splitSequence(u8, tsquery, " & ");
+
+    // Count matches
+    var match_count: usize = 0;
+    while (query_tokens.next()) |qtoken| {
+        if (qtoken.len == 0) continue;
+
+        var vec_iter = std.mem.splitScalar(u8, tsvec, ' ');
+        while (vec_iter.next()) |vtoken| {
+            if (std.mem.eql(u8, vtoken, qtoken)) {
+                match_count += 1;
+                break;
+            }
+        }
+    }
+
+    if (match_count == 0) return 0.0;
+
+    // Cover density gives higher scores for closer term proximity
+    // Simplified: base score is match_count * 2 (higher weight than ts_rank)
+    var rank: f64 = @floatFromInt(match_count * 2);
+
+    // Apply normalization
+    const vec_len: f64 = @floatFromInt(vec_count);
+    switch (normalization) {
+        0 => {},
+        1 => rank = rank / vec_len,
+        2 => rank = rank / @log(vec_len + 1.0),
+        4 => rank = rank / vec_len,
+        else => {},
+    }
+
+    return rank;
+}
+
 /// Format an array value as PostgreSQL-compatible text: {elem1,elem2,...}
 pub fn formatArray(allocator: Allocator, elements: []const Value) ![]u8 {
     var list = std.ArrayListUnmanaged(u8){};
@@ -2747,6 +2852,81 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         // This is simplified - production would support operators (&, |, !, <->)
         const tsq = try textToTsquery(allocator, query);
         return Value{ .tsquery = tsq };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "ts_rank")) {
+        // ts_rank(tsvector, tsquery [, normalization]) - calculate relevance rank
+        // normalization is optional integer bitmask (default: 0)
+        if (fc.args.len < 2 or fc.args.len > 3) return EvalError.TypeError;
+
+        const vec_arg = try evalExpr(allocator, fc.args[0], row);
+        defer vec_arg.free(allocator);
+        const query_arg = try evalExpr(allocator, fc.args[1], row);
+        defer query_arg.free(allocator);
+
+        const tsvec = switch (vec_arg) {
+            .tsvector => |t| t,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        const tsquery = switch (query_arg) {
+            .tsquery => |q| q,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        // Optional normalization parameter
+        var normalization: i64 = 0;
+        if (fc.args.len == 3) {
+            const norm_arg = try evalExpr(allocator, fc.args[2], row);
+            defer norm_arg.free(allocator);
+            normalization = switch (norm_arg) {
+                .integer => |n| n,
+                .null_value => 0,
+                else => return EvalError.TypeError,
+            };
+        }
+
+        const rank = try calculateRank(allocator, tsvec, tsquery, normalization);
+        return Value{ .real = rank };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "ts_rank_cd")) {
+        // ts_rank_cd(tsvector, tsquery [, normalization]) - cover density ranking
+        if (fc.args.len < 2 or fc.args.len > 3) return EvalError.TypeError;
+
+        const vec_arg = try evalExpr(allocator, fc.args[0], row);
+        defer vec_arg.free(allocator);
+        const query_arg = try evalExpr(allocator, fc.args[1], row);
+        defer query_arg.free(allocator);
+
+        const tsvec = switch (vec_arg) {
+            .tsvector => |t| t,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        const tsquery = switch (query_arg) {
+            .tsquery => |q| q,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        // Optional normalization parameter
+        var normalization: i64 = 0;
+        if (fc.args.len == 3) {
+            const norm_arg = try evalExpr(allocator, fc.args[2], row);
+            defer norm_arg.free(allocator);
+            normalization = switch (norm_arg) {
+                .integer => |n| n,
+                .null_value => 0,
+                else => return EvalError.TypeError,
+            };
+        }
+
+        const rank = try calculateRankCD(allocator, tsvec, tsquery, normalization);
+        return Value{ .real = rank };
     }
 
     return EvalError.UnsupportedExpression;
@@ -8629,4 +8809,111 @@ test "@@ operator: incompatible types" {
 
     const result = evalTsMatch(tv, tq);
     try std.testing.expect(result == .null_value); // Returns NULL for incompatible types
+}
+
+test "ts_rank: basic ranking" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox jumps lazy over quick the";
+    const tsquery = "fox & jumps";
+
+    const rank = try calculateRank(allocator, tsvec, tsquery, 0);
+    try std.testing.expect(rank > 0.0); // Should match both terms
+    try std.testing.expectEqual(@as(f64, 2.0), rank); // 2 matches, no normalization
+}
+
+test "ts_rank: no match" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox quick";
+    const tsquery = "cat & dog";
+
+    const rank = try calculateRank(allocator, tsvec, tsquery, 0);
+    try std.testing.expectEqual(@as(f64, 0.0), rank);
+}
+
+test "ts_rank: partial match" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox quick";
+    const tsquery = "fox & dog";
+
+    const rank = try calculateRank(allocator, tsvec, tsquery, 0);
+    try std.testing.expectEqual(@as(f64, 1.0), rank); // Only 'fox' matches
+}
+
+test "ts_rank: with normalization (divide by length)" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox jumps quick"; // 4 tokens
+    const tsquery = "fox & jumps";
+
+    const rank = try calculateRank(allocator, tsvec, tsquery, 1);
+    try std.testing.expectEqual(@as(f64, 0.5), rank); // 2 matches / 4 tokens
+}
+
+test "ts_rank: with normalization (log)" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox jumps quick"; // 4 tokens
+    const tsquery = "fox & jumps";
+
+    const rank = try calculateRank(allocator, tsvec, tsquery, 2);
+    // 2 matches / log(5) ≈ 1.24
+    try std.testing.expect(rank > 1.0 and rank < 2.0);
+}
+
+test "ts_rank: empty tsvector" {
+    const allocator = std.testing.allocator;
+
+    const rank = try calculateRank(allocator, "", "fox", 0);
+    try std.testing.expectEqual(@as(f64, 0.0), rank);
+}
+
+test "ts_rank: empty tsquery" {
+    const allocator = std.testing.allocator;
+
+    const rank = try calculateRank(allocator, "brown fox quick", "", 0);
+    try std.testing.expectEqual(@as(f64, 0.0), rank);
+}
+
+test "ts_rank_cd: basic ranking" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox jumps lazy over quick the";
+    const tsquery = "fox & jumps";
+
+    const rank = try calculateRankCD(allocator, tsvec, tsquery, 0);
+    try std.testing.expect(rank > 0.0);
+    try std.testing.expectEqual(@as(f64, 4.0), rank); // 2 matches * 2 weight
+}
+
+test "ts_rank_cd: no match" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox quick";
+    const tsquery = "cat & dog";
+
+    const rank = try calculateRankCD(allocator, tsvec, tsquery, 0);
+    try std.testing.expectEqual(@as(f64, 0.0), rank);
+}
+
+test "ts_rank_cd: with normalization" {
+    const allocator = std.testing.allocator;
+
+    const tsvec = "brown fox jumps quick"; // 4 tokens
+    const tsquery = "fox & jumps";
+
+    const rank = try calculateRankCD(allocator, tsvec, tsquery, 1);
+    try std.testing.expectEqual(@as(f64, 1.0), rank); // 4 (2*2) / 4 tokens
+}
+
+test "ts_rank_cd: empty inputs" {
+    const allocator = std.testing.allocator;
+
+    var rank = try calculateRankCD(allocator, "", "fox", 0);
+    try std.testing.expectEqual(@as(f64, 0.0), rank);
+
+    rank = try calculateRankCD(allocator, "brown fox", "", 0);
+    try std.testing.expectEqual(@as(f64, 0.0), rank);
 }
