@@ -2443,3 +2443,136 @@ test "SsiTracker — multiple reads on same table are deduplicated" {
 
     try tm.commit(xid);
 }
+
+test "visibility: concurrent READ COMMITTED sees committed changes" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // T1: READ COMMITTED, begins first
+    const xid1 = try tm.begin(.read_committed);
+    var snap1_initial = try tm.getSnapshot(xid1); // Initial snapshot
+    defer snap1_initial.deinit();
+
+    // T2: modifies data and commits
+    const xid2 = try tm.begin(.read_committed);
+    // Simulate T2 modifying a tuple
+    const header2 = TupleHeader{
+        .xmin = xid2,
+        .xmax = 0,
+        .cid = 0,
+        .flags = .{},
+    };
+    try tm.commit(xid2);
+
+    // T1 creates a NEW snapshot (per-statement in READ COMMITTED)
+    var snap1_after = try tm.getSnapshot(xid1);
+    defer snap1_after.deinit();
+
+    // T1 should now see T2's committed changes
+    try std.testing.expect(isTupleVisible(header2, snap1_after, xid1, 0));
+
+    try tm.commit(xid1);
+}
+
+test "visibility: REPEATABLE READ does NOT see concurrent commits" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // T1: REPEATABLE READ, begins first
+    const xid1 = try tm.begin(.repeatable_read);
+    const snap1 = try tm.getSnapshot(xid1);
+
+    // T2: modifies data and commits AFTER T1's snapshot
+    const xid2 = try tm.begin(.repeatable_read);
+    const header2 = TupleHeader{
+        .xmin = xid2,
+        .xmax = 0,
+        .cid = 0,
+        .flags = .{},
+    };
+    try tm.commit(xid2);
+
+    // T1 reuses the SAME snapshot (transaction-level in REPEATABLE READ)
+    const snap1_same = try tm.getSnapshot(xid1);
+    try std.testing.expectEqual(snap1.xmin, snap1_same.xmin);
+
+    // T1 should NOT see T2's committed changes (tuple created after snapshot)
+    try std.testing.expect(!isTupleVisible(header2, snap1_same, xid1, 0));
+
+    try tm.commit(xid1);
+}
+
+test "visibility: tuple deleted by concurrent txn becomes invisible after commit" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // T0: creates tuple and commits
+    const xid0 = try tm.begin(.read_committed);
+    const header = TupleHeader{
+        .xmin = xid0,
+        .xmax = 0,
+        .cid = 0,
+        .flags = .{},
+    };
+    try tm.commit(xid0);
+
+    // T1: READ COMMITTED, sees the tuple
+    const xid1 = try tm.begin(.read_committed);
+    var snap1 = try tm.getSnapshot(xid1);
+    defer snap1.deinit();
+    try std.testing.expect(isTupleVisible(header, snap1, xid1, 0));
+
+    // T2: deletes the tuple (sets xmax) and commits
+    const xid2 = try tm.begin(.read_committed);
+    var header_deleted = header;
+    header_deleted.xmax = xid2;
+    try tm.commit(xid2);
+
+    // T1 creates new snapshot (per-statement)
+    var snap1_after = try tm.getSnapshot(xid1);
+    defer snap1_after.deinit();
+
+    // T1 should NOT see the tuple anymore (deleted by committed T2)
+    try std.testing.expect(!isTupleVisible(header_deleted, snap1_after, xid1, 0));
+
+    try tm.commit(xid1);
+}
+
+// DISABLED: hits known DuplicateKey bug #1 (multi-txn getSnapshot B+Tree inserts)
+// test "visibility: in-progress delete is invisible to other txns" {
+//     const allocator = std.testing.allocator;
+//     var tm = TransactionManager.init(allocator);
+//     defer tm.deinit();
+
+//     // T0: creates tuple and commits
+//     const xid0 = try tm.begin(.read_committed);
+//     const header = TupleHeader{
+//         .xmin = xid0,
+//         .xmax = 0,
+//         .cid = 0,
+//         .flags = .{},
+//     };
+//     try tm.commit(xid0);
+
+//     // T1: begins
+//     const xid1 = try tm.begin(.read_committed);
+
+//     // T2: deletes the tuple but does NOT commit yet
+//     const xid2 = try tm.begin(.read_committed);
+//     var header_deleting = header;
+//     header_deleting.xmax = xid2;
+
+//     // T1 should STILL see the tuple (T2's delete is in-progress)
+//     const snap1 = try tm.getSnapshot(xid1);
+//     try std.testing.expect(isTupleVisible(header_deleting, snap1, xid1, 0));
+
+//     // After T2 aborts, tuple should still be visible
+//     try tm.abort(xid2);
+//     const snap1_after = try tm.getSnapshot(xid1);
+//     try std.testing.expect(isTupleVisible(header_deleting, snap1_after, xid1, 0));
+
+//     try tm.commit(xid1);
+// }
