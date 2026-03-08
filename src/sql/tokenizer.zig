@@ -98,6 +98,19 @@ pub const TokenType = enum {
     kw_type,
     kw_enum,
     kw_domain,
+    kw_function,
+    kw_returns,
+    kw_return,
+    kw_language,
+    kw_immutable,
+    kw_stable,
+    kw_volatile,
+    kw_setof,
+    kw_loop,
+    kw_while,
+    kw_for,
+    kw_exception,
+    kw_raise,
 
     // Keywords — DML
     kw_select,
@@ -726,6 +739,19 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "type", .kw_type },
         .{ "enum", .kw_enum },
         .{ "domain", .kw_domain },
+        .{ "function", .kw_function },
+        .{ "returns", .kw_returns },
+        .{ "return", .kw_return },
+        .{ "language", .kw_language },
+        .{ "immutable", .kw_immutable },
+        .{ "stable", .kw_stable },
+        .{ "volatile", .kw_volatile },
+        .{ "setof", .kw_setof },
+        .{ "loop", .kw_loop },
+        .{ "while", .kw_while },
+        .{ "for", .kw_for },
+        .{ "exception", .kw_exception },
+        .{ "raise", .kw_raise },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1035,6 +1061,22 @@ test "type keywords" {
 test "value keywords" {
     try expectSingleToken("true", .kw_true, "true");
     try expectSingleToken("false", .kw_false, "false");
+}
+
+test "function keywords" {
+    try expectSingleToken("function", .kw_function, "function");
+    try expectSingleToken("returns", .kw_returns, "returns");
+    try expectSingleToken("return", .kw_return, "return");
+    try expectSingleToken("language", .kw_language, "language");
+    try expectSingleToken("immutable", .kw_immutable, "immutable");
+    try expectSingleToken("stable", .kw_stable, "stable");
+    try expectSingleToken("volatile", .kw_volatile, "volatile");
+    try expectSingleToken("setof", .kw_setof, "setof");
+    try expectSingleToken("loop", .kw_loop, "loop");
+    try expectSingleToken("while", .kw_while, "while");
+    try expectSingleToken("for", .kw_for, "for");
+    try expectSingleToken("exception", .kw_exception, "exception");
+    try expectSingleToken("raise", .kw_raise, "raise");
 }
 
 test "line comments" {
