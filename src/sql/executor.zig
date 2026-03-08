@@ -8534,3 +8534,48 @@ test "@@ operator: NULL propagation" {
     const result2 = evalTsMatch(tv_null, tq);
     try std.testing.expect(result2 == .null_value);
 }
+
+test "@@ operator: both empty" {
+    const tv = Value{ .tsvector = "" };
+    const tq = Value{ .tsquery = "" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true); // Empty query matches empty tsvector
+}
+
+test "@@ operator: single term query" {
+    const tv = Value{ .tsvector = "brown fox quick" };
+    const tq = Value{ .tsquery = "fox" }; // No & operator, single term
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "@@ operator: case sensitivity" {
+    const tv = Value{ .tsvector = "brown fox quick" };
+    const tq = Value{ .tsquery = "FOX" }; // Different case
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false); // Case-sensitive match
+}
+
+test "@@ operator: text type fallback" {
+    // Test that plain text values work as tsvector/tsquery
+    const tv = Value{ .text = "brown fox quick" };
+    const tq = Value{ .text = "fox" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "@@ operator: incompatible types" {
+    const tv = Value{ .integer = 42 };
+    const tq = Value{ .tsquery = "fox" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .null_value); // Returns NULL for incompatible types
+}
