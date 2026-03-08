@@ -8917,3 +8917,155 @@ test "ts_rank_cd: empty inputs" {
     rank = try calculateRankCD(allocator, "brown fox", "", 0);
     try std.testing.expectEqual(@as(f64, 0.0), rank);
 }
+
+test "ts_rank: repeated terms (counts unique matches only)" {
+    const allocator = std.testing.allocator;
+
+    // tsvector has "fox" appearing 3 times, but query has only 1 term
+    // Current implementation counts unique query term matches, not occurrences
+    const rank = try calculateRank(allocator, "fox fox fox", "fox", 0);
+    // Only 1 unique match (query term "fox" found in vector)
+    try std.testing.expectEqual(@as(f64, 1.0), rank);
+
+    // Multiple query terms should count separately
+    const rank2 = try calculateRank(allocator, "fox dog cat", "fox & dog & cat", 0);
+    // 3 unique query terms all matched
+    try std.testing.expectEqual(@as(f64, 3.0), rank2);
+}
+
+test "ts_rank: very long vector" {
+    const allocator = std.testing.allocator;
+
+    // Create a long vector with 100 tokens
+    var buf: [1500]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const writer = fbs.writer();
+    for (0..100) |i| {
+        if (i > 0) _ = writer.write(" ") catch unreachable;
+        writer.print("word{d}", .{i}) catch unreachable;
+    }
+    const long_vec = fbs.getWritten();
+
+    // Query for word50
+    const rank = try calculateRank(allocator, long_vec, "word50", 0);
+    try std.testing.expectEqual(@as(f64, 1.0), rank);
+
+    // With normalization (divide by length)
+    const rank_norm = try calculateRank(allocator, long_vec, "word50", 1);
+    try std.testing.expectEqual(@as(f64, 1.0 / 100.0), rank_norm);
+}
+
+test "ts_rank: Unicode tokens" {
+    const allocator = std.testing.allocator;
+
+    // tsvector with unicode tokens
+    const vec = "café naïve résumé";
+    const query = "café";
+
+    const rank = try calculateRank(allocator, vec, query, 0);
+    try std.testing.expectEqual(@as(f64, 1.0), rank);
+}
+
+test "ts_rank: normalization with single token" {
+    const allocator = std.testing.allocator;
+
+    // Edge case: normalization=2 (log) with single token vector
+    const rank = try calculateRank(allocator, "word", "word", 2);
+    // log(1 + 1) = log(2) ≈ 0.693
+    const expected = 1.0 / @log(2.0);
+    try std.testing.expectApproxEqAbs(expected, rank, 0.01);
+}
+
+test "ts_rank_cd: repeated matches (counts unique only)" {
+    const allocator = std.testing.allocator;
+
+    // tsvector has "cat" appearing 4 times, query has 1 term
+    // Current implementation counts unique query term matches, not occurrences
+    const rank = try calculateRankCD(allocator, "cat cat cat cat", "cat", 0);
+    // 1 unique match * 2 (weight) = 2.0
+    try std.testing.expectEqual(@as(f64, 2.0), rank);
+
+    // Multiple query terms should count separately with 2x weight
+    const rank2 = try calculateRankCD(allocator, "fox dog cat", "fox & dog", 0);
+    // 2 unique query terms * 2 = 4.0
+    try std.testing.expectEqual(@as(f64, 4.0), rank2);
+}
+
+test "ts_rank_cd: normalization harmonic" {
+    const allocator = std.testing.allocator;
+
+    // Test normalization=4 (harmonic distance, treated as divide by length in simplified impl)
+    const rank = try calculateRankCD(allocator, "quick brown fox", "fox", 4);
+    // 1 match * 2 (weight) = 2, divided by 3 tokens = 0.666...
+    const expected = 2.0 / 3.0;
+    try std.testing.expectApproxEqAbs(expected, rank, 0.01);
+}
+
+test "@@ operator: lowercased match" {
+    // Both are already lowercased by to_tsvector/to_tsquery
+    const vec = Value{ .tsvector = "hello world" };
+    const query = Value{ .tsquery = "hello" };
+
+    const result = evalTsMatch(vec, query);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "@@ operator: query with multiple terms" {
+    // Vector has "quick brown fox"
+    const vec = Value{ .tsvector = "quick brown fox" };
+
+    // Query "quick & brown & fox" - all present
+    const query1 = Value{ .tsquery = "quick & brown & fox" };
+    const result1 = evalTsMatch(vec, query1);
+    try std.testing.expect(result1.boolean == true);
+
+    // Query "quick & brown & dog" - dog missing
+    const query2 = Value{ .tsquery = "quick & brown & dog" };
+    const result2 = evalTsMatch(vec, query2);
+    try std.testing.expect(result2.boolean == false);
+}
+
+test "to_tsvector: very long text" {
+    const allocator = std.testing.allocator;
+
+    // Create text with 200 words
+    var buf: [2000]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const writer = fbs.writer();
+    for (0..200) |i| {
+        if (i > 0) try writer.writeByte(' ');
+        try writer.print("word{d}", .{i});
+    }
+    const long_text = fbs.getWritten();
+
+    const result = try textToTsvector(allocator, long_text);
+    defer allocator.free(result);
+
+    // Should have 200 unique tokens
+    var token_count: usize = 0;
+    var it = std.mem.splitScalar(u8, result, ' ');
+    while (it.next()) |token| {
+        if (token.len > 0) token_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 200), token_count);
+}
+
+test "to_tsvector: special characters in middle of word" {
+    const allocator = std.testing.allocator;
+
+    // Text with apostrophes and hyphens
+    const text = "don't it's well-known";
+    const result = try textToTsvector(allocator, text);
+    defer allocator.free(result);
+
+    // Tokens should be split: "don" "t" "it" "s" "well" "known"
+    // (punctuation causes splitting)
+    var token_count: usize = 0;
+    var it = std.mem.splitScalar(u8, result, ' ');
+    while (it.next()) |token| {
+        if (token.len > 0) token_count += 1;
+    }
+    try std.testing.expect(token_count >= 4); // At least the split words
+}
