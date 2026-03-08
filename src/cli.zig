@@ -596,6 +596,12 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .drop_domain => |d| {
             writer.print("Parsed: DROP DOMAIN {s}\n", .{d.name}) catch {};
         },
+        .create_function => |f| {
+            writer.print("Parsed: CREATE FUNCTION {s} ({d} params)\n", .{ f.name, f.parameters.len }) catch {};
+        },
+        .drop_function => |f| {
+            writer.print("Parsed: DROP FUNCTION {s}\n", .{f.name}) catch {};
+        },
     }
 }
 

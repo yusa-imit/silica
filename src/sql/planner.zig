@@ -304,6 +304,8 @@ pub const Planner = struct {
             .drop_type => self.planTransaction(), // handled early in engine
             .create_domain => self.planTransaction(), // handled early in engine
             .drop_domain => self.planTransaction(), // handled early in engine
+            .create_function => self.planTransaction(), // handled early in engine
+            .drop_function => self.planTransaction(), // handled early in engine
             .explain => |s| self.planExplain(s),
         };
     }
