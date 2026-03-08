@@ -2138,6 +2138,47 @@ fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalEr
     }
 }
 
+/// Evaluate @@ match operator: tsvector @@ tsquery
+fn evalTsMatch(tsvector: Value, tsquery: Value) Value {
+    // NULL propagation
+    if (tsvector == .null_value or tsquery == .null_value) return Value.null_value;
+
+    // Get tsvector and tsquery texts
+    const tv_text = switch (tsvector) {
+        .tsvector => |t| t,
+        .text => |t| t, // Allow text as tsvector for flexibility
+        else => return Value.null_value,
+    };
+
+    const tq_text = switch (tsquery) {
+        .tsquery => |q| q,
+        .text => |q| q, // Allow text as tsquery for flexibility
+        else => return Value.null_value,
+    };
+
+    // Empty query matches empty tsvector
+    if (tq_text.len == 0) return Value{ .boolean = tv_text.len == 0 };
+    if (tv_text.len == 0) return Value{ .boolean = false };
+
+    // Basic matching: check if all query terms (joined by &) exist in tsvector
+    // This is a simplified implementation - production would handle operators properly
+    var query_iter = std.mem.splitSequence(u8, tq_text, " & ");
+    while (query_iter.next()) |term| {
+        // Check if term exists in tsvector (space-separated list)
+        var tv_iter = std.mem.splitScalar(u8, tv_text, ' ');
+        var found = false;
+        while (tv_iter.next()) |tv_term| {
+            if (std.mem.eql(u8, tv_term, term)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return Value{ .boolean = false };
+    }
+
+    return Value{ .boolean = true };
+}
+
 // ──────────────────────────────────────────────────────────────────
 
 fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Value) EvalError!Value {
@@ -2250,6 +2291,9 @@ fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Valu
         .json_path_extract => evalJsonPathExtract(allocator, left, right, false),
         .json_path_extract_text => evalJsonPathExtract(allocator, left, right, true),
         .json_delete_path => evalJsonDeletePath(allocator, left, right),
+
+        // Full-text search
+        .ts_match => evalTsMatch(left, right),
     };
 }
 
@@ -8431,4 +8475,62 @@ test "to_tsquery: multiple words" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("full & text & search", result);
+}
+
+test "@@ operator: basic match" {
+    const tv = Value{ .tsvector = "brown fox quick the" };
+    const tq = Value{ .tsquery = "fox & the" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "@@ operator: no match" {
+    const tv = Value{ .tsvector = "brown fox quick" };
+    const tq = Value{ .tsquery = "cat & dog" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "@@ operator: partial match" {
+    const tv = Value{ .tsvector = "brown fox quick" };
+    const tq = Value{ .tsquery = "fox & cat" }; // fox exists, cat doesn't
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false); // All terms must match
+}
+
+test "@@ operator: empty query" {
+    const tv = Value{ .tsvector = "brown fox" };
+    const tq = Value{ .tsquery = "" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "@@ operator: empty tsvector" {
+    const tv = Value{ .tsvector = "" };
+    const tq = Value{ .tsquery = "fox" };
+
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "@@ operator: NULL propagation" {
+    const tv = Value{ .tsvector = "brown fox" };
+    const tq_null = Value.null_value;
+
+    const result1 = evalTsMatch(tv, tq_null);
+    try std.testing.expect(result1 == .null_value);
+
+    const tv_null = Value.null_value;
+    const tq = Value{ .tsquery = "fox" };
+    const result2 = evalTsMatch(tv_null, tq);
+    try std.testing.expect(result2 == .null_value);
 }

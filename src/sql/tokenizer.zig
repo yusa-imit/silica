@@ -40,6 +40,7 @@ pub const TokenType = enum {
     json_path_extract, // #>
     json_path_extract_text, // #>>
     json_delete_path, // #-
+    ts_match, // @@
 
     // Punctuation
     left_paren,
@@ -337,9 +338,18 @@ pub const Tokenizer = struct {
             },
             '@' => {
                 self.pos += 1;
-                if (self.pos < self.source.len and self.source[self.pos] == '>') {
-                    self.pos += 1;
-                    return .{ .type = .json_contains, .start = start, .len = 2 };
+                if (self.pos < self.source.len) {
+                    switch (self.source[self.pos]) {
+                        '>' => {
+                            self.pos += 1;
+                            return .{ .type = .json_contains, .start = start, .len = 2 };
+                        },
+                        '@' => {
+                            self.pos += 1;
+                            return .{ .type = .ts_match, .start = start, .len = 2 };
+                        },
+                        else => {},
+                    }
                 }
                 return .{ .type = .invalid, .start = start, .len = 1 };
             },
@@ -1470,6 +1480,26 @@ test "JSON path operators" {
     try expectTokens(sql2, &.{ .identifier, .json_path_extract_text, .string_literal });
     const sql3 = "data #- '{a}'";
     try expectTokens(sql3, &.{ .identifier, .json_delete_path, .string_literal });
+}
+
+test "full-text search @@ operator" {
+    // @@ operator
+    try expectSingleToken("@@", .ts_match, "@@");
+    // Mixed with identifiers
+    const sql = "doc @@ query";
+    try expectTokens(sql, &.{ .identifier, .ts_match, .identifier });
+    const sql2 = "to_tsvector('text') @@ to_tsquery('search')";
+    try expectTokens(sql2, &.{
+        .identifier,
+        .left_paren,
+        .string_literal,
+        .right_paren,
+        .ts_match,
+        .identifier,
+        .left_paren,
+        .string_literal,
+        .right_paren,
+    });
 }
 
 test "JSON operators in SELECT queries" {

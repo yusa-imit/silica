@@ -1872,6 +1872,8 @@ pub const Parser = struct {
             .json_contains, .json_contained_by => 11,
             .json_key_exists, .json_any_key_exists, .json_all_keys_exist => 11,
             .json_path_extract, .json_path_extract_text, .json_delete_path => 11,
+            // Full-text search operator @@ has comparison precedence (7)
+            .ts_match => 7,
             else => 0,
         };
     }
@@ -1907,6 +1909,8 @@ pub const Parser = struct {
             .json_path_extract => .json_path_extract,
             .json_path_extract_text => .json_path_extract_text,
             .json_delete_path => .json_delete_path,
+            // Full-text search
+            .ts_match => .ts_match,
             else => null,
         };
     }

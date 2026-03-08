@@ -313,6 +313,9 @@ pub const BinaryOp = enum {
     json_path_extract, // #>
     json_path_extract_text, // #>>
     json_delete_path, // #-
+
+    // Full-text search
+    ts_match, // @@
 };
 
 /// Window frame mode: ROWS, RANGE, or GROUPS.
