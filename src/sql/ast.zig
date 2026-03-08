@@ -543,6 +543,48 @@ pub const DropDomainStmt = struct {
     if_exists: bool = false,
 };
 
+/// Function parameter definition.
+pub const FunctionParam = struct {
+    name: []const u8,
+    data_type: DataType,
+};
+
+/// Function return type specification.
+pub const FunctionReturn = union(enum) {
+    /// RETURNS type_name
+    scalar: DataType,
+    /// RETURNS TABLE(col1 type1, col2 type2, ...)
+    table: []const ColumnDef,
+    /// RETURNS SETOF type_name
+    setof: DataType,
+};
+
+/// Function volatility category.
+pub const FunctionVolatility = enum {
+    immutable, // Same input always gives same output, no side effects
+    stable,    // Same input gives same output within a transaction
+    vol,       // Output can vary, has side effects (volatile)
+};
+
+/// CREATE FUNCTION statement.
+pub const CreateFunctionStmt = struct {
+    name: []const u8,
+    parameters: []const FunctionParam = &.{},
+    return_type: FunctionReturn,
+    language: []const u8, // e.g., "sfl" for Silica Function Language
+    body: []const u8,     // Function body (SQL or SFL code)
+    volatility: FunctionVolatility = .vol,
+    or_replace: bool = false,
+};
+
+/// DROP FUNCTION statement.
+pub const DropFunctionStmt = struct {
+    name: []const u8,
+    /// Optional parameter types for overload resolution
+    param_types: []const DataType = &.{},
+    if_exists: bool = false,
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -562,6 +604,8 @@ pub const Stmt = union(enum) {
     drop_type: DropTypeStmt,
     create_domain: CreateDomainStmt,
     drop_domain: DropDomainStmt,
+    create_function: CreateFunctionStmt,
+    drop_function: DropFunctionStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -860,4 +904,69 @@ test "JSON binary operators" {
         .json_delete_path,
     };
     try std.testing.expectEqual(@as(usize, 10), ops.len);
+}
+
+test "CreateFunctionStmt basic structure" {
+    var arena = AstArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const params = try arena.dupeSlice(FunctionParam, &.{
+        .{ .name = "x", .data_type = .type_integer },
+        .{ .name = "y", .data_type = .type_integer },
+    });
+
+    const stmt = CreateFunctionStmt{
+        .name = "add_numbers",
+        .parameters = params,
+        .return_type = .{ .scalar = .type_integer },
+        .language = "sfl",
+        .body = "RETURN x + y;",
+        .volatility = .immutable,
+    };
+
+    try std.testing.expectEqualStrings("add_numbers", stmt.name);
+    try std.testing.expectEqual(@as(usize, 2), stmt.parameters.len);
+    try std.testing.expectEqualStrings("x", stmt.parameters[0].name);
+    try std.testing.expectEqual(DataType.type_integer, stmt.parameters[0].data_type);
+    try std.testing.expectEqual(FunctionVolatility.immutable, stmt.volatility);
+}
+
+test "FunctionReturn variants" {
+    // Test scalar return
+    const scalar_ret = FunctionReturn{ .scalar = .type_text };
+    try std.testing.expectEqual(DataType.type_text, scalar_ret.scalar);
+
+    // Test setof return
+    const setof_ret = FunctionReturn{ .setof = .type_integer };
+    try std.testing.expectEqual(DataType.type_integer, setof_ret.setof);
+
+    // Table return is tested via its presence in the union
+    var arena = AstArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const cols = try arena.dupeSlice(ColumnDef, &.{
+        .{ .name = "id", .data_type = .type_integer },
+    });
+    const table_ret = FunctionReturn{ .table = cols };
+    try std.testing.expectEqual(@as(usize, 1), table_ret.table.len);
+}
+
+test "DropFunctionStmt with overload resolution" {
+    var arena = AstArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const param_types = try arena.dupeSlice(DataType, &.{
+        .type_integer,
+        .type_text,
+    });
+
+    const stmt = DropFunctionStmt{
+        .name = "process",
+        .param_types = param_types,
+        .if_exists = true,
+    };
+
+    try std.testing.expectEqualStrings("process", stmt.name);
+    try std.testing.expectEqual(@as(usize, 2), stmt.param_types.len);
+    try std.testing.expect(stmt.if_exists);
 }
