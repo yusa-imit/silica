@@ -9434,3 +9434,102 @@ test "to_tsvector: special characters in middle of word" {
     }
     try std.testing.expect(token_count >= 4); // At least the split words
 }
+
+test "porter_stem: empty string" {
+    const allocator = std.testing.allocator;
+
+    // Empty string should return empty
+    const result = try porterStem(allocator, "");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "porter_stem: single character" {
+    const allocator = std.testing.allocator;
+
+    // Single chars < 3 unchanged
+    {
+        const result = try porterStem(allocator, "a");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("a", result);
+    }
+
+    {
+        const result = try porterStem(allocator, "z");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("z", result);
+    }
+}
+
+test "porter_stem: very long word" {
+    const allocator = std.testing.allocator;
+
+    // Test with a very long word (stress test)
+    const long_word = "antidisestablishmentarianism"; // 28 chars
+    const result = try porterStem(allocator, long_word);
+    defer allocator.free(result);
+
+    // Stemmer should handle it without crashing
+    // Result should be non-empty and <= original length
+    try std.testing.expect(result.len > 0);
+    try std.testing.expect(result.len <= long_word.len);
+}
+
+test "porter_stem: all consonants" {
+    const allocator = std.testing.allocator;
+
+    // Word with no vowels (edge case)
+    const result = try porterStem(allocator, "xyz");
+    defer allocator.free(result);
+
+    // Should handle gracefully (no vowel-based operations apply)
+    try std.testing.expectEqualStrings("xyz", result);
+}
+
+test "porter_stem: all vowels" {
+    const allocator = std.testing.allocator;
+
+    // Word with only vowels (edge case)
+    const result = try porterStem(allocator, "aeiou");
+    defer allocator.free(result);
+
+    // Should handle gracefully
+    try std.testing.expectEqualStrings("aeiou", result);
+}
+
+test "to_tsvector: empty string returns empty" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "to_tsvector: only whitespace" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "   \t\n  ");
+    defer allocator.free(result);
+    // Only whitespace produces empty result
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "to_tsquery: empty string returns empty" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "@@ operator: empty tsvector and empty tsquery" {
+    // Empty vector and empty query
+    const vec = Value{ .tsvector = "" };
+    const query = Value{ .tsquery = "" };
+
+    const result = evalTsMatch(vec, query);
+
+    // Empty query matches nothing (consistent with all-stop-words behavior)
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
