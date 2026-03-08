@@ -565,6 +565,122 @@ fn generateUuidV4() [16]u8 {
     return bytes;
 }
 
+/// Convert text to tsvector.
+/// Basic tokenization: split on whitespace/punctuation, lowercase, sort, deduplicate.
+/// Production version would include stemming, stop word removal, and position tracking.
+fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
+    if (text.len == 0) return allocator.dupe(u8, "");
+
+    var tokens = std.ArrayListUnmanaged([]const u8){};
+    defer tokens.deinit(allocator);
+
+    // Tokenize: split on whitespace and punctuation
+    var start: usize = 0;
+    var in_word = false;
+    for (text, 0..) |c, i| {
+        const is_alphanum = std.ascii.isAlphanumeric(c);
+        if (is_alphanum and !in_word) {
+            start = i;
+            in_word = true;
+        } else if (!is_alphanum and in_word) {
+            const token = text[start..i];
+            if (token.len > 0) {
+                // Lowercase the token
+                const lower = try allocator.alloc(u8, token.len);
+                errdefer allocator.free(lower);
+                for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
+                try tokens.append(allocator, lower);
+            }
+            in_word = false;
+        }
+    }
+    // Handle final token
+    if (in_word and start < text.len) {
+        const token = text[start..];
+        const lower = try allocator.alloc(u8, token.len);
+        errdefer allocator.free(lower);
+        for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
+        try tokens.append(allocator, lower);
+    }
+
+    if (tokens.items.len == 0) return allocator.dupe(u8, "");
+
+    // Sort and deduplicate
+    const S = struct {
+        pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    };
+    std.mem.sort([]const u8, tokens.items, {}, S.lessThan);
+
+    // Build result: space-separated sorted unique tokens
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+    defer for (tokens.items) |t| allocator.free(t);
+
+    var prev: ?[]const u8 = null;
+    for (tokens.items) |token| {
+        if (prev == null or !std.mem.eql(u8, prev.?, token)) {
+            if (result.items.len > 0) try result.append(allocator, ' ');
+            try result.appendSlice(allocator, token);
+            prev = token;
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Convert query text to tsquery.
+/// Basic parsing: split on whitespace, lowercase, join with & (AND).
+/// Production version would support operators: & (AND), | (OR), ! (NOT), <-> (phrase).
+fn textToTsquery(allocator: Allocator, query: []const u8) ![]u8 {
+    if (query.len == 0) return allocator.dupe(u8, "");
+
+    var tokens = std.ArrayListUnmanaged([]const u8){};
+    defer tokens.deinit(allocator);
+
+    // Tokenize: split on whitespace
+    var start: usize = 0;
+    var in_word = false;
+    for (query, 0..) |c, i| {
+        const is_alphanum = std.ascii.isAlphanumeric(c);
+        if (is_alphanum and !in_word) {
+            start = i;
+            in_word = true;
+        } else if (!is_alphanum and in_word) {
+            const token = query[start..i];
+            if (token.len > 0) {
+                const lower = try allocator.alloc(u8, token.len);
+                errdefer allocator.free(lower);
+                for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
+                try tokens.append(allocator, lower);
+            }
+            in_word = false;
+        }
+    }
+    if (in_word and start < query.len) {
+        const token = query[start..];
+        const lower = try allocator.alloc(u8, token.len);
+        errdefer allocator.free(lower);
+        for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
+        try tokens.append(allocator, lower);
+    }
+
+    if (tokens.items.len == 0) return allocator.dupe(u8, "");
+
+    // Join with & (implicit AND)
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+    defer for (tokens.items) |t| allocator.free(t);
+
+    for (tokens.items, 0..) |token, i| {
+        if (i > 0) try result.appendSlice(allocator, " & ");
+        try result.appendSlice(allocator, token);
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 /// Format an array value as PostgreSQL-compatible text: {elem1,elem2,...}
 pub fn formatArray(allocator: Allocator, elements: []const Value) ![]u8 {
     var list = std.ArrayListUnmanaged(u8){};
@@ -2545,6 +2661,48 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
             .null_value => .null_value,
             else => .null_value,
         };
+    }
+
+    // Full-text search functions
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_tsvector")) {
+        // to_tsvector([config,] text) - convert text to tsvector
+        // For now, we support single-argument form (no config parameter)
+        const text_arg_idx: usize = if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
+        if (fc.args.len > 2) return EvalError.TypeError;
+
+        const arg = try evalExpr(allocator, fc.args[text_arg_idx], row);
+        defer arg.free(allocator);
+
+        const text = switch (arg) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        // Basic tokenization: split on whitespace, lowercase, remove duplicates
+        // This is a simplified version - production would use stemming and stop words
+        const tsvec = try textToTsvector(allocator, text);
+        return Value{ .tsvector = tsvec };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_tsquery")) {
+        // to_tsquery([config,] query) - convert query string to tsquery
+        const query_arg_idx: usize = if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
+        if (fc.args.len > 2) return EvalError.TypeError;
+
+        const arg = try evalExpr(allocator, fc.args[query_arg_idx], row);
+        defer arg.free(allocator);
+
+        const query = switch (arg) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        // Basic query parsing: split on whitespace, lowercase
+        // This is simplified - production would support operators (&, |, !, <->)
+        const tsq = try textToTsquery(allocator, query);
+        return Value{ .tsquery = tsq };
     }
 
     return EvalError.UnsupportedExpression;
@@ -8188,4 +8346,89 @@ test "TSQUERY empty string handling" {
 
     try std.testing.expect(result.value == .tsquery);
     try std.testing.expectEqualStrings("", result.value.tsquery);
+}
+
+test "to_tsvector: basic tokenization" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "The quick brown fox");
+    defer allocator.free(result);
+
+    // Should be lowercased, sorted, space-separated
+    try std.testing.expectEqualStrings("brown fox quick the", result);
+}
+
+test "to_tsvector: deduplication" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "the the quick quick");
+    defer allocator.free(result);
+
+    // Duplicates should be removed
+    try std.testing.expectEqualStrings("quick the", result);
+}
+
+test "to_tsvector: punctuation handling" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "Hello, world! How are you?");
+    defer allocator.free(result);
+
+    // Punctuation should be stripped
+    try std.testing.expectEqualStrings("are hello how world you", result);
+}
+
+test "to_tsvector: empty string" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "");
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "to_tsvector: single word" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsvector(allocator, "Hello");
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("hello", result);
+}
+
+test "to_tsquery: basic query" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "search query");
+    defer allocator.free(result);
+
+    // Should be lowercased and joined with &
+    try std.testing.expectEqualStrings("search & query", result);
+}
+
+test "to_tsquery: single term" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "database");
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("database", result);
+}
+
+test "to_tsquery: empty string" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "");
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "to_tsquery: multiple words" {
+    const allocator = std.testing.allocator;
+
+    const result = try textToTsquery(allocator, "full text search");
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("full & text & search", result);
 }
