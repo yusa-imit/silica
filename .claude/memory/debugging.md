@@ -14,6 +14,12 @@
 
 ## Recently Fixed Bugs
 
+### AST Exhaustive Switch Statements (8b0ae6d)
+- **Symptom**: CI build failure after adding `create_function` and `drop_function` AST nodes
+- **Cause**: Exhaustive switch statements in `analyzer.zig`, `planner.zig`, and `cli.zig` didn't handle new statement types
+- **Fix**: Added empty cases in analyzer (no analysis needed yet), planner (returning `planTransaction()` as these are handled early in engine), and CLI (`printStmtInfo` now formats function statements)
+- **Lesson**: When adding new AST node types, always grep for all switch statements on `ast.Stmt` to find exhaustive switches
+
 ### MVCC Aborted Transaction Visibility (c42d358)
 - **Symptom**: Rows from aborted transactions visible in subsequent READ COMMITTED transactions
 - **Cause**: `isTupleVisible` fell back to `snapshot.isVisible()` when hint flags absent. Snapshot cannot distinguish committed from aborted — both look "not active"
