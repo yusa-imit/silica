@@ -788,6 +788,16 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] (Recommended) Add ScatterPlot for index analysis dashboard
 - [ ] 기존 테스트 전체 통과 확인
 
+
+**sailor v1.6.1 patch released** (2026-03-08) — Critical bug fixes for v1.6.0 widgets
+
+- **Bug fixes**:
+  - PieChart: Fixed integer overflow in coordinate calculation (prevented panics)
+  - Multiple widgets: Fixed API compilation errors (Color.rgb, buffer.set, u16 casts)
+- **Impact on zr**: None (zr doesn't use v1.6.0 widgets yet)
+- [ ] Optional: Update to v1.6.1 for stable data visualization widgets
+
+**Note**: Patch release, no breaking changes. Safe to upgrade when/if data visualization widgets are needed.
 **Note**: Non-breaking upgrade. Visualization widgets enable powerful performance monitoring and analytics features for SQL shell TUI.
 
 ---
