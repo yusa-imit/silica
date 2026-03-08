@@ -1125,3 +1125,94 @@ test "Wal pending overrides committed for same page" {
     try testing.expect(found2);
     try testing.expectEqual(@as(u8, 0x11), buf[0]);
 }
+
+test "Wal UnsupportedWalVersion error on invalid version" {
+    var buf: [WAL_HEADER_SIZE]u8 = undefined;
+    const header = WalHeader{
+        .page_size = 4096,
+        .salt_1 = 0x12345678,
+        .salt_2 = 0xABCDEF00,
+    };
+    header.serialize(&buf);
+
+    // Corrupt version to unsupported value
+    std.mem.writeInt(u32, buf[4..8], 999, .little);
+
+    try testing.expectError(error.UnsupportedWalVersion, WalHeader.deserialize(&buf));
+}
+
+test "Wal WalPageSizeMismatch detected during recovery" {
+    const path = "test_wal_pagemismatch.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_pagemismatch.db-wal") catch {};
+
+    // Create WAL with page_size=512
+    var wal = try Wal.init(testing.allocator, path, 512);
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0x42);
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(1);
+    wal.deinit();
+
+    // Manually corrupt the WAL header to have wrong page_size
+    const wal_path = path ++ "-wal";
+    {
+        const file = try std.fs.cwd().openFile(wal_path, .{ .mode = .read_write });
+        defer file.close();
+
+        var hdr_buf: [WAL_HEADER_SIZE]u8 = undefined;
+        _ = try file.read(&hdr_buf);
+        // Change page_size from 512 to 4096
+        std.mem.writeInt(u32, hdr_buf[8..12], 4096, .little);
+        // Recompute checksum
+        const cksum = checksum_mod.crc32c(hdr_buf[0..28]);
+        std.mem.writeInt(u32, hdr_buf[28..32], cksum, .little);
+        try file.seekTo(0);
+        _ = try file.write(&hdr_buf);
+    }
+
+    // Opening with mismatched page_size triggers recovery, which detects error
+    // and deletes the corrupt WAL, returning a fresh Wal instance.
+    // We verify the WAL file was deleted by checking it doesn't exist after init.
+    var wal2 = try Wal.init(testing.allocator, path, 512);
+    defer wal2.deinit();
+
+    // The corrupt WAL should have been deleted — verify file doesn't exist
+    // by attempting to open and expecting FileNotFound
+    const open_result = std.fs.cwd().openFile(wal_path, .{});
+    if (open_result) |f| {
+        f.close();
+        try testing.expect(false); // File should not exist
+    } else |err| {
+        try testing.expectEqual(error.FileNotFound, err);
+    }
+}
+
+test "Wal WalCorrupt error on truncated header" {
+    const path = "test_wal_corrupt.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_wal_corrupt.db-wal") catch {};
+
+    // Create a WAL file with a truncated header (only 10 bytes)
+    const wal_path = path ++ "-wal";
+    {
+        const file = try std.fs.cwd().createFile(wal_path, .{});
+        defer file.close();
+        const partial_header = [_]u8{0x53, 0x4C, 0x43, 0x57, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+        try file.writeAll(&partial_header);
+    }
+
+    // Opening should trigger recovery, which detects truncated header (WalCorrupt)
+    // and deletes the corrupt WAL
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Verify the corrupt WAL was deleted
+    const open_result = std.fs.cwd().openFile(wal_path, .{});
+    if (open_result) |f| {
+        f.close();
+        try testing.expect(false); // File should not exist
+    } else |err| {
+        try testing.expectEqual(error.FileNotFound, err);
+    }
+}
