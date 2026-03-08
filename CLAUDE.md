@@ -797,6 +797,30 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - **Impact on zr**: None (zr doesn't use v1.6.0 widgets yet)
 - [ ] Optional: Update to v1.6.1 for stable data visualization widgets
 
+### v1.7.0 — Advanced Layout & Rendering (status: READY)
+
+**sailor v1.7.0 released** (2026-03-09) — Advanced layout and rendering features
+
+- **New features**:
+  - FlexBox layout: CSS flexbox-inspired with justify/align (16 tests)
+  - Viewport clipping: Efficient rendering of large virtual buffers (14 tests)
+  - Shadow & 3D border effects: Visual depth for widgets (15 tests)
+  - Custom widget traits: Extensible widget protocol
+  - Layout caching: LRU cache for constraint computation (13 tests)
+- **Impact on silica**: HIGH — Essential for SQL TUI performance and UX
+  - FlexBox enables responsive query editor + result viewer layouts
+  - Viewport clipping crucial for efficient scrolling through large query results
+  - Shadow effects improve visual hierarchy (query pane vs. result pane)
+  - Layout caching significantly improves performance for complex dashboard layouts
+  - Custom widget traits enable SQL-specific widgets (syntax highlighter, schema tree)
+- [ ] `build.zig.zon`에 sailor v1.7.0 의존성 업데이트
+- [ ] (Recommended) Apply viewport clipping to large result set rendering
+- [ ] (Recommended) Use FlexBox for query editor layout
+- [ ] (Recommended) Add shadow effects to dialog boxes
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. All features are opt-in. High priority for TUI performance enhancements.
+
 **Note**: Patch release, no breaking changes. Safe to upgrade when/if data visualization widgets are needed.
 **Note**: Non-breaking upgrade. Visualization widgets enable powerful performance monitoring and analytics features for SQL shell TUI.
 
