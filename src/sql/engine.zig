@@ -13761,3 +13761,19 @@ test "ts_rank comparison: multiple terms" {
     defer row2.deinit();
     try testing.expectEqual(@as(f64, 1.0), row2.values[0].real);
 }
+
+test "SELECT division by zero: proper cleanup with defer" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    // Division by zero should fail during row fetch
+    var r = try db.exec("SELECT 10 / 0");
+    defer r.close(testing.allocator); // Ensure cleanup even if next() fails
+
+    // Attempt to fetch the row — this should fail with DivisionByZero
+    const maybe_row = r.rows.?.next();
+    try testing.expectError(executor_mod.ExecError.DivisionByZero, maybe_row);
+
+    // Test passes — arena is properly freed via defer
+}
+
