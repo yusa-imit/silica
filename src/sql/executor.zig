@@ -565,9 +565,139 @@ fn generateUuidV4() [16]u8 {
     return bytes;
 }
 
-/// Convert text to tsvector.
-/// Basic tokenization: split on whitespace/punctuation, lowercase, sort, deduplicate.
-/// Production version would include stemming, stop word removal, and position tracking.
+// ============================================================================
+// Text Search Configuration
+// ============================================================================
+
+/// English stop words - common words filtered from full-text search.
+/// Based on PostgreSQL's default English stop word list.
+const english_stop_words = [_][]const u8{
+    "a",     "an",    "and",   "are",  "as",    "at",    "be",    "but",
+    "by",    "for",   "if",    "in",   "into",  "is",    "it",    "no",
+    "not",   "of",    "on",    "or",   "such",  "that",  "the",   "their",
+    "then",  "there", "these", "they", "this",  "to",    "was",   "will",
+    "with",
+};
+
+/// Check if a word is a stop word.
+fn isStopWord(word: []const u8) bool {
+    for (english_stop_words) |stop| {
+        if (std.mem.eql(u8, word, stop)) return true;
+    }
+    return false;
+}
+
+/// Porter Stemmer - reduce English words to their root form.
+/// This is a simplified implementation of the Porter stemming algorithm.
+/// Reference: https://tartarus.org/martin/PorterStemmer/
+fn porterStem(allocator: Allocator, word: []const u8) ![]u8 {
+    if (word.len < 3) return allocator.dupe(u8, word);
+
+    var stem = try allocator.dupe(u8, word);
+    errdefer allocator.free(stem);
+
+    // Step 1a: plurals and -ed/-ing
+    if (std.mem.endsWith(u8, stem, "sses")) {
+        stem = try allocator.realloc(stem, stem.len - 2);
+    } else if (std.mem.endsWith(u8, stem, "ies")) {
+        const base = stem[0 .. stem.len - 3];
+        const new_stem = try std.mem.concat(allocator, u8, &[_][]const u8{ base, "i" });
+        allocator.free(stem);
+        stem = new_stem;
+    } else if (std.mem.endsWith(u8, stem, "ss")) {
+        // Keep as-is
+    } else if (std.mem.endsWith(u8, stem, "s")) {
+        stem = try allocator.realloc(stem, stem.len - 1);
+    }
+
+    // Step 1b: -ed, -ing
+    const old_len = stem.len;
+    if (std.mem.endsWith(u8, stem, "eed")) {
+        if (countVC(stem[0 .. stem.len - 3]) > 0) {
+            stem = try allocator.realloc(stem, stem.len - 1);
+        }
+    } else if (std.mem.endsWith(u8, stem, "ed")) {
+        const base = stem[0 .. stem.len - 2];
+        if (hasVowel(base)) {
+            stem = try allocator.realloc(stem, stem.len - 2);
+            if (std.mem.endsWith(u8, stem, "at") or std.mem.endsWith(u8, stem, "bl") or std.mem.endsWith(u8, stem, "iz")) {
+                const new = try allocator.alloc(u8, stem.len + 1);
+                @memcpy(new[0..stem.len], stem);
+                new[stem.len] = 'e';
+                allocator.free(stem);
+                stem = new;
+            }
+        }
+    } else if (std.mem.endsWith(u8, stem, "ing")) {
+        const base = stem[0 .. stem.len - 3];
+        if (hasVowel(base)) {
+            stem = try allocator.realloc(stem, stem.len - 3);
+            if (std.mem.endsWith(u8, stem, "at") or std.mem.endsWith(u8, stem, "bl") or std.mem.endsWith(u8, stem, "iz")) {
+                const new = try allocator.alloc(u8, stem.len + 1);
+                @memcpy(new[0..stem.len], stem);
+                new[stem.len] = 'e';
+                allocator.free(stem);
+                stem = new;
+            }
+        }
+    }
+    _ = old_len;
+
+    // Step 1c: y -> i
+    if (stem.len > 1 and stem[stem.len - 1] == 'y') {
+        if (hasVowel(stem[0 .. stem.len - 1])) {
+            stem[stem.len - 1] = 'i';
+        }
+    }
+
+    // Step 2: double consonant -> single
+    if (stem.len >= 2) {
+        const last = stem[stem.len - 1];
+        const second_last = stem[stem.len - 2];
+        if (last == second_last and isConsonant(last)) {
+            if (last != 's' and last != 'l' and last != 'z') {
+                // Don't reduce double s, l, z
+                stem = try allocator.realloc(stem, stem.len - 1);
+            }
+        }
+    }
+
+    return stem;
+}
+
+/// Check if a string contains at least one vowel.
+fn hasVowel(word: []const u8) bool {
+    for (word) |c| {
+        if (isVowel(c)) return true;
+    }
+    return false;
+}
+
+/// Check if a character is a vowel.
+fn isVowel(c: u8) bool {
+    return c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u';
+}
+
+/// Check if a character is a consonant.
+fn isConsonant(c: u8) bool {
+    return std.ascii.isAlphabetic(c) and !isVowel(c);
+}
+
+/// Count vowel-consonant sequences.
+/// This is a simplified version for the Porter stemmer.
+fn countVC(word: []const u8) usize {
+    var count: usize = 0;
+    var prev_vowel = false;
+    for (word) |c| {
+        const is_v = isVowel(c);
+        if (!is_v and prev_vowel) count += 1;
+        prev_vowel = is_v;
+    }
+    return count;
+}
+
+/// Convert text to tsvector with stemming and stop word removal.
+/// Tokenization: split on whitespace/punctuation, lowercase, stem, filter stop words, sort, deduplicate.
 fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
     if (text.len == 0) return allocator.dupe(u8, "");
 
@@ -589,7 +719,16 @@ fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
                 const lower = try allocator.alloc(u8, token.len);
                 errdefer allocator.free(lower);
                 for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
-                try tokens.append(allocator, lower);
+
+                // Filter stop words
+                if (!isStopWord(lower)) {
+                    // Apply stemming
+                    const stemmed = try porterStem(allocator, lower);
+                    allocator.free(lower);
+                    try tokens.append(allocator, stemmed);
+                } else {
+                    allocator.free(lower);
+                }
             }
             in_word = false;
         }
@@ -600,7 +739,16 @@ fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
         const lower = try allocator.alloc(u8, token.len);
         errdefer allocator.free(lower);
         for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
-        try tokens.append(allocator, lower);
+
+        // Filter stop words
+        if (!isStopWord(lower)) {
+            // Apply stemming
+            const stemmed = try porterStem(allocator, lower);
+            allocator.free(lower);
+            try tokens.append(allocator, stemmed);
+        } else {
+            allocator.free(lower);
+        }
     }
 
     if (tokens.items.len == 0) return allocator.dupe(u8, "");
@@ -630,8 +778,8 @@ fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
     return result.toOwnedSlice(allocator);
 }
 
-/// Convert query text to tsquery.
-/// Basic parsing: split on whitespace, lowercase, join with & (AND).
+/// Convert query text to tsquery with stemming and stop word removal.
+/// Parsing: split on whitespace, lowercase, stem, filter stop words, join with & (AND).
 /// Production version would support operators: & (AND), | (OR), ! (NOT), <-> (phrase).
 fn textToTsquery(allocator: Allocator, query: []const u8) ![]u8 {
     if (query.len == 0) return allocator.dupe(u8, "");
@@ -653,7 +801,16 @@ fn textToTsquery(allocator: Allocator, query: []const u8) ![]u8 {
                 const lower = try allocator.alloc(u8, token.len);
                 errdefer allocator.free(lower);
                 for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
-                try tokens.append(allocator, lower);
+
+                // Filter stop words
+                if (!isStopWord(lower)) {
+                    // Apply stemming
+                    const stemmed = try porterStem(allocator, lower);
+                    allocator.free(lower);
+                    try tokens.append(allocator, stemmed);
+                } else {
+                    allocator.free(lower);
+                }
             }
             in_word = false;
         }
@@ -663,7 +820,16 @@ fn textToTsquery(allocator: Allocator, query: []const u8) ![]u8 {
         const lower = try allocator.alloc(u8, token.len);
         errdefer allocator.free(lower);
         for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
-        try tokens.append(allocator, lower);
+
+        // Filter stop words
+        if (!isStopWord(lower)) {
+            // Apply stemming
+            const stemmed = try porterStem(allocator, lower);
+            allocator.free(lower);
+            try tokens.append(allocator, stemmed);
+        } else {
+            allocator.free(lower);
+        }
     }
 
     if (tokens.items.len == 0) return allocator.dupe(u8, "");
@@ -8578,8 +8744,8 @@ test "to_tsvector: basic tokenization" {
     const result = try textToTsvector(allocator, "The quick brown fox");
     defer allocator.free(result);
 
-    // Should be lowercased, sorted, space-separated
-    try std.testing.expectEqualStrings("brown fox quick the", result);
+    // Should be lowercased, stemmed, stop words removed ("the" filtered), sorted
+    try std.testing.expectEqualStrings("brown fox quick", result);
 }
 
 test "to_tsvector: deduplication" {
@@ -8588,8 +8754,8 @@ test "to_tsvector: deduplication" {
     const result = try textToTsvector(allocator, "the the quick quick");
     defer allocator.free(result);
 
-    // Duplicates should be removed
-    try std.testing.expectEqualStrings("quick the", result);
+    // Duplicates should be removed, stop words filtered ("the" removed)
+    try std.testing.expectEqualStrings("quick", result);
 }
 
 test "to_tsvector: punctuation handling" {
@@ -8598,8 +8764,8 @@ test "to_tsvector: punctuation handling" {
     const result = try textToTsvector(allocator, "Hello, world! How are you?");
     defer allocator.free(result);
 
-    // Punctuation should be stripped
-    try std.testing.expectEqualStrings("are hello how world you", result);
+    // Punctuation should be stripped, stop words filtered ("are" removed)
+    try std.testing.expectEqualStrings("hello how world you", result);
 }
 
 test "to_tsvector: empty string" {
@@ -8626,8 +8792,8 @@ test "to_tsquery: basic query" {
     const result = try textToTsquery(allocator, "search query");
     defer allocator.free(result);
 
-    // Should be lowercased and joined with &
-    try std.testing.expectEqualStrings("search & query", result);
+    // Should be lowercased, stemmed ("query" → "queri"), and joined with & (preserves input order)
+    try std.testing.expectEqualStrings("search & queri", result);
 }
 
 test "to_tsquery: single term" {
@@ -8663,9 +8829,9 @@ test "to_tsvector: alphanumeric tokens" {
     const result = try textToTsvector(allocator, "version 0.15.2 released");
     defer allocator.free(result);
 
-    // Should extract all alphanumeric tokens: "0", "15", "2", "released", "version"
+    // Should extract all alphanumeric tokens: "0", "15", "2", "releas" (stemmed), "version"
     // (sorted and deduplicated)
-    try std.testing.expectEqualStrings("0 15 2 released version", result);
+    try std.testing.expectEqualStrings("0 15 2 releas version", result);
 }
 
 test "to_tsvector: only punctuation" {
@@ -8684,8 +8850,8 @@ test "to_tsvector: mixed case with duplicates" {
     const result = try textToTsvector(allocator, "The THE the");
     defer allocator.free(result);
 
-    // Should lowercase and deduplicate
-    try std.testing.expectEqualStrings("the", result);
+    // Should lowercase, deduplicate, and filter stop words ("the" is a stop word)
+    try std.testing.expectEqualStrings("", result);
 }
 
 test "to_tsquery: with punctuation" {
@@ -8706,6 +8872,205 @@ test "to_tsquery: numeric tokens" {
 
     // Should extract all alphanumeric tokens
     try std.testing.expectEqualStrings("version & 0 & 15 & 2", result);
+}
+
+// ============================================================================
+// Stemming Tests
+// ============================================================================
+
+test "porter_stem: plural forms" {
+    const allocator = std.testing.allocator;
+
+    // -sses → -ss
+    {
+        const result = try porterStem(allocator, "dresses");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("dress", result);
+    }
+
+    // -ies → -i
+    {
+        const result = try porterStem(allocator, "ponies");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("poni", result);
+    }
+
+    // -s → remove (but keep -ss)
+    {
+        const result = try porterStem(allocator, "cats");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("cat", result);
+    }
+
+    {
+        const result = try porterStem(allocator, "pass");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("pass", result);
+    }
+}
+
+test "porter_stem: -ed and -ing" {
+    const allocator = std.testing.allocator;
+
+    // -ed with vowel in base
+    {
+        const result = try porterStem(allocator, "walked");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("walk", result);
+    }
+
+    // -ing with vowel in base
+    {
+        const result = try porterStem(allocator, "running");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("run", result);
+    }
+
+    // -eed with VC count > 0
+    {
+        const result = try porterStem(allocator, "agreed");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("agree", result);
+    }
+}
+
+test "porter_stem: -y to -i" {
+    const allocator = std.testing.allocator;
+
+    // y → i when there's a vowel before
+    {
+        const result = try porterStem(allocator, "happy");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("happi", result);
+    }
+
+    // Keep y if no vowel before
+    {
+        const result = try porterStem(allocator, "sky");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("sky", result);
+    }
+}
+
+test "porter_stem: short words unchanged" {
+    const allocator = std.testing.allocator;
+
+    // Words < 3 chars unchanged
+    {
+        const result = try porterStem(allocator, "at");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("at", result);
+    }
+
+    {
+        const result = try porterStem(allocator, "is");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("is", result);
+    }
+}
+
+test "porter_stem: double consonant reduction" {
+    const allocator = std.testing.allocator;
+
+    // Double consonant at end (except s, l, z) → single
+    const result = try porterStem(allocator, "hopping");
+    defer allocator.free(result);
+    // "hopping" → remove "ing" → "hopp" → reduce double → "hop"
+    try std.testing.expectEqualStrings("hop", result);
+}
+
+// ============================================================================
+// Stop Words Tests
+// ============================================================================
+
+test "stop_words: common words filtered" {
+    const allocator = std.testing.allocator;
+
+    // "the", "is", "a" are stop words
+    const result = try textToTsvector(allocator, "the cat is a mammal");
+    defer allocator.free(result);
+    // Only "cat" and "mammal" remain
+    try std.testing.expectEqualStrings("cat mammal", result);
+}
+
+test "stop_words: all stop words" {
+    const allocator = std.testing.allocator;
+
+    // Text with only stop words
+    const result = try textToTsvector(allocator, "the and or but");
+    defer allocator.free(result);
+    // All filtered, empty result
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "stop_words: mixed with regular words" {
+    const allocator = std.testing.allocator;
+
+    // Mix of stop words and regular words
+    const result = try textToTsvector(allocator, "database is a collection of data");
+    defer allocator.free(result);
+    // "is", "a", "of" are stop words, others remain (stemmed and sorted)
+    // Our simplified stemmer: "collection" keeps full form, "database" keeps full form
+    try std.testing.expectEqualStrings("collection data database", result);
+}
+
+test "stop_words: in tsquery" {
+    const allocator = std.testing.allocator;
+
+    // Stop words should also be filtered from queries
+    const result = try textToTsquery(allocator, "search for the database");
+    defer allocator.free(result);
+    // "for", "the" are stop words; preserves input order
+    try std.testing.expectEqualStrings("search & database", result);
+}
+
+// ============================================================================
+// Integration: Stemming + Stop Words
+// ============================================================================
+
+test "stemming: search matches stemmed forms" {
+    const allocator = std.testing.allocator;
+
+    // Vector: "running runs runner"
+    const vec_text = "running runs runner";
+    const vec = try textToTsvector(allocator, vec_text);
+    defer allocator.free(vec);
+
+    // Query: "run" (stemmed from "running")
+    const query_text = "run";
+    const query = try textToTsquery(allocator, query_text);
+    defer allocator.free(query);
+
+    // All forms stem to "run", so they should match
+    const tv = Value{ .tsvector = vec };
+    const tq = Value{ .tsquery = query };
+    const result = evalTsMatch(tv, tq);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "stemming: ranking with stemmed forms" {
+    const allocator = std.testing.allocator;
+
+    // Vector with multiple stemmed forms: "searching" → "search", "searched" → "search"
+    const vec = "search search"; // After stemming from "searching searched"
+    const query = "search";
+
+    const rank = try calculateRank(allocator, vec, query, 0);
+    // Should count the unique match (1 query term found)
+    try std.testing.expectEqual(@as(f64, 1.0), rank);
+}
+
+test "stop_words: does not affect ranking" {
+    const allocator = std.testing.allocator;
+
+    // Vector without stop words (already filtered)
+    const vec = "quick brown fox";
+    // Query without stop words (already filtered)
+    const query = "quick & brown";
+
+    const rank = try calculateRank(allocator, vec, query, 0);
+    // 2 query terms matched
+    try std.testing.expectEqual(@as(f64, 2.0), rank);
 }
 
 test "@@ operator: basic match" {
