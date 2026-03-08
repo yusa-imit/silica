@@ -952,6 +952,78 @@ fn calculateRankCD(allocator: Allocator, tsvec: []const u8, tsquery: []const u8,
     return rank;
 }
 
+/// Generate a highlighted snippet from a document for full-text search results.
+/// Finds query terms in the document and wraps them with <b></b> tags.
+fn generateHeadline(allocator: Allocator, document: []const u8, tsquery: []const u8) ![]u8 {
+    if (document.len == 0 or tsquery.len == 0) {
+        return try allocator.dupe(u8, document);
+    }
+
+    // Parse tsquery tokens (split by " & ")
+    var query_tokens_list = std.ArrayListUnmanaged([]const u8){};
+    defer query_tokens_list.deinit(allocator);
+
+    var query_iter = std.mem.splitSequence(u8, tsquery, " & ");
+    while (query_iter.next()) |qtoken| {
+        if (qtoken.len > 0) {
+            try query_tokens_list.append(allocator, qtoken);
+        }
+    }
+
+    if (query_tokens_list.items.len == 0) {
+        return try allocator.dupe(u8, document);
+    }
+
+    // Tokenize document (split on whitespace and punctuation)
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    var token_start: ?usize = null;
+
+    while (i <= document.len) {
+        const is_boundary = i == document.len or
+            std.ascii.isWhitespace(document[i]) or
+            std.mem.indexOfScalar(u8, ".,;:!?()[]{}\"'", document[i]) != null;
+
+        if (is_boundary) {
+            if (token_start) |start| {
+                const token = document[start..i];
+                // Check if this token matches any query term (case-insensitive)
+                var matched = false;
+                for (query_tokens_list.items) |qtoken| {
+                    if (std.ascii.eqlIgnoreCase(token, qtoken)) {
+                        matched = true;
+                        break;
+                    }
+                }
+
+                if (matched) {
+                    try result.appendSlice(allocator, "<b>");
+                    try result.appendSlice(allocator, token);
+                    try result.appendSlice(allocator, "</b>");
+                } else {
+                    try result.appendSlice(allocator, token);
+                }
+                token_start = null;
+            }
+
+            // Append the boundary character if not at end
+            if (i < document.len) {
+                try result.append(allocator, document[i]);
+            }
+        } else {
+            if (token_start == null) {
+                token_start = i;
+            }
+        }
+
+        i += 1;
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
 /// Format an array value as PostgreSQL-compatible text: {elem1,elem2,...}
 pub fn formatArray(allocator: Allocator, elements: []const Value) ![]u8 {
     var list = std.ArrayListUnmanaged(u8){};
@@ -3093,6 +3165,31 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
 
         const rank = try calculateRankCD(allocator, tsvec, tsquery, normalization);
         return Value{ .real = rank };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "ts_headline")) {
+        // ts_headline(document, query) - generate search result snippet with highlighting
+        if (fc.args.len != 2) return EvalError.TypeError;
+
+        const doc_arg = try evalExpr(allocator, fc.args[0], row);
+        defer doc_arg.free(allocator);
+        const query_arg = try evalExpr(allocator, fc.args[1], row);
+        defer query_arg.free(allocator);
+
+        const document = switch (doc_arg) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        const tsquery = switch (query_arg) {
+            .tsquery => |q| q,
+            .null_value => return .null_value,
+            else => return EvalError.TypeError,
+        };
+
+        const headline = try generateHeadline(allocator, document, tsquery);
+        return Value{ .text = headline };
     }
 
     return EvalError.UnsupportedExpression;
@@ -9364,6 +9461,96 @@ test "ts_rank_cd: normalization harmonic" {
     // 1 match * 2 (weight) = 2, divided by 3 tokens = 0.666...
     const expected = 2.0 / 3.0;
     try std.testing.expectApproxEqAbs(expected, rank, 0.01);
+}
+
+test "ts_headline: basic highlighting" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "the quick brown fox", "quick");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("the <b>quick</b> brown fox", headline);
+}
+
+test "ts_headline: multiple matches" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "the quick brown fox jumps", "quick & fox");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("the <b>quick</b> brown <b>fox</b> jumps", headline);
+}
+
+test "ts_headline: no match" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "the quick brown fox", "dog");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("the quick brown fox", headline);
+}
+
+test "ts_headline: case insensitive" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "The Quick Brown Fox", "quick");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("The <b>Quick</b> Brown Fox", headline);
+}
+
+test "ts_headline: with punctuation" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "Hello, world! How are you?", "world");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("Hello, <b>world</b>! How are you?", headline);
+}
+
+test "ts_headline: empty document" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "", "test");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("", headline);
+}
+
+test "ts_headline: empty query" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "test document", "");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("test document", headline);
+}
+
+test "ts_headline: word at boundary" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "quick", "quick");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("<b>quick</b>", headline);
+}
+
+test "ts_headline: multiple words at start and end" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "quick fox", "quick & fox");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("<b>quick</b> <b>fox</b>", headline);
+}
+
+test "ts_headline: repeated word" {
+    const allocator = std.testing.allocator;
+
+    const headline = try generateHeadline(allocator, "fox fox fox", "fox");
+    defer allocator.free(headline);
+
+    try std.testing.expectEqualStrings("<b>fox</b> <b>fox</b> <b>fox</b>", headline);
 }
 
 test "@@ operator: lowercased match" {

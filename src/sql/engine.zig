@@ -13762,6 +13762,74 @@ test "ts_rank comparison: multiple terms" {
     try testing.expectEqual(@as(f64, 1.0), row2.values[0].real);
 }
 
+test "ts_headline: basic usage" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_headline('The quick brown fox jumps over the lazy dog', to_tsquery('fox'))
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .text);
+    try testing.expectEqualStrings("The quick brown <b>fox</b> jumps over the lazy dog", row.values[0].text);
+}
+
+test "ts_headline: multiple query terms" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_headline('The quick brown fox', to_tsquery('quick & fox'))
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .text);
+    try testing.expectEqualStrings("The <b>quick</b> brown <b>fox</b>", row.values[0].text);
+}
+
+test "ts_headline: no match" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec(
+        \\SELECT ts_headline('The quick brown fox', to_tsquery('dog'))
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expect(row.values[0] == .text);
+    try testing.expectEqualStrings("The quick brown fox", row.values[0].text);
+}
+
+test "ts_headline: with table data" {
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE articles (id INTEGER, content TEXT)");
+    _ = try db.exec("INSERT INTO articles VALUES (1, 'PostgreSQL is a powerful database')");
+    _ = try db.exec("INSERT INTO articles VALUES (2, 'Full text search is useful')");
+
+    var r = try db.exec(
+        \\SELECT id, ts_headline(content, to_tsquery('database')) FROM articles WHERE id = 1
+    );
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    try testing.expectEqualStrings("PostgreSQL is a powerful <b>database</b>", row.values[1].text);
+}
+
 test "SELECT division by zero: proper cleanup with defer" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
