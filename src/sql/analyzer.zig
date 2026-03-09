@@ -282,6 +282,9 @@ pub const Analyzer = struct {
             .drop_domain => {},
             .create_function => |s| self.analyzeCreateFunction(&s),
             .drop_function => |s| self.analyzeDropFunction(&s),
+            .create_trigger => {}, // TODO: Milestone 14E
+            .drop_trigger => {},   // TODO: Milestone 14E
+            .alter_trigger => {},  // TODO: Milestone 14E
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

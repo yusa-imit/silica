@@ -306,6 +306,9 @@ pub const Planner = struct {
             .drop_domain => self.planTransaction(), // handled early in engine
             .create_function => self.planTransaction(), // handled early in engine
             .drop_function => self.planTransaction(), // handled early in engine
+            .create_trigger => self.planTransaction(), // TODO: Milestone 14F
+            .drop_trigger => self.planTransaction(),   // TODO: Milestone 14F
+            .alter_trigger => self.planTransaction(),  // TODO: Milestone 14F
             .explain => |s| self.planExplain(s),
         };
     }

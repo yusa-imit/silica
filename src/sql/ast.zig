@@ -585,6 +585,57 @@ pub const DropFunctionStmt = struct {
     if_exists: bool = false,
 };
 
+/// Trigger timing: when the trigger fires relative to the event.
+pub const TriggerTiming = enum {
+    before,     // BEFORE INSERT/UPDATE/DELETE
+    after,      // AFTER INSERT/UPDATE/DELETE
+    instead_of, // INSTEAD OF (for views)
+};
+
+/// Trigger event: what operation causes the trigger to fire.
+pub const TriggerEvent = enum {
+    insert,
+    update,
+    delete,
+    truncate,
+};
+
+/// Trigger level: per-row or per-statement.
+pub const TriggerLevel = enum {
+    row,       // FOR EACH ROW
+    statement, // FOR EACH STATEMENT
+};
+
+/// CREATE TRIGGER statement.
+pub const CreateTriggerStmt = struct {
+    name: []const u8,
+    table_name: []const u8,
+    timing: TriggerTiming,
+    event: TriggerEvent,
+    /// Columns for UPDATE OF clause (empty for other events)
+    update_columns: []const []const u8 = &.{},
+    level: TriggerLevel = .row,
+    /// WHEN (condition) clause
+    when_condition: ?*const Expr = null,
+    /// Trigger body (SQL statements to execute)
+    body: []const u8,
+    or_replace: bool = false,
+};
+
+/// DROP TRIGGER statement.
+pub const DropTriggerStmt = struct {
+    name: []const u8,
+    table_name: ?[]const u8 = null, // Optional; some DBs require it
+    if_exists: bool = false,
+};
+
+/// ALTER TRIGGER statement (ENABLE/DISABLE).
+pub const AlterTriggerStmt = struct {
+    name: []const u8,
+    table_name: ?[]const u8 = null,
+    enable: bool, // true = ENABLE, false = DISABLE
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -606,6 +657,9 @@ pub const Stmt = union(enum) {
     drop_domain: DropDomainStmt,
     create_function: CreateFunctionStmt,
     drop_function: DropFunctionStmt,
+    create_trigger: CreateTriggerStmt,
+    drop_trigger: DropTriggerStmt,
+    alter_trigger: AlterTriggerStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -969,4 +1023,79 @@ test "DropFunctionStmt with overload resolution" {
     try std.testing.expectEqualStrings("process", stmt.name);
     try std.testing.expectEqual(@as(usize, 2), stmt.param_types.len);
     try std.testing.expect(stmt.if_exists);
+}
+
+test "CreateTriggerStmt row-level AFTER INSERT" {
+    const stmt = CreateTriggerStmt{
+        .name = "audit_insert",
+        .table_name = "users",
+        .timing = .after,
+        .event = .insert,
+        .level = .row,
+        .body = "INSERT INTO audit_log VALUES (NEW.id, NOW());",
+    };
+
+    try std.testing.expectEqualStrings("audit_insert", stmt.name);
+    try std.testing.expectEqualStrings("users", stmt.table_name);
+    try std.testing.expectEqual(TriggerTiming.after, stmt.timing);
+    try std.testing.expectEqual(TriggerEvent.insert, stmt.event);
+    try std.testing.expectEqual(TriggerLevel.row, stmt.level);
+    try std.testing.expect(!stmt.or_replace);
+}
+
+test "CreateTriggerStmt UPDATE OF with columns" {
+    var arena = AstArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const update_cols = try arena.dupeSlice([]const u8, &.{ "name", "email" });
+
+    const stmt = CreateTriggerStmt{
+        .name = "check_update",
+        .table_name = "users",
+        .timing = .before,
+        .event = .update,
+        .update_columns = update_cols,
+        .level = .row,
+        .body = "SELECT validate_email(NEW.email);",
+    };
+
+    try std.testing.expectEqual(@as(usize, 2), stmt.update_columns.len);
+    try std.testing.expectEqualStrings("name", stmt.update_columns[0]);
+    try std.testing.expectEqualStrings("email", stmt.update_columns[1]);
+}
+
+test "CreateTriggerStmt INSTEAD OF for views" {
+    const stmt = CreateTriggerStmt{
+        .name = "view_insert",
+        .table_name = "user_view",
+        .timing = .instead_of,
+        .event = .insert,
+        .level = .row,
+        .body = "INSERT INTO users (id, name) VALUES (NEW.id, NEW.name);",
+    };
+
+    try std.testing.expectEqual(TriggerTiming.instead_of, stmt.timing);
+}
+
+test "DropTriggerStmt with table name" {
+    const stmt = DropTriggerStmt{
+        .name = "audit_trigger",
+        .table_name = "users",
+        .if_exists = true,
+    };
+
+    try std.testing.expectEqualStrings("audit_trigger", stmt.name);
+    try std.testing.expectEqualStrings("users", stmt.table_name.?);
+    try std.testing.expect(stmt.if_exists);
+}
+
+test "AlterTriggerStmt ENABLE" {
+    const stmt = AlterTriggerStmt{
+        .name = "check_constraint",
+        .table_name = "orders",
+        .enable = true,
+    };
+
+    try std.testing.expectEqualStrings("check_constraint", stmt.name);
+    try std.testing.expect(stmt.enable);
 }
