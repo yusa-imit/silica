@@ -690,12 +690,23 @@ pub const Parser = struct {
     fn parseCreate(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_create);
 
-        // CREATE OR REPLACE VIEW
+        // CREATE OR REPLACE (VIEW or FUNCTION)
         if (self.check(.kw_or)) {
-            return .{ .create_view = try self.parseCreateView(true) };
+            // Peek ahead to determine if it's VIEW or FUNCTION
+            if (self.checkAhead(.kw_view, 2)) {
+                return .{ .create_view = try self.parseCreateView(true) };
+            }
+            if (self.checkAhead(.kw_function, 2)) {
+                return .{ .create_function = try self.parseCreateFunction(true) };
+            }
+            try self.addError(self.peek(), "expected VIEW or FUNCTION after CREATE OR REPLACE");
+            return error.ParseFailed;
         }
         if (self.check(.kw_view)) {
             return .{ .create_view = try self.parseCreateView(false) };
+        }
+        if (self.check(.kw_function)) {
+            return .{ .create_function = try self.parseCreateFunction(false) };
         }
         if (self.match(.kw_unique)) {
             return .{ .create_index = try self.parseCreateIndex(true) };
@@ -713,7 +724,7 @@ pub const Parser = struct {
             return .{ .create_domain = try self.parseCreateDomain() };
         }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, or DOMAIN after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, or FUNCTION after CREATE");
         return error.ParseFailed;
     }
 
@@ -1091,7 +1102,8 @@ pub const Parser = struct {
         if (self.check(.kw_index)) return .{ .drop_index = try self.parseDropIndex() };
         if (self.check(.kw_type)) return .{ .drop_type = try self.parseDropType() };
         if (self.check(.kw_domain)) return .{ .drop_domain = try self.parseDropDomain() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, or DOMAIN after DROP");
+        if (self.check(.kw_function)) return .{ .drop_function = try self.parseDropFunction() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, or FUNCTION after DROP");
         return error.ParseFailed;
     }
 
@@ -1263,6 +1275,155 @@ pub const Parser = struct {
             if_exists = true;
         }
         return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    // ── CREATE FUNCTION / DROP FUNCTION ──────────────────────────
+
+    fn parseCreateFunction(self: *Parser, or_kw_seen: bool) Error!ast.CreateFunctionStmt {
+        const a = self.alloc();
+        var or_replace = false;
+
+        if (or_kw_seen) {
+            // CREATE OR REPLACE FUNCTION
+            _ = try self.expect(.kw_or);
+            _ = try self.expect(.kw_replace);
+            or_replace = true;
+        }
+
+        _ = try self.expect(.kw_function);
+
+        const name = try self.expectIdentifier();
+
+        // Parse parameter list: (param1 type1, param2 type2, ...)
+        _ = try self.expect(.left_paren);
+        var params = std.ArrayListUnmanaged(ast.FunctionParam){};
+        while (!self.check(.right_paren) and !self.check(.eof)) {
+            const param_name = try self.expectIdentifier();
+            const param_type = self.parseDataType() orelse {
+                try self.addError(self.peek(), "expected data type for parameter");
+                return error.ParseFailed;
+            };
+            params.append(a, .{ .name = param_name, .data_type = param_type }) catch return error.OutOfMemory;
+            if (!self.match(.comma)) break;
+        }
+        _ = try self.expect(.right_paren);
+
+        // Parse RETURNS clause
+        _ = try self.expect(.kw_returns);
+        const return_type = try self.parseFunctionReturn();
+
+        // Parse optional LANGUAGE clause
+        var language: []const u8 = "sfl"; // default to SFL
+        if (self.match(.kw_language)) {
+            language = try self.expectIdentifier();
+        }
+
+        // Parse optional volatility category
+        var volatility: ast.FunctionVolatility = .vol;
+        if (self.match(.kw_immutable)) {
+            volatility = .immutable;
+        } else if (self.match(.kw_stable)) {
+            volatility = .stable;
+        } else if (self.match(.kw_volatile)) {
+            volatility = .vol;
+        }
+
+        // Parse AS 'body' or AS $$ body $$
+        _ = try self.expect(.kw_as);
+        const body = try self.parseStringLiteral();
+
+        return .{
+            .name = name,
+            .parameters = params.toOwnedSlice(a) catch return error.OutOfMemory,
+            .return_type = return_type,
+            .language = language,
+            .body = body,
+            .volatility = volatility,
+            .or_replace = or_replace,
+        };
+    }
+
+    fn parseFunctionReturn(self: *Parser) Error!ast.FunctionReturn {
+        const a = self.alloc();
+
+        // RETURNS SETOF type_name
+        if (self.match(.kw_setof)) {
+            const element_type = self.parseDataType() orelse {
+                try self.addError(self.peek(), "expected data type after SETOF");
+                return error.ParseFailed;
+            };
+            return .{ .setof = element_type };
+        }
+
+        // RETURNS TABLE(col1 type1, col2 type2, ...)
+        if (self.match(.kw_table)) {
+            _ = try self.expect(.left_paren);
+            var columns = std.ArrayListUnmanaged(ast.ColumnDef){};
+            while (!self.check(.right_paren) and !self.check(.eof)) {
+                const col_name = try self.expectIdentifier();
+                const col_type = self.parseDataType() orelse {
+                    try self.addError(self.peek(), "expected data type for column");
+                    return error.ParseFailed;
+                };
+                columns.append(a, .{
+                    .name = col_name,
+                    .data_type = col_type,
+                    .constraints = &.{},
+                }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+            return .{ .table = columns.toOwnedSlice(a) catch return error.OutOfMemory };
+        }
+
+        // RETURNS type_name (scalar)
+        const scalar_type = self.parseDataType() orelse {
+            try self.addError(self.peek(), "expected return type after RETURNS");
+            return error.ParseFailed;
+        };
+        return .{ .scalar = scalar_type };
+    }
+
+    fn parseDropFunction(self: *Parser) Error!ast.DropFunctionStmt {
+        const a = self.alloc();
+        _ = try self.expect(.kw_function);
+
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+
+        const name = try self.expectIdentifier();
+
+        // Optional parameter type list for overload resolution: DROP FUNCTION foo(INTEGER, TEXT)
+        var param_types = std.ArrayListUnmanaged(ast.DataType){};
+        if (self.match(.left_paren)) {
+            while (!self.check(.right_paren) and !self.check(.eof)) {
+                const ptype = self.parseDataType() orelse {
+                    try self.addError(self.peek(), "expected data type");
+                    return error.ParseFailed;
+                };
+                param_types.append(a, ptype) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+        }
+
+        return .{
+            .name = name,
+            .param_types = param_types.toOwnedSlice(a) catch return error.OutOfMemory,
+            .if_exists = if_exists,
+        };
+    }
+
+    fn parseStringLiteral(self: *Parser) Error![]const u8 {
+        const t = self.advance();
+        if (t.type != .string_literal) {
+            try self.addError(t, "expected string literal");
+            return error.ParseFailed;
+        }
+        return self.lexeme(t);
     }
 
     // ── Transaction ───────────────────────────────────────────────
@@ -3301,4 +3462,170 @@ test "parse chained JSON operators" {
     try std.testing.expectEqual(ast.BinaryOp.json_extract_text, expr.binary_op.op);
     try std.testing.expect(expr.binary_op.left.* == .binary_op);
     try std.testing.expectEqual(ast.BinaryOp.json_extract, expr.binary_op.left.binary_op.op);
+}
+
+// ── CREATE FUNCTION / DROP FUNCTION tests ────────────────────────
+
+test "parse CREATE FUNCTION with scalar return" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION add(a INTEGER, b INTEGER)
+        \\RETURNS INTEGER
+        \\LANGUAGE sfl
+        \\AS 'a + b'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqualStrings("add", func.name);
+    try std.testing.expectEqual(@as(usize, 2), func.parameters.len);
+    try std.testing.expectEqualStrings("a", func.parameters[0].name);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.parameters[0].data_type);
+    try std.testing.expectEqualStrings("b", func.parameters[1].name);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.parameters[1].data_type);
+    try std.testing.expect(func.return_type == .scalar);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.return_type.scalar);
+    try std.testing.expectEqualStrings("sfl", func.language);
+    try std.testing.expectEqualStrings("'a + b'", func.body);
+    try std.testing.expectEqual(ast.FunctionVolatility.vol, func.volatility);
+    try std.testing.expectEqual(false, func.or_replace);
+}
+
+test "parse CREATE FUNCTION with SETOF return" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION get_numbers(n INTEGER)
+        \\RETURNS SETOF INTEGER
+        \\AS 'SELECT generate_series(1, n)'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqualStrings("get_numbers", func.name);
+    try std.testing.expect(func.return_type == .setof);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.return_type.setof);
+}
+
+test "parse CREATE FUNCTION with TABLE return" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION user_info()
+        \\RETURNS TABLE(id INTEGER, name TEXT)
+        \\AS 'SELECT id, name FROM users'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqualStrings("user_info", func.name);
+    try std.testing.expect(func.return_type == .table);
+    try std.testing.expectEqual(@as(usize, 2), func.return_type.table.len);
+    try std.testing.expectEqualStrings("id", func.return_type.table[0].name);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.return_type.table[0].data_type);
+    try std.testing.expectEqualStrings("name", func.return_type.table[1].name);
+    try std.testing.expectEqual(ast.DataType.type_text, func.return_type.table[1].data_type);
+}
+
+test "parse CREATE OR REPLACE FUNCTION" {
+    var r = try testParseWithArena(
+        \\CREATE OR REPLACE FUNCTION double(x INTEGER)
+        \\RETURNS INTEGER
+        \\AS 'x * 2'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqualStrings("double", func.name);
+    try std.testing.expectEqual(true, func.or_replace);
+}
+
+test "parse CREATE FUNCTION with IMMUTABLE" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION square(x INTEGER)
+        \\RETURNS INTEGER
+        \\IMMUTABLE
+        \\AS 'x * x'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqual(ast.FunctionVolatility.immutable, func.volatility);
+}
+
+test "parse CREATE FUNCTION with STABLE" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION current_user_id()
+        \\RETURNS INTEGER
+        \\STABLE
+        \\AS 'SELECT id FROM users WHERE username = current_user()'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqual(ast.FunctionVolatility.stable, func.volatility);
+}
+
+test "parse CREATE FUNCTION with VOLATILE" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION random_value()
+        \\RETURNS INTEGER
+        \\VOLATILE
+        \\AS 'SELECT random()'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqual(ast.FunctionVolatility.vol, func.volatility);
+}
+
+test "parse CREATE FUNCTION with no parameters" {
+    var r = try testParseWithArena(
+        \\CREATE FUNCTION get_timestamp()
+        \\RETURNS TIMESTAMP
+        \\AS 'SELECT NOW()'
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_function);
+    const func = r.stmt.create_function;
+    try std.testing.expectEqualStrings("get_timestamp", func.name);
+    try std.testing.expectEqual(@as(usize, 0), func.parameters.len);
+    try std.testing.expectEqual(ast.DataType.type_timestamp, func.return_type.scalar);
+}
+
+test "parse DROP FUNCTION" {
+    var r = try testParseWithArena("DROP FUNCTION add");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_function);
+    const func = r.stmt.drop_function;
+    try std.testing.expectEqualStrings("add", func.name);
+    try std.testing.expectEqual(@as(usize, 0), func.param_types.len);
+    try std.testing.expectEqual(false, func.if_exists);
+}
+
+test "parse DROP FUNCTION IF EXISTS" {
+    var r = try testParseWithArena("DROP FUNCTION IF EXISTS add");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_function);
+    const func = r.stmt.drop_function;
+    try std.testing.expectEqualStrings("add", func.name);
+    try std.testing.expectEqual(true, func.if_exists);
+}
+
+test "parse DROP FUNCTION with parameter types" {
+    var r = try testParseWithArena("DROP FUNCTION add(INTEGER, INTEGER)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_function);
+    const func = r.stmt.drop_function;
+    try std.testing.expectEqualStrings("add", func.name);
+    try std.testing.expectEqual(@as(usize, 2), func.param_types.len);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.param_types[0]);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.param_types[1]);
+}
+
+test "parse DROP FUNCTION IF EXISTS with parameter types" {
+    var r = try testParseWithArena("DROP FUNCTION IF EXISTS format(TEXT, INTEGER)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_function);
+    const func = r.stmt.drop_function;
+    try std.testing.expectEqualStrings("format", func.name);
+    try std.testing.expectEqual(@as(usize, 2), func.param_types.len);
+    try std.testing.expectEqual(ast.DataType.type_text, func.param_types[0]);
+    try std.testing.expectEqual(ast.DataType.type_integer, func.param_types[1]);
+    try std.testing.expectEqual(true, func.if_exists);
 }
