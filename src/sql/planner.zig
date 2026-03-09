@@ -1996,3 +1996,136 @@ test "plan non-recursive CTE with WITH RECURSIVE keyword" {
     try testing.expectEqual(@as(usize, 1), plan.ctes.len);
     try testing.expect(!plan.ctes[0].recursive); // No set_operation → not recursive
 }
+
+// ── Stored Function Planning Tests ───────────────────────────────────
+
+test "plan CREATE FUNCTION scalar" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE FUNCTION add(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x + y;';",
+        &arena, &schema);
+
+    // CREATE FUNCTION is a DDL statement handled in engine, returns transaction plan
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE FUNCTION with OR REPLACE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE OR REPLACE FUNCTION add(x INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x;';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE FUNCTION table return" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE FUNCTION get_users() RETURNS TABLE (id INTEGER, name TEXT) LANGUAGE sfl AS 'SELECT 1, ''test'';';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE FUNCTION setof return" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE FUNCTION generate_series(start INTEGER, stop INTEGER) RETURNS SETOF INTEGER LANGUAGE sfl AS 'RETURN start;';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE FUNCTION with volatility IMMUTABLE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE FUNCTION pi() RETURNS REAL LANGUAGE sfl IMMUTABLE AS 'RETURN 3.14159;';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE FUNCTION with volatility STABLE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE FUNCTION current_user() RETURNS TEXT LANGUAGE sfl STABLE AS 'RETURN ''admin'';';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE FUNCTION with volatility VOLATILE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE FUNCTION random() RETURNS REAL LANGUAGE sfl VOLATILE AS 'RETURN 0.5;';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP FUNCTION simple" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP FUNCTION add;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP FUNCTION with parameter types" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP FUNCTION add(INTEGER, INTEGER);",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP FUNCTION IF EXISTS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP FUNCTION IF EXISTS nonexistent;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
