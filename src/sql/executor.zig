@@ -7286,6 +7286,30 @@ test "Numeric + integer arithmetic" {
     try std.testing.expectEqual(@as(u8, 2), prod.numeric.scale);
 }
 
+test "Integer overflow: wrapping behavior" {
+    // Test documents current wrapping behavior for integer arithmetic.
+    // Silica uses wrapping arithmetic (+%, -%, *%) to avoid panics.
+    // PostgreSQL returns an error on overflow — we may change this in the future.
+
+    // Addition overflow: max + 1 wraps to negative
+    const max_val = Value{ .integer = std.math.maxInt(i64) };
+    const one = Value{ .integer = 1 };
+    const overflow_add = evalArithmetic(max_val, one, .add);
+    try std.testing.expectEqual(std.math.minInt(i64), overflow_add.integer);
+
+    // Subtraction overflow: min - 1 wraps to positive
+    const min_val = Value{ .integer = std.math.minInt(i64) };
+    const overflow_sub = evalArithmetic(min_val, one, .sub);
+    try std.testing.expectEqual(std.math.maxInt(i64), overflow_sub.integer);
+
+    // Multiplication overflow
+    const large = Value{ .integer = std.math.maxInt(i64) };
+    const two = Value{ .integer = 2 };
+    const overflow_mul = evalArithmetic(large, two, .mul);
+    // Result wraps: maxInt * 2 = -2 (in two's complement)
+    try std.testing.expectEqual(@as(i64, -2), overflow_mul.integer);
+}
+
 test "Numeric toInteger and toReal" {
     const n = Value{ .numeric = .{ .value = 12345, .scale = 2 } }; // 123.45
     try std.testing.expectEqual(@as(i64, 123), n.toInteger().?);
