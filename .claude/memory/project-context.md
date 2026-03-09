@@ -88,7 +88,16 @@
     - Catalog threading through FilterOp, SortOp operators
     - Type conversion from evaluated result to proper Value variant
 
-- **Milestone 14**: Triggers (PENDING)
+- **Milestone 14**: Triggers (IN PROGRESS)
+  - [x] Tokenizer (14A): Trigger keywords (TRIGGER, BEFORE, AFTER, INSTEAD, OF, EACH, STATEMENT, OLD, NEW, ENABLE, DISABLE, TRUNCATE)
+  - [x] AST (14B): CreateTriggerStmt, DropTriggerStmt, AlterTriggerStmt, TriggerTiming, TriggerEvent, TriggerLevel
+  - [x] Parser (14C): CREATE TRIGGER/DROP TRIGGER DDL with full syntax (timing, events, UPDATE OF, WHEN clause, FOR EACH ROW/STATEMENT)
+  - [ ] Catalog (14D): Trigger storage with 'trig:' key prefix, serialization/deserialization
+  - [ ] Analyzer (14E): Trigger definition validation
+  - [ ] Planner (14F): CREATE/DROP TRIGGER planning
+  - [ ] Executor (14G): Trigger execution logic
+  - [ ] Engine (14H): DML trigger integration (fire triggers on INSERT/UPDATE/DELETE)
+  - Tests: 7 tokenizer tests, 5 AST tests, 9 parser tests (21 tests total)
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
