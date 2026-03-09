@@ -19,6 +19,8 @@ const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const catalog_mod = @import("catalog.zig");
 const planner_mod = @import("planner.zig");
+const tokenizer_mod = @import("tokenizer.zig");
+const parser_mod = @import("parser.zig");
 const btree_mod = @import("../storage/btree.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const page_mod = @import("../storage/page.zig");
@@ -1770,7 +1772,7 @@ pub const EvalError = error{
 };
 
 /// Evaluate an AST expression against a row, producing a Value.
-pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) EvalError!Value {
+pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, catalog: ?*Catalog) EvalError!Value {
     switch (expr.*) {
         .integer_literal => |v| return .{ .integer = v },
         .float_literal => |v| return .{ .real = v },
@@ -1787,46 +1789,46 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
                 return EvalError.ColumnNotFound).dupe(allocator) catch return EvalError.OutOfMemory;
         },
 
-        .paren => |inner| return evalExpr(allocator, inner, row),
+        .paren => |inner| return evalExpr(allocator, inner, row, catalog),
 
         .unary_op => |op| {
-            const operand = try evalExpr(allocator, op.operand, row);
+            const operand = try evalExpr(allocator, op.operand, row, catalog);
             defer operand.free(allocator);
             return evalUnaryOp(op.op, operand);
         },
 
         .binary_op => |op| {
-            const left = try evalExpr(allocator, op.left, row);
+            const left = try evalExpr(allocator, op.left, row, catalog);
             defer left.free(allocator);
-            const right = try evalExpr(allocator, op.right, row);
+            const right = try evalExpr(allocator, op.right, row, catalog);
             defer right.free(allocator);
             return evalBinaryOp(allocator, op.op, left, right);
         },
 
         .is_null => |is| {
-            const val = try evalExpr(allocator, is.expr, row);
+            const val = try evalExpr(allocator, is.expr, row, catalog);
             defer val.free(allocator);
             const result = val == .null_value;
             return .{ .boolean = if (is.negated) !result else result };
         },
 
         .between => |bt| {
-            const val = try evalExpr(allocator, bt.expr, row);
+            const val = try evalExpr(allocator, bt.expr, row, catalog);
             defer val.free(allocator);
-            const low = try evalExpr(allocator, bt.low, row);
+            const low = try evalExpr(allocator, bt.low, row, catalog);
             defer low.free(allocator);
-            const high = try evalExpr(allocator, bt.high, row);
+            const high = try evalExpr(allocator, bt.high, row, catalog);
             defer high.free(allocator);
             const in_range = val.compare(low) != .lt and val.compare(high) != .gt;
             return .{ .boolean = if (bt.negated) !in_range else in_range };
         },
 
         .in_list => |il| {
-            const val = try evalExpr(allocator, il.expr, row);
+            const val = try evalExpr(allocator, il.expr, row, catalog);
             defer val.free(allocator);
             var found = false;
             for (il.list) |item| {
-                const item_val = try evalExpr(allocator, item, row);
+                const item_val = try evalExpr(allocator, item, row, catalog);
                 defer item_val.free(allocator);
                 if (val.eql(item_val)) {
                     found = true;
@@ -1837,9 +1839,9 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
         },
 
         .like => |lk| {
-            const val = try evalExpr(allocator, lk.expr, row);
+            const val = try evalExpr(allocator, lk.expr, row, catalog);
             defer val.free(allocator);
-            const pat = try evalExpr(allocator, lk.pattern, row);
+            const pat = try evalExpr(allocator, lk.pattern, row, catalog);
             defer pat.free(allocator);
             const text_val = switch (val) {
                 .text => |t| t,
@@ -1855,38 +1857,38 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
 
         .case_expr => |ce| {
             if (ce.operand) |operand| {
-                const op_val = try evalExpr(allocator, operand, row);
+                const op_val = try evalExpr(allocator, operand, row, catalog);
                 defer op_val.free(allocator);
                 for (ce.when_clauses) |wc| {
-                    const when_val = try evalExpr(allocator, wc.condition, row);
+                    const when_val = try evalExpr(allocator, wc.condition, row, catalog);
                     defer when_val.free(allocator);
                     if (op_val.eql(when_val)) {
-                        return evalExpr(allocator, wc.result, row);
+                        return evalExpr(allocator, wc.result, row, catalog);
                     }
                 }
             } else {
                 for (ce.when_clauses) |wc| {
-                    const cond = try evalExpr(allocator, wc.condition, row);
+                    const cond = try evalExpr(allocator, wc.condition, row, catalog);
                     defer cond.free(allocator);
                     if (cond.isTruthy()) {
-                        return evalExpr(allocator, wc.result, row);
+                        return evalExpr(allocator, wc.result, row, catalog);
                     }
                 }
             }
             if (ce.else_expr) |else_e| {
-                return evalExpr(allocator, else_e, row);
+                return evalExpr(allocator, else_e, row, catalog);
             }
             return .null_value;
         },
 
         .cast => |c| {
-            const val = try evalExpr(allocator, c.expr, row);
+            const val = try evalExpr(allocator, c.expr, row, catalog);
             defer val.free(allocator);
             return evalCast(allocator, val, c.target_type);
         },
 
         .function_call => |fc| {
-            return evalFunctionCall(allocator, fc, row);
+            return evalFunctionCall(allocator, fc, row, catalog);
         },
 
         // Window function values are pre-computed by WindowOp and stored in the row.
@@ -1902,16 +1904,16 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
                 allocator.free(elems);
             }
             for (elements, 0..) |elem_expr, i| {
-                elems[i] = try evalExpr(allocator, elem_expr, row);
+                elems[i] = try evalExpr(allocator, elem_expr, row, catalog);
                 inited += 1;
             }
             return .{ .array = elems };
         },
 
         .array_subscript => |sub| {
-            const arr_val = try evalExpr(allocator, sub.array, row);
+            const arr_val = try evalExpr(allocator, sub.array, row, catalog);
             defer arr_val.free(allocator);
-            const idx_val = try evalExpr(allocator, sub.index, row);
+            const idx_val = try evalExpr(allocator, sub.index, row, catalog);
             defer idx_val.free(allocator);
             const arr = switch (arr_val) {
                 .array => |a| a,
@@ -1924,9 +1926,9 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
         },
 
         .any => |any_expr| {
-            const lhs = try evalExpr(allocator, any_expr.expr, row);
+            const lhs = try evalExpr(allocator, any_expr.expr, row, catalog);
             defer lhs.free(allocator);
-            const arr_val = try evalExpr(allocator, any_expr.array, row);
+            const arr_val = try evalExpr(allocator, any_expr.array, row, catalog);
             defer arr_val.free(allocator);
 
             const arr = switch (arr_val) {
@@ -1944,9 +1946,9 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row) Ev
         },
 
         .all => |all_expr| {
-            const lhs = try evalExpr(allocator, all_expr.expr, row);
+            const lhs = try evalExpr(allocator, all_expr.expr, row, catalog);
             defer lhs.free(allocator);
-            const arr_val = try evalExpr(allocator, all_expr.array, row);
+            const arr_val = try evalExpr(allocator, all_expr.array, row, catalog);
             defer arr_val.free(allocator);
 
             const arr = switch (arr_val) {
@@ -2891,7 +2893,7 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
     };
 }
 
-fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalError!Value {
+fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog: ?*Catalog) EvalError!Value {
     // Aggregate functions: look up result by column name from the aggregate output row.
     // When an Aggregate operator has already computed COUNT/SUM/etc., the result is
     // stored as a named column. The Project operator just needs to retrieve it.
@@ -2910,7 +2912,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     // Built-in scalar functions
     if (std.ascii.eqlIgnoreCase(fc.name, "abs")) {
         if (fc.args.len != 1) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .integer => |v| Value{ .integer = if (v < 0) -v else v },
@@ -2920,7 +2922,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     }
     if (std.ascii.eqlIgnoreCase(fc.name, "length")) {
         if (fc.args.len != 1) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .text => |v| Value{ .integer = @intCast(v.len) },
@@ -2930,7 +2932,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     }
     if (std.ascii.eqlIgnoreCase(fc.name, "upper")) {
         if (fc.args.len != 1) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .text => |v| blk: {
@@ -2943,7 +2945,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     }
     if (std.ascii.eqlIgnoreCase(fc.name, "lower")) {
         if (fc.args.len != 1) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .text => |v| blk: {
@@ -2956,7 +2958,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     }
     if (std.ascii.eqlIgnoreCase(fc.name, "coalesce")) {
         for (fc.args) |arg| {
-            const val = try evalExpr(allocator, arg, row);
+            const val = try evalExpr(allocator, arg, row, catalog);
             if (val != .null_value) return val;
             val.free(allocator);
         }
@@ -2964,7 +2966,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     }
     if (std.ascii.eqlIgnoreCase(fc.name, "typeof")) {
         if (fc.args.len != 1) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         const type_name: []const u8 = switch (arg) {
             .integer => "integer",
@@ -3010,7 +3012,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
     // Array functions
     if (std.ascii.eqlIgnoreCase(fc.name, "array_length")) {
         if (fc.args.len < 1 or fc.args.len > 2) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .array => |a| Value{ .integer = @intCast(a.len) },
@@ -3021,7 +3023,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
 
     if (std.ascii.eqlIgnoreCase(fc.name, "array_upper")) {
         if (fc.args.len != 2) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .array => |a| if (a.len == 0) .null_value else Value{ .integer = @intCast(a.len) },
@@ -3031,7 +3033,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
 
     if (std.ascii.eqlIgnoreCase(fc.name, "array_lower")) {
         if (fc.args.len != 2) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .array => |a| if (a.len == 0) .null_value else Value{ .integer = 1 },
@@ -3041,7 +3043,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
 
     if (std.ascii.eqlIgnoreCase(fc.name, "cardinality")) {
         if (fc.args.len != 1) return EvalError.TypeError;
-        const arg = try evalExpr(allocator, fc.args[0], row);
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         return switch (arg) {
             .array => |a| Value{ .integer = @intCast(a.len) },
@@ -3057,7 +3059,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         const text_arg_idx: usize = if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
         if (fc.args.len > 2) return EvalError.TypeError;
 
-        const arg = try evalExpr(allocator, fc.args[text_arg_idx], row);
+        const arg = try evalExpr(allocator, fc.args[text_arg_idx], row, catalog);
         defer arg.free(allocator);
 
         const text = switch (arg) {
@@ -3077,7 +3079,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         const query_arg_idx: usize = if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
         if (fc.args.len > 2) return EvalError.TypeError;
 
-        const arg = try evalExpr(allocator, fc.args[query_arg_idx], row);
+        const arg = try evalExpr(allocator, fc.args[query_arg_idx], row, catalog);
         defer arg.free(allocator);
 
         const query = switch (arg) {
@@ -3097,9 +3099,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         // normalization is optional integer bitmask (default: 0)
         if (fc.args.len < 2 or fc.args.len > 3) return EvalError.TypeError;
 
-        const vec_arg = try evalExpr(allocator, fc.args[0], row);
+        const vec_arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer vec_arg.free(allocator);
-        const query_arg = try evalExpr(allocator, fc.args[1], row);
+        const query_arg = try evalExpr(allocator, fc.args[1], row, catalog);
         defer query_arg.free(allocator);
 
         const tsvec = switch (vec_arg) {
@@ -3117,7 +3119,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         // Optional normalization parameter
         var normalization: i64 = 0;
         if (fc.args.len == 3) {
-            const norm_arg = try evalExpr(allocator, fc.args[2], row);
+            const norm_arg = try evalExpr(allocator, fc.args[2], row, catalog);
             defer norm_arg.free(allocator);
             normalization = switch (norm_arg) {
                 .integer => |n| n,
@@ -3134,9 +3136,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         // ts_rank_cd(tsvector, tsquery [, normalization]) - cover density ranking
         if (fc.args.len < 2 or fc.args.len > 3) return EvalError.TypeError;
 
-        const vec_arg = try evalExpr(allocator, fc.args[0], row);
+        const vec_arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer vec_arg.free(allocator);
-        const query_arg = try evalExpr(allocator, fc.args[1], row);
+        const query_arg = try evalExpr(allocator, fc.args[1], row, catalog);
         defer query_arg.free(allocator);
 
         const tsvec = switch (vec_arg) {
@@ -3154,7 +3156,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         // Optional normalization parameter
         var normalization: i64 = 0;
         if (fc.args.len == 3) {
-            const norm_arg = try evalExpr(allocator, fc.args[2], row);
+            const norm_arg = try evalExpr(allocator, fc.args[2], row, catalog);
             defer norm_arg.free(allocator);
             normalization = switch (norm_arg) {
                 .integer => |n| n,
@@ -3171,9 +3173,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
         // ts_headline(document, query) - generate search result snippet with highlighting
         if (fc.args.len != 2) return EvalError.TypeError;
 
-        const doc_arg = try evalExpr(allocator, fc.args[0], row);
+        const doc_arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer doc_arg.free(allocator);
-        const query_arg = try evalExpr(allocator, fc.args[1], row);
+        const query_arg = try evalExpr(allocator, fc.args[1], row, catalog);
         defer query_arg.free(allocator);
 
         const document = switch (doc_arg) {
@@ -3190,6 +3192,112 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row) EvalErro
 
         const headline = try generateHeadline(allocator, document, tsquery);
         return Value{ .text = headline };
+    }
+
+    // User-defined functions: look up in catalog and execute
+    if (catalog) |cat| {
+        if (cat.getFunction(fc.name)) |func_info| {
+            defer func_info.deinit();
+
+            // For now, only support SQL-language scalar functions
+            if (!std.mem.eql(u8, func_info.language, "sql")) {
+                return EvalError.UnsupportedExpression; // Non-SQL languages not yet implemented
+            }
+
+            // Verify parameter count
+            if (fc.args.len != func_info.parameters.len) {
+                return EvalError.TypeError;
+            }
+
+        // Evaluate arguments
+        const arg_values = allocator.alloc(Value, fc.args.len) catch return EvalError.OutOfMemory;
+        defer allocator.free(arg_values);
+        var inited_args: usize = 0;
+        defer {
+            for (arg_values[0..inited_args]) |*v| v.free(allocator);
+        }
+
+        for (fc.args, 0..) |arg_expr, i| {
+            arg_values[i] = try evalExpr(allocator, arg_expr, row, catalog);
+            inited_args += 1;
+        }
+
+        // Execute SQL-language scalar function
+        // The body is a SQL expression (e.g., "UPPER($1) || ' ' || LOWER($2)")
+        // We need to create a temporary row with parameter bindings
+        var param_row = blk: {
+            const param_columns = allocator.alloc([]const u8, func_info.parameters.len) catch return EvalError.OutOfMemory;
+            const param_values = allocator.alloc(Value, func_info.parameters.len) catch return EvalError.OutOfMemory;
+
+            for (func_info.parameters, 0..) |param, i| {
+                param_columns[i] = param.name;
+                param_values[i] = try arg_values[i].dupe(allocator);
+            }
+
+            break :blk Row{
+                .columns = param_columns,
+                .values = param_values,
+                .allocator = allocator,
+            };
+        };
+        defer param_row.deinit();
+
+            // Parse and evaluate the function body as an expression
+            const result = switch (func_info.return_type) {
+                .scalar => |_| blk: {
+                    // Parse the function body as a SQL expression
+                    // The body should be a SQL expression like "UPPER($1) || ' ' || $2"
+                    // Wrap it in a SELECT statement to parse it
+                    const select_sql = std.fmt.allocPrint(allocator, "SELECT {s}", .{func_info.body}) catch {
+                        break :blk Value.null_value;
+                    };
+                    defer allocator.free(select_sql);
+
+                    var ast_arena = ast.AstArena.init(allocator);
+                    defer ast_arena.deinit();
+
+                    var parser = parser_mod.Parser.init(allocator, select_sql, &ast_arena) catch {
+                        // Parser initialization failed
+                        break :blk Value.null_value;
+                    };
+
+                    const stmt = parser.parseStatement() catch {
+                        // Parse error - return null
+                        break :blk Value.null_value;
+                    };
+
+                    // Extract the expression from the SELECT statement
+                    const expr: *const ast.Expr = if (stmt) |s| blk2: {
+                        switch (s) {
+                            .select => |sel| {
+                                if (sel.columns.len != 1) break :blk Value.null_value;
+                                switch (sel.columns[0]) {
+                                    .expr => |e| break :blk2 e.value,
+                                    else => break :blk Value.null_value,
+                                }
+                            },
+                            else => break :blk Value.null_value,
+                        }
+                    } else break :blk Value.null_value;
+
+                    // Evaluate the expression with the parameter row
+                    const expr_result = evalExpr(allocator, expr, &param_row, catalog) catch {
+                        // Evaluation error - return null
+                        break :blk Value.null_value;
+                    };
+
+                    break :blk expr_result;
+                },
+                .table, .setof => {
+                    // Set-returning functions not yet supported in scalar context
+                    return EvalError.UnsupportedExpression;
+                },
+            };
+
+            return result;
+        } else |_| {
+            // Function not found in catalog — fall through
+        }
     }
 
     return EvalError.UnsupportedExpression;
@@ -3523,7 +3631,7 @@ pub const FilterOp = struct {
     pub fn next(self: *FilterOp) ExecError!?Row {
         while (true) {
             var row = try self.input.next() orelse return null;
-            const val = evalExpr(self.allocator, self.predicate, &row) catch |err| {
+            const val = evalExpr(self.allocator, self.predicate, &row, null) catch |err| {
                 row.deinit();
                 return switch (err) {
                     error.OutOfMemory => ExecError.OutOfMemory,
@@ -3586,7 +3694,7 @@ pub const ProjectOp = struct {
         errdefer self.allocator.free(col_names);
 
         for (self.columns, 0..) |col, i| {
-            vals[i] = evalExpr(self.allocator, col.expr, &row) catch |err| {
+            vals[i] = evalExpr(self.allocator, col.expr, &row, null) catch |err| {
                 // When an aggregate function has an alias (e.g., SUM(x) AS total),
                 // the AggregateOp stores the result under the alias name. Try looking
                 // up by alias before reporting an error.
@@ -3776,9 +3884,9 @@ pub const SortOp = struct {
 
         fn lessThan(ctx: SortContext, a: Row, b: Row) bool {
             for (ctx.order_by) |ob| {
-                const av = evalExpr(ctx.allocator, ob.expr, &a) catch Value.null_value;
+                const av = evalExpr(ctx.allocator, ob.expr, &a, null) catch Value.null_value;
                 defer av.free(ctx.allocator);
-                const bv = evalExpr(ctx.allocator, ob.expr, &b) catch Value.null_value;
+                const bv = evalExpr(ctx.allocator, ob.expr, &b, null) catch Value.null_value;
                 defer bv.free(ctx.allocator);
 
                 const order = av.compare(bv);
@@ -3963,18 +4071,18 @@ pub const WindowOp = struct {
             const b = &ctx.rows[b_idx];
             // Compare partition keys first
             for (ctx.partition_by) |pb| {
-                const av = evalExpr(ctx.allocator, pb, a) catch Value.null_value;
+                const av = evalExpr(ctx.allocator, pb, a, null) catch Value.null_value;
                 defer av.free(ctx.allocator);
-                const bv = evalExpr(ctx.allocator, pb, b) catch Value.null_value;
+                const bv = evalExpr(ctx.allocator, pb, b, null) catch Value.null_value;
                 defer bv.free(ctx.allocator);
                 const order = av.compare(bv);
                 if (order != .eq) return order == .lt;
             }
             // Then order keys
             for (ctx.order_by) |ob| {
-                const av = evalExpr(ctx.allocator, ob.expr, a) catch Value.null_value;
+                const av = evalExpr(ctx.allocator, ob.expr, a, null) catch Value.null_value;
                 defer av.free(ctx.allocator);
-                const bv = evalExpr(ctx.allocator, ob.expr, b) catch Value.null_value;
+                const bv = evalExpr(ctx.allocator, ob.expr, b, null) catch Value.null_value;
                 defer bv.free(ctx.allocator);
                 const order = av.compare(bv);
                 if (order == .eq) continue;
@@ -3989,9 +4097,9 @@ pub const WindowOp = struct {
 
     fn samePartition(alloc: Allocator, partition_by: []const *const ast.Expr, a: *const Row, b: *const Row) bool {
         for (partition_by) |pb| {
-            const av = evalExpr(alloc, pb, a) catch Value.null_value;
+            const av = evalExpr(alloc, pb, a, null) catch Value.null_value;
             defer av.free(alloc);
-            const bv = evalExpr(alloc, pb, b) catch Value.null_value;
+            const bv = evalExpr(alloc, pb, b, null) catch Value.null_value;
             defer bv.free(alloc);
             if (!av.eql(bv)) return false;
         }
@@ -4041,7 +4149,7 @@ pub const WindowOp = struct {
             }
         } else if (std.mem.eql(u8, func_name_lower, "ntile")) {
             const n: i64 = if (wf.args.len > 0) blk: {
-                const val: Value = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]]) catch .null_value;
+                const val: Value = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]], null) catch .null_value;
                 break :blk val.toInteger() orelse 1;
             } else 1;
             const bucket_size = if (n > 0) @max(1, @divTrunc(@as(i64, @intCast(part_len)), n)) else 1;
@@ -4051,18 +4159,18 @@ pub const WindowOp = struct {
             }
         } else if (std.mem.eql(u8, func_name_lower, "lag")) {
             const offset: usize = if (wf.args.len > 1) blk: {
-                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]]) catch .null_value;
+                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]], null) catch .null_value;
                 break :blk @intCast(val.toInteger() orelse 1);
             } else 1;
             const default_val: Value = if (wf.args.len > 2)
-                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]]) catch Value.null_value
+                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]], null) catch Value.null_value
             else
                 Value.null_value;
             for (partition_indices, 0..) |orig_idx, pos| {
                 if (pos >= offset) {
                     const prev_idx = partition_indices[pos - offset];
                     if (wf.args.len > 0) {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[prev_idx]) catch Value.null_value;
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[prev_idx], null) catch Value.null_value;
                     } else {
                         results[orig_idx] = Value.null_value;
                     }
@@ -4073,18 +4181,18 @@ pub const WindowOp = struct {
             if (wf.args.len > 2) default_val.free(alloc);
         } else if (std.mem.eql(u8, func_name_lower, "lead")) {
             const offset: usize = if (wf.args.len > 1) blk: {
-                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]]) catch .null_value;
+                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]], null) catch .null_value;
                 break :blk @intCast(val.toInteger() orelse 1);
             } else 1;
             const default_val: Value = if (wf.args.len > 2)
-                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]]) catch Value.null_value
+                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]], null) catch Value.null_value
             else
                 Value.null_value;
             for (partition_indices, 0..) |orig_idx, pos| {
                 if (pos + offset < part_len) {
                     const next_idx = partition_indices[pos + offset];
                     if (wf.args.len > 0) {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[next_idx]) catch Value.null_value;
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[next_idx], null) catch Value.null_value;
                     } else {
                         results[orig_idx] = Value.null_value;
                     }
@@ -4096,7 +4204,7 @@ pub const WindowOp = struct {
         } else if (std.mem.eql(u8, func_name_lower, "first_value")) {
             if (wf.args.len > 0) {
                 for (partition_indices) |orig_idx| {
-                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]]) catch Value.null_value;
+                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]], null) catch Value.null_value;
                 }
             } else {
                 for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
@@ -4112,12 +4220,12 @@ pub const WindowOp = struct {
             if (wf.args.len > 0) {
                 if (use_full_partition) {
                     for (partition_indices) |orig_idx| {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[part_len - 1]]) catch Value.null_value;
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[part_len - 1]], null) catch Value.null_value;
                     }
                 } else {
                     // Default frame: last_value = current row's value
                     for (partition_indices) |orig_idx| {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[orig_idx]) catch Value.null_value;
+                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[orig_idx], null) catch Value.null_value;
                     }
                 }
             } else {
@@ -4125,12 +4233,12 @@ pub const WindowOp = struct {
             }
         } else if (std.mem.eql(u8, func_name_lower, "nth_value")) {
             const n: usize = if (wf.args.len > 1) blk: {
-                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]]) catch .null_value;
+                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]], null) catch .null_value;
                 break :blk @intCast(val.toInteger() orelse 1);
             } else 1;
             if (wf.args.len > 0 and n >= 1 and n <= part_len) {
                 for (partition_indices) |orig_idx| {
-                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[n - 1]]) catch Value.null_value;
+                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[n - 1]], null) catch Value.null_value;
                 }
             } else {
                 for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
@@ -4190,7 +4298,7 @@ pub const WindowOp = struct {
                 var count: i64 = 0;
                 for (frame_start..frame_end) |fi| {
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         defer v.free(alloc);
                         if (v != .null_value) count += 1;
                     }
@@ -4203,7 +4311,7 @@ pub const WindowOp = struct {
                 var has_any = false;
                 for (frame_start..frame_end) |fi| {
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         defer v.free(alloc);
                         switch (v) {
                             .integer => |iv| {
@@ -4231,7 +4339,7 @@ pub const WindowOp = struct {
                 var count: usize = 0;
                 for (frame_start..frame_end) |fi| {
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         defer v.free(alloc);
                         switch (v) {
                             .integer => |iv| {
@@ -4255,7 +4363,7 @@ pub const WindowOp = struct {
                 var min_val: Value = Value.null_value;
                 for (frame_start..frame_end) |fi| {
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         if (v == .null_value) {
                             v.free(alloc);
                             continue;
@@ -4273,7 +4381,7 @@ pub const WindowOp = struct {
                 var max_val: Value = Value.null_value;
                 for (frame_start..frame_end) |fi| {
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]]) catch Value.null_value;
+                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         if (v == .null_value) {
                             v.free(alloc);
                             continue;
@@ -4323,9 +4431,9 @@ pub const WindowOp = struct {
 
     fn orderKeysEqual(alloc: Allocator, order_by: []const ast.OrderByItem, a: *const Row, b: *const Row) bool {
         for (order_by) |ob| {
-            const av = evalExpr(alloc, ob.expr, a) catch Value.null_value;
+            const av = evalExpr(alloc, ob.expr, a, null) catch Value.null_value;
             defer av.free(alloc);
-            const bv = evalExpr(alloc, ob.expr, b) catch Value.null_value;
+            const bv = evalExpr(alloc, ob.expr, b, null) catch Value.null_value;
             defer bv.free(alloc);
             if (!av.eql(bv)) return false;
         }
@@ -4412,7 +4520,7 @@ pub const AggregateOp = struct {
         // Group by columns from first row in group
         for (self.group_by, 0..) |gb_expr, i| {
             if (group.len > 0) {
-                vals[i] = evalExpr(self.allocator, gb_expr, &group[0]) catch .null_value;
+                vals[i] = evalExpr(self.allocator, gb_expr, &group[0], null) catch .null_value;
             } else {
                 vals[i] = .null_value;
             }
@@ -4442,7 +4550,7 @@ pub const AggregateOp = struct {
                 var count: i64 = 0;
                 for (group) |*row| {
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
                         if (val != .null_value) count += 1;
                     }
@@ -4456,7 +4564,7 @@ pub const AggregateOp = struct {
                 var has_value = false;
                 for (group) |*row| {
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
                         switch (val) {
                             .integer => |v| {
@@ -4481,7 +4589,7 @@ pub const AggregateOp = struct {
                 var count: f64 = 0;
                 for (group) |*row| {
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
                         if (val.toReal()) |v| {
                             sum += v;
@@ -4496,7 +4604,7 @@ pub const AggregateOp = struct {
                 var min_val: ?Value = null;
                 for (group) |*row| {
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val == .null_value) {
                             val.free(self.allocator);
                             continue;
@@ -4526,7 +4634,7 @@ pub const AggregateOp = struct {
                 var max_val: ?Value = null;
                 for (group) |*row| {
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val == .null_value) {
                             val.free(self.allocator);
                             continue;
@@ -4585,9 +4693,9 @@ pub const AggregateOp = struct {
 
         fn lessThan(ctx: GroupContext, a: Row, b: Row) bool {
             for (ctx.group_by) |expr| {
-                const av = evalExpr(ctx.allocator, expr, &a) catch Value.null_value;
+                const av = evalExpr(ctx.allocator, expr, &a, null) catch Value.null_value;
                 defer av.free(ctx.allocator);
-                const bv = evalExpr(ctx.allocator, expr, &b) catch Value.null_value;
+                const bv = evalExpr(ctx.allocator, expr, &b, null) catch Value.null_value;
                 defer bv.free(ctx.allocator);
                 const order = av.compare(bv);
                 if (order == .eq) continue;
@@ -4600,9 +4708,9 @@ pub const AggregateOp = struct {
 
 fn groupKeysEqual(allocator: Allocator, group_by: []const *const ast.Expr, a: *const Row, b: *const Row) bool {
     for (group_by) |expr| {
-        const av = evalExpr(allocator, expr, a) catch Value.null_value;
+        const av = evalExpr(allocator, expr, a, null) catch Value.null_value;
         defer av.free(allocator);
-        const bv = evalExpr(allocator, expr, b) catch Value.null_value;
+        const bv = evalExpr(allocator, expr, b, null) catch Value.null_value;
         defer bv.free(allocator);
         if (!av.eql(bv)) return false;
     }
@@ -4681,7 +4789,7 @@ pub const NestedLoopJoinOp = struct {
 
                 // Check join condition
                 if (self.on_condition) |cond| {
-                    const val = evalExpr(self.allocator, cond, &combined) catch {
+                    const val = evalExpr(self.allocator, cond, &combined, null) catch {
                         combined.deinit();
                         continue;
                     };
@@ -4828,7 +4936,7 @@ pub const ValuesOp = struct {
         }
 
         for (exprs, 0..) |expr, i| {
-            vals[i] = evalExpr(self.allocator, expr, &empty_row) catch |err| {
+            vals[i] = evalExpr(self.allocator, expr, &empty_row, null) catch |err| {
                 return switch (err) {
                     error.OutOfMemory => ExecError.OutOfMemory,
                     error.TypeError => ExecError.TypeError,
@@ -5007,7 +5115,7 @@ pub const DistinctOp = struct {
             vals.deinit(self.allocator);
         }
         for (self.on_exprs) |expr| {
-            const v = evalExpr(self.allocator, expr, row) catch return ExecError.OutOfMemory;
+            const v = evalExpr(self.allocator, expr, row, null) catch return ExecError.OutOfMemory;
             vals.append(self.allocator, v) catch {
                 v.free(self.allocator);
                 return ExecError.OutOfMemory;
@@ -5387,21 +5495,21 @@ test "evalExpr literals" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const int_expr = ast.Expr{ .integer_literal = 42 };
-    const v1 = try evalExpr(allocator, &int_expr, &empty_row);
+    const v1 = try evalExpr(allocator, &int_expr, &empty_row, null);
     defer v1.free(allocator);
     try std.testing.expectEqual(@as(i64, 42), v1.integer);
 
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const v2 = try evalExpr(allocator, &str_expr, &empty_row);
+    const v2 = try evalExpr(allocator, &str_expr, &empty_row, null);
     defer v2.free(allocator);
     try std.testing.expectEqualStrings("hello", v2.text);
 
     const bool_expr = ast.Expr{ .boolean_literal = true };
-    const v3 = try evalExpr(allocator, &bool_expr, &empty_row);
+    const v3 = try evalExpr(allocator, &bool_expr, &empty_row, null);
     try std.testing.expect(v3.boolean);
 
     const null_expr = ast.Expr{ .null_literal = {} };
-    const v4 = try evalExpr(allocator, &null_expr, &empty_row);
+    const v4 = try evalExpr(allocator, &null_expr, &empty_row, null);
     try std.testing.expectEqual(Value.null_value, v4);
 }
 
@@ -5420,12 +5528,12 @@ test "evalExpr column reference" {
     const row = Row{ .columns = cols, .values = vals, .allocator = allocator };
 
     const ref_expr = ast.Expr{ .column_ref = .{ .name = "id" } };
-    const v = try evalExpr(allocator, &ref_expr, &row);
+    const v = try evalExpr(allocator, &ref_expr, &row, null);
     defer v.free(allocator);
     try std.testing.expectEqual(@as(i64, 1), v.integer);
 
     const bad_ref = ast.Expr{ .column_ref = .{ .name = "nonexistent" } };
-    try std.testing.expectError(EvalError.ColumnNotFound, evalExpr(allocator, &bad_ref, &row));
+    try std.testing.expectError(EvalError.ColumnNotFound, evalExpr(allocator, &bad_ref, &row, null));
 }
 
 test "evalExpr binary arithmetic" {
@@ -5435,24 +5543,24 @@ test "evalExpr binary arithmetic" {
     const left = ast.Expr{ .integer_literal = 10 };
     const right = ast.Expr{ .integer_literal = 3 };
     const add_expr = ast.Expr{ .binary_op = .{ .op = .add, .left = &left, .right = &right } };
-    const v = try evalExpr(allocator, &add_expr, &empty_row);
+    const v = try evalExpr(allocator, &add_expr, &empty_row, null);
     try std.testing.expectEqual(@as(i64, 13), v.integer);
 
     const sub_expr = ast.Expr{ .binary_op = .{ .op = .subtract, .left = &left, .right = &right } };
-    const v2 = try evalExpr(allocator, &sub_expr, &empty_row);
+    const v2 = try evalExpr(allocator, &sub_expr, &empty_row, null);
     try std.testing.expectEqual(@as(i64, 7), v2.integer);
 
     const mul_expr = ast.Expr{ .binary_op = .{ .op = .multiply, .left = &left, .right = &right } };
-    const v3 = try evalExpr(allocator, &mul_expr, &empty_row);
+    const v3 = try evalExpr(allocator, &mul_expr, &empty_row, null);
     try std.testing.expectEqual(@as(i64, 30), v3.integer);
 
     const div_expr = ast.Expr{ .binary_op = .{ .op = .divide, .left = &left, .right = &right } };
-    const v4 = try evalExpr(allocator, &div_expr, &empty_row);
+    const v4 = try evalExpr(allocator, &div_expr, &empty_row, null);
     try std.testing.expectEqual(@as(i64, 3), v4.integer);
 
     const zero = ast.Expr{ .integer_literal = 0 };
     const div_zero = ast.Expr{ .binary_op = .{ .op = .divide, .left = &left, .right = &zero } };
-    try std.testing.expectError(EvalError.DivisionByZero, evalExpr(allocator, &div_zero, &empty_row));
+    try std.testing.expectError(EvalError.DivisionByZero, evalExpr(allocator, &div_zero, &empty_row, null));
 }
 
 test "evalExpr comparison" {
@@ -5463,15 +5571,15 @@ test "evalExpr comparison" {
     const right = ast.Expr{ .integer_literal = 20 };
 
     const lt = ast.Expr{ .binary_op = .{ .op = .less_than, .left = &left, .right = &right } };
-    const v = try evalExpr(allocator, &lt, &empty_row);
+    const v = try evalExpr(allocator, &lt, &empty_row, null);
     try std.testing.expect(v.boolean);
 
     const eq = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left, .right = &left } };
-    const v2 = try evalExpr(allocator, &eq, &empty_row);
+    const v2 = try evalExpr(allocator, &eq, &empty_row, null);
     try std.testing.expect(v2.boolean);
 
     const neq = ast.Expr{ .binary_op = .{ .op = .not_equal, .left = &left, .right = &right } };
-    const v3 = try evalExpr(allocator, &neq, &empty_row);
+    const v3 = try evalExpr(allocator, &neq, &empty_row, null);
     try std.testing.expect(v3.boolean);
 }
 
@@ -5483,11 +5591,11 @@ test "evalExpr logical AND/OR" {
     const f = ast.Expr{ .boolean_literal = false };
 
     const and_expr = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &t, .right = &f } };
-    const v = try evalExpr(allocator, &and_expr, &empty_row);
+    const v = try evalExpr(allocator, &and_expr, &empty_row, null);
     try std.testing.expect(!v.boolean);
 
     const or_expr = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &t, .right = &f } };
-    const v2 = try evalExpr(allocator, &or_expr, &empty_row);
+    const v2 = try evalExpr(allocator, &or_expr, &empty_row, null);
     try std.testing.expect(v2.boolean);
 }
 
@@ -5501,52 +5609,52 @@ test "evalExpr AND/OR with NULL (three-valued logic)" {
 
     // FALSE AND NULL = FALSE
     const and_fn = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &f, .right = &n } };
-    const v1 = try evalExpr(allocator, &and_fn, &empty_row);
+    const v1 = try evalExpr(allocator, &and_fn, &empty_row, null);
     try std.testing.expect(v1 == .boolean and !v1.boolean);
 
     // NULL AND FALSE = FALSE (commutative)
     const and_nf = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &n, .right = &f } };
-    const v2 = try evalExpr(allocator, &and_nf, &empty_row);
+    const v2 = try evalExpr(allocator, &and_nf, &empty_row, null);
     try std.testing.expect(v2 == .boolean and !v2.boolean);
 
     // TRUE AND NULL = NULL
     const and_tn = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &t, .right = &n } };
-    const v3 = try evalExpr(allocator, &and_tn, &empty_row);
+    const v3 = try evalExpr(allocator, &and_tn, &empty_row, null);
     try std.testing.expect(v3 == .null_value);
 
     // NULL AND TRUE = NULL
     const and_nt = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &n, .right = &t } };
-    const v4 = try evalExpr(allocator, &and_nt, &empty_row);
+    const v4 = try evalExpr(allocator, &and_nt, &empty_row, null);
     try std.testing.expect(v4 == .null_value);
 
     // TRUE OR NULL = TRUE
     const or_tn = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &t, .right = &n } };
-    const v5 = try evalExpr(allocator, &or_tn, &empty_row);
+    const v5 = try evalExpr(allocator, &or_tn, &empty_row, null);
     try std.testing.expect(v5 == .boolean and v5.boolean);
 
     // NULL OR TRUE = TRUE (commutative)
     const or_nt = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &n, .right = &t } };
-    const v6 = try evalExpr(allocator, &or_nt, &empty_row);
+    const v6 = try evalExpr(allocator, &or_nt, &empty_row, null);
     try std.testing.expect(v6 == .boolean and v6.boolean);
 
     // FALSE OR NULL = NULL
     const or_fn = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &f, .right = &n } };
-    const v7 = try evalExpr(allocator, &or_fn, &empty_row);
+    const v7 = try evalExpr(allocator, &or_fn, &empty_row, null);
     try std.testing.expect(v7 == .null_value);
 
     // NULL OR FALSE = NULL
     const or_nf = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &n, .right = &f } };
-    const v8 = try evalExpr(allocator, &or_nf, &empty_row);
+    const v8 = try evalExpr(allocator, &or_nf, &empty_row, null);
     try std.testing.expect(v8 == .null_value);
 
     // NULL AND NULL = NULL
     const and_nn = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &n, .right = &n } };
-    const v9 = try evalExpr(allocator, &and_nn, &empty_row);
+    const v9 = try evalExpr(allocator, &and_nn, &empty_row, null);
     try std.testing.expect(v9 == .null_value);
 
     // NULL OR NULL = NULL
     const or_nn = ast.Expr{ .binary_op = .{ .op = .@"or", .left = &n, .right = &n } };
-    const v10 = try evalExpr(allocator, &or_nn, &empty_row);
+    const v10 = try evalExpr(allocator, &or_nn, &empty_row, null);
     try std.testing.expect(v10 == .null_value);
 }
 
@@ -5556,16 +5664,16 @@ test "evalExpr IS NULL / IS NOT NULL" {
 
     const null_expr = ast.Expr{ .null_literal = {} };
     const is_null = ast.Expr{ .is_null = .{ .expr = &null_expr } };
-    const v = try evalExpr(allocator, &is_null, &empty_row);
+    const v = try evalExpr(allocator, &is_null, &empty_row, null);
     try std.testing.expect(v.boolean);
 
     const is_not_null = ast.Expr{ .is_null = .{ .expr = &null_expr, .negated = true } };
-    const v2 = try evalExpr(allocator, &is_not_null, &empty_row);
+    const v2 = try evalExpr(allocator, &is_not_null, &empty_row, null);
     try std.testing.expect(!v2.boolean);
 
     const int_expr = ast.Expr{ .integer_literal = 42 };
     const not_null = ast.Expr{ .is_null = .{ .expr = &int_expr } };
-    const v3 = try evalExpr(allocator, &not_null, &empty_row);
+    const v3 = try evalExpr(allocator, &not_null, &empty_row, null);
     try std.testing.expect(!v3.boolean);
 }
 
@@ -5578,12 +5686,12 @@ test "evalExpr BETWEEN" {
     const high = ast.Expr{ .integer_literal = 10 };
 
     const between = ast.Expr{ .between = .{ .expr = &val, .low = &low, .high = &high } };
-    const v = try evalExpr(allocator, &between, &empty_row);
+    const v = try evalExpr(allocator, &between, &empty_row, null);
     try std.testing.expect(v.boolean);
 
     const out = ast.Expr{ .integer_literal = 15 };
     const not_between = ast.Expr{ .between = .{ .expr = &out, .low = &low, .high = &high } };
-    const v2 = try evalExpr(allocator, &not_between, &empty_row);
+    const v2 = try evalExpr(allocator, &not_between, &empty_row, null);
     try std.testing.expect(!v2.boolean);
 }
 
@@ -5598,12 +5706,12 @@ test "evalExpr IN list" {
     const list = [_]*const ast.Expr{ &item1, &item2, &item3 };
 
     const in_expr = ast.Expr{ .in_list = .{ .expr = &val, .list = &list } };
-    const v = try evalExpr(allocator, &in_expr, &empty_row);
+    const v = try evalExpr(allocator, &in_expr, &empty_row, null);
     try std.testing.expect(v.boolean);
 
     const val2 = ast.Expr{ .integer_literal = 4 };
     const not_in = ast.Expr{ .in_list = .{ .expr = &val2, .list = &list } };
-    const v2 = try evalExpr(allocator, &not_in, &empty_row);
+    const v2 = try evalExpr(allocator, &not_in, &empty_row, null);
     try std.testing.expect(!v2.boolean);
 }
 
@@ -5614,19 +5722,19 @@ test "evalExpr LIKE" {
     const text = ast.Expr{ .string_literal = "hello world" };
     const pat1 = ast.Expr{ .string_literal = "hello%" };
     const like1 = ast.Expr{ .like = .{ .expr = &text, .pattern = &pat1 } };
-    const v1 = try evalExpr(allocator, &like1, &empty_row);
+    const v1 = try evalExpr(allocator, &like1, &empty_row, null);
     defer v1.free(allocator);
     try std.testing.expect(v1.boolean);
 
     const pat2 = ast.Expr{ .string_literal = "h_llo%" };
     const like2 = ast.Expr{ .like = .{ .expr = &text, .pattern = &pat2 } };
-    const v2 = try evalExpr(allocator, &like2, &empty_row);
+    const v2 = try evalExpr(allocator, &like2, &empty_row, null);
     defer v2.free(allocator);
     try std.testing.expect(v2.boolean);
 
     const pat3 = ast.Expr{ .string_literal = "goodbye%" };
     const like3 = ast.Expr{ .like = .{ .expr = &text, .pattern = &pat3 } };
-    const v3 = try evalExpr(allocator, &like3, &empty_row);
+    const v3 = try evalExpr(allocator, &like3, &empty_row, null);
     defer v3.free(allocator);
     try std.testing.expect(!v3.boolean);
 }
@@ -5637,7 +5745,7 @@ test "evalExpr unary negation" {
 
     const inner = ast.Expr{ .integer_literal = 42 };
     const neg = ast.Expr{ .unary_op = .{ .op = .negate, .operand = &inner } };
-    const v = try evalExpr(allocator, &neg, &empty_row);
+    const v = try evalExpr(allocator, &neg, &empty_row, null);
     try std.testing.expectEqual(@as(i64, -42), v.integer);
 }
 
@@ -5647,7 +5755,7 @@ test "evalExpr NOT" {
 
     const inner = ast.Expr{ .boolean_literal = true };
     const not_expr = ast.Expr{ .unary_op = .{ .op = .not, .operand = &inner } };
-    const v = try evalExpr(allocator, &not_expr, &empty_row);
+    const v = try evalExpr(allocator, &not_expr, &empty_row, null);
     try std.testing.expect(!v.boolean);
 }
 
@@ -6031,7 +6139,7 @@ test "evalExpr CASE expression" {
         .{ .condition = &when_cond, .result = &then_val },
     };
     const case_expr = ast.Expr{ .case_expr = .{ .when_clauses = &when_clauses, .else_expr = &else_val } };
-    const v = try evalExpr(allocator, &case_expr, &empty_row);
+    const v = try evalExpr(allocator, &case_expr, &empty_row, null);
     defer v.free(allocator);
     try std.testing.expectEqual(@as(i64, 1), v.integer);
 }
@@ -6043,7 +6151,7 @@ test "evalExpr NULL arithmetic propagation" {
     const int_val = ast.Expr{ .integer_literal = 5 };
     const null_val = ast.Expr{ .null_literal = {} };
     const add_null = ast.Expr{ .binary_op = .{ .op = .add, .left = &int_val, .right = &null_val } };
-    const v = try evalExpr(allocator, &add_null, &empty_row);
+    const v = try evalExpr(allocator, &add_null, &empty_row, null);
     try std.testing.expectEqual(Value.null_value, v);
 }
 
@@ -6076,7 +6184,7 @@ test "evalExpr string concatenation" {
     const left = ast.Expr{ .string_literal = "hello" };
     const right = ast.Expr{ .string_literal = " world" };
     const concat = ast.Expr{ .binary_op = .{ .op = .concat, .left = &left, .right = &right } };
-    const v = try evalExpr(allocator, &concat, &empty_row);
+    const v = try evalExpr(allocator, &concat, &empty_row, null);
     defer v.free(allocator);
     try std.testing.expectEqualStrings("hello world", v.text);
 }
@@ -6087,7 +6195,7 @@ test "evalExpr CAST" {
 
     const int_val = ast.Expr{ .integer_literal = 42 };
     const cast_expr = ast.Expr{ .cast = .{ .expr = &int_val, .target_type = .type_text } };
-    const v = try evalExpr(allocator, &cast_expr, &empty_row);
+    const v = try evalExpr(allocator, &cast_expr, &empty_row, null);
     defer v.free(allocator);
     try std.testing.expectEqualStrings("42", v.text);
 }
@@ -6100,7 +6208,7 @@ test "evalExpr CAST to JSON/JSONB" {
     {
         const text_val = ast.Expr{ .string_literal = "{\"key\": \"value\"}" };
         const cast_expr = ast.Expr{ .cast = .{ .expr = &text_val, .target_type = .type_json } };
-        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        const v = try evalExpr(allocator, &cast_expr, &empty_row, null);
         defer v.free(allocator);
         try std.testing.expectEqualStrings("{\"key\": \"value\"}", v.text);
     }
@@ -6109,7 +6217,7 @@ test "evalExpr CAST to JSON/JSONB" {
     {
         const int_val = ast.Expr{ .integer_literal = 42 };
         const cast_expr = ast.Expr{ .cast = .{ .expr = &int_val, .target_type = .type_json } };
-        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        const v = try evalExpr(allocator, &cast_expr, &empty_row, null);
         defer v.free(allocator);
         try std.testing.expectEqualStrings("42", v.text);
     }
@@ -6118,7 +6226,7 @@ test "evalExpr CAST to JSON/JSONB" {
     {
         const real_val = ast.Expr{ .float_literal = 3.14 };
         const cast_expr = ast.Expr{ .cast = .{ .expr = &real_val, .target_type = .type_json } };
-        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        const v = try evalExpr(allocator, &cast_expr, &empty_row, null);
         defer v.free(allocator);
         // Should produce "3.14" or "3.14e0" format
         try std.testing.expect(v == .text);
@@ -6128,7 +6236,7 @@ test "evalExpr CAST to JSON/JSONB" {
     {
         const bool_val = ast.Expr{ .boolean_literal = true };
         const cast_expr = ast.Expr{ .cast = .{ .expr = &bool_val, .target_type = .type_json } };
-        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        const v = try evalExpr(allocator, &cast_expr, &empty_row, null);
         defer v.free(allocator);
         try std.testing.expectEqualStrings("true", v.text);
     }
@@ -6137,7 +6245,7 @@ test "evalExpr CAST to JSON/JSONB" {
     {
         const null_val = ast.Expr{ .null_literal = {} };
         const cast_expr = ast.Expr{ .cast = .{ .expr = &null_val, .target_type = .type_json } };
-        const v = try evalExpr(allocator, &cast_expr, &empty_row);
+        const v = try evalExpr(allocator, &cast_expr, &empty_row, null);
         defer v.free(allocator);
         try std.testing.expect(v == .null_value);
     }
@@ -7333,7 +7441,7 @@ test "evalFunctionCall COALESCE" {
     const args = [_]*const ast.Expr{ &null_expr, &null_expr, &int_expr };
     const fc = .{ .name = "coalesce", .args = &args, .distinct = false };
 
-    const result = try evalFunctionCall(allocator, fc, &empty_row);
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
     try std.testing.expectEqual(@as(i64, 42), result.integer);
 
@@ -7341,7 +7449,7 @@ test "evalFunctionCall COALESCE" {
     const all_null_args = [_]*const ast.Expr{ &null_expr, &null_expr, &null_expr };
     const fc_all_null = .{ .name = "coalesce", .args = &all_null_args, .distinct = false };
 
-    const result2 = try evalFunctionCall(allocator, fc_all_null, &empty_row);
+    const result2 = try evalFunctionCall(allocator, fc_all_null, &empty_row, null);
     defer result2.free(allocator);
     try std.testing.expect(result2 == .null_value);
 
@@ -7352,7 +7460,7 @@ test "evalFunctionCall COALESCE" {
     const multi_args = [_]*const ast.Expr{ &one, &two, &three };
     const fc_multi = .{ .name = "coalesce", .args = &multi_args, .distinct = false };
 
-    const result3 = try evalFunctionCall(allocator, fc_multi, &empty_row);
+    const result3 = try evalFunctionCall(allocator, fc_multi, &empty_row, null);
     defer result3.free(allocator);
     try std.testing.expectEqual(@as(i64, 1), result3.integer);
 
@@ -7362,7 +7470,7 @@ test "evalFunctionCall COALESCE" {
     const text_args = [_]*const ast.Expr{ &text_null, &text_val };
     const fc_text = .{ .name = "coalesce", .args = &text_args, .distinct = false };
 
-    const result4 = try evalFunctionCall(allocator, fc_text, &empty_row);
+    const result4 = try evalFunctionCall(allocator, fc_text, &empty_row, null);
     defer result4.free(allocator);
     try std.testing.expectEqualStrings("hello", result4.text);
 }
@@ -7840,7 +7948,7 @@ test "evalExpr array_constructor simple" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &expr, &empty_row);
+    const result = try evalExpr(allocator, &expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .array);
@@ -7888,7 +7996,7 @@ test "evalExpr array_subscript valid 1-based index" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .integer);
@@ -7924,7 +8032,7 @@ test "evalExpr array_subscript index 1 returns first element" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expectEqual(@as(i64, 100), result.integer);
@@ -7959,7 +8067,7 @@ test "evalExpr array_subscript out of bounds returns null" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .null_value);
@@ -7994,7 +8102,7 @@ test "evalExpr array_subscript zero index returns null" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .null_value); // index 0 is invalid (1-based)
@@ -8029,7 +8137,7 @@ test "evalExpr array_subscript negative index returns null" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .null_value);
@@ -8060,7 +8168,7 @@ test "evalExpr array_subscript on non-array returns null" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &subscript_expr, &empty_row);
+    const result = try evalExpr(allocator, &subscript_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .null_value);
@@ -8170,7 +8278,7 @@ test "evalExpr ANY operator with array" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &any_expr, &empty_row);
+    const result = try evalExpr(allocator, &any_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .boolean);
@@ -8212,7 +8320,7 @@ test "evalExpr ALL operator with array" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &all_expr, &empty_row);
+    const result = try evalExpr(allocator, &all_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .boolean);
@@ -8254,7 +8362,7 @@ test "evalExpr ANY returns false when no match" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &any_expr, &empty_row);
+    const result = try evalExpr(allocator, &any_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .boolean);
@@ -8290,7 +8398,7 @@ test "evalExpr ANY with empty array returns false" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &any_expr, &empty_row);
+    const result = try evalExpr(allocator, &any_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .boolean);
@@ -8326,7 +8434,7 @@ test "evalExpr ALL with empty array returns true" {
         .allocator = allocator,
     };
 
-    const result = try evalExpr(allocator, &all_expr, &empty_row);
+    const result = try evalExpr(allocator, &all_expr, &empty_row, null);
     defer result.free(allocator);
 
     try std.testing.expect(result == .boolean);

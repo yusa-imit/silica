@@ -959,7 +959,7 @@ pub const Database = struct {
         };
 
         // Evaluate the array argument
-        const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row) catch
+        const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
             return EngineError.ExecutionError;
 
         // Ensure it's actually an array
@@ -1547,12 +1547,12 @@ pub const Database = struct {
         // Evaluate limit/offset expressions (they should be integer literals)
         const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
         const limit_count: ?u64 = if (limit.limit_expr) |expr| blk: {
-            const val = evalExpr(self.allocator, expr, &empty_row) catch break :blk null;
+            const val = evalExpr(self.allocator, expr, &empty_row, null) catch break :blk null;
             defer val.free(self.allocator);
             break :blk if (val.toInteger()) |i| @intCast(i) else null;
         } else null;
         const offset_count: u64 = if (limit.offset_expr) |expr| blk: {
-            const val = evalExpr(self.allocator, expr, &empty_row) catch break :blk 0;
+            const val = evalExpr(self.allocator, expr, &empty_row, null) catch break :blk 0;
             defer val.free(self.allocator);
             break :blk if (val.toInteger()) |i| @intCast(i) else 0;
         } else 0;
@@ -1718,7 +1718,7 @@ pub const Database = struct {
             }
 
             for (row_exprs, 0..) |expr, i| {
-                vals[i] = evalExpr(self.allocator, expr, &empty_row) catch return EngineError.ExecutionError;
+                vals[i] = evalExpr(self.allocator, expr, &empty_row, null) catch return EngineError.ExecutionError;
                 inited += 1;
             }
 
@@ -2048,7 +2048,7 @@ pub const Database = struct {
 
             // Check predicate
             if (predicate) |pred| {
-                const val = evalExpr(self.allocator, pred, &row) catch {
+                const val = evalExpr(self.allocator, pred, &row, null) catch {
                     for (row.values) |v| v.free(self.allocator);
                     self.allocator.free(row.values);
                     continue;
@@ -2096,7 +2096,7 @@ pub const Database = struct {
 
             // Apply assignments
             for (assignments) |assign| {
-                const new_val = evalExpr(self.allocator, assign.expr, &row) catch continue;
+                const new_val = evalExpr(self.allocator, assign.expr, &row, null) catch continue;
                 // Find column index by alias (= column name)
                 const col_name = assign.alias orelse {
                     new_val.free(self.allocator);
@@ -2360,7 +2360,7 @@ pub const Database = struct {
                     .allocator = self.allocator,
                 };
 
-                const val = evalExpr(self.allocator, pred, &row) catch {
+                const val = evalExpr(self.allocator, pred, &row, null) catch {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
                     self.allocator.free(entry.key);
@@ -3029,7 +3029,7 @@ pub const Database = struct {
             .values = values,
             .allocator = self.allocator,
         };
-        const result = evalExpr(self.allocator, where_expr, &row) catch return false;
+        const result = evalExpr(self.allocator, where_expr, &row, null) catch return false;
         defer result.free(self.allocator);
         return switch (result) {
             .boolean => |b| b,
