@@ -7323,6 +7323,50 @@ test "Numeric toInteger and toReal" {
     try std.testing.expect(z.toReal().? == 0.0);
 }
 
+test "evalFunctionCall COALESCE" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // COALESCE(NULL, NULL, 42) → 42 (first non-NULL value)
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const int_expr = ast.Expr{ .integer_literal = 42 };
+    const args = [_]*const ast.Expr{ &null_expr, &null_expr, &int_expr };
+    const fc = .{ .name = "coalesce", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row);
+    defer result.free(allocator);
+    try std.testing.expectEqual(@as(i64, 42), result.integer);
+
+    // COALESCE(NULL, NULL, NULL) → NULL (all NULL)
+    const all_null_args = [_]*const ast.Expr{ &null_expr, &null_expr, &null_expr };
+    const fc_all_null = .{ .name = "coalesce", .args = &all_null_args, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_all_null, &empty_row);
+    defer result2.free(allocator);
+    try std.testing.expect(result2 == .null_value);
+
+    // COALESCE(1, 2, 3) → 1 (returns first value)
+    const one = ast.Expr{ .integer_literal = 1 };
+    const two = ast.Expr{ .integer_literal = 2 };
+    const three = ast.Expr{ .integer_literal = 3 };
+    const multi_args = [_]*const ast.Expr{ &one, &two, &three };
+    const fc_multi = .{ .name = "coalesce", .args = &multi_args, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_multi, &empty_row);
+    defer result3.free(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result3.integer);
+
+    // COALESCE() with text values
+    const text_null = ast.Expr{ .null_literal = {} };
+    const text_val = ast.Expr{ .string_literal = "hello" };
+    const text_args = [_]*const ast.Expr{ &text_null, &text_val };
+    const fc_text = .{ .name = "coalesce", .args = &text_args, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_text, &empty_row);
+    defer result4.free(allocator);
+    try std.testing.expectEqualStrings("hello", result4.text);
+}
+
 test "Numeric serialization roundtrip" {
     const allocator = std.testing.allocator;
 
