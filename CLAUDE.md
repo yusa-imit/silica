@@ -817,6 +817,28 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 - [ ] (Recommended) Apply viewport clipping to large result set rendering
 - [ ] (Recommended) Use FlexBox for query editor layout
 - [ ] (Recommended) Add shadow effects to dialog boxes
+
+### v1.8.0 — Network & Async Integration (status: READY)
+
+**sailor v1.8.0 released** (2026-03-10) — Network and async widgets
+
+- **New features**:
+  - HttpClient widget: Download progress visualization with speed/stats (16 tests)
+  - WebSocket widget: Live data feed with auto-scroll (16 tests)
+  - AsyncEventLoop: Non-blocking I/O for network operations (8 tests)
+  - TaskRunner widget: Parallel operation status indicator (20 tests)
+  - LogViewer widget: Tail -f style with filtering and search (20 tests)
+- **Impact on silica**: HIGH — LogViewer crucial for SQL query logging
+  - LogViewer perfect for displaying query execution logs and EXPLAIN output
+  - AsyncEventLoop enables non-blocking SQL query execution in TUI
+  - TaskRunner useful for visualizing multi-query execution progress
+  - HttpClient could support remote database connection progress
+- [ ] `build.zig.zon`에 sailor v1.8.0 의존성 업데이트
+- [ ] (Recommended) Use LogViewer for query log display in TUI mode
+- [ ] (Recommended) Apply AsyncEventLoop for non-blocking query execution
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. LogViewer widget highly recommended for SQL shell logging features.
 - [ ] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. All features are opt-in. High priority for TUI performance enhancements.
