@@ -3260,6 +3260,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                         // Parser initialization failed
                         break :blk Value.null_value;
                     };
+                    defer parser.deinit();
 
                     const stmt = parser.parseStatement() catch {
                         // Parse error - return null
@@ -3670,12 +3671,14 @@ pub const ProjectOp = struct {
     allocator: Allocator,
     input: RowIterator,
     columns: []const PlanNode.ProjectColumn,
+    catalog: ?*Catalog,
 
-    pub fn init(allocator: Allocator, input: RowIterator, columns: []const PlanNode.ProjectColumn) ProjectOp {
+    pub fn init(allocator: Allocator, input: RowIterator, columns: []const PlanNode.ProjectColumn, catalog: ?*Catalog) ProjectOp {
         return .{
             .allocator = allocator,
             .input = input,
             .columns = columns,
+            .catalog = catalog,
         };
     }
 
@@ -3694,7 +3697,7 @@ pub const ProjectOp = struct {
         errdefer self.allocator.free(col_names);
 
         for (self.columns, 0..) |col, i| {
-            vals[i] = evalExpr(self.allocator, col.expr, &row, null) catch |err| {
+            vals[i] = evalExpr(self.allocator, col.expr, &row, self.catalog) catch |err| {
                 // When an aggregate function has an alias (e.g., SUM(x) AS total),
                 // the AggregateOp stores the result under the alias name. Try looking
                 // up by alias before reporting an error.
@@ -5850,7 +5853,7 @@ test "ProjectOp selects columns" {
         .{ .expr = &name_ref, .alias = "user_name" },
     };
 
-    var proj = ProjectOp.init(allocator, data.iterator(), &cols);
+    var proj = ProjectOp.init(allocator, data.iterator(), &cols, null);
     defer proj.close();
 
     var row = (try proj.next()).?;

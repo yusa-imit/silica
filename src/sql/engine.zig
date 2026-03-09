@@ -1536,7 +1536,7 @@ pub const Database = struct {
         }
 
         const project_op = self.allocator.create(ProjectOp) catch return EngineError.OutOfMemory;
-        project_op.* = ProjectOp.init(self.allocator, input, project.columns);
+        project_op.* = ProjectOp.init(self.allocator, input, project.columns, &self.catalog);
         ops.project = project_op;
         return project_op.iterator();
     }
@@ -2660,6 +2660,34 @@ pub const Database = struct {
                 self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
                 return .{ .message = "DROP DOMAIN" };
+            },
+            .create_function => |cf| {
+                self.catalog.createFunction(cf) catch |err| {
+                    return switch (err) {
+                        error.TableAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE FUNCTION" };
+            },
+            .drop_function => |df| {
+                // TODO: For now, ignore param_types (no overload resolution yet)
+                _ = df.param_types;
+                self.catalog.dropFunction(df.name, df.if_exists) catch |err| {
+                    return switch (err) {
+                        error.FunctionNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP FUNCTION" };
             },
             else => {},
         }
@@ -13917,5 +13945,43 @@ test "edge case: WHERE with complex boolean expression" {
         count += 1;
     }
     try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "CREATE FUNCTION and DROP FUNCTION integration" {
+    const path = "test_create_drop_function.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    // Create a simple SQL function that returns a constant
+    var result1 = try db.exec(
+        \\CREATE FUNCTION get_ten()
+        \\RETURNS INTEGER
+        \\LANGUAGE sql
+        \\AS '10'
+    );
+    defer result1.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE FUNCTION", result1.message);
+
+    // Verify function was created (use it in a SELECT)
+    var result2 = try db.exec("SELECT get_ten() AS result");
+    defer result2.close(testing.allocator);
+
+    var row = (try result2.rows.?.next()).?;
+    defer row.deinit();
+    // Currently functions return string representation (type conversion TBD)
+    try testing.expectEqualStrings("10", row.values[0].text);
+
+    // DROP FUNCTION
+    var result5 = try db.exec("DROP FUNCTION get_ten");
+    defer result5.close(testing.allocator);
+    try testing.expectEqualStrings("DROP FUNCTION", result5.message);
+
+    // DROP FUNCTION IF EXISTS on non-existent function should succeed
+    var result6 = try db.exec("DROP FUNCTION IF EXISTS nonexistent_func");
+    defer result6.close(testing.allocator);
+    try testing.expectEqualStrings("DROP FUNCTION", result6.message);
 }
 
