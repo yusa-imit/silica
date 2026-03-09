@@ -690,16 +690,19 @@ pub const Parser = struct {
     fn parseCreate(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_create);
 
-        // CREATE OR REPLACE (VIEW or FUNCTION)
+        // CREATE OR REPLACE (VIEW, FUNCTION, or TRIGGER)
         if (self.check(.kw_or)) {
-            // Peek ahead to determine if it's VIEW or FUNCTION
+            // Peek ahead to determine if it's VIEW, FUNCTION, or TRIGGER
             if (self.checkAhead(.kw_view, 2)) {
                 return .{ .create_view = try self.parseCreateView(true) };
             }
             if (self.checkAhead(.kw_function, 2)) {
                 return .{ .create_function = try self.parseCreateFunction(true) };
             }
-            try self.addError(self.peek(), "expected VIEW or FUNCTION after CREATE OR REPLACE");
+            if (self.checkAhead(.kw_trigger, 2)) {
+                return .{ .create_trigger = try self.parseCreateTrigger(true) };
+            }
+            try self.addError(self.peek(), "expected VIEW, FUNCTION, or TRIGGER after CREATE OR REPLACE");
             return error.ParseFailed;
         }
         if (self.check(.kw_view)) {
@@ -723,8 +726,11 @@ pub const Parser = struct {
         if (self.check(.kw_domain)) {
             return .{ .create_domain = try self.parseCreateDomain() };
         }
+        if (self.check(.kw_trigger)) {
+            return .{ .create_trigger = try self.parseCreateTrigger(false) };
+        }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, or FUNCTION after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, or TRIGGER after CREATE");
         return error.ParseFailed;
     }
 
@@ -1103,7 +1109,8 @@ pub const Parser = struct {
         if (self.check(.kw_type)) return .{ .drop_type = try self.parseDropType() };
         if (self.check(.kw_domain)) return .{ .drop_domain = try self.parseDropDomain() };
         if (self.check(.kw_function)) return .{ .drop_function = try self.parseDropFunction() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, or FUNCTION after DROP");
+        if (self.check(.kw_trigger)) return .{ .drop_trigger = try self.parseDropTrigger() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, or TRIGGER after DROP");
         return error.ParseFailed;
     }
 
@@ -1424,6 +1431,128 @@ pub const Parser = struct {
             return error.ParseFailed;
         }
         return self.lexeme(t);
+    }
+
+    // ── CREATE TRIGGER / DROP TRIGGER ───────────────────────────────
+
+    fn parseCreateTrigger(self: *Parser, or_kw_seen: bool) Error!ast.CreateTriggerStmt {
+        const a = self.alloc();
+        var or_replace = false;
+
+        if (or_kw_seen) {
+            // CREATE OR REPLACE TRIGGER
+            _ = try self.expect(.kw_or);
+            _ = try self.expect(.kw_replace);
+            or_replace = true;
+        }
+
+        _ = try self.expect(.kw_trigger);
+
+        const name = try self.expectIdentifier();
+
+        // Parse timing: BEFORE, AFTER, or INSTEAD OF
+        const timing: ast.TriggerTiming = if (self.match(.kw_before))
+            .before
+        else if (self.match(.kw_after))
+            .after
+        else if (self.match(.kw_instead)) blk: {
+            _ = try self.expect(.kw_of);
+            break :blk .instead_of;
+        } else {
+            try self.addError(self.peek(), "expected BEFORE, AFTER, or INSTEAD OF");
+            return error.ParseFailed;
+        };
+
+        // Parse event: INSERT, UPDATE, DELETE, or TRUNCATE
+        const event: ast.TriggerEvent = if (self.match(.kw_insert))
+            .insert
+        else if (self.match(.kw_update))
+            .update
+        else if (self.match(.kw_delete))
+            .delete
+        else if (self.match(.kw_truncate))
+            .truncate
+        else {
+            try self.addError(self.peek(), "expected INSERT, UPDATE, DELETE, or TRUNCATE");
+            return error.ParseFailed;
+        };
+
+        // Parse UPDATE OF column_list (optional, only for UPDATE events)
+        var update_columns = std.ArrayListUnmanaged([]const u8){};
+        if (event == .update and self.match(.kw_of)) {
+            while (true) {
+                const col = try self.expectIdentifier();
+                update_columns.append(a, col) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // Parse ON table_name
+        _ = try self.expect(.kw_on);
+        const table_name = try self.expectIdentifier();
+
+        // Parse FOR EACH [ROW | STATEMENT] (default ROW)
+        var level: ast.TriggerLevel = .row;
+        if (self.match(.kw_for)) {
+            _ = try self.expect(.kw_each);
+            if (self.match(.kw_row)) {
+                level = .row;
+            } else if (self.match(.kw_statement)) {
+                level = .statement;
+            } else {
+                try self.addError(self.peek(), "expected ROW or STATEMENT after FOR EACH");
+                return error.ParseFailed;
+            }
+        }
+
+        // Parse WHEN (condition) clause (optional)
+        var when_condition: ?*const ast.Expr = null;
+        if (self.match(.kw_when)) {
+            _ = try self.expect(.left_paren);
+            when_condition = try self.parseExpr(0);
+            _ = try self.expect(.right_paren);
+        }
+
+        // Parse trigger body: AS 'body' or just 'body' as string
+        // For simplicity, we expect AS 'body' similar to functions
+        _ = try self.expect(.kw_as);
+        const body = try self.parseStringLiteral();
+
+        return .{
+            .name = name,
+            .table_name = table_name,
+            .timing = timing,
+            .event = event,
+            .update_columns = update_columns.toOwnedSlice(a) catch return error.OutOfMemory,
+            .level = level,
+            .when_condition = when_condition,
+            .body = body,
+            .or_replace = or_replace,
+        };
+    }
+
+    fn parseDropTrigger(self: *Parser) Error!ast.DropTriggerStmt {
+        _ = try self.expect(.kw_trigger);
+
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+
+        const name = try self.expectIdentifier();
+
+        // Optional ON table_name (some SQL dialects require it, some don't)
+        var table_name: ?[]const u8 = null;
+        if (self.match(.kw_on)) {
+            table_name = try self.expectIdentifier();
+        }
+
+        return .{
+            .name = name,
+            .table_name = table_name,
+            .if_exists = if_exists,
+        };
     }
 
     // ── Transaction ───────────────────────────────────────────────
@@ -3628,4 +3757,89 @@ test "parse DROP FUNCTION IF EXISTS with parameter types" {
     try std.testing.expectEqual(ast.DataType.type_text, func.param_types[0]);
     try std.testing.expectEqual(ast.DataType.type_integer, func.param_types[1]);
     try std.testing.expectEqual(true, func.if_exists);
+}
+
+test "parse CREATE TRIGGER AFTER INSERT" {
+    var r = try testParseWithArena("CREATE TRIGGER audit_log AFTER INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id)'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expectEqualStrings("audit_log", trig.name);
+    try std.testing.expectEqualStrings("users", trig.table_name);
+    try std.testing.expectEqual(ast.TriggerTiming.after, trig.timing);
+    try std.testing.expectEqual(ast.TriggerEvent.insert, trig.event);
+    try std.testing.expectEqual(ast.TriggerLevel.row, trig.level);
+    try std.testing.expectEqual(false, trig.or_replace);
+}
+
+test "parse CREATE TRIGGER BEFORE UPDATE OF columns" {
+    var r = try testParseWithArena("CREATE TRIGGER validate_email BEFORE UPDATE OF email, name ON users FOR EACH ROW AS 'SELECT check_email(NEW.email)'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expectEqualStrings("validate_email", trig.name);
+    try std.testing.expectEqual(ast.TriggerEvent.update, trig.event);
+    try std.testing.expectEqual(@as(usize, 2), trig.update_columns.len);
+    try std.testing.expectEqualStrings("email", trig.update_columns[0]);
+    try std.testing.expectEqualStrings("name", trig.update_columns[1]);
+}
+
+test "parse CREATE TRIGGER INSTEAD OF for views" {
+    var r = try testParseWithArena("CREATE TRIGGER view_insert INSTEAD OF INSERT ON user_view FOR EACH ROW AS 'INSERT INTO users VALUES (NEW.id, NEW.name)'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expectEqual(ast.TriggerTiming.instead_of, trig.timing);
+    try std.testing.expectEqual(ast.TriggerEvent.insert, trig.event);
+}
+
+test "parse CREATE TRIGGER with WHEN condition" {
+    var r = try testParseWithArena("CREATE TRIGGER check_balance BEFORE UPDATE ON accounts FOR EACH ROW WHEN (NEW.balance < 0) AS 'SELECT RAISE(ABORT)'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expect(trig.when_condition != null);
+}
+
+test "parse CREATE OR REPLACE TRIGGER" {
+    var r = try testParseWithArena("CREATE OR REPLACE TRIGGER audit_update AFTER UPDATE ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (OLD.id, NEW.id)'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expectEqual(true, trig.or_replace);
+}
+
+test "parse CREATE TRIGGER FOR EACH STATEMENT" {
+    var r = try testParseWithArena("CREATE TRIGGER cascade_delete AFTER DELETE ON departments FOR EACH STATEMENT AS 'DELETE FROM employees WHERE dept_id = OLD.id'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expectEqual(ast.TriggerLevel.statement, trig.level);
+}
+
+test "parse DROP TRIGGER" {
+    var r = try testParseWithArena("DROP TRIGGER audit_log");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_trigger);
+    const trig = r.stmt.drop_trigger;
+    try std.testing.expectEqualStrings("audit_log", trig.name);
+    try std.testing.expectEqual(false, trig.if_exists);
+}
+
+test "parse DROP TRIGGER IF EXISTS with table name" {
+    var r = try testParseWithArena("DROP TRIGGER IF EXISTS audit_log ON users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_trigger);
+    const trig = r.stmt.drop_trigger;
+    try std.testing.expectEqualStrings("audit_log", trig.name);
+    try std.testing.expectEqualStrings("users", trig.table_name.?);
+    try std.testing.expectEqual(true, trig.if_exists);
+}
+
+test "parse CREATE TRIGGER TRUNCATE event" {
+    var r = try testParseWithArena("CREATE TRIGGER log_truncate AFTER TRUNCATE ON sensitive_data FOR EACH STATEMENT AS 'INSERT INTO security_log VALUES (NOW())'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_trigger);
+    const trig = r.stmt.create_trigger;
+    try std.testing.expectEqual(ast.TriggerEvent.truncate, trig.event);
 }
