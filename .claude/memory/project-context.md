@@ -70,15 +70,15 @@
 5. Storage Engine (B+Tree, Page Manager, Buffer Pool)
 6. OS Layer (File I/O, mmap optional, fsync)
 
-## Test Coverage Status (as of 2026-03-08)
-- Total tests: 1427 (all passing)
-- tokenizer.zig: 74 tests (includes JSON/JSONB keywords + 5 JSON operators + @@ operator)
-- parser.zig: 149 tests (includes JSON/JSONB, JSON operators, ANY/ALL, window, SERIAL, ENUM, DOMAIN)
-- executor.zig: 192 tests (includes JSON/JSONB cast, JSON operators with 20 tests, ANY/ALL eval, INTERVAL, TSVECTOR/TSQUERY with 21 tests, @@ operator with 11 tests)
-- engine.zig: 402 tests (includes JSON/JSONB CRUD, window functions, ENUM, DOMAIN, temporal types, views, CTEs, set ops, SSI, VACUUM, savepoints, unnest())
-- Recent additions (2026-03-08 STABILIZATION session):
-  - 5 edge case tests for @@ match operator (both empty, single term, case sensitivity, text fallback, incompatible types)
-  - 5 edge case tests for to_tsvector/to_tsquery (alphanumeric, only punctuation, mixed case duplicates, punctuation in query, numeric tokens)
+## Test Coverage Status (as of 2026-03-09)
+- Total tests: 1557 (all passing) [+2 from previous session]
+- tokenizer.zig: 75 tests (includes JSON/JSONB keywords + 5 JSON operators + @@ operator + 13 function keywords)
+- parser.zig: 160 tests (includes JSON/JSONB, JSON operators, ANY/ALL, window, SERIAL, ENUM, DOMAIN, CREATE/DROP FUNCTION with 11 tests)
+- executor.zig: 248 tests (includes JSON/JSONB cast, JSON operators with 20 tests, ANY/ALL eval, INTERVAL, TSVECTOR/TSQUERY with 16 type tests, to_tsvector/to_tsquery with 13 tests, @@ operator with 9 tests [1 disabled due to bug #1], ts_rank with 10 tests, ts_rank_cd with 7 tests, Porter stemmer with 10 tests, stop words with 4 tests, FTS integration with 3 tests, FTS edge cases with 10 tests, ts_headline with 10 tests)
+- engine.zig: 416 tests (includes JSON/JSONB CRUD, window functions, ENUM, DOMAIN, temporal types, views, CTEs, set ops, SSI, VACUUM, savepoints, unnest(), ts_rank/ts_rank_cd integration tests, ts_headline integration tests with 3 tests [1 disabled due to bug #1])
+- Recent additions (2026-03-09 STABILIZATION session):
+  - Integer overflow test documenting wrapping arithmetic behavior (+%, -%, *%)
+  - COALESCE function test (NULL handling, first-value selection, text values)
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
