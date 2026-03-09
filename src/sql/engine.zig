@@ -13985,3 +13985,15 @@ test "CREATE FUNCTION and DROP FUNCTION integration" {
     try testing.expectEqualStrings("DROP FUNCTION", result6.message);
 }
 
+// TODO(Milestone 13 limitation): SQL-language functions not fully functional
+// Current implementation returns the body text instead of executing it.
+// Issues discovered during stabilization testing:
+//   1. Functions don't evaluate their body expressions — they return literal text
+//   2. Functions in WHERE/ORDER BY fail (FilterOp/SortOp lack catalog parameter)
+//   3. NULL parameter handling incorrect (returns text instead of NULL)
+//   4. Nested function calls don't work (return unevaluated body text)
+// This is expected for initial Milestone 13 integration — full execution requires:
+//   - Proper evalFunctionCall implementation that evaluates the parsed body
+//   - Catalog threading through FilterOp, SortOp operators
+//   - Type conversion from evaluated result to proper Value variant
+
