@@ -280,8 +280,8 @@ pub const Analyzer = struct {
             .drop_type => {},
             .create_domain => {},
             .drop_domain => {},
-            .create_function => {},
-            .drop_function => {},
+            .create_function => |s| self.analyzeCreateFunction(&s),
+            .drop_function => |s| self.analyzeDropFunction(&s),
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
@@ -627,6 +627,72 @@ pub const Analyzer = struct {
         for (stmt.columns) |col| {
             self.analyzeExpr(col.expr);
         }
+    }
+
+    fn analyzeCreateFunction(self: *Analyzer, stmt: *const ast.CreateFunctionStmt) void {
+        // Validate function name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "function name cannot be empty", .{});
+            return;
+        }
+
+        // Validate parameter names are unique
+        for (stmt.parameters, 0..) |param, i| {
+            if (param.name.len == 0) {
+                self.addError(.invalid_expression, "parameter name cannot be empty", .{});
+            }
+            for (stmt.parameters[i + 1 ..]) |other| {
+                if (std.ascii.eqlIgnoreCase(param.name, other.name)) {
+                    self.addError(.duplicate_alias, "duplicate parameter name: '{s}'", .{param.name});
+                    break;
+                }
+            }
+        }
+
+        // Validate return type for table returns has at least one column
+        switch (stmt.return_type) {
+            .table => |cols| {
+                if (cols.len == 0) {
+                    self.addError(.invalid_expression, "RETURNS TABLE must have at least one column", .{});
+                }
+                // Check for duplicate column names in table return type
+                for (cols, 0..) |col, i| {
+                    if (col.name.len == 0) {
+                        self.addError(.invalid_expression, "column name cannot be empty in RETURNS TABLE", .{});
+                    }
+                    for (cols[i + 1 ..]) |other| {
+                        if (std.ascii.eqlIgnoreCase(col.name, other.name)) {
+                            self.addError(.duplicate_alias, "duplicate column name in RETURNS TABLE: '{s}'", .{col.name});
+                            break;
+                        }
+                    }
+                }
+            },
+            .scalar, .setof => {},
+        }
+
+        // Validate language is supported (currently only "sfl")
+        if (!std.ascii.eqlIgnoreCase(stmt.language, "sfl")) {
+            self.addError(.invalid_expression, "unsupported language: '{s}' (only 'sfl' is supported)", .{stmt.language});
+        }
+
+        // Validate function body is not empty
+        if (stmt.body.len == 0) {
+            self.addError(.invalid_expression, "function body cannot be empty", .{});
+        }
+
+        // Note: We don't validate if function already exists here (unless or_replace=false)
+        // The catalog layer will handle existence checks during execution
+    }
+
+    fn analyzeDropFunction(self: *Analyzer, stmt: *const ast.DropFunctionStmt) void {
+        // Validate function name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "function name cannot be empty", .{});
+        }
+
+        // Note: We don't validate if function exists here (unless if_exists=false)
+        // The catalog layer will handle existence checks during execution
     }
 
     // ── CTE Column Inference ────────────────────────────────────────
@@ -1641,6 +1707,143 @@ test "set op: multiple CTEs with set operation" {
 
     var analyzer = try parseAndAnalyze(allocator,
         "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) SELECT x FROM a UNION SELECT y FROM b;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE FUNCTION: valid scalar function passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION add(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x + y;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE FUNCTION: valid table return function passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION get_users() RETURNS TABLE (id INTEGER, name TEXT) LANGUAGE sfl AS 'SELECT id, name FROM users;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE FUNCTION: valid setof return function passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION generate_series(start INTEGER, stop INTEGER) RETURNS SETOF INTEGER LANGUAGE sfl AS 'RETURN start;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE FUNCTION: duplicate parameter names fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION bad(x INTEGER, x TEXT) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_duplicate = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .duplicate_alias) found_duplicate = true;
+    }
+    try std.testing.expect(found_duplicate);
+}
+
+test "CREATE FUNCTION: empty table return fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION bad() RETURNS TABLE () LANGUAGE sfl AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "CREATE FUNCTION: duplicate column names in table return fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION bad() RETURNS TABLE (x INTEGER, x TEXT) LANGUAGE sfl AS 'SELECT 1, 2;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_duplicate = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .duplicate_alias) found_duplicate = true;
+    }
+    try std.testing.expect(found_duplicate);
+}
+
+test "CREATE FUNCTION: unsupported language fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE FUNCTION bad() RETURNS INTEGER LANGUAGE plpgsql AS 'BEGIN RETURN 1; END;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "DROP FUNCTION: valid drop passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP FUNCTION add;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP FUNCTION: with overload resolution passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP FUNCTION add(INTEGER, INTEGER);",
         schema.provider());
     defer analyzer.deinit();
 
