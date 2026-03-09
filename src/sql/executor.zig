@@ -7475,6 +7475,21 @@ test "evalFunctionCall COALESCE" {
     try std.testing.expectEqualStrings("hello", result4.text);
 }
 
+test "evalFunctionCall unknown function without catalog" {
+    // Test that calling an unknown function returns UnsupportedExpression when catalog is null
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+    const int_expr = ast.Expr{ .integer_literal = 42 };
+    const args = [_]*const ast.Expr{&int_expr};
+    const fc = .{ .name = "unknown_function", .args = &args, .distinct = false };
+
+    const result = evalFunctionCall(allocator, fc, &empty_row, null);
+    try std.testing.expectError(EvalError.UnsupportedExpression, result);
+
+    // Note: Full user-defined function tests (parameters, NULL args, multiple params,
+    // builtin calls in body, non-SQL languages, etc.) are in catalog.zig test suite.
+}
+
 test "Numeric serialization roundtrip" {
     const allocator = std.testing.allocator;
 
