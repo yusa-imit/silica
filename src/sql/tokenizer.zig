@@ -111,6 +111,18 @@ pub const TokenType = enum {
     kw_for,
     kw_exception,
     kw_raise,
+    kw_trigger,
+    kw_before,
+    kw_after,
+    kw_instead,
+    kw_of,
+    kw_each,
+    kw_statement,
+    kw_old,
+    kw_new,
+    kw_enable,
+    kw_disable,
+    kw_truncate,
 
     // Keywords — DML
     kw_select,
@@ -752,6 +764,18 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "for", .kw_for },
         .{ "exception", .kw_exception },
         .{ "raise", .kw_raise },
+        .{ "trigger", .kw_trigger },
+        .{ "before", .kw_before },
+        .{ "after", .kw_after },
+        .{ "instead", .kw_instead },
+        .{ "of", .kw_of },
+        .{ "each", .kw_each },
+        .{ "statement", .kw_statement },
+        .{ "old", .kw_old },
+        .{ "new", .kw_new },
+        .{ "enable", .kw_enable },
+        .{ "disable", .kw_disable },
+        .{ "truncate", .kw_truncate },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1557,5 +1581,57 @@ test "JSON operators in SELECT queries" {
         .identifier,
         .json_contains,
         .string_literal,
+    });
+}
+
+test "TRIGGER keyword" {
+    try expectSingleToken("trigger", .kw_trigger, "trigger");
+}
+
+test "CREATE TRIGGER keywords" {
+    const sql = "CREATE TRIGGER audit_log AFTER INSERT ON users FOR EACH ROW";
+    try expectTokens(sql, &.{
+        .kw_create,
+        .kw_trigger,
+        .identifier, // audit_log
+        .kw_after,
+        .kw_insert,
+        .kw_on,
+        .identifier, // users
+        .kw_for,
+        .kw_each,
+        .kw_row,
+    });
+}
+
+test "BEFORE/AFTER/INSTEAD OF timing keywords" {
+    try expectSingleToken("before", .kw_before, "before");
+    try expectSingleToken("after", .kw_after, "after");
+    try expectSingleToken("instead", .kw_instead, "instead");
+    try expectSingleToken("of", .kw_of, "of");
+}
+
+test "OLD and NEW keywords" {
+    try expectSingleToken("old", .kw_old, "old");
+    try expectSingleToken("new", .kw_new, "new");
+}
+
+test "ENABLE and DISABLE keywords" {
+    try expectSingleToken("enable", .kw_enable, "enable");
+    try expectSingleToken("disable", .kw_disable, "disable");
+}
+
+test "TRUNCATE keyword" {
+    try expectSingleToken("truncate", .kw_truncate, "truncate");
+}
+
+test "DROP TRIGGER keywords" {
+    const sql = "DROP TRIGGER IF EXISTS audit_log";
+    try expectTokens(sql, &.{
+        .kw_drop,
+        .kw_trigger,
+        .kw_if,
+        .kw_exists,
+        .identifier, // audit_log
     });
 }
