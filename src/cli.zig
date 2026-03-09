@@ -602,6 +602,15 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .drop_function => |f| {
             writer.print("Parsed: DROP FUNCTION {s}\n", .{f.name}) catch {};
         },
+        .create_trigger => |t| {
+            writer.print("Parsed: CREATE TRIGGER {s} ON {s}\n", .{ t.name, t.table_name }) catch {};
+        },
+        .drop_trigger => |t| {
+            writer.print("Parsed: DROP TRIGGER {s}\n", .{t.name}) catch {};
+        },
+        .alter_trigger => |t| {
+            writer.print("Parsed: ALTER TRIGGER {s}\n", .{t.name}) catch {};
+        },
     }
 }
 
