@@ -115,13 +115,22 @@
 - parser.zig: 160 tests (includes JSON/JSONB, JSON operators, ANY/ALL, window, SERIAL, ENUM, DOMAIN, CREATE/DROP FUNCTION with 11 tests)
 - executor.zig: 246 tests (includes JSON/JSONB cast, JSON operators with 20 tests, ANY/ALL eval, INTERVAL, TSVECTOR/TSQUERY with 16 type tests, to_tsvector/to_tsquery with 13 tests, @@ operator with 9 tests [1 disabled due to bug #1], ts_rank with 10 tests, ts_rank_cd with 7 tests, Porter stemmer with 10 tests, stop words with 4 tests, FTS integration with 3 tests, FTS edge cases with 10 tests, ts_headline with 10 tests, user-defined function error path with 1 test)
 - engine.zig: 419 tests (includes JSON/JSONB CRUD, window functions, ENUM, DOMAIN, temporal types, views, CTEs, set ops, SSI, VACUUM, savepoints, unnest(), ts_rank/ts_rank_cd integration tests, ts_headline integration tests, division by zero with proper cleanup, 2 stabilization edge case tests: ORDER BY sorting, complex WHERE expressions, CREATE/DROP FUNCTION integration test, CREATE/DROP/ALTER TRIGGER integration tests with 4 tests)
-- STABILIZATION session findings (2026-03-10 20:00 UTC):
-  - **BUG FIX**: GitHub issue #1 resolved (DuplicateKey in OR REPLACE/ALTER operations)
-  - Root cause: Catalog didn't delete old entry before insert in createFunction/createTrigger/alterTrigger
-  - 4 tests re-enabled: function OR REPLACE, trigger ALTER, 2 engine integration tests
-  - All 1618 tests passing (1569 main + 49 sailor)
-  - Milestone 13 SQL function execution limitations documented in engine.zig
-  - Comprehensive error handling verification (1165 defer cleanup sites, proper errdefer patterns)
+- STABILIZATION session findings:
+  - **2026-03-10 20:00 UTC**: GitHub issue #1 resolved (DuplicateKey in OR REPLACE/ALTER operations)
+    - Root cause: Catalog didn't delete old entry before insert in createFunction/createTrigger/alterTrigger
+    - 4 tests re-enabled: function OR REPLACE, trigger ALTER, 2 engine integration tests
+    - All 1618 tests passing (1569 main + 49 sailor)
+    - Milestone 13 SQL function execution limitations documented in engine.zig
+    - Comprehensive error handling verification (1165 defer cleanup sites, proper errdefer patterns)
+  - **2026-03-11 08:00 UTC**: CI failure root cause identified (Issue #2)
+    - **BUG**: net.Stream.Writer incompatibility on Linux (CI red, 5 consecutive failures)
+    - Root cause: Zig 0.15's net.Stream.writer() returns Io.Writer (lacks standard methods: writeByte, writeInt, writeAll)
+    - wire.zig expects standard writer interface (uses anytype)
+    - Solution: Use ArrayList.writer() pattern from tests (manual stream.writeAll() for sending)
+    - Files to fix: src/server/server.zig (processMessages function)
+    - Documented in .claude/memory/debugging.md
+    - Commit 137b22c attempted writeByte helper (wrong approach, to be reverted)
+    - **STATUS**: Root cause identified, fix deferred to next cycle
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
