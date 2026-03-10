@@ -3,6 +3,7 @@ const sailor = @import("sailor");
 const silica = @import("silica");
 
 const tui_mod = @import("tui.zig");
+const server_mod = @import("server/server.zig");
 
 const version = "0.4.0";
 
@@ -32,7 +33,64 @@ const CliFlags = [_]sailor.arg.FlagDef{
     .{ .name = "json", .type = .bool, .help = "Output in JSON format" },
     .{ .name = "mode", .short = 'm', .type = .string, .help = "Output mode: table, csv, json, jsonl, plain" },
     .{ .name = "tui", .short = 't', .type = .bool, .help = "Launch TUI database browser" },
+    .{ .name = "host", .type = .string, .help = "Server host (default: 127.0.0.1)" },
+    .{ .name = "port", .short = 'p', .type = .string, .help = "Server port (default: 5433)" },
+    .{ .name = "max-connections", .type = .string, .help = "Maximum connections (default: 100)" },
 };
+
+// ── Server Mode ───────────────────────────────────────────────────────
+
+fn runServer(
+    allocator: std.mem.Allocator,
+    stdout: anytype,
+    stderr: anytype,
+    db_path: []const u8,
+    arg_parser: anytype,
+) !void {
+    // Parse server configuration
+    const host = arg_parser.getString("host", "127.0.0.1");
+    const port_str = arg_parser.getString("port", "5433");
+    const max_conn_str = arg_parser.getString("max-connections", "100");
+
+    const port = std.fmt.parseInt(u16, port_str, 10) catch {
+        printError(stderr, "Invalid port number");
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    const max_connections = std.fmt.parseInt(usize, max_conn_str, 10) catch {
+        printError(stderr, "Invalid max-connections value");
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    // Create server
+    var server = server_mod.Server.init(allocator, .{
+        .host = host,
+        .port = port,
+        .max_connections = max_connections,
+        .database_path = db_path,
+    }) catch {
+        printError(stderr, "Failed to initialize server");
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer server.deinit();
+
+    stdout.print("Silica v{s} — PostgreSQL wire protocol server\n", .{version}) catch {};
+    stdout.print("Database: {s}\n", .{db_path}) catch {};
+    stdout.print("Listening on {s}:{}\n", .{ host, port }) catch {};
+    stdout.print("Max connections: {}\n", .{max_connections}) catch {};
+    stdout.writeAll("Press Ctrl+C to stop.\n\n") catch {};
+    stdout.flush() catch {};
+
+    // Start server (blocks until shutdown)
+    server.start() catch {
+        printError(stderr, "Server error");
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -78,14 +136,27 @@ pub fn main() !void {
         return;
     }
 
-    // First positional argument is the database path
+    // First positional argument is either "server" or database path
     if (arg_parser.positional.items.len == 0) {
         printUsage(stdout);
         stdout.flush() catch {};
         return;
     }
 
-    const db_path = arg_parser.positional.items[0];
+    const first_arg = arg_parser.positional.items[0];
+
+    // Check if running in server mode
+    if (std.mem.eql(u8, first_arg, "server")) {
+        if (arg_parser.positional.items.len < 2) {
+            printError(stderr, "Server mode requires database path: silica server <database>");
+            stderr.flush() catch {};
+            std.process.exit(1);
+        }
+        const db_path = arg_parser.positional.items[1];
+        return runServer(allocator, stdout, stderr, db_path, &arg_parser);
+    }
+
+    const db_path = first_arg;
 
     // Determine initial output mode from flags
     var mode: OutputMode = .table;
@@ -776,11 +847,15 @@ fn buildHistoryPath(allocator: std.mem.Allocator) ?[]const u8 {
 fn printUsage(writer: anytype) void {
     writer.writeAll(
         \\Usage: silica [OPTIONS] <database>
+        \\       silica server [OPTIONS] <database>
         \\
         \\A lightweight, embedded relational database engine.
         \\
         \\Arguments:
         \\  <database>    Path to the database file
+        \\
+        \\Commands:
+        \\  server        Start PostgreSQL wire protocol server
         \\
         \\
     ) catch {};
@@ -788,10 +863,12 @@ fn printUsage(writer: anytype) void {
     writer.writeAll(
         \\
         \\Examples:
-        \\  silica mydb.db              Open database in interactive mode
-        \\  silica --tui mydb.db        Open TUI database browser
-        \\  silica --csv mydb.db        Open with CSV output format
-        \\  silica -m json mydb.db      Open with JSON output format
+        \\  silica mydb.db                  Open database in interactive mode
+        \\  silica --tui mydb.db            Open TUI database browser
+        \\  silica --csv mydb.db            Open with CSV output format
+        \\  silica -m json mydb.db          Open with JSON output format
+        \\  silica server mydb.db           Start server on 127.0.0.1:5433
+        \\  silica server --port 5432 db    Start server on custom port
         \\
     ) catch {};
 }

@@ -13,10 +13,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const wire = @import("wire.zig");
-const engine = @import("../sql/engine.zig");
-const Database = engine.Database;
-const QueryResult = engine.QueryResult;
-const Value = @import("../sql/executor.zig").Value;
+const silica = @import("silica");
+const Database = silica.engine.Database;
+const QueryResult = silica.engine.QueryResult;
+const Value = silica.executor.Value;
 
 /// Prepared statement information
 const PreparedStatement = struct {
@@ -325,7 +325,7 @@ pub const Connection = struct {
     fn sendDataRow(
         self: *Connection,
         writer: anytype,
-        row: engine.Row,
+        row: silica.executor.Row,
         columns: []const []const u8,
     ) !void {
         const col_values = try self.allocator.alloc([]const u8, columns.len);
