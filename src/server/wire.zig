@@ -62,6 +62,7 @@ pub const BackendMessageType = enum(u8) {
     notice_response = 'N',
     parse_complete = '1',
     bind_complete = '2',
+    close_complete = '3',
     portal_suspended = 's',
     no_data = 'n',
     parameter_status = 'S',

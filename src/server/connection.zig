@@ -18,22 +18,65 @@ const Database = engine.Database;
 const QueryResult = engine.QueryResult;
 const Value = @import("../sql/executor.zig").Value;
 
+/// Prepared statement information
+const PreparedStatement = struct {
+    query: []const u8,
+    param_types: []const i32,
+    allocator: Allocator,
+
+    pub fn deinit(self: *PreparedStatement) void {
+        self.allocator.free(self.query);
+        self.allocator.free(self.param_types);
+    }
+};
+
+/// Portal (bound prepared statement)
+const Portal = struct {
+    statement_name: []const u8,
+    param_values: []const []const u8,
+    allocator: Allocator,
+
+    pub fn deinit(self: *Portal) void {
+        self.allocator.free(self.statement_name);
+        for (self.param_values) |val| {
+            self.allocator.free(val);
+        }
+        self.allocator.free(self.param_values);
+    }
+};
+
 /// Connection state
 pub const Connection = struct {
     allocator: Allocator,
     db: *Database,
     transaction_status: wire.TransactionStatus,
+    prepared_statements: std.StringHashMapUnmanaged(PreparedStatement),
+    portals: std.StringHashMapUnmanaged(Portal),
 
     pub fn init(allocator: Allocator, db: *Database) Connection {
         return .{
             .allocator = allocator,
             .db = db,
             .transaction_status = .idle,
+            .prepared_statements = .{},
+            .portals = .{},
         };
     }
 
     pub fn deinit(self: *Connection) void {
-        _ = self;
+        // Clean up prepared statements
+        var stmt_iter = self.prepared_statements.valueIterator();
+        while (stmt_iter.next()) |stmt| {
+            stmt.deinit();
+        }
+        self.prepared_statements.deinit(self.allocator);
+
+        // Clean up portals
+        var portal_iter = self.portals.valueIterator();
+        while (portal_iter.next()) |portal| {
+            portal.deinit();
+        }
+        self.portals.deinit(self.allocator);
     }
 
     /// Handle simple query protocol
@@ -67,6 +110,187 @@ pub const Connection = struct {
         const cmd_complete = wire.CommandComplete{ .tag = tag };
         try cmd_complete.write(writer);
 
+        // Send ReadyForQuery
+        const ready = wire.ReadyForQuery{ .status = self.transaction_status };
+        try ready.write(writer);
+    }
+
+    /// Handle Parse message (extended query protocol)
+    pub fn handleParse(
+        self: *Connection,
+        parse_msg: wire.Parse,
+        writer: anytype,
+    ) !void {
+        // Store prepared statement
+        const stmt_name = if (parse_msg.statement_name.len == 0)
+            "" // Unnamed statement
+        else
+            parse_msg.statement_name;
+
+        // Check if statement already exists
+        if (self.prepared_statements.get(stmt_name)) |existing| {
+            // Replace existing statement
+            var old = existing;
+            old.deinit();
+            _ = self.prepared_statements.remove(stmt_name);
+        }
+
+        // Create new prepared statement
+        const query_copy = try self.allocator.dupe(u8, parse_msg.query);
+        errdefer self.allocator.free(query_copy);
+
+        const param_types_copy = try self.allocator.dupe(i32, parse_msg.param_types);
+        errdefer self.allocator.free(param_types_copy);
+
+        const stmt = PreparedStatement{
+            .query = query_copy,
+            .param_types = param_types_copy,
+            .allocator = self.allocator,
+        };
+
+        const stmt_name_copy = try self.allocator.dupe(u8, stmt_name);
+        errdefer self.allocator.free(stmt_name_copy);
+
+        try self.prepared_statements.put(self.allocator, stmt_name_copy, stmt);
+
+        // Send ParseComplete
+        try writer.writeByte(@intFromEnum(wire.BackendMessageType.parse_complete));
+        try writer.writeInt(i32, 4, .big); // length (just the length field itself)
+    }
+
+    /// Handle Bind message (extended query protocol)
+    pub fn handleBind(
+        self: *Connection,
+        bind_msg: wire.Bind,
+        writer: anytype,
+    ) !void {
+        // Verify statement exists
+        const stmt = self.prepared_statements.get(bind_msg.statement_name) orelse {
+            try self.sendError(writer, error.StatementNotFound);
+            return;
+        };
+
+        // Verify parameter count matches
+        if (bind_msg.param_values.len != stmt.param_types.len) {
+            try self.sendError(writer, error.ParameterCountMismatch);
+            return;
+        }
+
+        // Create portal
+        const portal_name = if (bind_msg.portal_name.len == 0)
+            "" // Unnamed portal
+        else
+            bind_msg.portal_name;
+
+        // Check if portal already exists
+        if (self.portals.get(portal_name)) |existing| {
+            var old = existing;
+            old.deinit();
+            _ = self.portals.remove(portal_name);
+        }
+
+        // Copy statement name
+        const stmt_name_copy = try self.allocator.dupe(u8, bind_msg.statement_name);
+        errdefer self.allocator.free(stmt_name_copy);
+
+        // Copy parameter values
+        const param_values_copy = try self.allocator.alloc([]const u8, bind_msg.param_values.len);
+        errdefer self.allocator.free(param_values_copy);
+
+        for (bind_msg.param_values, 0..) |val, i| {
+            param_values_copy[i] = try self.allocator.dupe(u8, val);
+        }
+
+        const portal = Portal{
+            .statement_name = stmt_name_copy,
+            .param_values = param_values_copy,
+            .allocator = self.allocator,
+        };
+
+        const portal_name_copy = try self.allocator.dupe(u8, portal_name);
+        errdefer self.allocator.free(portal_name_copy);
+
+        try self.portals.put(self.allocator, portal_name_copy, portal);
+
+        // Send BindComplete
+        try writer.writeByte(@intFromEnum(wire.BackendMessageType.bind_complete));
+        try writer.writeInt(i32, 4, .big);
+    }
+
+    /// Handle Execute message (extended query protocol)
+    pub fn handleExecute(
+        self: *Connection,
+        portal_name: []const u8,
+        max_rows: i32,
+        writer: anytype,
+    ) !void {
+        _ = max_rows; // TODO: implement row limit
+
+        // Get portal
+        const portal = self.portals.get(portal_name) orelse {
+            try self.sendError(writer, error.PortalNotFound);
+            return;
+        };
+
+        // Get prepared statement
+        const stmt = self.prepared_statements.get(portal.statement_name) orelse {
+            try self.sendError(writer, error.StatementNotFound);
+            return;
+        };
+
+        // Substitute parameters in query (simplified - just execute as-is for now)
+        // TODO: implement proper parameter substitution
+        var result = self.db.execSQL(stmt.query) catch |err| {
+            try self.sendError(writer, err);
+            return;
+        };
+        defer result.close();
+
+        // Send results (same as simple query protocol)
+        if (result.columns) |columns| {
+            try self.sendRowDescription(writer, columns);
+
+            while (try result.next()) |row| {
+                try self.sendDataRow(writer, row, columns);
+            }
+        }
+
+        // Send CommandComplete
+        const tag = try self.getCommandTag(&result);
+        const cmd_complete = wire.CommandComplete{ .tag = tag };
+        try cmd_complete.write(writer);
+    }
+
+    /// Handle Close message (extended query protocol)
+    pub fn handleClose(
+        self: *Connection,
+        close_type: u8, // 'S' for statement, 'P' for portal
+        name: []const u8,
+        writer: anytype,
+    ) !void {
+        if (close_type == 'S') {
+            // Close prepared statement
+            if (self.prepared_statements.fetchRemove(name)) |kv| {
+                self.allocator.free(kv.key);
+                var stmt = kv.value;
+                stmt.deinit();
+            }
+        } else if (close_type == 'P') {
+            // Close portal
+            if (self.portals.fetchRemove(name)) |kv| {
+                self.allocator.free(kv.key);
+                var portal = kv.value;
+                portal.deinit();
+            }
+        }
+
+        // Send CloseComplete
+        try writer.writeByte(@intFromEnum(wire.BackendMessageType.close_complete));
+        try writer.writeInt(i32, 4, .big);
+    }
+
+    /// Handle Sync message (extended query protocol)
+    pub fn handleSync(self: *Connection, writer: anytype) !void {
         // Send ReadyForQuery
         const ready = wire.ReadyForQuery{ .status = self.transaction_status };
         try ready.write(writer);
@@ -215,6 +439,9 @@ pub const Connection = struct {
             error.ColumnNotFound => "42703", // undefined_column
             error.DivisionByZero => "22012", // division_by_zero
             error.OutOfMemory => "53200", // out_of_memory
+            error.StatementNotFound => "26000", // invalid_sql_statement_name
+            error.PortalNotFound => "34000", // invalid_cursor_name
+            error.ParameterCountMismatch => "07001", // wrong_number_of_parameters
             else => "XX000", // internal_error
         };
     }
@@ -228,6 +455,9 @@ pub const Connection = struct {
             error.ColumnNotFound => "column does not exist",
             error.DivisionByZero => "division by zero",
             error.OutOfMemory => "out of memory",
+            error.StatementNotFound => "prepared statement does not exist",
+            error.PortalNotFound => "portal does not exist",
+            error.ParameterCountMismatch => "wrong number of parameters",
             else => "internal error",
         };
     }
@@ -341,4 +571,150 @@ test "getCommandTag - OK" {
 
     const tag = try conn.getCommandTag(&result);
     try std.testing.expectEqualStrings("OK", tag);
+}
+
+test "handleParse - store prepared statement" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_parse.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create Parse message
+    const param_types = [_]i32{23}; // INT4
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT $1",
+        .param_types = &param_types,
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleParse(parse_msg, buf.writer(allocator));
+
+    // Verify ParseComplete was sent
+    try std.testing.expectEqual(@as(u8, '1'), buf.items[0]);
+
+    // Verify statement was stored
+    const stmt = conn.prepared_statements.get("stmt1").?;
+    try std.testing.expectEqualStrings("SELECT $1", stmt.query);
+    try std.testing.expectEqual(@as(usize, 1), stmt.param_types.len);
+    try std.testing.expectEqual(@as(i32, 23), stmt.param_types[0]);
+}
+
+test "handleBind - create portal" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_bind.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // First, create a prepared statement
+    const param_types = [_]i32{23};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT 42",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Now bind it
+    const param_values = [_][]const u8{"42"};
+    const result_formats = [_]i16{0};
+    const param_formats = [_]i16{0};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Verify BindComplete was sent
+    try std.testing.expectEqual(@as(u8, '2'), bind_buf.items[0]);
+
+    // Verify portal was stored
+    const portal = conn.portals.get("portal1").?;
+    try std.testing.expectEqualStrings("stmt1", portal.statement_name);
+    try std.testing.expectEqual(@as(usize, 1), portal.param_values.len);
+    try std.testing.expectEqualStrings("42", portal.param_values[0]);
+}
+
+test "handleClose - statement" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_close_stmt.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create a prepared statement
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT 1",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Verify statement exists
+    try std.testing.expect(conn.prepared_statements.contains("stmt1"));
+
+    // Close the statement
+    var close_buf = std.ArrayListUnmanaged(u8){};
+    defer close_buf.deinit(allocator);
+    try conn.handleClose('S', "stmt1", close_buf.writer(allocator));
+
+    // Verify CloseComplete was sent
+    try std.testing.expectEqual(@as(u8, '3'), close_buf.items[0]);
+
+    // Verify statement was removed
+    try std.testing.expect(!conn.prepared_statements.contains("stmt1"));
+}
+
+test "handleSync - send ReadyForQuery" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_sync.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleSync(buf.writer(allocator));
+
+    // Verify ReadyForQuery was sent
+    try std.testing.expectEqual(@as(u8, 'Z'), buf.items[0]);
 }
