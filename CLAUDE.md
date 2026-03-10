@@ -846,6 +846,27 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 **Note**: Patch release, no breaking changes. Safe to upgrade when/if data visualization widgets are needed.
 **Note**: Non-breaking upgrade. Visualization widgets enable powerful performance monitoring and analytics features for SQL shell TUI.
 
+### v1.9.0 — Developer Tools & Ecosystem (status: READY)
+
+**sailor v1.9.0 released** (2026-03-11) — Developer tools and ecosystem improvements
+
+- **New features**:
+  - WidgetDebugger: Widget tree inspection with layout bounds visualization
+  - PerformanceProfiler: Frame timing & memory profiling with histogram display
+  - CompletionPopup: REPL tab completion popup (resolves repl.zig TODO)
+  - ThemeEditor: Live theme customization with RGB editing and preview (18 tests)
+  - Widget Gallery: Comprehensive catalog of 40+ widgets across 7 categories
+- **Impact on silica**: HIGH — Directly improves SQL shell user experience
+  - CompletionPopup is CRITICAL for SQL keyword/table/column completion
+  - PerformanceProfiler helps optimize TUI rendering for large result sets
+  - WidgetDebugger aids debugging schema browser and query result layouts
+  - ThemeEditor enables user-customizable SQL shell themes
+- [ ] `build.zig.zon`에 sailor v1.9.0 의존성 업데이트
+- [ ] Integrate CompletionPopup with SQL completion (HIGH PRIORITY)
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: PRIORITY UPGRADE — CompletionPopup directly enhances SQL shell UX with keyword/table/column completion.
+
 ---
 
 ## zuda Migration
