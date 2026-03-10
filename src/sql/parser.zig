@@ -188,6 +188,7 @@ pub const Parser = struct {
             .kw_delete => .{ .delete = try self.parseDelete() },
             .kw_create => try self.parseCreate(),
             .kw_drop => try self.parseDrop(),
+            .kw_alter => try self.parseAlter(),
             .kw_begin => .{ .transaction = try self.parseBegin() },
             .kw_commit => .{ .transaction = self.parseCommit() },
             .kw_rollback => .{ .transaction = try self.parseRollback() },
@@ -1132,6 +1133,43 @@ pub const Parser = struct {
             if_exists = true;
         }
         return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    // ── ALTER ─────────────────────────────────────────────────────
+
+    fn parseAlter(self: *Parser) Error!ast.Stmt {
+        _ = try self.expect(.kw_alter);
+        if (self.check(.kw_trigger)) return .{ .alter_trigger = try self.parseAlterTrigger() };
+        try self.addError(self.peek(), "expected TRIGGER after ALTER");
+        return error.ParseFailed;
+    }
+
+    fn parseAlterTrigger(self: *Parser) Error!ast.AlterTriggerStmt {
+        _ = try self.expect(.kw_trigger);
+
+        const name = try self.expectIdentifier();
+
+        // Optional ON table_name (some SQL dialects require it, some don't)
+        var table_name: ?[]const u8 = null;
+        if (self.match(.kw_on)) {
+            table_name = try self.expectIdentifier();
+        }
+
+        // Parse ENABLE or DISABLE
+        const enable: bool = if (self.match(.kw_enable))
+            true
+        else if (self.match(.kw_disable))
+            false
+        else {
+            try self.addError(self.peek(), "expected ENABLE or DISABLE");
+            return error.ParseFailed;
+        };
+
+        return .{
+            .name = name,
+            .table_name = table_name,
+            .enable = enable,
+        };
     }
 
     // ── CREATE VIEW / DROP VIEW ──────────────────────────────────
@@ -3842,4 +3880,44 @@ test "parse CREATE TRIGGER TRUNCATE event" {
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
     try std.testing.expectEqual(ast.TriggerEvent.truncate, trig.event);
+}
+
+test "parse ALTER TRIGGER ENABLE" {
+    var r = try testParseWithArena("ALTER TRIGGER check_constraint ENABLE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_trigger);
+    const trig = r.stmt.alter_trigger;
+    try std.testing.expectEqualStrings("check_constraint", trig.name);
+    try std.testing.expect(trig.enable);
+    try std.testing.expect(trig.table_name == null);
+}
+
+test "parse ALTER TRIGGER DISABLE" {
+    var r = try testParseWithArena("ALTER TRIGGER audit_log DISABLE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_trigger);
+    const trig = r.stmt.alter_trigger;
+    try std.testing.expectEqualStrings("audit_log", trig.name);
+    try std.testing.expect(!trig.enable);
+    try std.testing.expect(trig.table_name == null);
+}
+
+test "parse ALTER TRIGGER ENABLE with table name" {
+    var r = try testParseWithArena("ALTER TRIGGER check_constraint ON orders ENABLE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_trigger);
+    const trig = r.stmt.alter_trigger;
+    try std.testing.expectEqualStrings("check_constraint", trig.name);
+    try std.testing.expectEqualStrings("orders", trig.table_name.?);
+    try std.testing.expect(trig.enable);
+}
+
+test "parse ALTER TRIGGER DISABLE with table name" {
+    var r = try testParseWithArena("ALTER TRIGGER audit_log ON users DISABLE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_trigger);
+    const trig = r.stmt.alter_trigger;
+    try std.testing.expectEqualStrings("audit_log", trig.name);
+    try std.testing.expectEqualStrings("users", trig.table_name.?);
+    try std.testing.expect(!trig.enable);
 }
