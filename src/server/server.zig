@@ -116,20 +116,18 @@ pub const Server = struct {
         // Create reader/writer with buffers
         var read_buf: [8192]u8 = undefined;
         var write_buf: [8192]u8 = undefined;
-        var stream_reader = stream.reader(&read_buf);
+        const stream_reader = stream.reader(&read_buf);
         var stream_writer = stream.writer(&write_buf);
-        const reader = &stream_reader.interface;
-        const writer = &stream_writer.interface;
 
         // Send initial ready for query (startup handshake simplified for now)
         const ready = wire.ReadyForQuery{ .status = .idle };
-        try ready.write(writer);
-        try stream_writer.interface.flush();
+        try ready.write(stream_writer);
+        try stream_writer.flush();
 
         // Main message loop
         while (true) {
             // Read next message from client
-            const msg = wire.readMessage(self.allocator, reader) catch |err| {
+            const msg = wire.readMessage(self.allocator, stream_reader) catch |err| {
                 if (err == error.EndOfStream) {
                     // Client disconnected gracefully
                     return;
@@ -141,28 +139,28 @@ pub const Server = struct {
             // Handle message based on type
             switch (msg) {
                 .query => |query_msg| {
-                    try conn.handleSimpleQuery(query_msg, writer);
-                    try stream_writer.interface.flush();
+                    try conn.handleSimpleQuery(query_msg, stream_writer);
+                    try stream_writer.flush();
                 },
                 .parse => |parse_msg| {
-                    try conn.handleParse(parse_msg, writer);
-                    try stream_writer.interface.flush();
+                    try conn.handleParse(parse_msg, stream_writer);
+                    try stream_writer.flush();
                 },
                 .bind => |bind_msg| {
-                    try conn.handleBind(bind_msg, writer);
-                    try stream_writer.interface.flush();
+                    try conn.handleBind(bind_msg, stream_writer);
+                    try stream_writer.flush();
                 },
                 .execute => |execute_msg| {
-                    try conn.handleExecute(execute_msg, writer);
-                    try stream_writer.interface.flush();
+                    try conn.handleExecute(execute_msg, stream_writer);
+                    try stream_writer.flush();
                 },
                 .close => |close_msg| {
-                    try conn.handleClose(close_msg, writer);
-                    try stream_writer.interface.flush();
+                    try conn.handleClose(close_msg, stream_writer);
+                    try stream_writer.flush();
                 },
                 .sync => {
-                    try conn.handleSync(writer);
-                    try stream_writer.interface.flush();
+                    try conn.handleSync(stream_writer);
+                    try stream_writer.flush();
                 },
                 .terminate => {
                     // Client requested termination
@@ -175,8 +173,8 @@ pub const Server = struct {
                         .code = "08P01", // protocol_violation
                         .message = "Unsupported message type",
                     };
-                    try err_msg.write(writer);
-                    try stream_writer.interface.flush();
+                    try err_msg.write(stream_writer);
+                    try stream_writer.flush();
                 },
             }
         }
