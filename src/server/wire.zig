@@ -618,3 +618,329 @@ test "readMessage helper" {
     try std.testing.expectEqual(@as(u8, 'Q'), msg.msg_type);
     try std.testing.expectEqualStrings("SELECT 1\x00", msg.payload);
 }
+
+// ── Edge Case & Error Path Tests ───────────────────────────────────────
+
+test "Query parse - empty payload" {
+    const result = Query.parse(&[_]u8{});
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Query parse - missing null terminator" {
+    const result = Query.parse("SELECT 1");
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Parse message - truncated statement name" {
+    const allocator = std.testing.allocator;
+    const payload = "stmt1"; // missing null terminator
+    const result = Parse.parse(payload, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Parse message - truncated query" {
+    const allocator = std.testing.allocator;
+    const payload = "stmt1\x00SELECT"; // query missing null terminator
+    const result = Parse.parse(payload, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Parse message - truncated param count" {
+    const allocator = std.testing.allocator;
+    const payload = "stmt1\x00SELECT 1\x00"; // missing param count
+    const result = Parse.parse(payload, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Parse message - truncated param types" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.appendSlice(allocator, "SELECT $1\x00");
+    try payload.writer(allocator).writeInt(i16, 2, .big); // claims 2 params
+    try payload.writer(allocator).writeInt(i32, 23, .big); // only 1 param OID
+
+    const result = Parse.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated portal name" {
+    const allocator = std.testing.allocator;
+    const payload = "portal1"; // missing null terminator
+    const result = Bind.parse(payload, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated statement name" {
+    const allocator = std.testing.allocator;
+    const payload = "portal1\x00stmt1"; // stmt missing null terminator
+    const result = Bind.parse(payload, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated format count" {
+    const allocator = std.testing.allocator;
+    const payload = "portal1\x00stmt1\x00"; // missing format count
+    const result = Bind.parse(payload, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated param formats" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 2, .big); // claims 2 formats
+    try payload.writer(allocator).writeInt(i16, 0, .big); // only 1 format
+
+    const result = Bind.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated param value count" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+    // missing param value count
+
+    const result = Bind.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated param value length" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 param value
+    // missing param value length
+
+    const result = Bind.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated param value data" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 param value
+    try payload.writer(allocator).writeInt(i32, 10, .big); // length 10
+    try payload.appendSlice(allocator, "short"); // only 5 bytes
+
+    const result = Bind.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - NULL param value" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 param value
+    try payload.writer(allocator).writeInt(i32, -1, .big); // NULL value
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 result format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+
+    const bind_msg = try Bind.parse(payload.items, allocator);
+    defer bind_msg.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), bind_msg.param_values.len);
+    try std.testing.expectEqual(@as(usize, 0), bind_msg.param_values[0].len); // NULL represented as empty slice
+}
+
+test "Bind message - truncated result format count" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 param value
+    try payload.writer(allocator).writeInt(i32, 2, .big); // length
+    try payload.appendSlice(allocator, "42");
+    // missing result format count
+
+    const result = Bind.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Bind message - truncated result formats" {
+    const allocator = std.testing.allocator;
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.appendSlice(allocator, "portal1\x00");
+    try payload.appendSlice(allocator, "stmt1\x00");
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 format
+    try payload.writer(allocator).writeInt(i16, 0, .big); // text format
+    try payload.writer(allocator).writeInt(i16, 1, .big); // 1 param value
+    try payload.writer(allocator).writeInt(i32, 2, .big); // length
+    try payload.appendSlice(allocator, "42");
+    try payload.writer(allocator).writeInt(i16, 2, .big); // claims 2 result formats
+    try payload.writer(allocator).writeInt(i16, 0, .big); // only 1 format
+
+    const result = Bind.parse(payload.items, allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "readMessage - invalid length (too small)" {
+    const allocator = std.testing.allocator;
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try buf.append(allocator, 'Q');
+    try buf.writer(allocator).writeInt(i32, 3, .big); // invalid: less than 4
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    const result = readMessage(stream.reader(), allocator);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "readMessage - unexpected EOF" {
+    const allocator = std.testing.allocator;
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try buf.append(allocator, 'Q');
+    try buf.writer(allocator).writeInt(i32, 100, .big); // claims 100 bytes
+    try buf.appendSlice(allocator, "short"); // only 5 bytes
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    const result = readMessage(stream.reader(), allocator);
+    try std.testing.expectError(error.UnexpectedEof, result);
+}
+
+test "Authentication message - with salt" {
+    const allocator = std.testing.allocator;
+    const auth = Authentication{
+        .auth_type = .md5_password,
+        .salt = [4]u8{ 0x12, 0x34, 0x56, 0x78 },
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try auth.write(buf.writer(allocator));
+
+    try std.testing.expectEqual(@as(u8, 'R'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 12), len);
+    const auth_type = std.mem.readInt(i32, buf.items[5..9], .big);
+    try std.testing.expectEqual(@as(i32, 5), auth_type); // MD5
+    try std.testing.expectEqual([4]u8{ 0x12, 0x34, 0x56, 0x78 }, buf.items[9..13].*);
+}
+
+test "Authentication message - without salt" {
+    const allocator = std.testing.allocator;
+    const auth = Authentication{
+        .auth_type = .ok,
+        .salt = null,
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try auth.write(buf.writer(allocator));
+
+    try std.testing.expectEqual(@as(u8, 'R'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 8), len);
+    const auth_type = std.mem.readInt(i32, buf.items[5..9], .big);
+    try std.testing.expectEqual(@as(i32, 0), auth_type); // OK
+}
+
+test "DataRow - empty columns" {
+    const allocator = std.testing.allocator;
+    const data_row = DataRow{ .columns = &[_][]const u8{} };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try data_row.write(buf.writer(allocator));
+
+    try std.testing.expectEqual(@as(u8, 'D'), buf.items[0]);
+    const col_count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 0), col_count);
+}
+
+test "RowDescription - zero fields" {
+    const allocator = std.testing.allocator;
+    const row_desc = RowDescription{ .fields = &[_]RowDescription.Field{} };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try row_desc.write(buf.writer(allocator), allocator);
+
+    try std.testing.expectEqual(@as(u8, 'T'), buf.items[0]);
+    const field_count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 0), field_count);
+}
+
+test "ErrorResponse - empty fields" {
+    const allocator = std.testing.allocator;
+    const err_resp = ErrorResponse{ .fields = &[_]ErrorResponse.Field{} };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try err_resp.write(buf.writer(allocator));
+
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+    // Should have final terminator
+    try std.testing.expectEqual(@as(u8, 0), buf.items[buf.items.len - 1]);
+}
+
+test "Query write - empty query string" {
+    const allocator = std.testing.allocator;
+    const query = Query{ .query = "" };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try query.write(buf.writer(allocator));
+
+    try std.testing.expectEqual(@as(u8, 'Q'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 5), len); // 4 + 1 (null terminator only)
+}
+
+test "CommandComplete - empty tag" {
+    const allocator = std.testing.allocator;
+    const cmd_complete = CommandComplete{ .tag = "" };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try cmd_complete.write(buf.writer(allocator));
+
+    try std.testing.expectEqual(@as(u8, 'C'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 5), len); // 4 + 1 (null terminator only)
+}
