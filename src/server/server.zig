@@ -113,10 +113,9 @@ pub const Server = struct {
 
     /// Process wire protocol messages from a client stream
     fn processMessages(self: *Self, conn: *Connection, stream: net.Stream) !void {
-        var read_buffer: [8192]u8 = undefined;
-        var write_buffer: [8192]u8 = undefined;
-        const reader = stream.reader(&read_buffer);
-        const writer = stream.writer(&write_buffer);
+        // Use the raw stream as reader/writer interfaces
+        const reader = stream;
+        const writer = stream;
 
         // Send initial ready for query (startup handshake simplified for now)
         const ready = wire.ReadyForQuery{ .status = .idle };
