@@ -2132,3 +2132,161 @@ test "plan DROP FUNCTION IF EXISTS" {
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
+
+// ── Milestone 14F: Trigger Planner Tests ──────────────────────────────
+
+test "plan CREATE TRIGGER BEFORE INSERT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER audit_insert BEFORE INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id)';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER AFTER UPDATE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER update_timestamp AFTER UPDATE ON products FOR EACH ROW AS 'UPDATE products SET modified_at = NOW() WHERE id = NEW.id';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER BEFORE DELETE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER archive_user BEFORE DELETE ON users FOR EACH ROW AS 'INSERT INTO archived_users SELECT * FROM users WHERE id = OLD.id';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER with UPDATE OF columns" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER price_change AFTER UPDATE OF price, discount ON products FOR EACH ROW AS 'INSERT INTO price_history VALUES (OLD.price, NEW.price)';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER with WHEN clause" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER high_salary_alert AFTER INSERT ON employees FOR EACH ROW WHEN (NEW.salary > 100000) AS 'INSERT INTO alerts VALUES (NEW.id)';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER statement-level" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER check_batch AFTER INSERT ON orders FOR EACH STATEMENT AS 'SELECT validate_batch()';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER INSTEAD OF (for views)" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER view_insert INSTEAD OF INSERT ON user_view FOR EACH ROW AS 'INSERT INTO users VALUES (NEW.id, NEW.name)';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE TRIGGER TRUNCATE event" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE TRIGGER log_truncate AFTER TRUNCATE ON sensitive_data FOR EACH STATEMENT AS 'INSERT INTO security_log VALUES (NOW())';",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP TRIGGER simple" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP TRIGGER audit_insert ON users;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP TRIGGER IF EXISTS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP TRIGGER IF EXISTS nonexistent ON users;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan ALTER TRIGGER ENABLE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "ALTER TRIGGER audit_insert ON users ENABLE;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan ALTER TRIGGER DISABLE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "ALTER TRIGGER update_timestamp ON products DISABLE;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
