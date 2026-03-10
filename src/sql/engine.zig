@@ -14071,73 +14071,71 @@ test "CREATE TRIGGER and DROP TRIGGER integration" {
     try testing.expectEqualStrings("DROP TRIGGER", result3.message);
 }
 
-// DISABLED: triggers bug #1 (DuplicateKey on catalog re-insert for OR REPLACE)
-// test "CREATE OR REPLACE TRIGGER integration" {
-//     const path = "test_or_replace_trigger.db";
-//     var db = try Database.open(testing.allocator, path, .{});
-//     defer {
-//         db.close();
-//         std.fs.cwd().deleteFile(path) catch {};
-//     }
+test "CREATE OR REPLACE TRIGGER integration" {
+    const path = "test_or_replace_trigger.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
 
-//     // Create a table first
-//     var result0 = try db.exec("CREATE TABLE products (id INTEGER, price REAL)");
-//     defer result0.close(testing.allocator);
+    // Create a table first
+    var result0 = try db.exec("CREATE TABLE products (id INTEGER, price REAL)");
+    defer result0.close(testing.allocator);
 
-//     // CREATE TRIGGER
-//     var result1 = try db.exec(
-//         \\CREATE TRIGGER update_price
-//         \\AFTER UPDATE ON products
-//         \\FOR EACH ROW
-//         \\AS 'INSERT INTO price_history VALUES (NEW.id, NEW.price)'
-//     );
-//     defer result1.close(testing.allocator);
-//     try testing.expectEqualStrings("CREATE TRIGGER", result1.message);
+    // CREATE TRIGGER
+    var result1 = try db.exec(
+        \\CREATE TRIGGER update_price
+        \\AFTER UPDATE ON products
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO price_history VALUES (NEW.id, NEW.price)'
+    );
+    defer result1.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", result1.message);
 
-//     // CREATE OR REPLACE TRIGGER (should overwrite)
-//     var result2 = try db.exec(
-//         \\CREATE OR REPLACE TRIGGER update_price
-//         \\AFTER UPDATE ON products
-//         \\FOR EACH ROW
-//         \\AS 'INSERT INTO price_history VALUES (NEW.id, NEW.price, NOW())'
-//     );
-//     defer result2.close(testing.allocator);
-//     try testing.expectEqualStrings("CREATE TRIGGER", result2.message);
-// }
+    // CREATE OR REPLACE TRIGGER (should overwrite)
+    var result2 = try db.exec(
+        \\CREATE OR REPLACE TRIGGER update_price
+        \\AFTER UPDATE ON products
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO price_history VALUES (NEW.id, NEW.price, NOW())'
+    );
+    defer result2.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", result2.message);
+}
 
-// DISABLED: triggers bug #1 (DuplicateKey on catalog re-insert after alterTrigger)
-// test "ALTER TRIGGER ENABLE/DISABLE integration" {
-//     const path = "test_alter_trigger.db";
-//     var db = try Database.open(testing.allocator, path, .{});
-//     defer {
-//         db.close();
-//         std.fs.cwd().deleteFile(path) catch {};
-//     }
+test "ALTER TRIGGER ENABLE/DISABLE integration" {
+    const path = "test_alter_trigger.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
 
-//     // Create a table first
-//     var result0 = try db.exec("CREATE TABLE logs (id INTEGER, message TEXT)");
-//     defer result0.close(testing.allocator);
+    // Create a table first
+    var result0 = try db.exec("CREATE TABLE logs (id INTEGER, message TEXT)");
+    defer result0.close(testing.allocator);
 
-//     // CREATE TRIGGER
-//     var result1 = try db.exec(
-//         \\CREATE TRIGGER log_insert
-//         \\BEFORE INSERT ON logs
-//         \\FOR EACH ROW
-//         \\AS 'INSERT INTO audit_logs VALUES (NEW.id, NEW.message)'
-//     );
-//     defer result1.close(testing.allocator);
-//     try testing.expectEqualStrings("CREATE TRIGGER", result1.message);
+    // CREATE TRIGGER
+    var result1 = try db.exec(
+        \\CREATE TRIGGER log_insert
+        \\BEFORE INSERT ON logs
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO audit_logs VALUES (NEW.id, NEW.message)'
+    );
+    defer result1.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", result1.message);
 
-//     // ALTER TRIGGER DISABLE
-//     var result2 = try db.exec("ALTER TRIGGER log_insert DISABLE");
-//     defer result2.close(testing.allocator);
-//     try testing.expectEqualStrings("ALTER TRIGGER", result2.message);
+    // ALTER TRIGGER DISABLE
+    var result2 = try db.exec("ALTER TRIGGER log_insert DISABLE");
+    defer result2.close(testing.allocator);
+    try testing.expectEqualStrings("ALTER TRIGGER", result2.message);
 
-//     // ALTER TRIGGER ENABLE
-//     var result3 = try db.exec("ALTER TRIGGER log_insert ENABLE");
-//     defer result3.close(testing.allocator);
-//     try testing.expectEqualStrings("ALTER TRIGGER", result3.message);
-// }
+    // ALTER TRIGGER ENABLE
+    var result3 = try db.exec("ALTER TRIGGER log_insert ENABLE");
+    defer result3.close(testing.allocator);
+    try testing.expectEqualStrings("ALTER TRIGGER", result3.message);
+}
 
 test "CREATE TRIGGER with different timings" {
     const path = "test_trigger_timings.db";

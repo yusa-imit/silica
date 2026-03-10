@@ -1239,8 +1239,17 @@ pub const Catalog = struct {
         const key = try self.makeFunctionKey(stmt.name);
         defer self.allocator.free(key);
 
-        // If OR REPLACE, allow overwriting
-        if (!stmt.or_replace) {
+        // If OR REPLACE, delete existing entry first
+        if (stmt.or_replace) {
+            // Check if exists
+            const existing = try self.tree.get(self.allocator, key);
+            if (existing) |v| {
+                self.allocator.free(v);
+                // Delete old entry before inserting new one
+                try self.tree.delete(key);
+            }
+        } else {
+            // Without OR REPLACE, fail if already exists
             const existing = try self.tree.get(self.allocator, key);
             if (existing) |v| {
                 self.allocator.free(v);
@@ -1585,8 +1594,17 @@ pub const Catalog = struct {
         const key = try self.makeTriggerKey(stmt.name);
         defer self.allocator.free(key);
 
-        // If OR REPLACE, allow overwriting
-        if (!stmt.or_replace) {
+        // If OR REPLACE, delete existing entry first
+        if (stmt.or_replace) {
+            // Check if exists
+            const existing = try self.tree.get(self.allocator, key);
+            if (existing) |v| {
+                self.allocator.free(v);
+                // Delete old entry before inserting new one
+                try self.tree.delete(key);
+            }
+        } else {
+            // Without OR REPLACE, fail if already exists
             const existing = try self.tree.get(self.allocator, key);
             if (existing) |v| {
                 self.allocator.free(v);
@@ -1910,6 +1928,8 @@ pub const Catalog = struct {
         // Write enabled (updated value)
         data[offset] = if (info.enabled) 1 else 0;
 
+        // Delete old entry before inserting updated one
+        try self.tree.delete(key);
         try self.tree.insert(key, data);
     }
 
@@ -3281,9 +3301,7 @@ test "Catalog createFunction — RETURNS SETOF" {
     }
 }
 
-// Disabled due to known DuplicateKey bug #1 (multi-operation catalog updates)
 test "Catalog createFunction — OR REPLACE" {
-    if (true) return error.SkipZigTest; // Known bug #1
 
     const allocator = std.testing.allocator;
     const path = "test_catalog_func_replace.db";
@@ -3731,9 +3749,7 @@ test "Catalog dropTrigger IF EXISTS" {
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropTrigger("nonexistent", false));
 }
 
-// DISABLED: DuplicateKey bug #1 — repeated catalog updates fail
-test "Catalog alterTrigger — ENABLE (DISABLED)" {
-    if (true) return error.SkipZigTest;
+test "Catalog alterTrigger — ENABLE" {
     const allocator = std.testing.allocator;
     const path = "test_catalog_trig_alter_enable.db";
 
