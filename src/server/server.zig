@@ -63,20 +63,20 @@ pub const Server = struct {
     /// Start the server and begin accepting connections
     pub fn start(self: *Self) !void {
         self.running = true;
-        std.debug.print("Silica server listening on {}\n", .{self.address});
+        std.debug.print("Silica server listening on {any}\n", .{self.address});
 
         while (self.running) {
             // Check connection limit
             const current_connections = self.active_connections.load(.acquire);
             if (current_connections >= self.max_connections) {
                 // Wait a bit before checking again
-                std.time.sleep(10 * std.time.ns_per_ms);
+                std.Thread.sleep(10 * std.time.ns_per_ms);
                 continue;
             }
 
             // Accept a new connection
             const client = self.listener.accept() catch |err| {
-                std.debug.print("Error accepting connection: {}\n", .{err});
+                std.debug.print("Error accepting connection: {any}\n", .{err});
                 continue;
             };
 
@@ -107,7 +107,7 @@ pub const Server = struct {
 
         // Process messages from the client
         self.processMessages(&conn, client.stream) catch |err| {
-            std.debug.print("Connection error: {}\n", .{err});
+            std.debug.print("Connection error: {any}\n", .{err});
         };
     }
 
