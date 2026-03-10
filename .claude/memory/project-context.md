@@ -88,16 +88,18 @@
     - Catalog threading through FilterOp, SortOp operators
     - Type conversion from evaluated result to proper Value variant
 
-- **Milestone 14**: Triggers (IN PROGRESS)
+- **Milestone 14**: Triggers ✅ (DDL complete, execution deferred)
   - [x] Tokenizer (14A): Trigger keywords (TRIGGER, BEFORE, AFTER, INSTEAD, OF, EACH, STATEMENT, OLD, NEW, ENABLE, DISABLE, TRUNCATE)
   - [x] AST (14B): CreateTriggerStmt, DropTriggerStmt, AlterTriggerStmt, TriggerTiming, TriggerEvent, TriggerLevel
-  - [x] Parser (14C): CREATE TRIGGER/DROP TRIGGER DDL with full syntax (timing, events, UPDATE OF, WHEN clause, FOR EACH ROW/STATEMENT)
-  - [ ] Catalog (14D): Trigger storage with 'trig:' key prefix, serialization/deserialization
-  - [ ] Analyzer (14E): Trigger definition validation
-  - [ ] Planner (14F): CREATE/DROP TRIGGER planning
-  - [ ] Executor (14G): Trigger execution logic
-  - [ ] Engine (14H): DML trigger integration (fire triggers on INSERT/UPDATE/DELETE)
-  - Tests: 7 tokenizer tests, 5 AST tests, 9 parser tests (21 tests total)
+  - [x] Parser (14C): CREATE TRIGGER/DROP TRIGGER/ALTER TRIGGER DDL with full syntax
+  - [x] Catalog (14D): Trigger storage with 'trigger:' key prefix, serialization/deserialization (13 tests)
+  - [x] Analyzer (14E): Trigger definition validation (14 tests)
+  - [x] Planner (14F): CREATE/DROP/ALTER TRIGGER planning (12 tests)
+  - [x] Engine (14H): CREATE/DROP/ALTER TRIGGER DDL integration (2 integration tests)
+  - Tests: 7 tokenizer + 6 AST + 14 parser + 13 catalog + 14 analyzer + 12 planner + 2 engine = 68 tests
+  - **BUG FIX (c25f4a0)**: Fixed DuplicateKey in OR REPLACE and ALTER operations (all 4 disabled tests re-enabled)
+  - **LIMITATION**: Trigger execution NOT yet implemented — definitions stored in catalog only
+  - **FUTURE WORK**: Trigger firing mechanism, OLD/NEW row references, WHEN condition evaluation, execution order
 
 ## Architecture Layers
 1. Client Layer (Zig API, C FFI, Wire Protocol)
@@ -108,15 +110,18 @@
 6. OS Layer (File I/O, mmap optional, fsync)
 
 ## Test Coverage Status (as of 2026-03-10)
-- Total tests: 1557 (all passing) [3 disabled due to known DuplicateKey bug #1]
+- Total tests: 1618 (all passing, 0 disabled)
 - tokenizer.zig: 75 tests (includes JSON/JSONB keywords + 5 JSON operators + @@ operator + 13 function keywords)
 - parser.zig: 160 tests (includes JSON/JSONB, JSON operators, ANY/ALL, window, SERIAL, ENUM, DOMAIN, CREATE/DROP FUNCTION with 11 tests)
 - executor.zig: 246 tests (includes JSON/JSONB cast, JSON operators with 20 tests, ANY/ALL eval, INTERVAL, TSVECTOR/TSQUERY with 16 type tests, to_tsvector/to_tsquery with 13 tests, @@ operator with 9 tests [1 disabled due to bug #1], ts_rank with 10 tests, ts_rank_cd with 7 tests, Porter stemmer with 10 tests, stop words with 4 tests, FTS integration with 3 tests, FTS edge cases with 10 tests, ts_headline with 10 tests, user-defined function error path with 1 test)
-- engine.zig: 417 tests (includes JSON/JSONB CRUD, window functions, ENUM, DOMAIN, temporal types, views, CTEs, set ops, SSI, VACUUM, savepoints, unnest(), ts_rank/ts_rank_cd integration tests, ts_headline integration tests with 3 tests [1 disabled due to bug #1], division by zero with proper cleanup, 2 stabilization edge case tests: ORDER BY sorting, complex WHERE expressions, CREATE/DROP FUNCTION integration test)
-- STABILIZATION session findings (2026-03-10):
+- engine.zig: 419 tests (includes JSON/JSONB CRUD, window functions, ENUM, DOMAIN, temporal types, views, CTEs, set ops, SSI, VACUUM, savepoints, unnest(), ts_rank/ts_rank_cd integration tests, ts_headline integration tests, division by zero with proper cleanup, 2 stabilization edge case tests: ORDER BY sorting, complex WHERE expressions, CREATE/DROP FUNCTION integration test, CREATE/DROP/ALTER TRIGGER integration tests with 4 tests)
+- STABILIZATION session findings (2026-03-10 20:00 UTC):
+  - **BUG FIX**: GitHub issue #1 resolved (DuplicateKey in OR REPLACE/ALTER operations)
+  - Root cause: Catalog didn't delete old entry before insert in createFunction/createTrigger/alterTrigger
+  - 4 tests re-enabled: function OR REPLACE, trigger ALTER, 2 engine integration tests
+  - All 1618 tests passing (1569 main + 49 sailor)
   - Milestone 13 SQL function execution limitations documented in engine.zig
   - Comprehensive error handling verification (1165 defer cleanup sites, proper errdefer patterns)
-  - No new test gaps discovered — coverage is comprehensive
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs

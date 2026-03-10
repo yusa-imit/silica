@@ -4,13 +4,13 @@
 
 ## Known Issues
 
-### GitHub Issue #1: DuplicateKey Bug (Buffer Pool Cache Staleness)
-- **Symptom**: `BTreeError.DuplicateKey` during test execution, particularly in tests that create multiple tables
-- **Root Cause**: Buffer pool caches stale pages, causing `findNextRowKey()` and `updateTableRootPage()` to work with outdated data
-- **Impact**: Certain test execution orders trigger the bug (affected test: `@@ operator: empty tsvector and empty tsquery`)
-- **Workaround**: Temporarily disabled the failing test (commit 156b770)
-- **Fix**: TODO — requires investigating buffer pool page invalidation logic
-- **Related**: Multi-table INSERT, single-column NULL INSERT also hit this bug
+### GitHub Issue #1: DuplicateKey Bug (RESOLVED)
+- **Symptom**: `BTreeError.DuplicateKey` in OR REPLACE and ALTER operations for functions/triggers
+- **Root Cause**: Catalog code checked if key existed but didn't delete before inserting, causing B+Tree to reject duplicate
+- **Impact**: All OR REPLACE operations and ALTER TRIGGER operations failed
+- **Fix (c25f4a0)**: Delete existing entry before insert in createFunction/createTrigger (when or_replace=true) and alterTrigger
+- **Tests**: Re-enabled 4 previously disabled tests, all 1618 tests now passing
+- **Note**: Original issue #1 had multiple symptoms. Buffer pool cache staleness may still affect multi-table INSERT (different root cause)
 
 ## Recently Fixed Bugs
 
