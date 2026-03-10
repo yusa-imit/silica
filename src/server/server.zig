@@ -40,7 +40,6 @@ pub const Server = struct {
         // Create the TCP listener
         const listener = try address.listen(.{
             .reuse_address = true,
-            .reuse_port = false,
         });
 
         return Self{
