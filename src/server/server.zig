@@ -113,18 +113,18 @@ pub const Server = struct {
 
     /// Process wire protocol messages from a client stream
     fn processMessages(self: *Self, conn: *Connection, stream: net.Stream) !void {
-        // Create buffered writer/reader for the stream
+        // Create reader/writer with buffers
         var read_buf: [8192]u8 = undefined;
         var write_buf: [8192]u8 = undefined;
-        var buf_reader = std.io.bufferedReader(stream.reader(&read_buf));
-        var buf_writer = std.io.bufferedWriter(stream.writer(&write_buf));
-        const reader = buf_reader.reader();
-        const writer = buf_writer.writer();
+        var stream_reader = stream.reader(&read_buf);
+        var stream_writer = stream.writer(&write_buf);
+        const reader = &stream_reader.interface;
+        const writer = &stream_writer.interface;
 
         // Send initial ready for query (startup handshake simplified for now)
         const ready = wire.ReadyForQuery{ .status = .idle };
         try ready.write(writer);
-        try buf_writer.flush();
+        try stream_writer.interface.flush();
 
         // Main message loop
         while (true) {
@@ -142,27 +142,27 @@ pub const Server = struct {
             switch (msg) {
                 .query => |query_msg| {
                     try conn.handleSimpleQuery(query_msg, writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
                 .parse => |parse_msg| {
                     try conn.handleParse(parse_msg, writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
                 .bind => |bind_msg| {
                     try conn.handleBind(bind_msg, writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
                 .execute => |execute_msg| {
                     try conn.handleExecute(execute_msg, writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
                 .close => |close_msg| {
                     try conn.handleClose(close_msg, writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
                 .sync => {
                     try conn.handleSync(writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
                 .terminate => {
                     // Client requested termination
@@ -176,7 +176,7 @@ pub const Server = struct {
                         .message = "Unsupported message type",
                     };
                     try err_msg.write(writer);
-                    try buf_writer.flush();
+                    try stream_writer.interface.flush();
                 },
             }
         }
