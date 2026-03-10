@@ -35,7 +35,7 @@ pub const Server = struct {
         // Open the database
         const database = try allocator.create(Database);
         errdefer allocator.destroy(database);
-        database.* = try Database.open(allocator, config.database_path);
+        database.* = try Database.open(allocator, config.database_path, .{});
 
         // Create the TCP listener
         const listener = try address.listen(.{
