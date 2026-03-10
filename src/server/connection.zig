@@ -718,3 +718,411 @@ test "handleSync - send ReadyForQuery" {
     // Verify ReadyForQuery was sent
     try std.testing.expectEqual(@as(u8, 'Z'), buf.items[0]);
 }
+
+test "valueToText - real" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_real.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    const value = Value{ .real = 3.14 };
+    const text = try conn.valueToText(value);
+    defer allocator.free(text);
+
+    try std.testing.expectEqualStrings("3.14", text);
+}
+
+test "valueToText - boolean true" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_bool_true.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    const value = Value{ .boolean = true };
+    const text = try conn.valueToText(value);
+    defer allocator.free(text);
+
+    try std.testing.expectEqualStrings("true", text);
+}
+
+test "valueToText - boolean false" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_bool_false.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    const value = Value{ .boolean = false };
+    const text = try conn.valueToText(value);
+    defer allocator.free(text);
+
+    try std.testing.expectEqualStrings("false", text);
+}
+
+test "valueToText - blob hex encoding" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_blob.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    const blob_data = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF };
+    const value = Value{ .blob = &blob_data };
+    const text = try conn.valueToText(value);
+    defer allocator.free(text);
+
+    try std.testing.expectEqualStrings("deadbeef", text);
+}
+
+test "valueToText - uuid formatting" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_uuid.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    const uuid: [16]u8 = .{ 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
+    const value = Value{ .uuid = uuid };
+    const text = try conn.valueToText(value);
+    defer allocator.free(text);
+
+    try std.testing.expectEqualStrings("12345678-9abc-def0-1122-334455667788", text);
+}
+
+test "valueToText - json passthrough" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_json.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    const value = Value{ .json = "{\"key\":\"value\"}" };
+    const text = try conn.valueToText(value);
+    defer allocator.free(text);
+
+    try std.testing.expectEqualStrings("{\"key\":\"value\"}", text);
+}
+
+test "handleParse - replace existing statement" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_parse_replace.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create first statement
+    const param_types1 = [_]i32{23};
+    const parse_msg1 = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT $1",
+        .param_types = &param_types1,
+    };
+
+    var buf1 = std.ArrayListUnmanaged(u8){};
+    defer buf1.deinit(allocator);
+    try conn.handleParse(parse_msg1, buf1.writer(allocator));
+
+    // Replace with second statement
+    const param_types2 = [_]i32{ 23, 25 };
+    const parse_msg2 = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT $1, $2",
+        .param_types = &param_types2,
+    };
+
+    var buf2 = std.ArrayListUnmanaged(u8){};
+    defer buf2.deinit(allocator);
+    try conn.handleParse(parse_msg2, buf2.writer(allocator));
+
+    // Verify new statement replaced old one
+    const stmt = conn.prepared_statements.get("stmt1").?;
+    try std.testing.expectEqualStrings("SELECT $1, $2", stmt.query);
+    try std.testing.expectEqual(@as(usize, 2), stmt.param_types.len);
+}
+
+test "handleParse - unnamed statement" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_parse_unnamed.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create unnamed statement (empty name)
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "",
+        .query = "SELECT 1",
+        .param_types = &param_types,
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+    try conn.handleParse(parse_msg, buf.writer(allocator));
+
+    // Verify unnamed statement was stored with empty key
+    const stmt = conn.prepared_statements.get("").?;
+    try std.testing.expectEqualStrings("SELECT 1", stmt.query);
+}
+
+test "handleBind - parameter count mismatch" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_bind_mismatch.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create a prepared statement expecting 2 parameters
+    const param_types = [_]i32{ 23, 25 };
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT $1, $2",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Try to bind with only 1 parameter
+    const param_values = [_][]const u8{"42"};
+    const result_formats = [_]i16{0};
+    const param_formats = [_]i16{0};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Verify ErrorResponse was sent (message type 'E')
+    try std.testing.expectEqual(@as(u8, 'E'), bind_buf.items[0]);
+}
+
+test "handleBind - statement not found" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_bind_notfound.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Try to bind to non-existent statement
+    const param_values = [_][]const u8{};
+    const result_formats = [_]i16{};
+    const param_formats = [_]i16{};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "nonexistent",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleBind(bind_msg, buf.writer(allocator));
+
+    // Verify ErrorResponse was sent
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+}
+
+test "handleBind - unnamed portal" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_bind_unnamed.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create a prepared statement
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT 1",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Bind with unnamed portal (empty name)
+    const param_values = [_][]const u8{};
+    const result_formats = [_]i16{};
+    const param_formats = [_]i16{};
+    const bind_msg = wire.Bind{
+        .portal_name = "",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Verify unnamed portal was created
+    const portal = conn.portals.get("").?;
+    try std.testing.expectEqualStrings("stmt1", portal.statement_name);
+}
+
+test "handleClose - portal" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_close_portal.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Create a prepared statement and portal
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT 1",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    const param_values = [_][]const u8{};
+    const result_formats = [_]i16{};
+    const param_formats = [_]i16{};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Verify portal exists
+    try std.testing.expect(conn.portals.contains("portal1"));
+
+    // Close the portal
+    var close_buf = std.ArrayListUnmanaged(u8){};
+    defer close_buf.deinit(allocator);
+    try conn.handleClose('P', "portal1", close_buf.writer(allocator));
+
+    // Verify CloseComplete was sent
+    try std.testing.expectEqual(@as(u8, '3'), close_buf.items[0]);
+
+    // Verify portal was removed
+    try std.testing.expect(!conn.portals.contains("portal1"));
+}
+
+test "handleClose - nonexistent statement (no error)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_close_noexist.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    // Close non-existent statement (should succeed silently)
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+    try conn.handleClose('S', "nonexistent", buf.writer(allocator));
+
+    // Verify CloseComplete was sent
+    try std.testing.expectEqual(@as(u8, '3'), buf.items[0]);
+}
+
+test "getSQLState - various errors" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_sqlstate_all.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = Connection.init(allocator, &db);
+    defer conn.deinit();
+
+    try std.testing.expectEqualStrings("42601", try conn.getSQLState(error.ParseError));
+    try std.testing.expectEqualStrings("42703", try conn.getSQLState(error.ColumnNotFound));
+    try std.testing.expectEqualStrings("22012", try conn.getSQLState(error.DivisionByZero));
+    try std.testing.expectEqualStrings("53200", try conn.getSQLState(error.OutOfMemory));
+    try std.testing.expectEqualStrings("26000", try conn.getSQLState(error.StatementNotFound));
+    try std.testing.expectEqualStrings("34000", try conn.getSQLState(error.PortalNotFound));
+    try std.testing.expectEqualStrings("07001", try conn.getSQLState(error.ParameterCountMismatch));
+    try std.testing.expectEqualStrings("XX000", try conn.getSQLState(error.UnexpectedError));
+}
