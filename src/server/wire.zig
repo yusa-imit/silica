@@ -34,6 +34,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Helper to write a single byte (cross-platform compatibility)
+/// Stream writers don't have writeByte method on all platforms
+inline fn writeByte(writer: anytype, byte: u8) !void {
+    try writer.writeAll(&[_]u8{byte});
+}
+
 // ── Message Types ──────────────────────────────────────────────────────
 
 /// Frontend message types (client → server)
@@ -100,11 +106,11 @@ pub const Query = struct {
     }
 
     pub fn write(self: Query, writer: anytype) !void {
-        try writer.writeByte(@intFromEnum(FrontendMessageType.query));
+        try writeByte(writer, @intFromEnum(FrontendMessageType.query));
         const len: i32 = @intCast(4 + self.query.len + 1); // length + query + null
         try writer.writeInt(i32, len, .big);
         try writer.writeAll(self.query);
-        try writer.writeByte(0); // null terminator
+        try writeByte(writer, 0); // null terminator
     }
 };
 
@@ -257,7 +263,7 @@ pub const RowDescription = struct {
     fields: []const Field,
 
     pub fn write(self: RowDescription, writer: anytype, allocator: Allocator) !void {
-        try writer.writeByte(@intFromEnum(BackendMessageType.row_description));
+        try writeByte(writer, @intFromEnum(BackendMessageType.row_description));
 
         // Calculate total length
         var total_len: i32 = 4 + 2; // length field + field count
@@ -272,7 +278,7 @@ pub const RowDescription = struct {
         // Fields
         for (self.fields) |field| {
             try writer.writeAll(field.name);
-            try writer.writeByte(0); // null terminator
+            try writeByte(writer, 0); // null terminator
             try writer.writeInt(i32, field.table_oid, .big);
             try writer.writeInt(i16, field.column_attr_number, .big);
             try writer.writeInt(i32, field.type_oid, .big);
@@ -294,7 +300,7 @@ pub const DataRow = struct {
     columns: []const []const u8,
 
     pub fn write(self: DataRow, writer: anytype) !void {
-        try writer.writeByte(@intFromEnum(BackendMessageType.data_row));
+        try writeByte(writer, @intFromEnum(BackendMessageType.data_row));
 
         // Calculate total length
         var total_len: i32 = 4 + 2; // length field + column count
@@ -319,11 +325,11 @@ pub const CommandComplete = struct {
     tag: []const u8, // e.g., "SELECT 5", "INSERT 0 3", "UPDATE 2"
 
     pub fn write(self: CommandComplete, writer: anytype) !void {
-        try writer.writeByte(@intFromEnum(BackendMessageType.command_complete));
+        try writeByte(writer, @intFromEnum(BackendMessageType.command_complete));
         const len: i32 = @intCast(4 + self.tag.len + 1);
         try writer.writeInt(i32, len, .big);
         try writer.writeAll(self.tag);
-        try writer.writeByte(0); // null terminator
+        try writeByte(writer, 0); // null terminator
     }
 };
 
@@ -332,9 +338,9 @@ pub const ReadyForQuery = struct {
     status: TransactionStatus,
 
     pub fn write(self: ReadyForQuery, writer: anytype) !void {
-        try writer.writeByte(@intFromEnum(BackendMessageType.ready_for_query));
+        try writeByte(writer, @intFromEnum(BackendMessageType.ready_for_query));
         try writer.writeInt(i32, 5, .big); // length = 4 + 1
-        try writer.writeByte(@intFromEnum(self.status));
+        try writeByte(writer, @intFromEnum(self.status));
     }
 };
 
@@ -348,7 +354,7 @@ pub const ErrorResponse = struct {
     fields: []const Field,
 
     pub fn write(self: ErrorResponse, writer: anytype) !void {
-        try writer.writeByte(@intFromEnum(BackendMessageType.error_response));
+        try writeByte(writer, @intFromEnum(BackendMessageType.error_response));
 
         // Calculate total length
         var total_len: i32 = 4 + 1; // length field + terminator
@@ -359,12 +365,12 @@ pub const ErrorResponse = struct {
 
         // Fields
         for (self.fields) |field| {
-            try writer.writeByte(field.code);
+            try writeByte(writer, field.code);
             try writer.writeAll(field.value);
-            try writer.writeByte(0); // null terminator
+            try writeByte(writer, 0); // null terminator
         }
 
-        try writer.writeByte(0); // final terminator
+        try writeByte(writer, 0); // final terminator
     }
 
     pub fn deinit(self: ErrorResponse, allocator: Allocator) void {
@@ -378,7 +384,7 @@ pub const Authentication = struct {
     salt: ?[4]u8, // for MD5
 
     pub fn write(self: Authentication, writer: anytype) !void {
-        try writer.writeByte(@intFromEnum(BackendMessageType.authentication));
+        try writeByte(writer, @intFromEnum(BackendMessageType.authentication));
 
         if (self.salt) |salt| {
             try writer.writeInt(i32, 12, .big); // length = 4 + 4 + 4
