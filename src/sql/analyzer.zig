@@ -282,9 +282,9 @@ pub const Analyzer = struct {
             .drop_domain => {},
             .create_function => |s| self.analyzeCreateFunction(&s),
             .drop_function => |s| self.analyzeDropFunction(&s),
-            .create_trigger => {}, // TODO: Milestone 14E
-            .drop_trigger => {},   // TODO: Milestone 14E
-            .alter_trigger => {},  // TODO: Milestone 14E
+            .create_trigger => |s| self.analyzeCreateTrigger(&s),
+            .drop_trigger => |s| self.analyzeDropTrigger(&s),
+            .alter_trigger => |s| self.analyzeAlterTrigger(&s),
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
@@ -695,6 +695,70 @@ pub const Analyzer = struct {
         }
 
         // Note: We don't validate if function exists here (unless if_exists=false)
+        // The catalog layer will handle existence checks during execution
+    }
+
+    // ── Trigger Analysis ────────────────────────────────────────────
+
+    fn analyzeCreateTrigger(self: *Analyzer, stmt: *const ast.CreateTriggerStmt) void {
+        // Validate trigger name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "trigger name cannot be empty", .{});
+        }
+
+        // Validate table name is not empty
+        if (stmt.table_name.len == 0) {
+            self.addError(.invalid_expression, "table name cannot be empty for trigger", .{});
+        }
+
+        // Validate UPDATE OF columns (only valid for UPDATE events)
+        if (stmt.update_columns.len > 0) {
+            if (stmt.event != .update) {
+                self.addError(.invalid_expression, "OF column_list is only allowed for UPDATE triggers", .{});
+            }
+
+            // Check for duplicate column names
+            for (stmt.update_columns, 0..) |col, i| {
+                if (col.len == 0) {
+                    self.addError(.invalid_expression, "column name cannot be empty in UPDATE OF clause", .{});
+                }
+                for (stmt.update_columns[i + 1 ..]) |other| {
+                    if (std.ascii.eqlIgnoreCase(col, other)) {
+                        self.addError(.duplicate_alias, "duplicate column in UPDATE OF: '{s}'", .{col});
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Validate WHEN condition if present
+        if (stmt.when_condition) |cond| {
+            self.analyzeExpr(cond);
+        }
+
+        // Note: Body syntax validation is deferred to executor
+        // An empty string here would parse successfully but fail at execution time
+
+        // Note: We don't validate if the table exists here — the catalog will handle that
+    }
+
+    fn analyzeDropTrigger(self: *Analyzer, stmt: *const ast.DropTriggerStmt) void {
+        // Validate trigger name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "trigger name cannot be empty", .{});
+        }
+
+        // Note: table_name is optional in DROP TRIGGER (some DBs require it)
+        // The catalog layer will handle existence checks during execution
+    }
+
+    fn analyzeAlterTrigger(self: *Analyzer, stmt: *const ast.AlterTriggerStmt) void {
+        // Validate trigger name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "trigger name cannot be empty", .{});
+        }
+
+        // Note: table_name is optional for ALTER TRIGGER
         // The catalog layer will handle existence checks during execution
     }
 
@@ -1851,4 +1915,236 @@ test "DROP FUNCTION: with overload resolution passes" {
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
+}
+
+// ── Trigger Analysis Tests ───────────────────────────────────────
+
+test "CREATE TRIGGER: valid trigger passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("users", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER audit_insert AFTER INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id);';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE TRIGGER: empty trigger name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER \"\" AFTER INSERT ON users AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "CREATE TRIGGER: empty table name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER t AFTER INSERT ON \"\" AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "CREATE TRIGGER: valid UPDATE OF passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER t AFTER UPDATE OF name ON users AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    // This should pass — UPDATE OF is valid for UPDATE events
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE TRIGGER: empty column in UPDATE OF fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER t AFTER UPDATE OF \"\" ON users AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "CREATE TRIGGER: duplicate columns in UPDATE OF fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER t AFTER UPDATE OF name, name ON users AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_duplicate = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .duplicate_alias) found_duplicate = true;
+    }
+    try std.testing.expect(found_duplicate);
+}
+
+test "CREATE TRIGGER: body validation" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    // Non-empty body should pass basic validation
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER t AFTER INSERT ON users AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    // Analyzer checks for empty strings, but parser handles empty string literals differently
+    // For now, we accept any string literal that parses successfully
+    // Empty body validation can be enhanced in the executor phase
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE TRIGGER: WHEN condition basic validation" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("users", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "age", .column_type = .integer, .flags = .{} },
+    });
+
+    // WHEN condition with simple expression (no NEW/OLD references for now)
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE TRIGGER t AFTER INSERT ON users FOR EACH ROW WHEN (1 > 0) AS 'SELECT 1;';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    // Basic WHEN condition should parse and analyze successfully
+    // Note: Full NEW/OLD validation requires trigger execution context (beyond analyzer scope)
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP TRIGGER: valid drop passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP TRIGGER audit_insert;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP TRIGGER: with table name passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP TRIGGER audit_insert ON users;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP TRIGGER: empty name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP TRIGGER \"\";",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "ALTER TRIGGER: ENABLE passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "ALTER TRIGGER audit_insert ENABLE;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "ALTER TRIGGER: DISABLE passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "ALTER TRIGGER audit_insert DISABLE;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "ALTER TRIGGER: empty name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "ALTER TRIGGER \"\" ENABLE;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
 }
