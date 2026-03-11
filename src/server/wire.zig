@@ -524,6 +524,22 @@ pub const Authentication = struct {
     }
 };
 
+/// ParameterStatus message (server → client runtime parameter notification)
+pub const ParameterStatus = struct {
+    name: []const u8,
+    value: []const u8,
+
+    pub fn write(self: ParameterStatus, writer: anytype) !void {
+        try writer.writeByte(@intFromEnum(BackendMessageType.parameter_status));
+        const len: i32 = @intCast(4 + self.name.len + 1 + self.value.len + 1);
+        try writer.writeInt(i32, len, .big);
+        try writer.writeAll(self.name);
+        try writer.writeByte(0);
+        try writer.writeAll(self.value);
+        try writer.writeByte(0);
+    }
+};
+
 // ── Message Reader ──────────────────────────────────────────────────────
 
 /// Read a message from a reader

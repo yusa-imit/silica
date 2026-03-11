@@ -6,6 +6,7 @@ const silica = @import("silica");
 const Database = silica.engine.Database;
 const Connection = @import("connection.zig").Connection;
 const wire = @import("wire.zig");
+const auth = @import("auth.zig");
 
 /// Server represents a TCP server that accepts PostgreSQL wire protocol connections
 pub const Server = struct {
@@ -16,6 +17,8 @@ pub const Server = struct {
     running: bool,
     max_connections: usize,
     active_connections: std.atomic.Value(usize),
+    auth_method: auth.AuthMethod,
+    credentials: auth.CredentialStore,
 
     const Self = @This();
 
@@ -25,6 +28,7 @@ pub const Server = struct {
         port: u16 = 5433,
         max_connections: usize = 100,
         database_path: []const u8,
+        auth_method: auth.AuthMethod = .trust, // Default to trust for development
     };
 
     /// Initialize a new server with the given configuration
@@ -42,6 +46,20 @@ pub const Server = struct {
             .reuse_address = true,
         });
 
+        // Initialize credential store
+        var credentials = auth.CredentialStore.init(allocator);
+
+        // Add default user for development (only if using MD5 or SCRAM)
+        if (config.auth_method == .md5) {
+            const hash = try auth.storePasswordMd5(allocator, "postgres", "postgres");
+            defer allocator.free(hash);
+            try credentials.addUser("postgres", hash);
+        } else if (config.auth_method == .scram_sha_256) {
+            const hash = try auth.storePasswordScram(allocator, "postgres", .{});
+            defer allocator.free(hash);
+            try credentials.addUser("postgres", hash);
+        }
+
         return Self{
             .allocator = allocator,
             .address = address,
@@ -50,11 +68,14 @@ pub const Server = struct {
             .running = false,
             .max_connections = config.max_connections,
             .active_connections = std.atomic.Value(usize).init(0),
+            .auth_method = config.auth_method,
+            .credentials = credentials,
         };
     }
 
     /// Deinitialize the server and clean up resources
     pub fn deinit(self: *Self) void {
+        self.credentials.deinit();
         self.listener.deinit();
         self.database.close();
         self.allocator.destroy(self.database);
@@ -101,10 +122,16 @@ pub const Server = struct {
             client.stream.close();
         }
 
-        // Create a connection handler
-        // TODO: Extract user/database from startup message
-        // For now, use default user/database from connection
-        var conn = Connection.init(self.allocator, self.database, "postgres", "postgres") catch |err| {
+        // Perform startup handshake and authentication
+        const startup_info = self.performStartup(client.stream) catch |err| {
+            std.debug.print("Startup handshake failed: {any}\n", .{err});
+            return;
+        };
+        defer self.allocator.free(startup_info.user);
+        defer self.allocator.free(startup_info.database);
+
+        // Create a connection handler with authenticated user
+        var conn = Connection.init(self.allocator, self.database, startup_info.user, startup_info.database) catch |err| {
             std.debug.print("Failed to initialize connection: {any}\n", .{err});
             return;
         };
@@ -113,6 +140,135 @@ pub const Server = struct {
         // Process messages from the client
         self.processMessages(&conn, client.stream) catch |err| {
             std.debug.print("Connection error: {any}\n", .{err});
+        };
+    }
+
+    /// Perform startup handshake and authentication
+    fn performStartup(self: *Self, stream: net.Stream) !struct { user: []const u8, database: []const u8 } {
+        const StreamReader = std.io.GenericReader(net.Stream, net.Stream.ReadError, struct {
+            fn read(s: net.Stream, buffer: []u8) net.Stream.ReadError!usize {
+                return s.read(buffer);
+            }
+        }.read);
+        const reader = StreamReader{ .context = stream };
+
+        // Read startup message (untagged)
+        const startup_payload = try wire.readStartupMessage(reader, self.allocator);
+        defer self.allocator.free(startup_payload);
+
+        var startup = try wire.Startup.parse(startup_payload, self.allocator);
+        defer startup.deinit(self.allocator);
+
+        // Authenticate based on configured method
+        switch (self.auth_method) {
+            .trust => {
+                // TRUST: no password verification
+                try auth.authenticateTrust(startup.user);
+
+                // Send AuthenticationOk
+                var write_buf = std.ArrayListUnmanaged(u8){};
+                defer write_buf.deinit(self.allocator);
+                const writer = write_buf.writer(self.allocator);
+
+                const auth_ok = wire.Authentication{ .auth_type = .ok, .salt = null };
+                try auth_ok.write(writer);
+                try stream.writeAll(write_buf.items);
+            },
+            .md5 => {
+                // MD5: send salt, wait for password response
+                const salt = auth.generateMd5Salt(std.crypto.random);
+
+                // Send AuthenticationMD5Password
+                var write_buf = std.ArrayListUnmanaged(u8){};
+                defer write_buf.deinit(self.allocator);
+                var writer = write_buf.writer(self.allocator);
+
+                const auth_md5 = wire.Authentication{ .auth_type = .md5_password, .salt = salt };
+                try auth_md5.write(writer);
+                try stream.writeAll(write_buf.items);
+
+                // Read password response
+                const msg = try wire.readMessage(reader, self.allocator);
+                defer self.allocator.free(msg.payload);
+
+                if (msg.msg_type != 'p') return error.ProtocolError;
+                const pwd_msg = try wire.PasswordMessage.parse(msg.payload);
+
+                // Verify password
+                const cred = self.credentials.getUser(startup.user) orelse return error.AuthenticationFailed;
+                const verified = try auth.verifyPasswordMd5(self.allocator, cred.password_hash, pwd_msg.password, startup.user, salt);
+                if (!verified) return error.AuthenticationFailed;
+
+                // Send AuthenticationOk
+                write_buf.clearRetainingCapacity();
+                writer = write_buf.writer(self.allocator);
+                const auth_ok = wire.Authentication{ .auth_type = .ok, .salt = null };
+                try auth_ok.write(writer);
+                try stream.writeAll(write_buf.items);
+            },
+            .scram_sha_256 => {
+                // SCRAM-SHA-256: send challenge (simplified - full SASL exchange TBD)
+                // For now, fall back to AuthenticationCleartextPassword
+                var write_buf = std.ArrayListUnmanaged(u8){};
+                defer write_buf.deinit(self.allocator);
+                var writer = write_buf.writer(self.allocator);
+
+                const auth_cleartext = wire.Authentication{ .auth_type = .cleartext_password, .salt = null };
+                try auth_cleartext.write(writer);
+                try stream.writeAll(write_buf.items);
+
+                // Read password response
+                const msg = try wire.readMessage(reader, self.allocator);
+                defer self.allocator.free(msg.payload);
+
+                if (msg.msg_type != 'p') return error.ProtocolError;
+                const pwd_msg = try wire.PasswordMessage.parse(msg.payload);
+
+                // Verify password
+                const cred = self.credentials.getUser(startup.user) orelse return error.AuthenticationFailed;
+                const verified = try auth.verifyPasswordScram(cred.password_hash, pwd_msg.password);
+                if (!verified) return error.AuthenticationFailed;
+
+                // Send AuthenticationOk
+                write_buf.clearRetainingCapacity();
+                writer = write_buf.writer(self.allocator);
+                const auth_ok = wire.Authentication{ .auth_type = .ok, .salt = null };
+                try auth_ok.write(writer);
+                try stream.writeAll(write_buf.items);
+            },
+        }
+
+        // Send ParameterStatus messages
+        {
+            var write_buf = std.ArrayListUnmanaged(u8){};
+            defer write_buf.deinit(self.allocator);
+            const writer = write_buf.writer(self.allocator);
+
+            const params = wire.ParameterStatus{ .name = "server_version", .value = "14.0" };
+            try params.write(writer);
+            try stream.writeAll(write_buf.items);
+
+            write_buf.clearRetainingCapacity();
+            const encoding_params = wire.ParameterStatus{ .name = "client_encoding", .value = "UTF8" };
+            try encoding_params.write(writer);
+            try stream.writeAll(write_buf.items);
+        }
+
+        // Send ReadyForQuery
+        {
+            var write_buf = std.ArrayListUnmanaged(u8){};
+            defer write_buf.deinit(self.allocator);
+            const writer = write_buf.writer(self.allocator);
+
+            const ready = wire.ReadyForQuery{ .status = .idle };
+            try ready.write(writer);
+            try stream.writeAll(write_buf.items);
+        }
+
+        // Return user and database (must dupe for caller)
+        return .{
+            .user = try self.allocator.dupe(u8, startup.user),
+            .database = try self.allocator.dupe(u8, startup.database),
         };
     }
 
@@ -129,16 +285,7 @@ pub const Server = struct {
         var write_buf = std.ArrayListUnmanaged(u8){};
         defer write_buf.deinit(self.allocator);
 
-        // Send initial ready for query (startup handshake simplified for now)
-        {
-            write_buf.clearRetainingCapacity();
-            const writer = write_buf.writer(self.allocator);
-            const ready = wire.ReadyForQuery{ .status = .idle };
-            try ready.write(writer);
-            try stream.writeAll(write_buf.items);
-        }
-
-        // Main message loop
+        // Main message loop (startup handshake already completed)
         while (true) {
             // Read next message from client
             const msg = wire.readMessage(reader, self.allocator) catch |err| {
