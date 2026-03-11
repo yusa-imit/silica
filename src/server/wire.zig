@@ -132,6 +132,9 @@ pub const Parse = struct {
         const param_count = std.mem.readInt(i16, payload[offset..][0..2], .big);
         offset += 2;
 
+        // Validate param_count is non-negative
+        if (param_count < 0) return error.InvalidMessage;
+
         const param_types = try allocator.alloc(i32, @intCast(param_count));
         errdefer allocator.free(param_types);
 
@@ -179,6 +182,9 @@ pub const Bind = struct {
         const format_count = std.mem.readInt(i16, payload[offset..][0..2], .big);
         offset += 2;
 
+        // Validate format_count is non-negative
+        if (format_count < 0) return error.InvalidMessage;
+
         const param_formats = try allocator.alloc(i16, @intCast(format_count));
         errdefer allocator.free(param_formats);
 
@@ -193,6 +199,9 @@ pub const Bind = struct {
         const param_count = std.mem.readInt(i16, payload[offset..][0..2], .big);
         offset += 2;
 
+        // Validate param_count is non-negative
+        if (param_count < 0) return error.InvalidMessage;
+
         const param_values = try allocator.alloc([]const u8, @intCast(param_count));
         errdefer allocator.free(param_values);
 
@@ -204,6 +213,9 @@ pub const Bind = struct {
             if (val_len == -1) {
                 // NULL value
                 val.* = &[_]u8{};
+            } else if (val_len < 0) {
+                // Invalid negative length (other than -1 which means NULL)
+                return error.InvalidMessage;
             } else {
                 const len: usize = @intCast(val_len);
                 if (offset + len > payload.len) return error.InvalidMessage;
@@ -216,6 +228,9 @@ pub const Bind = struct {
         if (offset + 2 > payload.len) return error.InvalidMessage;
         const result_format_count = std.mem.readInt(i16, payload[offset..][0..2], .big);
         offset += 2;
+
+        // Validate result_format_count is non-negative
+        if (result_format_count < 0) return error.InvalidMessage;
 
         const result_formats = try allocator.alloc(i16, @intCast(result_format_count));
         errdefer allocator.free(result_formats);

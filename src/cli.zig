@@ -1361,3 +1361,8 @@ test "formatPlain renders key-value pairs" {
     try std.testing.expect(std.mem.indexOf(u8, output, "id = 42") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "name = World") != null);
 }
+
+// Import wire_fuzz tests
+test {
+    _ = @import("server/wire_fuzz.zig");
+}

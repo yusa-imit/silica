@@ -34,6 +34,10 @@ pub const mvcc = @import("tx/mvcc.zig");
 pub const lock = @import("tx/lock.zig");
 pub const vacuum = @import("tx/vacuum.zig");
 
+// Note: Server modules (wire, connection, server) are not imported here
+// to avoid circular dependencies (they import "silica"). Their tests
+// are run via the CLI test module which has proper module setup.
+
 test {
     // Pull in tests from all imported modules
     std.testing.refAllDecls(@This());
