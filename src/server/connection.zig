@@ -435,12 +435,10 @@ pub const Connection = struct {
     /// Get command tag for CommandComplete message
     fn getCommandTag(self: *Connection, result: *QueryResult) ![]const u8 {
         _ = self;
-        if (result.rows_affected) |affected| {
+        if (result.rows_affected > 0) {
             // For INSERT/UPDATE/DELETE, include row count
             // For now, just return a generic tag
-            if (affected > 0) {
-                return "SELECT"; // Placeholder
-            }
+            return "SELECT"; // Placeholder
         }
         return "OK";
     }
