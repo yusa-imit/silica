@@ -123,6 +123,20 @@ pub const TokenType = enum {
     kw_enable,
     kw_disable,
     kw_truncate,
+    kw_role,
+    kw_login,
+    kw_nologin,
+    kw_superuser,
+    kw_nosuperuser,
+    kw_createdb,
+    kw_nocreatedb,
+    kw_createrole,
+    kw_nocreaterole,
+    kw_inherit,
+    kw_noinherit,
+    kw_password,
+    kw_valid,
+    kw_until,
 
     // Keywords — DML
     kw_select,
@@ -776,6 +790,20 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "enable", .kw_enable },
         .{ "disable", .kw_disable },
         .{ "truncate", .kw_truncate },
+        .{ "role", .kw_role },
+        .{ "login", .kw_login },
+        .{ "nologin", .kw_nologin },
+        .{ "superuser", .kw_superuser },
+        .{ "nosuperuser", .kw_nosuperuser },
+        .{ "createdb", .kw_createdb },
+        .{ "nocreatedb", .kw_nocreatedb },
+        .{ "createrole", .kw_createrole },
+        .{ "nocreaterole", .kw_nocreaterole },
+        .{ "inherit", .kw_inherit },
+        .{ "noinherit", .kw_noinherit },
+        .{ "password", .kw_password },
+        .{ "valid", .kw_valid },
+        .{ "until", .kw_until },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1633,5 +1661,91 @@ test "DROP TRIGGER keywords" {
         .kw_if,
         .kw_exists,
         .identifier, // audit_log
+    });
+}
+
+test "ROLE keyword" {
+    try expectSingleToken("role", .kw_role, "role");
+}
+
+test "CREATE ROLE keywords" {
+    const sql = "CREATE ROLE admin LOGIN PASSWORD";
+    try expectTokens(sql, &.{
+        .kw_create,
+        .kw_role,
+        .identifier, // admin
+        .kw_login,
+        .kw_password,
+    });
+}
+
+test "LOGIN/NOLOGIN keywords" {
+    const sql = "LOGIN NOLOGIN";
+    try expectTokens(sql, &.{
+        .kw_login,
+        .kw_nologin,
+    });
+}
+
+test "SUPERUSER/NOSUPERUSER keywords" {
+    const sql = "SUPERUSER NOSUPERUSER";
+    try expectTokens(sql, &.{
+        .kw_superuser,
+        .kw_nosuperuser,
+    });
+}
+
+test "CREATEDB/NOCREATEDB keywords" {
+    const sql = "CREATEDB NOCREATEDB";
+    try expectTokens(sql, &.{
+        .kw_createdb,
+        .kw_nocreatedb,
+    });
+}
+
+test "CREATEROLE/NOCREATEROLE keywords" {
+    const sql = "CREATEROLE NOCREATEROLE";
+    try expectTokens(sql, &.{
+        .kw_createrole,
+        .kw_nocreaterole,
+    });
+}
+
+test "INHERIT/NOINHERIT keywords" {
+    const sql = "INHERIT NOINHERIT";
+    try expectTokens(sql, &.{
+        .kw_inherit,
+        .kw_noinherit,
+    });
+}
+
+test "VALID UNTIL keywords" {
+    const sql = "VALID UNTIL '2025-12-31'";
+    try expectTokens(sql, &.{
+        .kw_valid,
+        .kw_until,
+        .string_literal, // '2025-12-31'
+    });
+}
+
+test "DROP ROLE keywords" {
+    const sql = "DROP ROLE IF EXISTS admin";
+    try expectTokens(sql, &.{
+        .kw_drop,
+        .kw_role,
+        .kw_if,
+        .kw_exists,
+        .identifier, // admin
+    });
+}
+
+test "ALTER ROLE keywords" {
+    const sql = "ALTER ROLE user1 WITH LOGIN";
+    try expectTokens(sql, &.{
+        .kw_alter,
+        .kw_role,
+        .identifier, // user1
+        .kw_with,
+        .kw_login,
     });
 }
