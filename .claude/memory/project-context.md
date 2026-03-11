@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 7 — Stored Functions & Triggers (Milestone 13 complete, Milestone 14 pending)
+## Current Phase: Phase 8 — Client-Server & Wire Protocol (Milestone 16 complete, Milestone 17 in progress)
 
 ### Completed Phases
 - **Phase 1**: Storage Foundation ✅ (v0.1.0)
@@ -131,6 +131,14 @@
     - Documented in .claude/memory/debugging.md
     - Commit 137b22c attempted writeByte helper (wrong approach, to be reverted)
     - **STATUS**: Root cause identified, fix deferred to next cycle
+  - **2026-03-12 04:00 UTC**: CI compilation error fixed (STABILIZATION MODE)
+    - **BUG**: Exhaustive switch statements missing role management cases (CI red, 3 consecutive failures)
+    - Root cause: Commits 0461a4b, 66647fb, fa2c468 added create_role/drop_role/alter_role AST nodes but didn't update exhaustive switches
+    - Files affected: src/sql/analyzer.zig, src/sql/planner.zig, src/cli.zig
+    - Fix (commit 264b8fe): Added missing switch cases (empty handlers in analyzer, planTransaction in planner, printStmtInfo in cli)
+    - CI green after 15-minute run (unusually long due to GitHub Actions infrastructure delay)
+    - All 1684 tests passing (previous count: 1618 + new tests from Milestone 17A commits)
+    - **LESSON**: When adding new AST node variants to tagged unions, ALWAYS update ALL exhaustive switches before committing
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
