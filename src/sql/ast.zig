@@ -636,6 +636,36 @@ pub const AlterTriggerStmt = struct {
     enable: bool, // true = ENABLE, false = DISABLE
 };
 
+/// Role options for CREATE/ALTER ROLE.
+pub const RoleOptions = struct {
+    login: ?bool = null, // LOGIN or NOLOGIN
+    superuser: ?bool = null, // SUPERUSER or NOSUPERUSER
+    createdb: ?bool = null, // CREATEDB or NOCREATEDB
+    createrole: ?bool = null, // CREATEROLE or NOCREATEROLE
+    inherit: ?bool = null, // INHERIT or NOINHERIT
+    password: ?[]const u8 = null, // PASSWORD 'password'
+    valid_until: ?[]const u8 = null, // VALID UNTIL 'timestamp'
+};
+
+/// CREATE ROLE statement.
+pub const CreateRoleStmt = struct {
+    name: []const u8,
+    options: RoleOptions = .{},
+    or_replace: bool = false,
+};
+
+/// DROP ROLE statement.
+pub const DropRoleStmt = struct {
+    name: []const u8,
+    if_exists: bool = false,
+};
+
+/// ALTER ROLE statement.
+pub const AlterRoleStmt = struct {
+    name: []const u8,
+    options: RoleOptions = .{},
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -660,6 +690,9 @@ pub const Stmt = union(enum) {
     create_trigger: CreateTriggerStmt,
     drop_trigger: DropTriggerStmt,
     alter_trigger: AlterTriggerStmt,
+    create_role: CreateRoleStmt,
+    drop_role: DropRoleStmt,
+    alter_role: AlterRoleStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -1098,4 +1131,90 @@ test "AlterTriggerStmt ENABLE" {
 
     try std.testing.expectEqualStrings("check_constraint", stmt.name);
     try std.testing.expect(stmt.enable);
+}
+
+test "CreateRoleStmt basic" {
+    const stmt = CreateRoleStmt{
+        .name = "admin",
+        .options = .{
+            .login = true,
+            .superuser = true,
+        },
+    };
+
+    try std.testing.expectEqualStrings("admin", stmt.name);
+    try std.testing.expectEqual(true, stmt.options.login.?);
+    try std.testing.expectEqual(true, stmt.options.superuser.?);
+}
+
+test "CreateRoleStmt with password" {
+    const stmt = CreateRoleStmt{
+        .name = "app_user",
+        .options = .{
+            .login = true,
+            .password = "secret123",
+            .valid_until = "2025-12-31",
+        },
+    };
+
+    try std.testing.expectEqualStrings("app_user", stmt.name);
+    try std.testing.expectEqualStrings("secret123", stmt.options.password.?);
+    try std.testing.expectEqualStrings("2025-12-31", stmt.options.valid_until.?);
+}
+
+test "CreateRoleStmt with all options" {
+    const stmt = CreateRoleStmt{
+        .name = "test_role",
+        .options = .{
+            .login = true,
+            .superuser = false,
+            .createdb = true,
+            .createrole = false,
+            .inherit = true,
+            .password = "pass",
+            .valid_until = "2026-01-01",
+        },
+        .or_replace = true,
+    };
+
+    try std.testing.expectEqualStrings("test_role", stmt.name);
+    try std.testing.expectEqual(true, stmt.options.login.?);
+    try std.testing.expectEqual(false, stmt.options.superuser.?);
+    try std.testing.expectEqual(true, stmt.options.createdb.?);
+    try std.testing.expectEqual(false, stmt.options.createrole.?);
+    try std.testing.expectEqual(true, stmt.options.inherit.?);
+    try std.testing.expect(stmt.or_replace);
+}
+
+test "DropRoleStmt basic" {
+    const stmt = DropRoleStmt{
+        .name = "old_user",
+    };
+
+    try std.testing.expectEqualStrings("old_user", stmt.name);
+    try std.testing.expectEqual(false, stmt.if_exists);
+}
+
+test "DropRoleStmt with IF EXISTS" {
+    const stmt = DropRoleStmt{
+        .name = "maybe_role",
+        .if_exists = true,
+    };
+
+    try std.testing.expectEqualStrings("maybe_role", stmt.name);
+    try std.testing.expect(stmt.if_exists);
+}
+
+test "AlterRoleStmt modify options" {
+    const stmt = AlterRoleStmt{
+        .name = "user1",
+        .options = .{
+            .login = false,
+            .password = "new_pass",
+        },
+    };
+
+    try std.testing.expectEqualStrings("user1", stmt.name);
+    try std.testing.expectEqual(false, stmt.options.login.?);
+    try std.testing.expectEqualStrings("new_pass", stmt.options.password.?);
 }
