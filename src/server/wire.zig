@@ -242,6 +242,55 @@ pub const Bind = struct {
     }
 };
 
+/// Execute message (execute portal)
+pub const Execute = struct {
+    portal_name: []const u8,
+    max_rows: i32,
+
+    pub fn parse(payload: []const u8) !Execute {
+        var stream = std.io.fixedBufferStream(payload);
+        const reader = stream.reader();
+
+        // Portal name (null-terminated string)
+        const name_end = std.mem.indexOfScalar(u8, payload, 0) orelse return error.InvalidMessage;
+        const portal_name = payload[0..name_end];
+
+        // Seek past the portal name and null terminator
+        try reader.skipBytes(name_end + 1, .{});
+
+        // Maximum rows (0 = unlimited)
+        const max_rows = try reader.readInt(i32, .big);
+
+        return Execute{
+            .portal_name = portal_name,
+            .max_rows = max_rows,
+        };
+    }
+};
+
+/// Close message (close statement or portal)
+pub const Close = struct {
+    close_type: u8, // 'S' for statement, 'P' for portal
+    name: []const u8,
+
+    pub fn parse(payload: []const u8) !Close {
+        if (payload.len < 2) return error.InvalidMessage;
+
+        // Close type ('S' or 'P')
+        const close_type = payload[0];
+
+        // Name (null-terminated string)
+        const name_start = 1;
+        const name_end = std.mem.indexOfScalar(u8, payload[name_start..], 0) orelse return error.InvalidMessage;
+        const name = payload[name_start .. name_start + name_end];
+
+        return Close{
+            .close_type = close_type,
+            .name = name,
+        };
+    }
+};
+
 /// RowDescription message (column metadata)
 pub const RowDescription = struct {
     pub const Field = struct {

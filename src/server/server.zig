@@ -167,11 +167,11 @@ pub const Server = struct {
                 },
                 'E' => { // Execute
                     const execute_msg = try wire.Execute.parse(msg.payload);
-                    try conn.handleExecute(execute_msg, writer);
+                    try conn.handleExecute(execute_msg.portal_name, execute_msg.max_rows, writer);
                 },
                 'C' => { // Close
                     const close_msg = try wire.Close.parse(msg.payload);
-                    try conn.handleClose(close_msg, writer);
+                    try conn.handleClose(close_msg.close_type, close_msg.name, writer);
                 },
                 'S' => { // Sync
                     try conn.handleSync(writer);

@@ -253,11 +253,19 @@ pub const Connection = struct {
         defer result.close(self.allocator);
 
         // Send results (same as simple query protocol)
-        if (result.columns) |columns| {
-            try self.sendRowDescription(writer, columns);
+        if (result.rows) |rows_iter| {
+            // Get first row to determine columns
+            if (try rows_iter.next()) |first_row| {
+                // Send RowDescription
+                try self.sendRowDescription(writer, first_row.columns);
 
-            while (try result.next()) |row| {
-                try self.sendDataRow(writer, row, columns);
+                // Send first DataRow
+                try self.sendDataRow(writer, first_row, first_row.columns);
+
+                // Send remaining DataRows
+                while (try rows_iter.next()) |row| {
+                    try self.sendDataRow(writer, row, row.columns);
+                }
             }
         }
 
