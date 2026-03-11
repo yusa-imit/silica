@@ -18,16 +18,22 @@
 
 ## Recently Fixed Bugs
 
-### CI Failure: net.Stream.Writer incompatibility (763c70e, March 11, 2026)
+### CI Failure: net.Stream.Writer incompatibility (763c70e + 6 follow-ups, March 11, 2026)
 - **Symptom**: Build fails on CI (Linux) but works locally (macOS) with `no field or member function named 'writeAll'`
 - **Root Cause**: `net.Stream.writer(&buffer)` returns platform-specific types without standard writer methods (writeByte, writeInt, writeAll)
-- **Solution**:
+- **Main Fix** (763c70e):
   - Writing: Use `ArrayListUnmanaged` buffer → `.writer(allocator)` → `stream.writeAll(buf.items)`
-  - Reading: Wrap stream with `GenericReader` to get standard reader interface
-  - wire.zig: Use `writer.writeByte()` directly instead of custom helper
-  - server.zig: Manual message parsing based on `msg_type` byte
-- **Side fixes**: Updated connection.zig for QueryResult API changes (rows iterator, Value enum variants)
+  - Reading: Wrap stream with `GenericReader(net.Stream, ReadError, read_fn)` to get standard reader interface
+  - wire.zig: Use `writer.writeByte()` directly instead of custom helper (14 call sites)
+  - server.zig: Manual message parsing based on `msg_type` byte, call individual .parse() methods
+- **Follow-up Fixes** (6 commits to fix API mismatches revealed by CI):
+  - 3783a9b: Added Value.array variant in connection.valueToText (PostgreSQL {val1,val2} format)
+  - e91042a: Fixed rows_affected optional binding (u64 not ?u64 in getCommandTag)
+  - 708905d: Added Execute/Close message types to wire.zig (were referenced but not implemented)
+  - 2a27015: Fixed ErrorResponse construction (uses .fields array, not direct .severity/.code/.message)
+  - connection.zig: Updated QueryResult API (use .rows iterator not .columns, Value.null_value variant)
 - **Closed**: Issue #2
+- **Lesson**: Cross-platform issues may hide API mismatches - comprehensive CI coverage essential
 
 ### AST Exhaustive Switch Statements (8b0ae6d)
 - **Symptom**: CI build failure after adding `create_function` and `drop_function` AST nodes
