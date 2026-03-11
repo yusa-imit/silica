@@ -309,6 +309,9 @@ pub const Planner = struct {
             .create_trigger => self.planTransaction(), // TODO: Milestone 14F
             .drop_trigger => self.planTransaction(),   // TODO: Milestone 14F
             .alter_trigger => self.planTransaction(),  // TODO: Milestone 14F
+            .create_role => self.planTransaction(),    // TODO: Milestone 17A
+            .drop_role => self.planTransaction(),      // TODO: Milestone 17A
+            .alter_role => self.planTransaction(),     // TODO: Milestone 17A
             .explain => |s| self.planExplain(s),
         };
     }

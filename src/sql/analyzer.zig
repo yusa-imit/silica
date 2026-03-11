@@ -285,6 +285,9 @@ pub const Analyzer = struct {
             .create_trigger => |s| self.analyzeCreateTrigger(&s),
             .drop_trigger => |s| self.analyzeDropTrigger(&s),
             .alter_trigger => |s| self.analyzeAlterTrigger(&s),
+            .create_role => {},
+            .drop_role => {},
+            .alter_role => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

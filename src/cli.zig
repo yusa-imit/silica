@@ -682,6 +682,15 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .alter_trigger => |t| {
             writer.print("Parsed: ALTER TRIGGER {s}\n", .{t.name}) catch {};
         },
+        .create_role => |r| {
+            writer.print("Parsed: CREATE ROLE {s}\n", .{r.name}) catch {};
+        },
+        .drop_role => |r| {
+            writer.print("Parsed: DROP ROLE {s}\n", .{r.name}) catch {};
+        },
+        .alter_role => |r| {
+            writer.print("Parsed: ALTER ROLE {s}\n", .{r.name}) catch {};
+        },
     }
 }
 
