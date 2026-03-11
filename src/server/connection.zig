@@ -45,6 +45,72 @@ const Portal = struct {
     }
 };
 
+/// Session state holds per-connection runtime parameters and settings
+pub const SessionState = struct {
+    /// Current user/role (empty for trust authentication)
+    user: []const u8,
+    /// Current database name
+    database: []const u8,
+    /// Schema search path (comma-separated, default "public")
+    search_path: []const u8,
+    /// Client encoding (default "UTF8")
+    client_encoding: []const u8,
+    /// Statement timeout in milliseconds (0 = disabled)
+    statement_timeout: u32,
+    /// Application name (for logging/monitoring)
+    application_name: []const u8,
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, user: []const u8, database: []const u8) !SessionState {
+        return .{
+            .user = try allocator.dupe(u8, user),
+            .database = try allocator.dupe(u8, database),
+            .search_path = try allocator.dupe(u8, "public"),
+            .client_encoding = try allocator.dupe(u8, "UTF8"),
+            .statement_timeout = 0,
+            .application_name = try allocator.dupe(u8, "silica"),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *SessionState) void {
+        self.allocator.free(self.user);
+        self.allocator.free(self.database);
+        self.allocator.free(self.search_path);
+        self.allocator.free(self.client_encoding);
+        self.allocator.free(self.application_name);
+    }
+
+    /// Set a runtime parameter
+    pub fn setParameter(self: *SessionState, name: []const u8, value: []const u8) !void {
+        if (std.mem.eql(u8, name, "search_path")) {
+            self.allocator.free(self.search_path);
+            self.search_path = try self.allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, name, "client_encoding")) {
+            self.allocator.free(self.client_encoding);
+            self.client_encoding = try self.allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, name, "statement_timeout")) {
+            self.statement_timeout = try std.fmt.parseInt(u32, value, 10);
+        } else if (std.mem.eql(u8, name, "application_name")) {
+            self.allocator.free(self.application_name);
+            self.application_name = try self.allocator.dupe(u8, value);
+        }
+        // Ignore unknown parameters for now
+    }
+
+    /// Get a runtime parameter
+    pub fn getParameter(self: *const SessionState, name: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, name, "search_path")) {
+            return self.search_path;
+        } else if (std.mem.eql(u8, name, "client_encoding")) {
+            return self.client_encoding;
+        } else if (std.mem.eql(u8, name, "application_name")) {
+            return self.application_name;
+        }
+        return null;
+    }
+};
+
 /// Connection state
 pub const Connection = struct {
     allocator: Allocator,
@@ -52,14 +118,16 @@ pub const Connection = struct {
     transaction_status: wire.TransactionStatus,
     prepared_statements: std.StringHashMapUnmanaged(PreparedStatement),
     portals: std.StringHashMapUnmanaged(Portal),
+    session: SessionState,
 
-    pub fn init(allocator: Allocator, db: *Database) Connection {
+    pub fn init(allocator: Allocator, db: *Database, user: []const u8, database: []const u8) !Connection {
         return .{
             .allocator = allocator,
             .db = db,
             .transaction_status = .idle,
             .prepared_statements = .{},
             .portals = .{},
+            .session = try SessionState.init(allocator, user, database),
         };
     }
 
@@ -77,6 +145,9 @@ pub const Connection = struct {
             portal.deinit();
         }
         self.portals.deinit(self.allocator);
+
+        // Clean up session state
+        self.session.deinit();
     }
 
     /// Handle simple query protocol
@@ -496,10 +567,13 @@ test "Connection init/deinit" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "testuser", "testdb");
     defer conn.deinit();
 
     try std.testing.expectEqual(wire.TransactionStatus.idle, conn.transaction_status);
+    try std.testing.expectEqualStrings("testuser", conn.session.user);
+    try std.testing.expectEqualStrings("testdb", conn.session.database);
+    try std.testing.expectEqualStrings("public", conn.session.search_path);
 }
 
 test "valueToText - integer" {
@@ -511,7 +585,7 @@ test "valueToText - integer" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .integer = 42 };
@@ -530,7 +604,7 @@ test "valueToText - text" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .text = "hello" };
@@ -549,7 +623,7 @@ test "valueToText - null" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .null = {} };
@@ -568,7 +642,7 @@ test "getSQLState - error mapping" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const sqlstate = try conn.getSQLState(error.TableNotFound);
@@ -584,7 +658,7 @@ test "getCommandTag - OK" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     var result = try db.execSQL("CREATE TABLE test (id INTEGER)");
@@ -603,7 +677,7 @@ test "handleParse - store prepared statement" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create Parse message
@@ -638,7 +712,7 @@ test "handleBind - create portal" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // First, create a prepared statement
@@ -689,7 +763,7 @@ test "handleClose - statement" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create a prepared statement
@@ -728,7 +802,7 @@ test "handleSync - send ReadyForQuery" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     var buf = std.ArrayListUnmanaged(u8){};
@@ -749,7 +823,7 @@ test "valueToText - real" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .real = 3.14 };
@@ -768,7 +842,7 @@ test "valueToText - boolean true" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .boolean = true };
@@ -787,7 +861,7 @@ test "valueToText - boolean false" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .boolean = false };
@@ -806,7 +880,7 @@ test "valueToText - blob hex encoding" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const blob_data = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF };
@@ -826,7 +900,7 @@ test "valueToText - uuid formatting" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const uuid: [16]u8 = .{ 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
@@ -846,7 +920,7 @@ test "valueToText - json passthrough" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     const value = Value{ .json = "{\"key\":\"value\"}" };
@@ -865,7 +939,7 @@ test "handleParse - replace existing statement" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create first statement
@@ -907,7 +981,7 @@ test "handleParse - unnamed statement" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create unnamed statement (empty name)
@@ -936,7 +1010,7 @@ test "handleBind - parameter count mismatch" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create a prepared statement expecting 2 parameters
@@ -981,7 +1055,7 @@ test "handleBind - statement not found" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Try to bind to non-existent statement
@@ -1014,7 +1088,7 @@ test "handleBind - unnamed portal" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create a prepared statement
@@ -1060,7 +1134,7 @@ test "handleClose - portal" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Create a prepared statement and portal
@@ -1114,7 +1188,7 @@ test "handleClose - nonexistent statement (no error)" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     // Close non-existent statement (should succeed silently)
@@ -1135,7 +1209,7 @@ test "getSQLState - various errors" {
     var db = try Database.init(allocator, db_path);
     defer db.deinit();
 
-    var conn = Connection.init(allocator, &db);
+    var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     try std.testing.expectEqualStrings("42601", try conn.getSQLState(error.ParseError));
@@ -1146,4 +1220,91 @@ test "getSQLState - various errors" {
     try std.testing.expectEqualStrings("34000", try conn.getSQLState(error.PortalNotFound));
     try std.testing.expectEqualStrings("07001", try conn.getSQLState(error.ParameterCountMismatch));
     try std.testing.expectEqualStrings("XX000", try conn.getSQLState(error.UnexpectedError));
+}
+
+test "SessionState - init with defaults" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "testuser", "testdb");
+    defer session.deinit();
+
+    try std.testing.expectEqualStrings("testuser", session.user);
+    try std.testing.expectEqualStrings("testdb", session.database);
+    try std.testing.expectEqualStrings("public", session.search_path);
+    try std.testing.expectEqualStrings("UTF8", session.client_encoding);
+    try std.testing.expectEqual(@as(u32, 0), session.statement_timeout);
+    try std.testing.expectEqualStrings("silica", session.application_name);
+}
+
+test "SessionState - set search_path parameter" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    try session.setParameter("search_path", "myschema,public");
+    try std.testing.expectEqualStrings("myschema,public", session.search_path);
+}
+
+test "SessionState - set client_encoding parameter" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    try session.setParameter("client_encoding", "LATIN1");
+    try std.testing.expectEqualStrings("LATIN1", session.client_encoding);
+}
+
+test "SessionState - set statement_timeout parameter" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    try session.setParameter("statement_timeout", "5000");
+    try std.testing.expectEqual(@as(u32, 5000), session.statement_timeout);
+}
+
+test "SessionState - set application_name parameter" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    try session.setParameter("application_name", "myapp");
+    try std.testing.expectEqualStrings("myapp", session.application_name);
+}
+
+test "SessionState - get parameter" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    try session.setParameter("search_path", "custom");
+
+    const value = session.getParameter("search_path");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("custom", value.?);
+}
+
+test "SessionState - get unknown parameter" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    const value = session.getParameter("unknown_param");
+    try std.testing.expect(value == null);
+}
+
+test "SessionState - set unknown parameter (ignored)" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    // Should not error, just ignore
+    try session.setParameter("unknown_param", "value");
 }

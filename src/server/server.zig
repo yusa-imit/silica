@@ -102,7 +102,12 @@ pub const Server = struct {
         }
 
         // Create a connection handler
-        var conn = Connection.init(self.allocator, self.database);
+        // TODO: Extract user/database from startup message
+        // For now, use default user/database from connection
+        var conn = Connection.init(self.allocator, self.database, "postgres", "postgres") catch |err| {
+            std.debug.print("Failed to initialize connection: {any}\n", .{err});
+            return;
+        };
         defer conn.deinit();
 
         // Process messages from the client
