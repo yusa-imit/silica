@@ -295,7 +295,7 @@ test "TRUST authentication - always succeeds" {
 }
 
 test "MD5 - generate salt" {
-    const random = std.Random.DefaultPrng.init(42);
+    var random = std.Random.DefaultPrng.init(42);
     const salt1 = generateMd5Salt(random.random());
     const salt2 = generateMd5Salt(random.random());
     // Different salts should be generated
@@ -338,7 +338,7 @@ test "SCRAM-SHA-256 - store password" {
     try std.testing.expect(std.mem.startsWith(u8, stored, "SCRAM-SHA-256$"));
 
     // Should have format: SCRAM-SHA-256$iterations:salt$stored_key:server_key
-    const parts = std.mem.tokenizeScalar(u8, stored[14..], '$');
+    var parts = std.mem.tokenizeScalar(u8, stored[14..], '$');
     const iter_salt = parts.next();
     const keys = parts.next();
     try std.testing.expect(iter_salt != null);
@@ -364,6 +364,24 @@ test "SCRAM-SHA-256 - verify password" {
 
 test "SCRAM-SHA-256 - invalid hash format" {
     const result = verifyPasswordScram("invalid", "password");
+    try std.testing.expectError(error.InvalidHashFormat, result);
+}
+
+test "SCRAM-SHA-256 - invalid hash format (missing parts)" {
+    // Missing the second $ separator
+    const result1 = verifyPasswordScram("SCRAM-SHA-256$4096:abc", "password");
+    try std.testing.expectError(error.InvalidHashFormat, result1);
+}
+
+test "SCRAM-SHA-256 - invalid hash format (missing colon in iter_salt)" {
+    // Missing colon between iterations and salt
+    const result = verifyPasswordScram("SCRAM-SHA-256$4096abc$def:ghi", "password");
+    try std.testing.expectError(error.InvalidHashFormat, result);
+}
+
+test "SCRAM-SHA-256 - invalid hash format (missing colon in keys)" {
+    // Missing colon between stored_key and server_key (using valid base64)
+    const result = verifyPasswordScram("SCRAM-SHA-256$4096:AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "password");
     try std.testing.expectError(error.InvalidHashFormat, result);
 }
 
