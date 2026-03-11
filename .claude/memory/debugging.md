@@ -18,6 +18,23 @@
 
 ## Recently Fixed Bugs
 
+### Wire Protocol Integer Overflow Security Vulnerabilities (8b5f54d, March 11, 2026)
+- **Symptom**: Fuzz tests caused panics/crashes (signal 6) in Parse.parse and Bind.parse
+- **Root Cause**: Unchecked `@intCast()` operations on i16/i32 counts read from untrusted wire protocol data
+  - Parse.parse: `@intCast(param_count)` panics if param_count is negative
+  - Bind.parse: `@intCast(format_count)`, `@intCast(param_count)`, `@intCast(result_format_count)` all vulnerable
+  - Bind.parse: `@intCast(val_len)` panics on negative values (except -1 which means NULL)
+- **Security Impact**: Malicious clients could crash server with malformed messages
+- **Fix**: Added validation checks before all @intCast operations:
+  ```zig
+  const count = std.mem.readInt(i16, ...);
+  if (count < 0) return error.InvalidMessage;
+  const safe_count = @intCast(count); // Now guaranteed non-negative
+  ```
+- **Fuzz Tests**: Added wire_fuzz.zig with 11 tests covering all message types
+- **Lesson**: ALWAYS validate integer values from untrusted input before @intCast
+- **Rule**: Fuzz testing wire protocol parsers is MANDATORY for security
+
 ### CI Failure: net.Stream.Writer incompatibility (763c70e + 6 follow-ups, March 11, 2026)
 - **Symptom**: Build fails on CI (Linux) but works locally (macOS) with `no field or member function named 'writeAll'`
 - **Root Cause**: `net.Stream.writer(&buffer)` returns platform-specific types without standard writer methods (writeByte, writeInt, writeAll)
