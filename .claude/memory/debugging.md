@@ -14,45 +14,20 @@
 
 ## Active Issues
 
-### CI Failure: net.Stream.Writer incompatibility (March 11, 2026 - IN PROGRESS)
-
-**Symptom**: Build fails on CI (Linux) but works locally (macOS) with error:
-```
-src/server/wire.zig:40:15: error: no field or member function named 'writeAll' in 'net.Stream.Writer__struct_38627'
-```
-
-**Root Cause**:
-- Zig 0.15's `net.Stream.writer(&buffer)` returns `Io.Writer` type on Linux
-- `Io.Writer` doesn't have standard `std.io.Writer` methods (`writeByte`, `writeInt`, `writeAll`)
-- `wire.zig` expects writers with these standard methods (uses `anytype` parameter)
-- Tests work because they use `std.ArrayList(u8).writer()` which DOES have standard methods
-- macOS and Linux have different `net.Stream.Writer` implementations
-
-**Solution**:
-Don't use `net.Stream.writer()`. Follow test pattern:
-1. Use `std.ArrayList(u8)` for buffering
-2. Call `.writer()` on ArrayList → standard writer
-3. Pass to wire functions
-4. Use `stream.writeAll(buf.items)` to send
-5. For reading: `stream.read()` + `std.io.fixedBufferStream()`
-
-**Example**:
-```zig
-var buf = std.ArrayList(u8).init(allocator);
-defer buf.deinit();
-const writer = buf.writer();  // Standard writer
-
-try message.write(writer);
-try stream.writeAll(buf.items);
-```
-
-**Files to Fix**:
-- `src/server/server.zig`: `processMessages()` needs ArrayList buffer refactor
-- Last commit (137b22c) tried `writeByte` helper but wrong approach
-
-**Status**: Root cause identified, fix in progress
+(None)
 
 ## Recently Fixed Bugs
+
+### CI Failure: net.Stream.Writer incompatibility (763c70e, March 11, 2026)
+- **Symptom**: Build fails on CI (Linux) but works locally (macOS) with `no field or member function named 'writeAll'`
+- **Root Cause**: `net.Stream.writer(&buffer)` returns platform-specific types without standard writer methods (writeByte, writeInt, writeAll)
+- **Solution**:
+  - Writing: Use `ArrayListUnmanaged` buffer → `.writer(allocator)` → `stream.writeAll(buf.items)`
+  - Reading: Wrap stream with `GenericReader` to get standard reader interface
+  - wire.zig: Use `writer.writeByte()` directly instead of custom helper
+  - server.zig: Manual message parsing based on `msg_type` byte
+- **Side fixes**: Updated connection.zig for QueryResult API changes (rows iterator, Value enum variants)
+- **Closed**: Issue #2
 
 ### AST Exhaustive Switch Statements (8b0ae6d)
 - **Symptom**: CI build failure after adding `create_function` and `drop_function` AST nodes
