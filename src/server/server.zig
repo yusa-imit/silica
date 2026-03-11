@@ -182,11 +182,12 @@ pub const Server = struct {
                 },
                 else => {
                     // Unsupported message type - send error
-                    const err_msg = wire.ErrorResponse{
-                        .severity = "ERROR",
-                        .code = "08P01", // protocol_violation
-                        .message = "Unsupported message type",
-                    };
+                    const fields = try self.allocator.alloc(wire.ErrorResponse.Field, 3);
+                    defer self.allocator.free(fields);
+                    fields[0] = .{ .code = 'S', .value = "ERROR" };
+                    fields[1] = .{ .code = 'C', .value = "08P01" }; // protocol_violation
+                    fields[2] = .{ .code = 'M', .value = "Unsupported message type" };
+                    const err_msg = wire.ErrorResponse{ .fields = fields };
                     try err_msg.write(writer);
                 },
             }
