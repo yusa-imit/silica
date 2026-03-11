@@ -252,7 +252,7 @@
   - [x] 17A Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
   - [x] 17A AST: CreateRoleStmt, DropRoleStmt, AlterRoleStmt, RoleOptions struct
   - [x] 17A Parser: parseCreateRole, parseDropRole, parseAlterRole with full syntax support
-  - [ ] 17A Catalog: Role storage with 'role:' key prefix
+  - [x] 17A Catalog: Role storage with 'role:' key prefix (RoleInfo, createRole, getRole, dropRole, roleExists, alterRole, listRoles)
   - [ ] 17A Analyzer: Role statement validation
   - [ ] 17A Planner: Role DDL planning (PlanType.transaction)
   - [ ] 17A Engine: Role DDL integration (execSQL switch)
@@ -262,8 +262,9 @@
   - [ ] 17E information_schema views
   - [ ] 17F Default privileges
 
-## Test Coverage (as of 2026-03-12 02:00 UTC)
+## Test Coverage (as of 2026-03-12 06:00 UTC)
 - tokenizer.zig: 92 tests (includes 10 role keyword tests)
 - ast.zig: 29 tests (includes 6 role AST tests)
 - parser.zig: 309 tests (includes 14 role parser tests)
-- Total: 1698+ tests (all passing)
+- catalog.zig: 99 tests (includes 14 role catalog tests: basic, all options, NOLOGIN, OR REPLACE, duplicate, drop, IF EXISTS, roleExists, alterRole, listRoles, getRole error)
+- Total: 1715 tests (all passing)
