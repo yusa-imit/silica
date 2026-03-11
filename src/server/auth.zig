@@ -109,7 +109,7 @@ pub fn hashPasswordMd5(
         hasher.update(username);
         var digest: [16]u8 = undefined;
         hasher.final(&digest);
-        _ = std.fmt.bufPrint(&inner_hash, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+        _ = std.fmt.bufPrint(&inner_hash, "{x}", .{digest}) catch unreachable;
     }
 
     // Outer hash: md5(inner_hash + salt)
@@ -119,7 +119,7 @@ pub fn hashPasswordMd5(
         hasher.update(&salt);
         var digest: [16]u8 = undefined;
         hasher.final(&digest);
-        _ = std.fmt.bufPrint(&outer_hash, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+        _ = std.fmt.bufPrint(&outer_hash, "{x}", .{digest}) catch unreachable;
     }
 
     // Return with "md5" prefix
@@ -155,7 +155,7 @@ pub fn storePasswordMd5(
     hasher.update(username);
     var digest: [16]u8 = undefined;
     hasher.final(&digest);
-    _ = std.fmt.bufPrint(&hash, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+    _ = std.fmt.bufPrint(&hash, "{x}", .{digest}) catch unreachable;
 
     const result = try allocator.alloc(u8, 3 + 32);
     @memcpy(result[0..3], "md5");
@@ -212,17 +212,17 @@ pub fn storePasswordScram(
     _ = encoder.encode(&server_key_b64, &server_key);
 
     // Format: SCRAM-SHA-256$iterations:salt$stored_key:server_key
-    var buf = std.ArrayList(u8).init(allocator);
-    defer buf.deinit();
-    try buf.appendSlice("SCRAM-SHA-256$");
-    try std.fmt.format(buf.writer(), "{d}:", .{config.iterations});
-    try buf.appendSlice(&salt_b64);
-    try buf.append('$');
-    try buf.appendSlice(&stored_key_b64);
-    try buf.append(':');
-    try buf.appendSlice(&server_key_b64);
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "SCRAM-SHA-256$");
+    try std.fmt.format(buf.writer(allocator), "{d}:", .{config.iterations});
+    try buf.appendSlice(allocator, &salt_b64);
+    try buf.append(allocator, '$');
+    try buf.appendSlice(allocator, &stored_key_b64);
+    try buf.append(allocator, ':');
+    try buf.appendSlice(allocator, &server_key_b64);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Verify SCRAM-SHA-256 password (simplified - full SASL exchange in wire protocol handler)
@@ -233,7 +233,7 @@ pub fn verifyPasswordScram(
     // Parse stored hash: SCRAM-SHA-256$iterations:salt$stored_key:server_key
     if (!std.mem.startsWith(u8, stored_hash, "SCRAM-SHA-256$")) return error.InvalidHashFormat;
 
-    const parts = std.mem.tokenizeScalar(u8, stored_hash[14..], '$');
+    var parts = std.mem.tokenizeScalar(u8, stored_hash[14..], '$');
     var iter_salt = parts.next() orelse return error.InvalidHashFormat;
     const keys = parts.next() orelse return error.InvalidHashFormat;
 
@@ -270,7 +270,7 @@ pub fn verifyPasswordScram(
     crypto.hash.sha2.Sha256.hash(&client_key, &computed_stored_key, .{});
 
     // Compare
-    return crypto.utils.timingSafeEql([32]u8, expected_stored_key, computed_stored_key);
+    return crypto.timing_safe.eql([32]u8, expected_stored_key, computed_stored_key);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
