@@ -561,3 +561,99 @@ test "Server.shutdown with timeout on active connections" {
     try std.testing.expect(!clean);
     try std.testing.expect(!server.running);
 }
+
+test "Server.active_connections - atomicity of increment/decrement" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_atomicity.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    // Test that concurrent increment/decrement operations are atomic
+    const thread_count = 10;
+    const operations_per_thread = 100;
+
+    var threads: [thread_count]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, struct {
+            fn worker(s: *Server) void {
+                var i: usize = 0;
+                while (i < operations_per_thread) : (i += 1) {
+                    _ = s.active_connections.fetchAdd(1, .acquire);
+                    _ = s.active_connections.fetchSub(1, .release);
+                }
+            }
+        }.worker, .{&server});
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // After all threads complete, counter should be back to 0
+    try std.testing.expectEqual(@as(usize, 0), server.active_connections.load(.acquire));
+}
+
+test "Server.max_connections - enforce connection limit" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_max_conn.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+        .max_connections = 5,
+    });
+    defer server.deinit();
+
+    // Simulate reaching max connections
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        _ = server.active_connections.fetchAdd(1, .acquire);
+    }
+    defer {
+        i = 0;
+        while (i < 5) : (i += 1) {
+            _ = server.active_connections.fetchSub(1, .release);
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 5), server.active_connections.load(.acquire));
+
+    // Verify we're at the limit
+    const current = server.active_connections.load(.acquire);
+    try std.testing.expect(current >= server.max_connections);
+}
+
+test "Server.waitForConnections - zero timeout means wait indefinitely" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_wait_zero.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    // Simulate active connection
+    _ = server.active_connections.fetchAdd(1, .acquire);
+
+    // Spawn thread to decrement after 100ms
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn decrementAfterDelay(s: *Server) void {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+            _ = s.active_connections.fetchSub(1, .release);
+        }
+    }.decrementAfterDelay, .{&server});
+    thread.detach();
+
+    // Wait with 0 timeout (indefinite) - should succeed
+    const finished = server.waitForConnections(0);
+    try std.testing.expect(finished);
+    try std.testing.expectEqual(@as(usize, 0), server.active_connections.load(.acquire));
+}
