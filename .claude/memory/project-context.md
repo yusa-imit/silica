@@ -236,3 +236,26 @@
 - [x] WITH CHECK OPTION (LOCAL/CASCADED) — enforced on INSERT/UPDATE
 - [ ] Window functions (ROW_NUMBER, RANK, etc.) — Milestone 9
 - [ ] Advanced data types (DATE/TIME/TIMESTAMP, NUMERIC, UUID, ARRAY, ENUM) — Milestone 10
+
+### Current: Phase 8 — Client-Server & Wire Protocol
+- **Milestone 15**: Wire Protocol ✅ (15A Message Types, 15B Simple Query, 15C Extended Query)
+- **Milestone 16**: Server & Connection Management ✅ (16A TCP Server, 16B Session State, 16C Authentication, 16D Graceful Shutdown)
+- **Milestone 17**: Authorization (RBAC) IN PROGRESS
+  - [x] 17A Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
+  - [x] 17A AST: CreateRoleStmt, DropRoleStmt, AlterRoleStmt, RoleOptions struct
+  - [x] 17A Parser: parseCreateRole, parseDropRole, parseAlterRole with full syntax support
+  - [ ] 17A Catalog: Role storage with 'role:' key prefix
+  - [ ] 17A Analyzer: Role statement validation
+  - [ ] 17A Planner: Role DDL planning (PlanType.transaction)
+  - [ ] 17A Engine: Role DDL integration (execSQL switch)
+  - [ ] 17B GRANT/REVOKE on database objects
+  - [ ] 17C Role inheritance and membership
+  - [ ] 17D Row-level security policies
+  - [ ] 17E information_schema views
+  - [ ] 17F Default privileges
+
+## Test Coverage (as of 2026-03-12 02:00 UTC)
+- tokenizer.zig: 92 tests (includes 10 role keyword tests)
+- ast.zig: 29 tests (includes 6 role AST tests)
+- parser.zig: 309 tests (includes 14 role parser tests)
+- Total: 1698+ tests (all passing)
