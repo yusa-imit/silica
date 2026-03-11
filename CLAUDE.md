@@ -929,3 +929,32 @@ gh issue create --repo yusa-imit/zuda \
 
 - **로컬 워크어라운드 금지**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기
 - zuda 에이전트가 `from:*` 라벨 이슈를 최우선 처리한다
+
+### v1.10.0 — Mouse & Gamepad Input (status: READY)
+
+**sailor v1.10.0 released** (2026-03-11) — Mouse, gamepad, and touch input support
+
+- **New features**:
+  - Mouse event handling: SGR protocol, click/drag/scroll/double-click (19 tests)
+  - Widget mouse interaction: Clickable, Draggable, Scrollable, Hoverable traits (17 tests)
+  - Gamepad/controller input: Buttons, analog sticks, triggers, multi-controller (13 tests)
+  - Touch gesture recognition: Tap, swipe, pinch, multi-touch support (18 tests)
+  - Input mapping: Remap mouse/gamepad/touch to keyboard events (16 tests)
+- **Impact on silica**: HIGH — Enables rich SQL shell interactions
+  - Mouse click for column/row selection in result tables
+  - Scrollable query results viewer
+  - Draggable column resize in table widget
+  - Touch gestures for mobile terminal support
+  - Input mapping for accessibility
+- [ ] Update `build.zig.zon` to sailor v1.10.0
+- [ ] Add mouse click support to SQL result table widget
+- [ ] Enable scrolling in large result sets
+- [ ] Consider draggable column resize for table formatting
+- [ ] All tests passing after upgrade
+
+**Priority**: HIGH — Significantly enhances SQL shell usability with mouse-enabled table interactions.
+
+**Note**: Non-breaking upgrade. Mouse support will make silica shell more intuitive for data exploration.
+
+---
+
