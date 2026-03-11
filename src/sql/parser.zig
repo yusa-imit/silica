@@ -703,7 +703,10 @@ pub const Parser = struct {
             if (self.checkAhead(.kw_trigger, 2)) {
                 return .{ .create_trigger = try self.parseCreateTrigger(true) };
             }
-            try self.addError(self.peek(), "expected VIEW, FUNCTION, or TRIGGER after CREATE OR REPLACE");
+            if (self.checkAhead(.kw_role, 2)) {
+                return .{ .create_role = try self.parseCreateRole(true) };
+            }
+            try self.addError(self.peek(), "expected VIEW, FUNCTION, TRIGGER, or ROLE after CREATE OR REPLACE");
             return error.ParseFailed;
         }
         if (self.check(.kw_view)) {
@@ -730,8 +733,11 @@ pub const Parser = struct {
         if (self.check(.kw_trigger)) {
             return .{ .create_trigger = try self.parseCreateTrigger(false) };
         }
+        if (self.check(.kw_role)) {
+            return .{ .create_role = try self.parseCreateRole(false) };
+        }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, or TRIGGER after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, or ROLE after CREATE");
         return error.ParseFailed;
     }
 
@@ -1111,7 +1117,8 @@ pub const Parser = struct {
         if (self.check(.kw_domain)) return .{ .drop_domain = try self.parseDropDomain() };
         if (self.check(.kw_function)) return .{ .drop_function = try self.parseDropFunction() };
         if (self.check(.kw_trigger)) return .{ .drop_trigger = try self.parseDropTrigger() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, or TRIGGER after DROP");
+        if (self.check(.kw_role)) return .{ .drop_role = try self.parseDropRole() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, or ROLE after DROP");
         return error.ParseFailed;
     }
 
@@ -1140,7 +1147,8 @@ pub const Parser = struct {
     fn parseAlter(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_alter);
         if (self.check(.kw_trigger)) return .{ .alter_trigger = try self.parseAlterTrigger() };
-        try self.addError(self.peek(), "expected TRIGGER after ALTER");
+        if (self.check(.kw_role)) return .{ .alter_role = try self.parseAlterRole() };
+        try self.addError(self.peek(), "expected TRIGGER or ROLE after ALTER");
         return error.ParseFailed;
     }
 
@@ -1169,6 +1177,124 @@ pub const Parser = struct {
             .name = name,
             .table_name = table_name,
             .enable = enable,
+        };
+    }
+
+    // ── CREATE ROLE / DROP ROLE / ALTER ROLE ──────────────────────────────────
+
+    fn parseCreateRole(self: *Parser, or_kw_seen: bool) Error!ast.CreateRoleStmt {
+        var or_replace = false;
+
+        if (or_kw_seen) {
+            // CREATE OR REPLACE ROLE
+            _ = try self.expect(.kw_or);
+            _ = try self.expect(.kw_replace);
+            or_replace = true;
+        }
+
+        _ = try self.expect(.kw_role);
+
+        const name = try self.expectIdentifier();
+
+        // Parse optional WITH keyword
+        _ = self.match(.kw_with);
+
+        // Parse role options
+        var options = ast.RoleOptions{};
+        while (true) {
+            if (self.match(.kw_login)) {
+                options.login = true;
+            } else if (self.match(.kw_nologin)) {
+                options.login = false;
+            } else if (self.match(.kw_superuser)) {
+                options.superuser = true;
+            } else if (self.match(.kw_nosuperuser)) {
+                options.superuser = false;
+            } else if (self.match(.kw_createdb)) {
+                options.createdb = true;
+            } else if (self.match(.kw_nocreatedb)) {
+                options.createdb = false;
+            } else if (self.match(.kw_createrole)) {
+                options.createrole = true;
+            } else if (self.match(.kw_nocreaterole)) {
+                options.createrole = false;
+            } else if (self.match(.kw_inherit)) {
+                options.inherit = true;
+            } else if (self.match(.kw_noinherit)) {
+                options.inherit = false;
+            } else if (self.match(.kw_password)) {
+                options.password = try self.parseStringLiteral();
+            } else if (self.match(.kw_valid)) {
+                _ = try self.expect(.kw_until);
+                options.valid_until = try self.parseStringLiteral();
+            } else {
+                // No more role options
+                break;
+            }
+        }
+
+        return .{
+            .name = name,
+            .options = options,
+            .or_replace = or_replace,
+        };
+    }
+
+    fn parseDropRole(self: *Parser) Error!ast.DropRoleStmt {
+        _ = try self.expect(.kw_role);
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+        return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
+    }
+
+    fn parseAlterRole(self: *Parser) Error!ast.AlterRoleStmt {
+        _ = try self.expect(.kw_role);
+
+        const name = try self.expectIdentifier();
+
+        // Parse optional WITH keyword
+        _ = self.match(.kw_with);
+
+        // Parse role options (same as CREATE ROLE)
+        var options = ast.RoleOptions{};
+        while (true) {
+            if (self.match(.kw_login)) {
+                options.login = true;
+            } else if (self.match(.kw_nologin)) {
+                options.login = false;
+            } else if (self.match(.kw_superuser)) {
+                options.superuser = true;
+            } else if (self.match(.kw_nosuperuser)) {
+                options.superuser = false;
+            } else if (self.match(.kw_createdb)) {
+                options.createdb = true;
+            } else if (self.match(.kw_nocreatedb)) {
+                options.createdb = false;
+            } else if (self.match(.kw_createrole)) {
+                options.createrole = true;
+            } else if (self.match(.kw_nocreaterole)) {
+                options.createrole = false;
+            } else if (self.match(.kw_inherit)) {
+                options.inherit = true;
+            } else if (self.match(.kw_noinherit)) {
+                options.inherit = false;
+            } else if (self.match(.kw_password)) {
+                options.password = try self.parseStringLiteral();
+            } else if (self.match(.kw_valid)) {
+                _ = try self.expect(.kw_until);
+                options.valid_until = try self.parseStringLiteral();
+            } else {
+                // No more role options
+                break;
+            }
+        }
+
+        return .{
+            .name = name,
+            .options = options,
         };
     }
 
@@ -3920,4 +4046,146 @@ test "parse ALTER TRIGGER DISABLE with table name" {
     try std.testing.expectEqualStrings("audit_log", trig.name);
     try std.testing.expectEqualStrings("users", trig.table_name.?);
     try std.testing.expect(!trig.enable);
+}
+
+test "parse CREATE ROLE basic" {
+    var r = try testParseWithArena("CREATE ROLE admin");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("admin", role.name);
+    try std.testing.expect(role.options.login == null);
+}
+
+test "parse CREATE ROLE with LOGIN" {
+    var r = try testParseWithArena("CREATE ROLE app_user WITH LOGIN");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("app_user", role.name);
+    try std.testing.expectEqual(true, role.options.login.?);
+}
+
+test "parse CREATE ROLE with NOLOGIN" {
+    var r = try testParseWithArena("CREATE ROLE group_role NOLOGIN");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("group_role", role.name);
+    try std.testing.expectEqual(false, role.options.login.?);
+}
+
+test "parse CREATE ROLE with multiple options" {
+    var r = try testParseWithArena("CREATE ROLE superadmin WITH LOGIN SUPERUSER CREATEDB");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("superadmin", role.name);
+    try std.testing.expectEqual(true, role.options.login.?);
+    try std.testing.expectEqual(true, role.options.superuser.?);
+    try std.testing.expectEqual(true, role.options.createdb.?);
+}
+
+test "parse CREATE ROLE with PASSWORD" {
+    var r = try testParseWithArena("CREATE ROLE user1 LOGIN PASSWORD 'secret123'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("user1", role.name);
+    try std.testing.expectEqual(true, role.options.login.?);
+    try std.testing.expectEqualStrings("'secret123'", role.options.password.?);
+}
+
+test "parse CREATE ROLE with VALID UNTIL" {
+    var r = try testParseWithArena("CREATE ROLE temp_user LOGIN VALID UNTIL '2025-12-31'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("temp_user", role.name);
+    try std.testing.expectEqual(true, role.options.login.?);
+    try std.testing.expectEqualStrings("'2025-12-31'", role.options.valid_until.?);
+}
+
+test "parse CREATE ROLE with all options" {
+    var r = try testParseWithArena("CREATE ROLE full_role WITH LOGIN SUPERUSER CREATEDB CREATEROLE INHERIT PASSWORD 'pass' VALID UNTIL '2026-01-01'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("full_role", role.name);
+    try std.testing.expectEqual(true, role.options.login.?);
+    try std.testing.expectEqual(true, role.options.superuser.?);
+    try std.testing.expectEqual(true, role.options.createdb.?);
+    try std.testing.expectEqual(true, role.options.createrole.?);
+    try std.testing.expectEqual(true, role.options.inherit.?);
+    try std.testing.expectEqualStrings("'pass'", role.options.password.?);
+    try std.testing.expectEqualStrings("'2026-01-01'", role.options.valid_until.?);
+}
+
+test "parse CREATE ROLE with negative options" {
+    var r = try testParseWithArena("CREATE ROLE restricted WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("restricted", role.name);
+    try std.testing.expectEqual(false, role.options.login.?);
+    try std.testing.expectEqual(false, role.options.superuser.?);
+    try std.testing.expectEqual(false, role.options.createdb.?);
+    try std.testing.expectEqual(false, role.options.createrole.?);
+    try std.testing.expectEqual(false, role.options.inherit.?);
+}
+
+test "parse CREATE OR REPLACE ROLE" {
+    var r = try testParseWithArena("CREATE OR REPLACE ROLE admin LOGIN");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_role);
+    const role = r.stmt.create_role;
+    try std.testing.expectEqualStrings("admin", role.name);
+    try std.testing.expect(role.or_replace);
+    try std.testing.expectEqual(true, role.options.login.?);
+}
+
+test "parse DROP ROLE" {
+    var r = try testParseWithArena("DROP ROLE old_user");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_role);
+    const role = r.stmt.drop_role;
+    try std.testing.expectEqualStrings("old_user", role.name);
+    try std.testing.expect(!role.if_exists);
+}
+
+test "parse DROP ROLE IF EXISTS" {
+    var r = try testParseWithArena("DROP ROLE IF EXISTS maybe_role");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_role);
+    const role = r.stmt.drop_role;
+    try std.testing.expectEqualStrings("maybe_role", role.name);
+    try std.testing.expect(role.if_exists);
+}
+
+test "parse ALTER ROLE basic" {
+    var r = try testParseWithArena("ALTER ROLE user1 WITH LOGIN");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_role);
+    const role = r.stmt.alter_role;
+    try std.testing.expectEqualStrings("user1", role.name);
+    try std.testing.expectEqual(true, role.options.login.?);
+}
+
+test "parse ALTER ROLE change PASSWORD" {
+    var r = try testParseWithArena("ALTER ROLE app_user PASSWORD 'new_secret'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_role);
+    const role = r.stmt.alter_role;
+    try std.testing.expectEqualStrings("app_user", role.name);
+    try std.testing.expectEqualStrings("'new_secret'", role.options.password.?);
+}
+
+test "parse ALTER ROLE multiple options" {
+    var r = try testParseWithArena("ALTER ROLE user2 WITH NOLOGIN NOSUPERUSER");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_role);
+    const role = r.stmt.alter_role;
+    try std.testing.expectEqualStrings("user2", role.name);
+    try std.testing.expectEqual(false, role.options.login.?);
+    try std.testing.expectEqual(false, role.options.superuser.?);
 }
