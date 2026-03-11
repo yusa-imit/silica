@@ -436,6 +436,75 @@ pub const ErrorResponse = struct {
     }
 };
 
+/// Startup message (special untagged message sent at connection start)
+/// Format: length (i32) | protocol_version (i32) | params (key=value pairs, null-terminated)
+pub const Startup = struct {
+    protocol_version: i32,
+    user: []const u8,
+    database: []const u8,
+    params: std.StringHashMapUnmanaged([]const u8),
+
+    pub fn parse(payload: []const u8, allocator: Allocator) !Startup {
+        if (payload.len < 4) return error.InvalidMessage;
+
+        // Read protocol version
+        const protocol_version = std.mem.readInt(i32, payload[0..4], .big);
+
+        var user: ?[]const u8 = null;
+        var database: ?[]const u8 = null;
+        var params = std.StringHashMapUnmanaged([]const u8){};
+        errdefer params.deinit(allocator);
+
+        // Parse key-value pairs
+        var offset: usize = 4;
+        while (offset < payload.len) {
+            // Key (null-terminated)
+            const key_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse break;
+            if (key_end == offset) break; // Empty key = end of params
+            const key = payload[offset..key_end];
+            offset = key_end + 1;
+
+            // Value (null-terminated)
+            if (offset >= payload.len) return error.InvalidMessage;
+            const value_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse return error.InvalidMessage;
+            const value = payload[offset..value_end];
+            offset = value_end + 1;
+
+            // Special handling for user and database
+            if (std.mem.eql(u8, key, "user")) {
+                user = value;
+            } else if (std.mem.eql(u8, key, "database")) {
+                database = value;
+            } else {
+                try params.put(allocator, key, value);
+            }
+        }
+
+        return Startup{
+            .protocol_version = protocol_version,
+            .user = user orelse return error.MissingUser,
+            .database = database orelse user orelse return error.MissingDatabase,
+            .params = params,
+        };
+    }
+
+    pub fn deinit(self: *Startup, allocator: Allocator) void {
+        self.params.deinit(allocator);
+    }
+};
+
+/// PasswordMessage (client response to authentication request)
+pub const PasswordMessage = struct {
+    password: []const u8,
+
+    pub fn parse(payload: []const u8) !PasswordMessage {
+        // Payload is null-terminated password string
+        if (payload.len == 0) return error.InvalidMessage;
+        if (payload[payload.len - 1] != 0) return error.InvalidMessage;
+        return PasswordMessage{ .password = payload[0 .. payload.len - 1] };
+    }
+};
+
 /// Authentication message
 pub const Authentication = struct {
     auth_type: AuthenticationType,
@@ -481,6 +550,23 @@ pub fn readMessage(reader: anytype, allocator: Allocator) !struct {
         .msg_type = msg_type,
         .payload = payload,
     };
+}
+
+/// Read startup message (no type byte, just length + payload)
+pub fn readStartupMessage(reader: anytype, allocator: Allocator) ![]u8 {
+    // Read message length (includes itself)
+    const length = try reader.readInt(i32, .big);
+    if (length < 4) return error.InvalidMessage;
+    const payload_len: usize = @intCast(length - 4);
+
+    // Read payload
+    const payload = try allocator.alloc(u8, payload_len);
+    errdefer allocator.free(payload);
+
+    const n = try reader.readAll(payload);
+    if (n != payload_len) return error.UnexpectedEof;
+
+    return payload;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -1008,4 +1094,72 @@ test "CommandComplete - empty tag" {
     try std.testing.expectEqual(@as(u8, 'C'), buf.items[0]);
     const len = std.mem.readInt(i32, buf.items[1..5], .big);
     try std.testing.expectEqual(@as(i32, 5), len); // 4 + 1 (null terminator only)
+}
+
+test "Startup message parsing" {
+    const allocator = std.testing.allocator;
+
+    // Build a startup message payload
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    // Protocol version 3.0 = 196608 (0x00030000)
+    try buf.writer(allocator).writeInt(i32, 196608, .big);
+    // user=alice\0database=testdb\0application_name=psql\0\0
+    try buf.appendSlice(allocator, "user\x00alice\x00database\x00testdb\x00application_name\x00psql\x00\x00");
+
+    var startup = try Startup.parse(buf.items, allocator);
+    defer startup.deinit(allocator);
+
+    try std.testing.expectEqual(@as(i32, 196608), startup.protocol_version);
+    try std.testing.expectEqualStrings("alice", startup.user);
+    try std.testing.expectEqualStrings("testdb", startup.database);
+    try std.testing.expectEqualStrings("psql", startup.params.get("application_name").?);
+}
+
+test "Startup message - missing user" {
+    const allocator = std.testing.allocator;
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try buf.writer(allocator).writeInt(i32, 196608, .big);
+    try buf.appendSlice(allocator, "database\x00testdb\x00\x00");
+
+    const result = Startup.parse(buf.items, allocator);
+    try std.testing.expectError(error.MissingUser, result);
+}
+
+test "Startup message - user without database uses user as database" {
+    const allocator = std.testing.allocator;
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try buf.writer(allocator).writeInt(i32, 196608, .big);
+    try buf.appendSlice(allocator, "user\x00alice\x00\x00");
+
+    var startup = try Startup.parse(buf.items, allocator);
+    defer startup.deinit(allocator);
+
+    try std.testing.expectEqualStrings("alice", startup.user);
+    try std.testing.expectEqualStrings("alice", startup.database); // Falls back to user
+}
+
+test "PasswordMessage parsing" {
+    const payload = "secret\x00";
+    const pwd_msg = try PasswordMessage.parse(payload);
+    try std.testing.expectEqualStrings("secret", pwd_msg.password);
+}
+
+test "PasswordMessage - empty password" {
+    const payload = "\x00";
+    const pwd_msg = try PasswordMessage.parse(payload);
+    try std.testing.expectEqualStrings("", pwd_msg.password);
+}
+
+test "PasswordMessage - missing null terminator" {
+    const payload = "secret";
+    const result = PasswordMessage.parse(payload);
+    try std.testing.expectError(error.InvalidMessage, result);
 }
