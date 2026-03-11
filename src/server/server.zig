@@ -113,56 +113,70 @@ pub const Server = struct {
 
     /// Process wire protocol messages from a client stream
     fn processMessages(self: *Self, conn: *Connection, stream: net.Stream) !void {
-        // Create reader/writer with buffers
-        var read_buf: [8192]u8 = undefined;
-        var write_buf: [8192]u8 = undefined;
-        const stream_reader = stream.reader(&read_buf);
-        var stream_writer = stream.writer(&write_buf);
+        // Create a GenericReader that wraps the stream
+        const StreamReader = std.io.GenericReader(net.Stream, net.Stream.ReadError, struct {
+            fn read(s: net.Stream, buffer: []u8) net.Stream.ReadError!usize {
+                return s.read(buffer);
+            }
+        }.read);
+        const reader = StreamReader{ .context = stream };
+
+        var write_buf = std.ArrayListUnmanaged(u8){};
+        defer write_buf.deinit(self.allocator);
 
         // Send initial ready for query (startup handshake simplified for now)
-        const ready = wire.ReadyForQuery{ .status = .idle };
-        try ready.write(stream_writer);
-        try stream_writer.flush();
+        {
+            write_buf.clearRetainingCapacity();
+            const writer = write_buf.writer(self.allocator);
+            const ready = wire.ReadyForQuery{ .status = .idle };
+            try ready.write(writer);
+            try stream.writeAll(write_buf.items);
+        }
 
         // Main message loop
         while (true) {
             // Read next message from client
-            const msg = wire.readMessage(self.allocator, stream_reader) catch |err| {
+            const msg = wire.readMessage(reader, self.allocator) catch |err| {
                 if (err == error.EndOfStream) {
                     // Client disconnected gracefully
                     return;
                 }
                 return err;
             };
-            defer msg.deinit(self.allocator);
+            defer self.allocator.free(msg.payload);
+
+            // Clear write buffer for next response
+            write_buf.clearRetainingCapacity();
+            const writer = write_buf.writer(self.allocator);
 
             // Handle message based on type
-            switch (msg) {
-                .query => |query_msg| {
-                    try conn.handleSimpleQuery(query_msg, stream_writer);
-                    try stream_writer.flush();
+            switch (msg.msg_type) {
+                'Q' => { // Query
+                    const query_msg = try wire.Query.parse(msg.payload);
+                    try conn.handleSimpleQuery(query_msg, writer);
                 },
-                .parse => |parse_msg| {
-                    try conn.handleParse(parse_msg, stream_writer);
-                    try stream_writer.flush();
+                'P' => { // Parse
+                    const parse_msg = try wire.Parse.parse(msg.payload, self.allocator);
+                    defer parse_msg.deinit(self.allocator);
+                    try conn.handleParse(parse_msg, writer);
                 },
-                .bind => |bind_msg| {
-                    try conn.handleBind(bind_msg, stream_writer);
-                    try stream_writer.flush();
+                'B' => { // Bind
+                    const bind_msg = try wire.Bind.parse(msg.payload, self.allocator);
+                    defer bind_msg.deinit(self.allocator);
+                    try conn.handleBind(bind_msg, writer);
                 },
-                .execute => |execute_msg| {
-                    try conn.handleExecute(execute_msg, stream_writer);
-                    try stream_writer.flush();
+                'E' => { // Execute
+                    const execute_msg = try wire.Execute.parse(msg.payload);
+                    try conn.handleExecute(execute_msg, writer);
                 },
-                .close => |close_msg| {
-                    try conn.handleClose(close_msg, stream_writer);
-                    try stream_writer.flush();
+                'C' => { // Close
+                    const close_msg = try wire.Close.parse(msg.payload);
+                    try conn.handleClose(close_msg, writer);
                 },
-                .sync => {
-                    try conn.handleSync(stream_writer);
-                    try stream_writer.flush();
+                'S' => { // Sync
+                    try conn.handleSync(writer);
                 },
-                .terminate => {
+                'X' => { // Terminate
                     // Client requested termination
                     return;
                 },
@@ -173,9 +187,13 @@ pub const Server = struct {
                         .code = "08P01", // protocol_violation
                         .message = "Unsupported message type",
                     };
-                    try err_msg.write(stream_writer);
-                    try stream_writer.flush();
+                    try err_msg.write(writer);
                 },
+            }
+
+            // Send buffered response to client
+            if (write_buf.items.len > 0) {
+                try stream.writeAll(write_buf.items);
             }
         }
     }

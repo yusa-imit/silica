@@ -92,16 +92,22 @@ pub const Connection = struct {
             try self.sendError(writer, err);
             return;
         };
-        defer result.close();
+        defer result.close(self.allocator);
 
         // Determine if query returns rows
-        if (result.columns) |columns| {
-            // Send RowDescription
-            try self.sendRowDescription(writer, columns);
+        if (result.rows) |rows_iter| {
+            // Get first row to determine columns
+            if (try rows_iter.next()) |first_row| {
+                // Send RowDescription
+                try self.sendRowDescription(writer, first_row.columns);
 
-            // Send DataRow for each row
-            while (try result.next()) |row| {
-                try self.sendDataRow(writer, row, columns);
+                // Send first DataRow
+                try self.sendDataRow(writer, first_row, first_row.columns);
+
+                // Send remaining DataRows
+                while (try rows_iter.next()) |row| {
+                    try self.sendDataRow(writer, row, row.columns);
+                }
             }
         }
 
@@ -244,7 +250,7 @@ pub const Connection = struct {
             try self.sendError(writer, err);
             return;
         };
-        defer result.close();
+        defer result.close(self.allocator);
 
         // Send results (same as simple query protocol)
         if (result.columns) |columns| {
@@ -337,8 +343,7 @@ pub const Connection = struct {
         }
 
         // Convert each column value to text
-        for (columns, 0..) |col_name, i| {
-            const value = row.get(col_name) orelse Value{ .null = {} };
+        for (row.values, 0..) |value, i| {
             col_values[i] = try self.valueToText(value);
         }
 
@@ -371,7 +376,7 @@ pub const Connection = struct {
         const writer = buf.writer(self.allocator);
 
         switch (value) {
-            .null => return try self.allocator.dupe(u8, "NULL"),
+            .null_value => return try self.allocator.dupe(u8, "NULL"),
             .integer => |i| try std.fmt.format(writer, "{d}", .{i}),
             .real => |r| try std.fmt.format(writer, "{d}", .{r}),
             .text => |t| return try self.allocator.dupe(u8, t),
@@ -410,7 +415,6 @@ pub const Connection = struct {
                     u[8],  u[9],  u[10], u[11], u[12], u[13], u[14], u[15],
                 });
             },
-            .json, .jsonb => |j| return try self.allocator.dupe(u8, j),
             .tsvector, .tsquery => |t| return try self.allocator.dupe(u8, t),
         }
 
