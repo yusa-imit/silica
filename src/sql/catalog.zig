@@ -1963,6 +1963,356 @@ pub const Catalog = struct {
 
         return names.toOwnedSlice(allocator);
     }
+
+    // ── Role Management ─────────────────────────────────────────────────
+
+    /// Role metadata stored in catalog.
+    pub const RoleInfo = struct {
+        name: []const u8,
+        login: bool,
+        superuser: bool,
+        createdb: bool,
+        createrole: bool,
+        inherit: bool,
+        password: ?[]const u8,
+        valid_until: ?[]const u8,
+        allocator: Allocator,
+
+        pub fn deinit(self: RoleInfo) void {
+            self.allocator.free(self.name);
+            if (self.password) |pwd| {
+                self.allocator.free(pwd);
+            }
+            if (self.valid_until) |ts| {
+                self.allocator.free(ts);
+            }
+        }
+    };
+
+    fn makeRoleKey(self: *Catalog, name: []const u8) ![]u8 {
+        const prefix = "role:";
+        const key = try self.allocator.alloc(u8, prefix.len + name.len);
+        @memcpy(key[0..prefix.len], prefix);
+        @memcpy(key[prefix.len..], name);
+        return key;
+    }
+
+    /// Create or replace a role.
+    pub fn createRole(
+        self: *Catalog,
+        stmt: ast.CreateRoleStmt,
+    ) !void {
+        const key = try self.makeRoleKey(stmt.name);
+        defer self.allocator.free(key);
+
+        // If OR REPLACE, delete existing entry first
+        if (stmt.or_replace) {
+            const existing = try self.tree.get(self.allocator, key);
+            if (existing) |v| {
+                self.allocator.free(v);
+                try self.tree.delete(key);
+            }
+        } else {
+            // Without OR REPLACE, fail if already exists
+            const existing = try self.tree.get(self.allocator, key);
+            if (existing) |v| {
+                self.allocator.free(v);
+                return CatalogError.TableAlreadyExists; // Reuse error for "already exists"
+            }
+        }
+
+        // Serialize role metadata:
+        // [login: u8]
+        // [superuser: u8]
+        // [createdb: u8]
+        // [createrole: u8]
+        // [inherit: u8]
+        // [has_password: u8]
+        // if has_password:
+        //   [password_len: u32][password_bytes...]
+        // [has_valid_until: u8]
+        // if has_valid_until:
+        //   [valid_until_len: u32][valid_until_bytes...]
+
+        var total_size: usize = 6; // 5 bool flags + has_password
+
+        if (stmt.options.password) |pwd| {
+            total_size += 4 + pwd.len; // password_len + password
+        }
+
+        total_size += 1; // has_valid_until
+        if (stmt.options.valid_until) |ts| {
+            total_size += 4 + ts.len; // valid_until_len + timestamp
+        }
+
+        const data = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(data);
+
+        var offset: usize = 0;
+
+        // Write boolean flags (default to true for login, inherit; false for others)
+        data[offset] = if (stmt.options.login) |v| @intFromBool(v) else 1; // LOGIN by default
+        offset += 1;
+        data[offset] = if (stmt.options.superuser) |v| @intFromBool(v) else 0;
+        offset += 1;
+        data[offset] = if (stmt.options.createdb) |v| @intFromBool(v) else 0;
+        offset += 1;
+        data[offset] = if (stmt.options.createrole) |v| @intFromBool(v) else 0;
+        offset += 1;
+        data[offset] = if (stmt.options.inherit) |v| @intFromBool(v) else 1; // INHERIT by default
+        offset += 1;
+
+        // Write password
+        if (stmt.options.password) |pwd| {
+            data[offset] = 1; // has_password
+            offset += 1;
+            std.mem.writeInt(u32, data[offset..][0..4], @intCast(pwd.len), .little);
+            offset += 4;
+            @memcpy(data[offset..][0..pwd.len], pwd);
+            offset += pwd.len;
+        } else {
+            data[offset] = 0; // has_password = false
+            offset += 1;
+        }
+
+        // Write valid_until
+        if (stmt.options.valid_until) |ts| {
+            data[offset] = 1; // has_valid_until
+            offset += 1;
+            std.mem.writeInt(u32, data[offset..][0..4], @intCast(ts.len), .little);
+            offset += 4;
+            @memcpy(data[offset..][0..ts.len], ts);
+        } else {
+            data[offset] = 0; // has_valid_until = false
+        }
+
+        try self.tree.insert(key, data);
+    }
+
+    /// Retrieve role metadata by name. Caller must call RoleInfo.deinit().
+    pub fn getRole(self: *Catalog, name: []const u8) !RoleInfo {
+        const key = try self.makeRoleKey(name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value == null) return CatalogError.TypeNotFound;
+        defer self.allocator.free(value.?);
+
+        var offset: usize = 0;
+
+        // Read boolean flags
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const login = value.?[offset] == 1;
+        offset += 1;
+
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const superuser = value.?[offset] == 1;
+        offset += 1;
+
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const createdb = value.?[offset] == 1;
+        offset += 1;
+
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const createrole = value.?[offset] == 1;
+        offset += 1;
+
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const inherit = value.?[offset] == 1;
+        offset += 1;
+
+        // Read password
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const has_password = value.?[offset] == 1;
+        offset += 1;
+
+        var password: ?[]const u8 = null;
+        if (has_password) {
+            if (offset + 4 > value.?.len) return CatalogError.InvalidSchemaData;
+            const pwd_len = std.mem.readInt(u32, value.?[offset..][0..4], .little);
+            offset += 4;
+
+            if (offset + pwd_len > value.?.len) return CatalogError.InvalidSchemaData;
+            password = try self.allocator.dupe(u8, value.?[offset..][0..pwd_len]);
+            offset += pwd_len;
+        }
+        errdefer if (password) |p| self.allocator.free(p);
+
+        // Read valid_until
+        if (offset >= value.?.len) return CatalogError.InvalidSchemaData;
+        const has_valid_until = value.?[offset] == 1;
+        offset += 1;
+
+        var valid_until: ?[]const u8 = null;
+        if (has_valid_until) {
+            if (offset + 4 > value.?.len) return CatalogError.InvalidSchemaData;
+            const ts_len = std.mem.readInt(u32, value.?[offset..][0..4], .little);
+            offset += 4;
+
+            if (offset + ts_len > value.?.len) return CatalogError.InvalidSchemaData;
+            valid_until = try self.allocator.dupe(u8, value.?[offset..][0..ts_len]);
+        }
+
+        return .{
+            .name = try self.allocator.dupe(u8, name),
+            .login = login,
+            .superuser = superuser,
+            .createdb = createdb,
+            .createrole = createrole,
+            .inherit = inherit,
+            .password = password,
+            .valid_until = valid_until,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// Drop a role.
+    pub fn dropRole(self: *Catalog, name: []const u8, if_exists: bool) !void {
+        const key = try self.makeRoleKey(name);
+        defer self.allocator.free(key);
+
+        const exists = try self.tree.get(self.allocator, key);
+        if (exists) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        } else {
+            if (!if_exists) return CatalogError.TypeNotFound;
+        }
+    }
+
+    /// Check if a role exists.
+    pub fn roleExists(self: *Catalog, name: []const u8) !bool {
+        const key = try self.makeRoleKey(name);
+        defer self.allocator.free(key);
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
+    }
+
+    /// Alter role options.
+    pub fn alterRole(
+        self: *Catalog,
+        name: []const u8,
+        options: ast.RoleOptions,
+    ) !void {
+        // Retrieve existing role
+        var info = try self.getRole(name);
+        defer info.deinit();
+
+        // Update fields based on options
+        if (options.login) |v| info.login = v;
+        if (options.superuser) |v| info.superuser = v;
+        if (options.createdb) |v| info.createdb = v;
+        if (options.createrole) |v| info.createrole = v;
+        if (options.inherit) |v| info.inherit = v;
+
+        if (options.password) |pwd| {
+            if (info.password) |old_pwd| {
+                self.allocator.free(old_pwd);
+            }
+            info.password = try self.allocator.dupe(u8, pwd);
+        }
+
+        if (options.valid_until) |ts| {
+            if (info.valid_until) |old_ts| {
+                self.allocator.free(old_ts);
+            }
+            info.valid_until = try self.allocator.dupe(u8, ts);
+        }
+
+        // Serialize updated role (same format as createRole)
+        var total_size: usize = 6; // 5 bool flags + has_password
+
+        if (info.password) |pwd| {
+            total_size += 4 + pwd.len;
+        }
+
+        total_size += 1; // has_valid_until
+        if (info.valid_until) |ts| {
+            total_size += 4 + ts.len;
+        }
+
+        const data = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(data);
+
+        var offset: usize = 0;
+
+        // Write boolean flags
+        data[offset] = @intFromBool(info.login);
+        offset += 1;
+        data[offset] = @intFromBool(info.superuser);
+        offset += 1;
+        data[offset] = @intFromBool(info.createdb);
+        offset += 1;
+        data[offset] = @intFromBool(info.createrole);
+        offset += 1;
+        data[offset] = @intFromBool(info.inherit);
+        offset += 1;
+
+        // Write password
+        if (info.password) |pwd| {
+            data[offset] = 1;
+            offset += 1;
+            std.mem.writeInt(u32, data[offset..][0..4], @intCast(pwd.len), .little);
+            offset += 4;
+            @memcpy(data[offset..][0..pwd.len], pwd);
+            offset += pwd.len;
+        } else {
+            data[offset] = 0;
+            offset += 1;
+        }
+
+        // Write valid_until
+        if (info.valid_until) |ts| {
+            data[offset] = 1;
+            offset += 1;
+            std.mem.writeInt(u32, data[offset..][0..4], @intCast(ts.len), .little);
+            offset += 4;
+            @memcpy(data[offset..][0..ts.len], ts);
+        } else {
+            data[offset] = 0;
+        }
+
+        // Delete old entry before inserting updated one
+        const key = try self.makeRoleKey(name);
+        defer self.allocator.free(key);
+        try self.tree.delete(key);
+        try self.tree.insert(key, data);
+    }
+
+    /// List all role names. Caller must free each name and the returned slice.
+    pub fn listRoles(self: *Catalog, allocator: Allocator) ![][]const u8 {
+        var cursor = Cursor.init(allocator, &self.tree);
+        defer cursor.deinit();
+
+        try cursor.seekFirst();
+
+        var names = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (names.items) |n| allocator.free(n);
+            names.deinit(allocator);
+        }
+
+        const role_prefix = "role:";
+        while (try cursor.next()) |entry| {
+            defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            if (entry.key.len > role_prefix.len and
+                std.mem.eql(u8, entry.key[0..role_prefix.len], role_prefix))
+            {
+                const role_name = entry.key[role_prefix.len..];
+                const name_copy = try allocator.dupe(u8, role_name);
+                errdefer allocator.free(name_copy);
+                try names.append(allocator, name_copy);
+            }
+        }
+
+        return names.toOwnedSlice(allocator);
+    }
 };
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -4004,4 +4354,326 @@ test "Catalog getTrigger — nonexistent trigger" {
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getTrigger("does_not_exist"));
+}
+// ── Role Catalog Tests ──────────────────────────────────────────────────
+
+test "Catalog createRole — basic role with defaults" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_basic.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreateRoleStmt{
+        .name = "test_user",
+        .options = .{},
+        .or_replace = false,
+    };
+
+    try tc.catalog.createRole(stmt);
+
+    const info = try tc.catalog.getRole("test_user");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("test_user", info.name);
+    try std.testing.expect(info.login); // default LOGIN
+    try std.testing.expect(!info.superuser); // default NOSUPERUSER
+    try std.testing.expect(!info.createdb); // default NOCREATEDB
+    try std.testing.expect(!info.createrole); // default NOCREATEROLE
+    try std.testing.expect(info.inherit); // default INHERIT
+    try std.testing.expect(info.password == null);
+    try std.testing.expect(info.valid_until == null);
+}
+
+test "Catalog createRole — all options" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_all_options.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreateRoleStmt{
+        .name = "admin",
+        .options = .{
+            .login = true,
+            .superuser = true,
+            .createdb = true,
+            .createrole = true,
+            .inherit = false,
+            .password = "secret123",
+            .valid_until = "2025-12-31 23:59:59",
+        },
+        .or_replace = false,
+    };
+
+    try tc.catalog.createRole(stmt);
+
+    const info = try tc.catalog.getRole("admin");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("admin", info.name);
+    try std.testing.expect(info.login);
+    try std.testing.expect(info.superuser);
+    try std.testing.expect(info.createdb);
+    try std.testing.expect(info.createrole);
+    try std.testing.expect(!info.inherit);
+    try std.testing.expect(info.password != null);
+    try std.testing.expectEqualStrings("secret123", info.password.?);
+    try std.testing.expect(info.valid_until != null);
+    try std.testing.expectEqualStrings("2025-12-31 23:59:59", info.valid_until.?);
+}
+
+test "Catalog createRole — NOLOGIN role" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_nologin.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreateRoleStmt{
+        .name = "readonly",
+        .options = .{
+            .login = false,
+        },
+        .or_replace = false,
+    };
+
+    try tc.catalog.createRole(stmt);
+
+    const info = try tc.catalog.getRole("readonly");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("readonly", info.name);
+    try std.testing.expect(!info.login);
+}
+
+test "Catalog createRole — OR REPLACE existing role" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_or_replace.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create initial role
+    const stmt1 = ast.CreateRoleStmt{
+        .name = "test_user",
+        .options = .{ .superuser = false },
+        .or_replace = false,
+    };
+    try tc.catalog.createRole(stmt1);
+
+    // Replace with OR REPLACE
+    const stmt2 = ast.CreateRoleStmt{
+        .name = "test_user",
+        .options = .{ .superuser = true },
+        .or_replace = true,
+    };
+    try tc.catalog.createRole(stmt2);
+
+    const info = try tc.catalog.getRole("test_user");
+    defer info.deinit();
+
+    try std.testing.expect(info.superuser); // Updated value
+}
+
+test "Catalog createRole — duplicate role without OR REPLACE" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_duplicate.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreateRoleStmt{
+        .name = "test_user",
+        .options = .{},
+        .or_replace = false,
+    };
+    try tc.catalog.createRole(stmt);
+
+    // Attempt to create again without OR REPLACE should fail
+    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createRole(stmt));
+}
+
+test "Catalog dropRole — existing role" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_drop.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreateRoleStmt{
+        .name = "temp_user",
+        .options = .{},
+        .or_replace = false,
+    };
+    try tc.catalog.createRole(stmt);
+
+    try tc.catalog.dropRole("temp_user", false);
+
+    // Should not exist after drop
+    try std.testing.expect(!(try tc.catalog.roleExists("temp_user")));
+}
+
+test "Catalog dropRole — IF EXISTS on nonexistent role" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_drop_if_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Should succeed with IF EXISTS
+    try tc.catalog.dropRole("nonexistent", true);
+
+    // Should fail without IF EXISTS
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropRole("nonexistent", false));
+}
+
+test "Catalog roleExists" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreateRoleStmt{
+        .name = "existing_user",
+        .options = .{},
+        .or_replace = false,
+    };
+    try tc.catalog.createRole(stmt);
+
+    try std.testing.expect(try tc.catalog.roleExists("existing_user"));
+    try std.testing.expect(!(try tc.catalog.roleExists("nonexistent_user")));
+}
+
+test "Catalog alterRole — change options" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_alter.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create initial role
+    const stmt = ast.CreateRoleStmt{
+        .name = "test_user",
+        .options = .{
+            .superuser = false,
+            .createdb = false,
+            .password = "old_password",
+        },
+        .or_replace = false,
+    };
+    try tc.catalog.createRole(stmt);
+
+    // Alter role
+    const alter_opts = ast.RoleOptions{
+        .superuser = true,
+        .createdb = true,
+        .password = "new_password",
+    };
+    try tc.catalog.alterRole("test_user", alter_opts);
+
+    // Verify changes
+    const info = try tc.catalog.getRole("test_user");
+    defer info.deinit();
+
+    try std.testing.expect(info.superuser);
+    try std.testing.expect(info.createdb);
+    try std.testing.expectEqualStrings("new_password", info.password.?);
+}
+
+test "Catalog alterRole — partial update" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_alter_partial.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create initial role with all options
+    const stmt = ast.CreateRoleStmt{
+        .name = "test_user",
+        .options = .{
+            .login = true,
+            .superuser = false,
+            .createdb = true,
+            .password = "original",
+        },
+        .or_replace = false,
+    };
+    try tc.catalog.createRole(stmt);
+
+    // Alter only superuser
+    const alter_opts = ast.RoleOptions{
+        .superuser = true,
+    };
+    try tc.catalog.alterRole("test_user", alter_opts);
+
+    // Verify superuser changed, other fields unchanged
+    const info = try tc.catalog.getRole("test_user");
+    defer info.deinit();
+
+    try std.testing.expect(info.login); // unchanged
+    try std.testing.expect(info.superuser); // changed
+    try std.testing.expect(info.createdb); // unchanged
+    try std.testing.expectEqualStrings("original", info.password.?); // unchanged
+}
+
+test "Catalog alterRole — nonexistent role" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_alter_nonexistent.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const alter_opts = ast.RoleOptions{ .superuser = true };
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.alterRole("nonexistent", alter_opts));
+}
+
+test "Catalog listRoles" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_list.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create multiple roles
+    const stmt1 = ast.CreateRoleStmt{ .name = "user1", .options = .{}, .or_replace = false };
+    const stmt2 = ast.CreateRoleStmt{ .name = "user2", .options = .{}, .or_replace = false };
+    const stmt3 = ast.CreateRoleStmt{ .name = "admin", .options = .{}, .or_replace = false };
+
+    try tc.catalog.createRole(stmt1);
+    try tc.catalog.createRole(stmt2);
+    try tc.catalog.createRole(stmt3);
+
+    // List roles
+    const names = try tc.catalog.listRoles(allocator);
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), names.len);
+
+    // Names should be present (order not guaranteed)
+    var found_user1 = false;
+    var found_user2 = false;
+    var found_admin = false;
+    for (names) |name| {
+        if (std.mem.eql(u8, name, "user1")) found_user1 = true;
+        if (std.mem.eql(u8, name, "user2")) found_user2 = true;
+        if (std.mem.eql(u8, name, "admin")) found_admin = true;
+    }
+    try std.testing.expect(found_user1);
+    try std.testing.expect(found_user2);
+    try std.testing.expect(found_admin);
+}
+
+test "Catalog getRole — nonexistent role" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_get_nonexistent.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getRole("does_not_exist"));
 }
