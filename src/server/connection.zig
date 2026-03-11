@@ -416,6 +416,17 @@ pub const Connection = struct {
                 });
             },
             .tsvector, .tsquery => |t| return try self.allocator.dupe(u8, t),
+            .array => |arr| {
+                // Format as PostgreSQL array: {val1,val2,val3}
+                try writer.writeByte('{');
+                for (arr, 0..) |elem, i| {
+                    if (i > 0) try writer.writeByte(',');
+                    const elem_text = try self.valueToText(elem);
+                    defer self.allocator.free(elem_text);
+                    try writer.writeAll(elem_text);
+                }
+                try writer.writeByte('}');
+            },
         }
 
         return try buf.toOwnedSlice(self.allocator);
