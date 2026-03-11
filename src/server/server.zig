@@ -111,8 +111,55 @@ pub const Server = struct {
     }
 
     /// Stop the server gracefully
+    /// Sets running flag to false and waits for all active connections to finish
     pub fn stop(self: *Self) void {
         self.running = false;
+    }
+
+    /// Wait for all active connections to finish
+    /// timeout_ms: maximum time to wait in milliseconds (0 = wait indefinitely)
+    /// Returns true if all connections finished, false if timeout expired
+    pub fn waitForConnections(self: *Self, timeout_ms: u64) bool {
+        if (timeout_ms == 0) {
+            // Wait indefinitely
+            while (self.active_connections.load(.acquire) > 0) {
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+            }
+            return true;
+        } else {
+            // Wait with timeout
+            const start_time = std.time.milliTimestamp();
+            while (self.active_connections.load(.acquire) > 0) {
+                const elapsed = std.time.milliTimestamp() - start_time;
+                if (elapsed >= timeout_ms) {
+                    return false; // Timeout
+                }
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+            }
+            return true;
+        }
+    }
+
+    /// Shutdown the server gracefully with a timeout
+    /// timeout_ms: maximum time to wait for connections to finish (0 = wait indefinitely)
+    /// Returns true if shutdown completed cleanly, false if forceful shutdown required
+    pub fn shutdown(self: *Self, timeout_ms: u64) bool {
+        std.debug.print("Initiating graceful shutdown...\n", .{});
+
+        // Stop accepting new connections
+        self.stop();
+
+        // Wait for active connections to finish
+        const all_finished = self.waitForConnections(timeout_ms);
+
+        if (all_finished) {
+            std.debug.print("All connections closed cleanly\n", .{});
+        } else {
+            const remaining = self.active_connections.load(.acquire);
+            std.debug.print("Shutdown timeout: {d} connections still active\n", .{remaining});
+        }
+
+        return all_finished;
     }
 
     /// Handle a single client connection
@@ -404,5 +451,113 @@ test "Server.stop sets running flag" {
 
     server.running = true;
     server.stop();
+    try std.testing.expect(!server.running);
+}
+
+test "Server.waitForConnections returns immediately when no active connections" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_wait_none.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    // No active connections, should return immediately
+    const finished = server.waitForConnections(5000);
+    try std.testing.expect(finished);
+}
+
+test "Server.waitForConnections waits for active connections" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_wait_active.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    // Simulate active connection
+    _ = server.active_connections.fetchAdd(1, .acquire);
+
+    // Spawn thread to decrement after 200ms
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn decrementAfterDelay(s: *Server) void {
+            std.Thread.sleep(200 * std.time.ns_per_ms);
+            _ = s.active_connections.fetchSub(1, .release);
+        }
+    }.decrementAfterDelay, .{&server});
+    thread.detach();
+
+    // Wait with 1 second timeout - should succeed
+    const finished = server.waitForConnections(1000);
+    try std.testing.expect(finished);
+    try std.testing.expectEqual(@as(usize, 0), server.active_connections.load(.acquire));
+}
+
+test "Server.waitForConnections times out when connections don't finish" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_wait_timeout.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    // Simulate active connection that won't finish
+    _ = server.active_connections.fetchAdd(1, .acquire);
+    defer _ = server.active_connections.fetchSub(1, .release);
+
+    // Wait with short timeout - should timeout
+    const finished = server.waitForConnections(100);
+    try std.testing.expect(!finished);
+    try std.testing.expectEqual(@as(usize, 1), server.active_connections.load(.acquire));
+}
+
+test "Server.shutdown with no active connections" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_shutdown_clean.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    server.running = true;
+
+    // Shutdown should complete immediately
+    const clean = server.shutdown(1000);
+    try std.testing.expect(clean);
+    try std.testing.expect(!server.running);
+}
+
+test "Server.shutdown with timeout on active connections" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_shutdown_timeout.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+    });
+    defer server.deinit();
+
+    server.running = true;
+
+    // Simulate active connection
+    _ = server.active_connections.fetchAdd(1, .acquire);
+    defer _ = server.active_connections.fetchSub(1, .release);
+
+    // Shutdown with short timeout - should timeout
+    const clean = server.shutdown(100);
+    try std.testing.expect(!clean);
     try std.testing.expect(!server.running);
 }
