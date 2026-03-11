@@ -2728,6 +2728,45 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "ALTER TRIGGER" };
             },
+            .create_role => |cr| {
+                self.catalog.createRole(cr) catch |err| {
+                    return switch (err) {
+                        error.TypeAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE ROLE" };
+            },
+            .drop_role => |dr| {
+                self.catalog.dropRole(dr.name, dr.if_exists) catch |err| {
+                    return switch (err) {
+                        error.TypeNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP ROLE" };
+            },
+            .alter_role => |ar| {
+                self.catalog.alterRole(ar.name, ar.options) catch |err| {
+                    return switch (err) {
+                        error.TypeNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "ALTER ROLE" };
+            },
             else => {},
         }
 
@@ -14180,4 +14219,65 @@ test "CREATE TRIGGER with different timings" {
 //   - Statement-level vs row-level execution logic
 //   - Trigger execution order by name (alphabetical)
 // This will be implemented in future milestones.
+
+// ── Role Management Tests ───────────────────────────────────────────
+
+test "CREATE ROLE and DROP ROLE" {
+    const allocator = std.testing.allocator;
+    const path = "test_create_drop_role.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.init(allocator, path, .{});
+    defer db.deinit();
+
+    // CREATE ROLE
+    const r1 = try db.execSQL("CREATE ROLE admin;");
+    defer r1.close(&db);
+    try std.testing.expectEqualStrings("CREATE ROLE", r1.message);
+
+    // CREATE ROLE with options
+    const r2 = try db.execSQL("CREATE ROLE app_user WITH LOGIN PASSWORD 'secret';");
+    defer r2.close(&db);
+    try std.testing.expectEqualStrings("CREATE ROLE", r2.message);
+
+    // DROP ROLE
+    const r3 = try db.execSQL("DROP ROLE admin;");
+    defer r3.close(&db);
+    try std.testing.expectEqualStrings("DROP ROLE", r3.message);
+
+    // DROP ROLE IF EXISTS (role exists)
+    const r4 = try db.execSQL("DROP ROLE IF EXISTS app_user;");
+    defer r4.close(&db);
+    try std.testing.expectEqualStrings("DROP ROLE", r4.message);
+
+    // DROP ROLE IF EXISTS (role doesn't exist)
+    const r5 = try db.execSQL("DROP ROLE IF EXISTS nonexistent;");
+    defer r5.close(&db);
+    try std.testing.expectEqualStrings("DROP ROLE", r5.message);
+}
+
+test "ALTER ROLE basic" {
+    const allocator = std.testing.allocator;
+    const path = "test_alter_role.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.init(allocator, path, .{});
+    defer db.deinit();
+
+    // CREATE ROLE first
+    const r1 = try db.execSQL("CREATE ROLE test_user;");
+    defer r1.close(&db);
+
+    // ALTER ROLE
+    const r2 = try db.execSQL("ALTER ROLE test_user WITH LOGIN;");
+    defer r2.close(&db);
+    try std.testing.expectEqualStrings("ALTER ROLE", r2.message);
+
+    // ALTER ROLE with password
+    const r3 = try db.execSQL("ALTER ROLE test_user PASSWORD 'new_password';");
+    defer r3.close(&db);
+    try std.testing.expectEqualStrings("ALTER ROLE", r3.message);
+}
 

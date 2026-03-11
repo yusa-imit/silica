@@ -285,9 +285,9 @@ pub const Analyzer = struct {
             .create_trigger => |s| self.analyzeCreateTrigger(&s),
             .drop_trigger => |s| self.analyzeDropTrigger(&s),
             .alter_trigger => |s| self.analyzeAlterTrigger(&s),
-            .create_role => {},
-            .drop_role => {},
-            .alter_role => {},
+            .create_role => |s| self.analyzeCreateRole(&s),
+            .drop_role => |s| self.analyzeDropRole(&s),
+            .alter_role => |s| self.analyzeAlterRole(&s),
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
@@ -763,6 +763,31 @@ pub const Analyzer = struct {
 
         // Note: table_name is optional for ALTER TRIGGER
         // The catalog layer will handle existence checks during execution
+    }
+
+    // ── Role Management Validation ──────────────────────────────────
+
+    fn analyzeCreateRole(self: *Analyzer, stmt: *const ast.CreateRoleStmt) void {
+        // Validate role name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "role name cannot be empty", .{});
+        }
+        // Note: password and other option validation happens at catalog layer
+    }
+
+    fn analyzeDropRole(self: *Analyzer, stmt: *const ast.DropRoleStmt) void {
+        // Validate role name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "role name cannot be empty", .{});
+        }
+    }
+
+    fn analyzeAlterRole(self: *Analyzer, stmt: *const ast.AlterRoleStmt) void {
+        // Validate role name is not empty
+        if (stmt.name.len == 0) {
+            self.addError(.invalid_expression, "role name cannot be empty", .{});
+        }
+        // Note: password and other option validation happens at catalog layer
     }
 
     // ── CTE Column Inference ────────────────────────────────────────
@@ -2151,3 +2176,112 @@ test "ALTER TRIGGER: empty name fails" {
     }
     try std.testing.expect(found_invalid);
 }
+
+// ── Role Management Tests ───────────────────────────────────────────
+
+test "CREATE ROLE: valid role passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE ROLE admin;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE ROLE: valid role with password passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE ROLE app_user WITH LOGIN PASSWORD 'secret123';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE ROLE: empty role name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "CREATE ROLE \"\";",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "DROP ROLE: valid drop passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP ROLE old_user;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP ROLE: empty role name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "DROP ROLE \"\";",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "ALTER ROLE: valid alter passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "ALTER ROLE user1 WITH LOGIN;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "ALTER ROLE: empty role name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "ALTER ROLE \"\" WITH NOLOGIN;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
