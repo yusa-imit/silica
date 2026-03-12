@@ -288,6 +288,8 @@ pub const Analyzer = struct {
             .create_role => |s| self.analyzeCreateRole(&s),
             .drop_role => |s| self.analyzeDropRole(&s),
             .alter_role => |s| self.analyzeAlterRole(&s),
+            .grant => |s| self.analyzeGrant(&s),
+            .revoke => |s| self.analyzeRevoke(&s),
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
@@ -788,6 +790,32 @@ pub const Analyzer = struct {
             self.addError(.invalid_expression, "role name cannot be empty", .{});
         }
         // Note: password and other option validation happens at catalog layer
+    }
+
+    fn analyzeGrant(self: *Analyzer, stmt: *const ast.GrantStmt) void {
+        // Validate object name and grantee are not empty
+        if (stmt.object_name.len == 0) {
+            self.addError(.invalid_expression, "object name cannot be empty", .{});
+        }
+        if (stmt.grantee.len == 0) {
+            self.addError(.invalid_expression, "grantee role name cannot be empty", .{});
+        }
+        if (stmt.privileges.len == 0) {
+            self.addError(.invalid_expression, "at least one privilege must be specified", .{});
+        }
+    }
+
+    fn analyzeRevoke(self: *Analyzer, stmt: *const ast.RevokeStmt) void {
+        // Validate object name and grantee are not empty
+        if (stmt.object_name.len == 0) {
+            self.addError(.invalid_expression, "object name cannot be empty", .{});
+        }
+        if (stmt.grantee.len == 0) {
+            self.addError(.invalid_expression, "grantee role name cannot be empty", .{});
+        }
+        if (stmt.privileges.len == 0) {
+            self.addError(.invalid_expression, "at least one privilege must be specified", .{});
+        }
     }
 
     // ── CTE Column Inference ────────────────────────────────────────

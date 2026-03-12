@@ -2313,6 +2313,125 @@ pub const Catalog = struct {
 
         return names.toOwnedSlice(allocator);
     }
+
+    // ── PERMISSIONS (GRANT/REVOKE) ───────────────────────────────
+
+    /// Create a catalog key for a permission entry.
+    /// Format: "perm:{object_type_char}:{object_name}:{grantee}"
+    /// object_type_char: 't' for table, 's' for schema, 'f' for function, 'q' for sequence, 'd' for database
+    fn makePermissionKey(self: *Catalog, object_type: ast.ObjectType, object_name: []const u8, grantee: []const u8) ![]u8 {
+        const type_char: u8 = switch (object_type) {
+            .table => 't',
+            .schema => 's',
+            .function => 'f',
+            .sequence => 'q',
+            .database => 'd',
+        };
+
+        // "perm:" + type_char + ":" + object_name + ":" + grantee
+        const total_len = 5 + 1 + 1 + object_name.len + 1 + grantee.len;
+        const key = try self.allocator.alloc(u8, total_len);
+        var offset: usize = 0;
+
+        @memcpy(key[offset..][0..5], "perm:");
+        offset += 5;
+        key[offset] = type_char;
+        offset += 1;
+        key[offset] = ':';
+        offset += 1;
+        @memcpy(key[offset..][0..object_name.len], object_name);
+        offset += object_name.len;
+        key[offset] = ':';
+        offset += 1;
+        @memcpy(key[offset..][0..grantee.len], grantee);
+
+        return key;
+    }
+
+    /// Grant permission to a role on an object.
+    /// Stores privileges as a bitmask + with_grant_option flag.
+    pub fn grantPermission(
+        self: *Catalog,
+        stmt: ast.GrantStmt,
+    ) !void {
+        const key = try self.makePermissionKey(stmt.object_type, stmt.object_name, stmt.grantee);
+        defer self.allocator.free(key);
+
+        // Compute privilege bitmask
+        // Bit 0: SELECT, Bit 1: INSERT, Bit 2: UPDATE, Bit 3: DELETE, Bit 4: ALL
+        var privilege_bits: u8 = 0;
+        for (stmt.privileges) |priv| {
+            switch (priv) {
+                .select => privilege_bits |= 1 << 0,
+                .insert => privilege_bits |= 1 << 1,
+                .update => privilege_bits |= 1 << 2,
+                .delete => privilege_bits |= 1 << 3,
+                .all => privilege_bits |= 1 << 4,
+            }
+        }
+
+        // Serialize: [privilege_bits: u8][with_grant_option: u8]
+        var data: [2]u8 = undefined;
+        data[0] = privilege_bits;
+        data[1] = @intFromBool(stmt.with_grant_option);
+
+        // If permission already exists, delete and re-insert (update)
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        }
+
+        try self.tree.insert(key, &data);
+    }
+
+    /// Revoke permission from a role on an object.
+    pub fn revokePermission(
+        self: *Catalog,
+        stmt: ast.RevokeStmt,
+    ) !void {
+        const key = try self.makePermissionKey(stmt.object_type, stmt.object_name, stmt.grantee);
+        defer self.allocator.free(key);
+
+        // Simply delete the permission entry
+        // Note: In a real implementation, we'd need to handle partial revocation
+        // (i.e., revoking only some privileges, not all)
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        }
+        // If permission doesn't exist, that's fine (no-op)
+    }
+
+    /// Check if a role has a specific privilege on an object.
+    pub fn hasPermission(
+        self: *Catalog,
+        object_type: ast.ObjectType,
+        object_name: []const u8,
+        grantee: []const u8,
+        privilege: ast.Privilege,
+    ) !bool {
+        const key = try self.makePermissionKey(object_type, object_name, grantee);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value == null) return false;
+        defer self.allocator.free(value.?);
+
+        if (value.?.len < 2) return false;
+
+        const privilege_bits = value.?[0];
+
+        // Check if the requested privilege is granted
+        return switch (privilege) {
+            .select => (privilege_bits & (1 << 0)) != 0,
+            .insert => (privilege_bits & (1 << 1)) != 0,
+            .update => (privilege_bits & (1 << 2)) != 0,
+            .delete => (privilege_bits & (1 << 3)) != 0,
+            .all => (privilege_bits & (1 << 4)) != 0,
+        };
+    }
 };
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -4676,4 +4795,101 @@ test "Catalog getRole — nonexistent role" {
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getRole("does_not_exist"));
+}
+
+test "Catalog grantPermission — basic grant" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_basic.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const privileges = [_]ast.Privilege{.select};
+    const stmt = ast.GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "users",
+        .grantee = "alice",
+        .with_grant_option = false,
+    };
+
+    try tc.catalog.grantPermission(stmt);
+
+    // Check that the permission exists
+    const has_select = try tc.catalog.hasPermission(.table, "users", "alice", .select);
+    try std.testing.expect(has_select);
+
+    // Check that other privileges don't exist
+    const has_insert = try tc.catalog.hasPermission(.table, "users", "alice", .insert);
+    try std.testing.expect(!has_insert);
+}
+
+test "Catalog grantPermission — multiple privileges" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_multiple.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const privileges = [_]ast.Privilege{ .select, .insert, .update };
+    const stmt = ast.GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "orders",
+        .grantee = "bob",
+        .with_grant_option = false,
+    };
+
+    try tc.catalog.grantPermission(stmt);
+
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "orders", "bob", .select));
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "orders", "bob", .insert));
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "orders", "bob", .update));
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "orders", "bob", .delete));
+}
+
+test "Catalog revokePermission — removes permission" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_revoke.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // First, grant permission
+    const grant_privs = [_]ast.Privilege{.select};
+    const grant_stmt = ast.GrantStmt{
+        .privileges = &grant_privs,
+        .object_type = .table,
+        .object_name = "products",
+        .grantee = "charlie",
+        .with_grant_option = false,
+    };
+    try tc.catalog.grantPermission(grant_stmt);
+
+    // Verify it exists
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "products", "charlie", .select));
+
+    // Revoke it
+    const revoke_privs = [_]ast.Privilege{.select};
+    const revoke_stmt = ast.RevokeStmt{
+        .privileges = &revoke_privs,
+        .object_type = .table,
+        .object_name = "products",
+        .grantee = "charlie",
+    };
+    try tc.catalog.revokePermission(revoke_stmt);
+
+    // Verify it no longer exists
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "products", "charlie", .select));
+}
+
+test "Catalog hasPermission — nonexistent permission" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_has_perm_nonexistent.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const has_perm = try tc.catalog.hasPermission(.table, "nonexistent", "nobody", .select);
+    try std.testing.expect(!has_perm);
 }
