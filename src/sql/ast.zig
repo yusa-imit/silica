@@ -714,6 +714,45 @@ pub const RevokeRoleStmt = struct {
     members: []const []const u8, // users/roles losing the role
 };
 
+/// Policy command type for CREATE POLICY
+pub const PolicyCommand = enum {
+    all, // default: applies to all commands
+    select,
+    insert,
+    update,
+    delete,
+};
+
+/// Policy type for CREATE POLICY
+pub const PolicyType = enum {
+    permissive, // default: OR logic with other policies
+    restrictive, // AND logic with other policies
+};
+
+/// CREATE POLICY statement: CREATE POLICY name ON table [AS {PERMISSIVE|RESTRICTIVE}] [FOR {ALL|SELECT|INSERT|UPDATE|DELETE}] [USING (qual)] [WITH CHECK (with_check)]
+pub const CreatePolicyStmt = struct {
+    policy_name: []const u8,
+    table_name: []const u8,
+    policy_type: PolicyType = .permissive,
+    command: PolicyCommand = .all,
+    using_expr: ?Expr = null, // USING clause (for SELECT, UPDATE, DELETE)
+    with_check_expr: ?Expr = null, // WITH CHECK clause (for INSERT, UPDATE)
+};
+
+/// DROP POLICY statement: DROP POLICY [IF EXISTS] name ON table
+pub const DropPolicyStmt = struct {
+    policy_name: []const u8,
+    table_name: []const u8,
+    if_exists: bool = false,
+};
+
+/// ALTER TABLE ENABLE/DISABLE ROW LEVEL SECURITY statement
+pub const AlterTableRLSStmt = struct {
+    table_name: []const u8,
+    enable: bool, // true = ENABLE, false = DISABLE
+    force: bool = false, // FORCE ROW LEVEL SECURITY (applies even to table owner)
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -745,6 +784,9 @@ pub const Stmt = union(enum) {
     revoke: RevokeStmt,
     grant_role: GrantRoleStmt,
     revoke_role: RevokeRoleStmt,
+    create_policy: CreatePolicyStmt,
+    drop_policy: DropPolicyStmt,
+    alter_table_rls: AlterTableRLSStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -1378,4 +1420,112 @@ test "RevokeRoleStmt multiple members" {
     try std.testing.expectEqual(@as(usize, 2), stmt.members.len);
     try std.testing.expectEqualStrings("alice", stmt.members[0]);
     try std.testing.expectEqualStrings("bob", stmt.members[1]);
+}
+
+test "CreatePolicyStmt default permissive all" {
+    const stmt = CreatePolicyStmt{
+        .policy_name = "policy1",
+        .table_name = "users",
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try std.testing.expectEqualStrings("policy1", stmt.policy_name);
+    try std.testing.expectEqualStrings("users", stmt.table_name);
+    try std.testing.expectEqual(PolicyType.permissive, stmt.policy_type);
+    try std.testing.expectEqual(PolicyCommand.all, stmt.command);
+    try std.testing.expect(stmt.using_expr == null);
+    try std.testing.expect(stmt.with_check_expr == null);
+}
+
+test "CreatePolicyStmt restrictive select with using" {
+    const using_expr = Expr{ .integer_literal = 1 };
+    const stmt = CreatePolicyStmt{
+        .policy_name = "select_policy",
+        .table_name = "documents",
+        .policy_type = .restrictive,
+        .command = .select,
+        .using_expr = using_expr,
+        .with_check_expr = null,
+    };
+
+    try std.testing.expectEqualStrings("select_policy", stmt.policy_name);
+    try std.testing.expectEqualStrings("documents", stmt.table_name);
+    try std.testing.expectEqual(PolicyType.restrictive, stmt.policy_type);
+    try std.testing.expectEqual(PolicyCommand.select, stmt.command);
+    try std.testing.expect(stmt.using_expr != null);
+    try std.testing.expect(stmt.with_check_expr == null);
+}
+
+test "CreatePolicyStmt insert with check" {
+    const check_expr = Expr{ .boolean_literal = true };
+    const stmt = CreatePolicyStmt{
+        .policy_name = "insert_check",
+        .table_name = "posts",
+        .command = .insert,
+        .with_check_expr = check_expr,
+    };
+
+    try std.testing.expectEqualStrings("insert_check", stmt.policy_name);
+    try std.testing.expectEqualStrings("posts", stmt.table_name);
+    try std.testing.expectEqual(PolicyCommand.insert, stmt.command);
+    try std.testing.expect(stmt.using_expr == null);
+    try std.testing.expect(stmt.with_check_expr != null);
+}
+
+test "DropPolicyStmt without if exists" {
+    const stmt = DropPolicyStmt{
+        .policy_name = "old_policy",
+        .table_name = "accounts",
+    };
+
+    try std.testing.expectEqualStrings("old_policy", stmt.policy_name);
+    try std.testing.expectEqualStrings("accounts", stmt.table_name);
+    try std.testing.expect(!stmt.if_exists);
+}
+
+test "DropPolicyStmt with if exists" {
+    const stmt = DropPolicyStmt{
+        .policy_name = "maybe_policy",
+        .table_name = "logs",
+        .if_exists = true,
+    };
+
+    try std.testing.expectEqualStrings("maybe_policy", stmt.policy_name);
+    try std.testing.expectEqualStrings("logs", stmt.table_name);
+    try std.testing.expect(stmt.if_exists);
+}
+
+test "AlterTableRLSStmt enable" {
+    const stmt = AlterTableRLSStmt{
+        .table_name = "sensitive_data",
+        .enable = true,
+    };
+
+    try std.testing.expectEqualStrings("sensitive_data", stmt.table_name);
+    try std.testing.expect(stmt.enable);
+    try std.testing.expect(!stmt.force);
+}
+
+test "AlterTableRLSStmt disable" {
+    const stmt = AlterTableRLSStmt{
+        .table_name = "public_data",
+        .enable = false,
+    };
+
+    try std.testing.expectEqualStrings("public_data", stmt.table_name);
+    try std.testing.expect(!stmt.enable);
+    try std.testing.expect(!stmt.force);
+}
+
+test "AlterTableRLSStmt force enable" {
+    const stmt = AlterTableRLSStmt{
+        .table_name = "audit_log",
+        .enable = true,
+        .force = true,
+    };
+
+    try std.testing.expectEqualStrings("audit_log", stmt.table_name);
+    try std.testing.expect(stmt.enable);
+    try std.testing.expect(stmt.force);
 }
