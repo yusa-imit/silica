@@ -976,3 +976,20 @@ gh issue create --repo yusa-imit/zuda \
 - [x] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Graphics features are opt-in and available for future TUI enhancements.
+
+### v1.12.0 — Enterprise & Accessibility (status: READY)
+
+**sailor v1.12.0 released** (2026-03-13) — Enterprise features and accessibility
+
+- **New features**:
+  - Session recording & playback (debug TUI interactions)
+  - Audit logging (10 event types, compliance tracking)
+  - 4 high contrast WCAG AAA themes (dark, light, amber, green)
+  - Screen reader enhancements (OSC8, ARIA, JSON modes)
+  - Keyboard navigation improvements (skip links, focus indicators, hints)
+- **Impact on silica**: Optional — improves accessibility and compliance
+  - Audit logging for query execution history (future compliance feature)
+  - High contrast themes for accessibility mode (future settings feature)
+  - Keyboard navigation hints in help display
+- **Migration**: No action required — all features are opt-in and additive
+- **Breaking**: None — fully backward compatible with v1.11.0
