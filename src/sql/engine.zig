@@ -2791,6 +2791,34 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "REVOKE" };
             },
+            .grant_role => |g| {
+                for (g.members) |member| {
+                    self.catalog.grantRole(g.role, member, g.with_admin_option) catch |err| {
+                        return switch (err) {
+                            error.OutOfMemory => EngineError.OutOfMemory,
+                            else => EngineError.StorageError,
+                        };
+                    };
+                }
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "GRANT" };
+            },
+            .revoke_role => |r| {
+                for (r.members) |member| {
+                    self.catalog.revokeRole(r.role, member) catch |err| {
+                        return switch (err) {
+                            error.OutOfMemory => EngineError.OutOfMemory,
+                            else => EngineError.StorageError,
+                        };
+                    };
+                }
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "REVOKE" };
+            },
             else => {},
         }
 
@@ -14363,5 +14391,138 @@ test "GRANT with grant option" {
     var r1 = try db.execSQL("GRANT ALL ON mydb TO admin WITH GRANT OPTION;");
     defer r1.close(allocator);
     try std.testing.expectEqualStrings("GRANT", r1.message);
+}
+
+test "GRANT role membership" {
+    const allocator = std.testing.allocator;
+    const path = "test_grant_role.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create roles
+    var r1 = try db.execSQL("CREATE ROLE admin;");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE ROLE alice;");
+    defer r2.close(allocator);
+
+    // GRANT role to single member
+    var r3 = try db.execSQL("GRANT admin TO alice;");
+    defer r3.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r3.message);
+
+    // Verify membership
+    const has_membership = try db.catalog.hasRoleMembership("admin", "alice");
+    try std.testing.expect(has_membership);
+}
+
+test "GRANT role with admin option" {
+    const allocator = std.testing.allocator;
+    const path = "test_grant_role_admin.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create roles
+    var r1 = try db.execSQL("CREATE ROLE superuser;");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE ROLE alice;");
+    defer r2.close(allocator);
+
+    // GRANT role WITH ADMIN OPTION
+    var r3 = try db.execSQL("GRANT superuser TO alice WITH ADMIN OPTION;");
+    defer r3.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r3.message);
+
+    const has_membership = try db.catalog.hasRoleMembership("superuser", "alice");
+    try std.testing.expect(has_membership);
+}
+
+test "GRANT role to multiple members" {
+    const allocator = std.testing.allocator;
+    const path = "test_grant_role_multiple.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create roles
+    var r1 = try db.execSQL("CREATE ROLE manager;");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE ROLE alice;");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE ROLE bob;");
+    defer r3.close(allocator);
+
+    // GRANT role to multiple members
+    var r4 = try db.execSQL("GRANT manager TO alice, bob;");
+    defer r4.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r4.message);
+
+    const has_alice = try db.catalog.hasRoleMembership("manager", "alice");
+    const has_bob = try db.catalog.hasRoleMembership("manager", "bob");
+    try std.testing.expect(has_alice);
+    try std.testing.expect(has_bob);
+}
+
+test "REVOKE role membership" {
+    const allocator = std.testing.allocator;
+    const path = "test_revoke_role.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create roles
+    var r1 = try db.execSQL("CREATE ROLE admin;");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE ROLE alice;");
+    defer r2.close(allocator);
+
+    // GRANT then REVOKE
+    var r3 = try db.execSQL("GRANT admin TO alice;");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("REVOKE admin FROM alice;");
+    defer r4.close(allocator);
+    try std.testing.expectEqualStrings("REVOKE", r4.message);
+
+    const has_membership = try db.catalog.hasRoleMembership("admin", "alice");
+    try std.testing.expect(!has_membership);
+}
+
+test "REVOKE role from multiple members" {
+    const allocator = std.testing.allocator;
+    const path = "test_revoke_role_multiple.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create roles
+    var r1 = try db.execSQL("CREATE ROLE manager;");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE ROLE alice;");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE ROLE bob;");
+    defer r3.close(allocator);
+
+    // GRANT to both, then REVOKE from both
+    var r4 = try db.execSQL("GRANT manager TO alice, bob;");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("REVOKE manager FROM alice, bob;");
+    defer r5.close(allocator);
+    try std.testing.expectEqualStrings("REVOKE", r5.message);
+
+    const has_alice = try db.catalog.hasRoleMembership("manager", "alice");
+    const has_bob = try db.catalog.hasRoleMembership("manager", "bob");
+    try std.testing.expect(!has_alice);
+    try std.testing.expect(!has_bob);
 }
 
