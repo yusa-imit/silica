@@ -2314,6 +2314,167 @@ pub const Catalog = struct {
         return names.toOwnedSlice(allocator);
     }
 
+    // ── ROLE MEMBERSHIP ───────────────────────────────────────────
+
+    /// Create a catalog key for a role membership entry.
+    /// Format: "rolemember:{role}:{member}"
+    fn makeRoleMemberKey(self: *Catalog, role: []const u8, member: []const u8) ![]u8 {
+        // "rolemember:" + role + ":" + member
+        const total_len = 11 + role.len + 1 + member.len;
+        const key = try self.allocator.alloc(u8, total_len);
+        var offset: usize = 0;
+
+        @memcpy(key[offset..][0..11], "rolemember:");
+        offset += 11;
+        @memcpy(key[offset..][0..role.len], role);
+        offset += role.len;
+        key[offset] = ':';
+        offset += 1;
+        @memcpy(key[offset..][0..member.len], member);
+
+        return key;
+    }
+
+    /// Grant role membership: GRANT role TO member
+    /// Stores with_admin_option flag (1 byte: 0 or 1)
+    pub fn grantRole(
+        self: *Catalog,
+        role: []const u8,
+        member: []const u8,
+        with_admin_option: bool,
+    ) !void {
+        // Verify both role and member exist
+        if (!try self.roleExists(role)) return CatalogError.TypeNotFound;
+        if (!try self.roleExists(member)) return CatalogError.TypeNotFound;
+
+        const key = try self.makeRoleMemberKey(role, member);
+        defer self.allocator.free(key);
+
+        // Serialize: [with_admin_option: u8]
+        const data = try self.allocator.alloc(u8, 1);
+        defer self.allocator.free(data);
+        data[0] = @intFromBool(with_admin_option);
+
+        // Check if already exists (overwrite is allowed for simplicity)
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        }
+
+        try self.tree.insert(key, data);
+    }
+
+    /// Revoke role membership: REVOKE role FROM member
+    pub fn revokeRole(
+        self: *Catalog,
+        role: []const u8,
+        member: []const u8,
+    ) !void {
+        const key = try self.makeRoleMemberKey(role, member);
+        defer self.allocator.free(key);
+
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        }
+        // Silently succeed if membership doesn't exist (PostgreSQL behavior)
+    }
+
+    /// Check if a role membership exists.
+    pub fn hasRoleMembership(self: *Catalog, role: []const u8, member: []const u8) !bool {
+        const key = try self.makeRoleMemberKey(role, member);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
+    }
+
+    /// Get all members of a role. Caller must free each name and the returned slice.
+    pub fn getRoleMembers(self: *Catalog, allocator: Allocator, role: []const u8) ![][]const u8 {
+        var cursor = Cursor.init(allocator, &self.tree);
+        defer cursor.deinit();
+
+        try cursor.seekFirst();
+
+        var members = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (members.items) |m| allocator.free(m);
+            members.deinit(allocator);
+        }
+
+        // Build prefix: "rolemember:{role}:"
+        const prefix_len = 11 + role.len + 1;
+        const prefix = try allocator.alloc(u8, prefix_len);
+        defer allocator.free(prefix);
+        var offset: usize = 0;
+        @memcpy(prefix[offset..][0..11], "rolemember:");
+        offset += 11;
+        @memcpy(prefix[offset..][0..role.len], role);
+        offset += role.len;
+        prefix[offset] = ':';
+
+        while (try cursor.next()) |entry| {
+            defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            if (entry.key.len > prefix.len and
+                std.mem.eql(u8, entry.key[0..prefix.len], prefix))
+            {
+                const member_name = entry.key[prefix.len..];
+                const name_copy = try allocator.dupe(u8, member_name);
+                errdefer allocator.free(name_copy);
+                try members.append(allocator, name_copy);
+            }
+        }
+
+        return members.toOwnedSlice(allocator);
+    }
+
+    /// Get all roles that a member belongs to. Caller must free each name and the returned slice.
+    pub fn getMemberRoles(self: *Catalog, allocator: Allocator, member: []const u8) ![][]const u8 {
+        var cursor = Cursor.init(allocator, &self.tree);
+        defer cursor.deinit();
+
+        try cursor.seekFirst();
+
+        var roles = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (roles.items) |r| allocator.free(r);
+            roles.deinit(allocator);
+        }
+
+        const rolemember_prefix = "rolemember:";
+        while (try cursor.next()) |entry| {
+            defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            if (entry.key.len > rolemember_prefix.len and
+                std.mem.eql(u8, entry.key[0..rolemember_prefix.len], rolemember_prefix))
+            {
+                // Parse key: "rolemember:{role}:{member}"
+                const after_prefix = entry.key[rolemember_prefix.len..];
+                if (std.mem.indexOfScalar(u8, after_prefix, ':')) |colon_idx| {
+                    const role_name = after_prefix[0..colon_idx];
+                    const member_name = after_prefix[colon_idx + 1 ..];
+
+                    if (std.mem.eql(u8, member_name, member)) {
+                        const role_copy = try allocator.dupe(u8, role_name);
+                        errdefer allocator.free(role_copy);
+                        try roles.append(allocator, role_copy);
+                    }
+                }
+            }
+        }
+
+        return roles.toOwnedSlice(allocator);
+    }
+
     // ── PERMISSIONS (GRANT/REVOKE) ───────────────────────────────
 
     /// Create a catalog key for a permission entry.
@@ -4795,6 +4956,286 @@ test "Catalog getRole — nonexistent role" {
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getRole("does_not_exist"));
+}
+
+test "Catalog grantRole — basic membership" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_role_basic.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create two roles
+    const admin_stmt = ast.CreateRoleStmt{
+        .name = "admin",
+        .or_replace = false,
+        .options = .{},
+    };
+    const user_stmt = ast.CreateRoleStmt{
+        .name = "user1",
+        .or_replace = false,
+        .options = .{},
+    };
+
+    try tc.catalog.createRole(admin_stmt);
+    try tc.catalog.createRole(user_stmt);
+
+    // Grant admin role to user1
+    try tc.catalog.grantRole("admin", "user1", false);
+
+    // Verify membership exists
+    const has_membership = try tc.catalog.hasRoleMembership("admin", "user1");
+    try std.testing.expect(has_membership);
+}
+
+test "Catalog grantRole — with admin option" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_role_admin_option.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const role1_stmt = ast.CreateRoleStmt{
+        .name = "role1",
+        .or_replace = false,
+        .options = .{},
+    };
+    const role2_stmt = ast.CreateRoleStmt{
+        .name = "role2",
+        .or_replace = false,
+        .options = .{},
+    };
+
+    try tc.catalog.createRole(role1_stmt);
+    try tc.catalog.createRole(role2_stmt);
+
+    // Grant with admin option
+    try tc.catalog.grantRole("role1", "role2", true);
+
+    const has_membership = try tc.catalog.hasRoleMembership("role1", "role2");
+    try std.testing.expect(has_membership);
+}
+
+test "Catalog grantRole — role does not exist" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_role_nonexistent.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const user_stmt = ast.CreateRoleStmt{
+        .name = "user1",
+        .or_replace = false,
+        .options = .{},
+    };
+    try tc.catalog.createRole(user_stmt);
+
+    // Try to grant nonexistent role
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.grantRole("ghost", "user1", false));
+
+    // Try to grant to nonexistent member
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.grantRole("user1", "ghost", false));
+}
+
+test "Catalog revokeRole — existing membership" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_revoke_role_existing.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const admin_stmt = ast.CreateRoleStmt{
+        .name = "admin",
+        .or_replace = false,
+        .options = .{},
+    };
+    const user_stmt = ast.CreateRoleStmt{
+        .name = "user1",
+        .or_replace = false,
+        .options = .{},
+    };
+
+    try tc.catalog.createRole(admin_stmt);
+    try tc.catalog.createRole(user_stmt);
+
+    // Grant then revoke
+    try tc.catalog.grantRole("admin", "user1", false);
+    try tc.catalog.revokeRole("admin", "user1");
+
+    // Verify membership no longer exists
+    const has_membership = try tc.catalog.hasRoleMembership("admin", "user1");
+    try std.testing.expect(!has_membership);
+}
+
+test "Catalog revokeRole — nonexistent membership (no error)" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_revoke_role_nonexistent.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const role1_stmt = ast.CreateRoleStmt{
+        .name = "role1",
+        .or_replace = false,
+        .options = .{},
+    };
+    const role2_stmt = ast.CreateRoleStmt{
+        .name = "role2",
+        .or_replace = false,
+        .options = .{},
+    };
+
+    try tc.catalog.createRole(role1_stmt);
+    try tc.catalog.createRole(role2_stmt);
+
+    // Revoke nonexistent membership should succeed silently (PostgreSQL behavior)
+    try tc.catalog.revokeRole("role1", "role2");
+}
+
+test "Catalog getRoleMembers — multiple members" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_get_role_members.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const admin_stmt = ast.CreateRoleStmt{ .name = "admin", .or_replace = false, .options = .{} };
+    const user1_stmt = ast.CreateRoleStmt{ .name = "user1", .or_replace = false, .options = .{} };
+    const user2_stmt = ast.CreateRoleStmt{ .name = "user2", .or_replace = false, .options = .{} };
+    const user3_stmt = ast.CreateRoleStmt{ .name = "user3", .or_replace = false, .options = .{} };
+
+    try tc.catalog.createRole(admin_stmt);
+    try tc.catalog.createRole(user1_stmt);
+    try tc.catalog.createRole(user2_stmt);
+    try tc.catalog.createRole(user3_stmt);
+
+    // Grant admin to multiple users
+    try tc.catalog.grantRole("admin", "user1", false);
+    try tc.catalog.grantRole("admin", "user2", false);
+    try tc.catalog.grantRole("admin", "user3", false);
+
+    // Get members
+    const members = try tc.catalog.getRoleMembers(allocator, "admin");
+    defer {
+        for (members) |m| allocator.free(m);
+        allocator.free(members);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), members.len);
+
+    // Verify all members are present (order not guaranteed)
+    var found_user1 = false;
+    var found_user2 = false;
+    var found_user3 = false;
+    for (members) |m| {
+        if (std.mem.eql(u8, m, "user1")) found_user1 = true;
+        if (std.mem.eql(u8, m, "user2")) found_user2 = true;
+        if (std.mem.eql(u8, m, "user3")) found_user3 = true;
+    }
+    try std.testing.expect(found_user1);
+    try std.testing.expect(found_user2);
+    try std.testing.expect(found_user3);
+}
+
+test "Catalog getRoleMembers — no members" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_get_role_members_empty.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const role_stmt = ast.CreateRoleStmt{ .name = "lonely", .or_replace = false, .options = .{} };
+    try tc.catalog.createRole(role_stmt);
+
+    const members = try tc.catalog.getRoleMembers(allocator, "lonely");
+    defer allocator.free(members);
+
+    try std.testing.expectEqual(@as(usize, 0), members.len);
+}
+
+test "Catalog getMemberRoles — multiple roles" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_get_member_roles.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const admin_stmt = ast.CreateRoleStmt{ .name = "admin", .or_replace = false, .options = .{} };
+    const editor_stmt = ast.CreateRoleStmt{ .name = "editor", .or_replace = false, .options = .{} };
+    const viewer_stmt = ast.CreateRoleStmt{ .name = "viewer", .or_replace = false, .options = .{} };
+    const user_stmt = ast.CreateRoleStmt{ .name = "alice", .or_replace = false, .options = .{} };
+
+    try tc.catalog.createRole(admin_stmt);
+    try tc.catalog.createRole(editor_stmt);
+    try tc.catalog.createRole(viewer_stmt);
+    try tc.catalog.createRole(user_stmt);
+
+    // Grant multiple roles to alice
+    try tc.catalog.grantRole("admin", "alice", false);
+    try tc.catalog.grantRole("editor", "alice", false);
+    try tc.catalog.grantRole("viewer", "alice", false);
+
+    // Get roles
+    const roles = try tc.catalog.getMemberRoles(allocator, "alice");
+    defer {
+        for (roles) |r| allocator.free(r);
+        allocator.free(roles);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), roles.len);
+
+    // Verify all roles are present (order not guaranteed)
+    var found_admin = false;
+    var found_editor = false;
+    var found_viewer = false;
+    for (roles) |r| {
+        if (std.mem.eql(u8, r, "admin")) found_admin = true;
+        if (std.mem.eql(u8, r, "editor")) found_editor = true;
+        if (std.mem.eql(u8, r, "viewer")) found_viewer = true;
+    }
+    try std.testing.expect(found_admin);
+    try std.testing.expect(found_editor);
+    try std.testing.expect(found_viewer);
+}
+
+test "Catalog getMemberRoles — no roles" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_get_member_roles_empty.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const user_stmt = ast.CreateRoleStmt{ .name = "bob", .or_replace = false, .options = .{} };
+    try tc.catalog.createRole(user_stmt);
+
+    const roles = try tc.catalog.getMemberRoles(allocator, "bob");
+    defer allocator.free(roles);
+
+    try std.testing.expectEqual(@as(usize, 0), roles.len);
+}
+
+test "Catalog role membership — grant overwrite" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_role_membership_overwrite.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const role1_stmt = ast.CreateRoleStmt{ .name = "role1", .or_replace = false, .options = .{} };
+    const role2_stmt = ast.CreateRoleStmt{ .name = "role2", .or_replace = false, .options = .{} };
+
+    try tc.catalog.createRole(role1_stmt);
+    try tc.catalog.createRole(role2_stmt);
+
+    // Grant without admin option
+    try tc.catalog.grantRole("role1", "role2", false);
+
+    // Grant again with admin option (should overwrite)
+    try tc.catalog.grantRole("role1", "role2", true);
+
+    // Verify membership still exists (only one entry)
+    const has_membership = try tc.catalog.hasRoleMembership("role1", "role2");
+    try std.testing.expect(has_membership);
 }
 
 test "Catalog grantPermission — basic grant" {
