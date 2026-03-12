@@ -4893,3 +4893,157 @@ test "Catalog hasPermission — nonexistent permission" {
     const has_perm = try tc.catalog.hasPermission(.table, "nonexistent", "nobody", .select);
     try std.testing.expect(!has_perm);
 }
+
+test "Catalog grantPermission — ALL privilege" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_all.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const privileges = [_]ast.Privilege{.all};
+    const stmt = ast.GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "admin_table",
+        .grantee = "admin",
+        .with_grant_option = false,
+    };
+
+    try tc.catalog.grantPermission(stmt);
+
+    // ALL privilege should be stored as bit 4
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "admin_table", "admin", .all));
+    // Other privileges should NOT be set (ALL is a separate bit)
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "admin_table", "admin", .select));
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "admin_table", "admin", .insert));
+}
+
+test "Catalog grantPermission — with_grant_option true" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_option.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const privileges = [_]ast.Privilege{.select};
+    const stmt = ast.GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "shared_table",
+        .grantee = "delegator",
+        .with_grant_option = true,
+    };
+
+    try tc.catalog.grantPermission(stmt);
+
+    // Verify permission exists (with_grant_option is stored but not checked by hasPermission)
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "shared_table", "delegator", .select));
+
+    // Verify with_grant_option is stored (retrieve raw data)
+    const key = try tc.catalog.makePermissionKey(.table, "shared_table", "delegator");
+    defer allocator.free(key);
+    const value = try tc.catalog.tree.get(allocator, key);
+    defer if (value) |v| allocator.free(v);
+
+    try std.testing.expect(value != null);
+    try std.testing.expectEqual(@as(usize, 2), value.?.len);
+    try std.testing.expectEqual(@as(u8, 1), value.?[1]); // with_grant_option = true
+}
+
+test "Catalog grantPermission — overwrites existing grant" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_grant_overwrite.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // First grant: SELECT only
+    const privs1 = [_]ast.Privilege{.select};
+    const stmt1 = ast.GrantStmt{
+        .privileges = &privs1,
+        .object_type = .table,
+        .object_name = "evolving",
+        .grantee = "user1",
+        .with_grant_option = false,
+    };
+    try tc.catalog.grantPermission(stmt1);
+
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "evolving", "user1", .select));
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "evolving", "user1", .insert));
+
+    // Second grant: SELECT + INSERT (should overwrite)
+    const privs2 = [_]ast.Privilege{ .select, .insert };
+    const stmt2 = ast.GrantStmt{
+        .privileges = &privs2,
+        .object_type = .table,
+        .object_name = "evolving",
+        .grantee = "user1",
+        .with_grant_option = false,
+    };
+    try tc.catalog.grantPermission(stmt2);
+
+    // Both privileges should now exist
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "evolving", "user1", .select));
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "evolving", "user1", .insert));
+}
+
+test "Catalog revokePermission — nonexistent permission no-op" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_revoke_noop.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Revoke permission that was never granted (should not error)
+    const privileges = [_]ast.Privilege{.delete};
+    const stmt = ast.RevokeStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "phantom",
+        .grantee = "ghost",
+    };
+
+    // Should succeed without error
+    try tc.catalog.revokePermission(stmt);
+
+    // Verify no permission exists
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "phantom", "ghost", .delete));
+}
+
+test "Catalog hasPermission — different grantees isolated" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_perm_isolation.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Grant to alice
+    const alice_privs = [_]ast.Privilege{.select};
+    const alice_stmt = ast.GrantStmt{
+        .privileges = &alice_privs,
+        .object_type = .table,
+        .object_name = "data",
+        .grantee = "alice",
+        .with_grant_option = false,
+    };
+    try tc.catalog.grantPermission(alice_stmt);
+
+    // Grant to bob (different privileges)
+    const bob_privs = [_]ast.Privilege{.insert};
+    const bob_stmt = ast.GrantStmt{
+        .privileges = &bob_privs,
+        .object_type = .table,
+        .object_name = "data",
+        .grantee = "bob",
+        .with_grant_option = false,
+    };
+    try tc.catalog.grantPermission(bob_stmt);
+
+    // Verify isolation
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "data", "alice", .select));
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "data", "alice", .insert));
+
+    try std.testing.expect(!try tc.catalog.hasPermission(.table, "data", "bob", .select));
+    try std.testing.expect(try tc.catalog.hasPermission(.table, "data", "bob", .insert));
+}
