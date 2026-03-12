@@ -141,6 +141,13 @@ pub const TokenType = enum {
     kw_grant,
     kw_revoke,
     kw_privileges,
+    kw_policy,
+    kw_security,
+    kw_level,
+    kw_permissive,
+    kw_restrictive,
+    kw_force,
+    kw_using,
 
     // Keywords — DML
     kw_select,
@@ -812,6 +819,13 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "grant", .kw_grant },
         .{ "revoke", .kw_revoke },
         .{ "privileges", .kw_privileges },
+        .{ "policy", .kw_policy },
+        .{ "security", .kw_security },
+        .{ "level", .kw_level },
+        .{ "permissive", .kw_permissive },
+        .{ "restrictive", .kw_restrictive },
+        .{ "force", .kw_force },
+        .{ "using", .kw_using },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1781,4 +1795,44 @@ test "ALTER ROLE keywords" {
 
 test "ADMIN keyword" {
     try expectSingleToken("admin", .kw_admin, "admin");
+}
+
+test "RLS keywords" {
+    try expectSingleToken("policy", .kw_policy, "policy");
+    try expectSingleToken("security", .kw_security, "security");
+    try expectSingleToken("level", .kw_level, "level");
+    try expectSingleToken("permissive", .kw_permissive, "permissive");
+    try expectSingleToken("restrictive", .kw_restrictive, "restrictive");
+    try expectSingleToken("force", .kw_force, "force");
+    try expectSingleToken("using", .kw_using, "using");
+}
+
+test "CREATE POLICY keywords" {
+    const sql = "CREATE POLICY policy1 ON table1 USING (user_id = current_user)";
+    try expectTokens(sql, &.{
+        .kw_create,
+        .kw_policy,
+        .identifier, // policy1
+        .kw_on,
+        .identifier, // table1
+        .kw_using,
+        .left_paren,
+        .identifier, // user_id
+        .equals,
+        .identifier, // current_user
+        .right_paren,
+    });
+}
+
+test "ALTER TABLE ENABLE ROW LEVEL SECURITY keywords" {
+    const sql = "ALTER TABLE users ENABLE ROW LEVEL SECURITY";
+    try expectTokens(sql, &.{
+        .kw_alter,
+        .kw_table,
+        .identifier, // users
+        .kw_enable,
+        .kw_row,
+        .kw_level,
+        .kw_security,
+    });
 }
