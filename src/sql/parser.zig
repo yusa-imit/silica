@@ -196,6 +196,8 @@ pub const Parser = struct {
             .kw_release => .{ .transaction = try self.parseRelease() },
             .kw_explain => .{ .explain = try self.parseExplain() },
             .kw_vacuum => .{ .vacuum = self.parseVacuum() },
+            .kw_grant => .{ .grant = try self.parseGrant() },
+            .kw_revoke => .{ .revoke = try self.parseRevoke() },
             else => {
                 try self.addError(t, "expected statement");
                 return error.ParseFailed;
@@ -1295,6 +1297,131 @@ pub const Parser = struct {
         return .{
             .name = name,
             .options = options,
+        };
+    }
+
+    // ── GRANT / REVOKE ────────────────────────────────────────────
+
+    fn parseGrant(self: *Parser) Error!ast.GrantStmt {
+        const a = self.alloc();
+        _ = try self.expect(.kw_grant);
+
+        // Parse privileges
+        var privileges = std.ArrayListUnmanaged(ast.Privilege){};
+        if (self.match(.kw_all)) {
+            // GRANT ALL [PRIVILEGES]
+            _ = self.match(.kw_privileges);
+            privileges.append(a, .all) catch return error.OutOfMemory;
+        } else {
+            // GRANT privilege [, privilege ...]
+            while (true) {
+                const priv: ast.Privilege = if (self.match(.kw_select))
+                    .select
+                else if (self.match(.kw_insert))
+                    .insert
+                else if (self.match(.kw_update))
+                    .update
+                else if (self.match(.kw_delete))
+                    .delete
+                else {
+                    try self.addError(self.peek(), "expected SELECT, INSERT, UPDATE, DELETE, or ALL");
+                    return error.ParseFailed;
+                };
+                privileges.append(a, priv) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // ON object_type object_name
+        _ = try self.expect(.kw_on);
+
+        const object_type: ast.ObjectType = if (self.match(.kw_table))
+            .table
+        else if (self.check(.identifier)) // Default to table if just name
+            .table
+        else {
+            try self.addError(self.peek(), "expected TABLE or object name");
+            return error.ParseFailed;
+        };
+
+        const object_name = try self.expectIdentifier();
+
+        // TO role_name
+        _ = try self.expect(.kw_to);
+        const grantee = try self.expectIdentifier();
+
+        // Optional WITH GRANT OPTION
+        var with_grant_option = false;
+        if (self.match(.kw_with)) {
+            _ = try self.expect(.kw_grant);
+            _ = try self.expect(.kw_option);
+            with_grant_option = true;
+        }
+
+        return .{
+            .privileges = privileges.toOwnedSlice(a) catch return error.OutOfMemory,
+            .object_type = object_type,
+            .object_name = object_name,
+            .grantee = grantee,
+            .with_grant_option = with_grant_option,
+        };
+    }
+
+    fn parseRevoke(self: *Parser) Error!ast.RevokeStmt {
+        const a = self.alloc();
+        _ = try self.expect(.kw_revoke);
+
+        // Parse privileges (same as GRANT)
+        var privileges = std.ArrayListUnmanaged(ast.Privilege){};
+        if (self.match(.kw_all)) {
+            _ = self.match(.kw_privileges);
+            privileges.append(a, .all) catch return error.OutOfMemory;
+        } else {
+            while (true) {
+                const priv: ast.Privilege = if (self.match(.kw_select))
+                    .select
+                else if (self.match(.kw_insert))
+                    .insert
+                else if (self.match(.kw_update))
+                    .update
+                else if (self.match(.kw_delete))
+                    .delete
+                else {
+                    try self.addError(self.peek(), "expected SELECT, INSERT, UPDATE, DELETE, or ALL");
+                    return error.ParseFailed;
+                };
+                privileges.append(a, priv) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // ON object_type object_name
+        _ = try self.expect(.kw_on);
+
+        const object_type: ast.ObjectType = if (self.match(.kw_table))
+            .table
+        else if (self.check(.identifier))
+            .table
+        else {
+            try self.addError(self.peek(), "expected TABLE or object name");
+            return error.ParseFailed;
+        };
+
+        const object_name = try self.expectIdentifier();
+
+        // FROM role_name (not TO!)
+        if (self.match(.kw_to)) {
+            try self.addError(self.peek(), "expected FROM (not TO) in REVOKE statement");
+            return error.ParseFailed;
+        }
+        _ = try self.expect(.kw_from);
+        const grantee = try self.expectIdentifier();
+
+        return .{
+            .privileges = privileges.toOwnedSlice(a) catch return error.OutOfMemory,
+            .object_type = object_type,
+            .object_name = object_name,
+            .grantee = grantee,
         };
     }
 
@@ -4188,4 +4315,85 @@ test "parse ALTER ROLE multiple options" {
     try std.testing.expectEqualStrings("user2", role.name);
     try std.testing.expectEqual(false, role.options.login.?);
     try std.testing.expectEqual(false, role.options.superuser.?);
+}
+
+test "parse GRANT SELECT on table" {
+    var r = try testParseWithArena("GRANT SELECT ON users TO alice");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant);
+    const grant = r.stmt.grant;
+    try std.testing.expectEqual(@as(usize, 1), grant.privileges.len);
+    try std.testing.expectEqual(ast.Privilege.select, grant.privileges[0]);
+    try std.testing.expectEqual(ast.ObjectType.table, grant.object_type);
+    try std.testing.expectEqualStrings("users", grant.object_name);
+    try std.testing.expectEqualStrings("alice", grant.grantee);
+    try std.testing.expectEqual(false, grant.with_grant_option);
+}
+
+test "parse GRANT ALL PRIVILEGES" {
+    var r = try testParseWithArena("GRANT ALL PRIVILEGES ON TABLE employees TO bob");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant);
+    const grant = r.stmt.grant;
+    try std.testing.expectEqual(@as(usize, 1), grant.privileges.len);
+    try std.testing.expectEqual(ast.Privilege.all, grant.privileges[0]);
+    try std.testing.expectEqual(ast.ObjectType.table, grant.object_type);
+    try std.testing.expectEqualStrings("employees", grant.object_name);
+    try std.testing.expectEqualStrings("bob", grant.grantee);
+}
+
+test "parse GRANT multiple privileges" {
+    var r = try testParseWithArena("GRANT SELECT, INSERT, UPDATE ON orders TO clerk");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant);
+    const grant = r.stmt.grant;
+    try std.testing.expectEqual(@as(usize, 3), grant.privileges.len);
+    try std.testing.expectEqual(ast.Privilege.select, grant.privileges[0]);
+    try std.testing.expectEqual(ast.Privilege.insert, grant.privileges[1]);
+    try std.testing.expectEqual(ast.Privilege.update, grant.privileges[2]);
+}
+
+test "parse GRANT with grant option" {
+    var r = try testParseWithArena("GRANT ALL ON mydb TO admin WITH GRANT OPTION");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant);
+    const grant = r.stmt.grant;
+    try std.testing.expectEqual(ast.Privilege.all, grant.privileges[0]);
+    try std.testing.expectEqualStrings("mydb", grant.object_name);
+    try std.testing.expectEqualStrings("admin", grant.grantee);
+    try std.testing.expectEqual(true, grant.with_grant_option);
+}
+
+test "parse REVOKE SELECT" {
+    var r = try testParseWithArena("REVOKE SELECT ON products FROM charlie");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .revoke);
+    const revoke = r.stmt.revoke;
+    try std.testing.expectEqual(@as(usize, 1), revoke.privileges.len);
+    try std.testing.expectEqual(ast.Privilege.select, revoke.privileges[0]);
+    try std.testing.expectEqual(ast.ObjectType.table, revoke.object_type);
+    try std.testing.expectEqualStrings("products", revoke.object_name);
+    try std.testing.expectEqualStrings("charlie", revoke.grantee);
+}
+
+test "parse REVOKE ALL PRIVILEGES" {
+    var r = try testParseWithArena("REVOKE ALL PRIVILEGES ON TABLE inventory FROM guest");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .revoke);
+    const revoke = r.stmt.revoke;
+    try std.testing.expectEqual(@as(usize, 1), revoke.privileges.len);
+    try std.testing.expectEqual(ast.Privilege.all, revoke.privileges[0]);
+    try std.testing.expectEqualStrings("inventory", revoke.object_name);
+    try std.testing.expectEqualStrings("guest", revoke.grantee);
+}
+
+test "parse REVOKE multiple privileges" {
+    var r = try testParseWithArena("REVOKE INSERT, UPDATE, DELETE ON logs FROM intern");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .revoke);
+    const revoke = r.stmt.revoke;
+    try std.testing.expectEqual(@as(usize, 3), revoke.privileges.len);
+    try std.testing.expectEqual(ast.Privilege.insert, revoke.privileges[0]);
+    try std.testing.expectEqual(ast.Privilege.update, revoke.privileges[1]);
+    try std.testing.expectEqual(ast.Privilege.delete, revoke.privileges[2]);
 }
