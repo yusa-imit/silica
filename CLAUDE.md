@@ -959,16 +959,20 @@ gh issue create --repo yusa-imit/zuda \
 ---
 
 
-### v1.11.0 — Terminal Graphics & Effects
-- **status**: READY
-- **features**:
+### v1.11.0 — Terminal Graphics & Effects (status: DONE)
+
+**sailor v1.11.0 released** (2026-03-12) — Terminal graphics and visual effects
+
+- **New features**:
   - Particle effects system (confetti, sparkles)
   - Blur/transparency effects
   - Sixel/Kitty graphics support
   - Animated transitions
-- **integration**:
-  - Particle effects for query success notifications
-  - Blur for background panels
-  - Graphics for inline data visualization
-- **tests**: Verify rendering
-- **breaking**: None
+- **Impact on silica**: Optional — enhances visual experience
+  - Particle effects for query success notifications (future feature)
+  - Blur for background panels (future feature)
+  - Graphics for inline data visualization (future feature)
+- [x] `build.zig.zon`에 sailor v1.11.0 의존성 업데이트
+- [x] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Graphics features are opt-in and available for future TUI enhancements.
