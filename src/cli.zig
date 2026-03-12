@@ -697,6 +697,12 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .revoke => |r| {
             writer.print("Parsed: REVOKE {d} privilege(s) ON {s} FROM {s}\n", .{ r.privileges.len, r.object_name, r.grantee }) catch {};
         },
+        .grant_role => |g| {
+            writer.print("Parsed: GRANT {s} TO {d} member(s)\n", .{ g.role, g.members.len }) catch {};
+        },
+        .revoke_role => |r| {
+            writer.print("Parsed: REVOKE {s} FROM {d} member(s)\n", .{ r.role, r.members.len }) catch {};
+        },
     }
 }
 

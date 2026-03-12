@@ -701,6 +701,19 @@ pub const RevokeStmt = struct {
     grantee: []const u8, // role name
 };
 
+/// GRANT role membership statement: GRANT role TO member
+pub const GrantRoleStmt = struct {
+    role: []const u8, // role being granted
+    members: []const []const u8, // users/roles receiving the role
+    with_admin_option: bool = false,
+};
+
+/// REVOKE role membership statement: REVOKE role FROM member
+pub const RevokeRoleStmt = struct {
+    role: []const u8, // role being revoked
+    members: []const []const u8, // users/roles losing the role
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -730,6 +743,8 @@ pub const Stmt = union(enum) {
     alter_role: AlterRoleStmt,
     grant: GrantStmt,
     revoke: RevokeStmt,
+    grant_role: GrantRoleStmt,
+    revoke_role: RevokeRoleStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -1308,4 +1323,59 @@ test "RevokeStmt multiple privileges" {
     try std.testing.expectEqual(ObjectType.table, stmt.object_type);
     try std.testing.expectEqualStrings("orders", stmt.object_name);
     try std.testing.expectEqualStrings("bob", stmt.grantee);
+}
+
+test "GrantRoleStmt single member" {
+    const members = [_][]const u8{"user1"};
+    const stmt = GrantRoleStmt{
+        .role = "admin",
+        .members = &members,
+        .with_admin_option = false,
+    };
+
+    try std.testing.expectEqualStrings("admin", stmt.role);
+    try std.testing.expectEqual(@as(usize, 1), stmt.members.len);
+    try std.testing.expectEqualStrings("user1", stmt.members[0]);
+    try std.testing.expect(!stmt.with_admin_option);
+}
+
+test "GrantRoleStmt multiple members with admin option" {
+    const members = [_][]const u8{ "user1", "user2", "user3" };
+    const stmt = GrantRoleStmt{
+        .role = "editor",
+        .members = &members,
+        .with_admin_option = true,
+    };
+
+    try std.testing.expectEqualStrings("editor", stmt.role);
+    try std.testing.expectEqual(@as(usize, 3), stmt.members.len);
+    try std.testing.expectEqualStrings("user1", stmt.members[0]);
+    try std.testing.expectEqualStrings("user2", stmt.members[1]);
+    try std.testing.expectEqualStrings("user3", stmt.members[2]);
+    try std.testing.expect(stmt.with_admin_option);
+}
+
+test "RevokeRoleStmt single member" {
+    const members = [_][]const u8{"user1"};
+    const stmt = RevokeRoleStmt{
+        .role = "admin",
+        .members = &members,
+    };
+
+    try std.testing.expectEqualStrings("admin", stmt.role);
+    try std.testing.expectEqual(@as(usize, 1), stmt.members.len);
+    try std.testing.expectEqualStrings("user1", stmt.members[0]);
+}
+
+test "RevokeRoleStmt multiple members" {
+    const members = [_][]const u8{ "alice", "bob" };
+    const stmt = RevokeRoleStmt{
+        .role = "viewer",
+        .members = &members,
+    };
+
+    try std.testing.expectEqualStrings("viewer", stmt.role);
+    try std.testing.expectEqual(@as(usize, 2), stmt.members.len);
+    try std.testing.expectEqualStrings("alice", stmt.members[0]);
+    try std.testing.expectEqualStrings("bob", stmt.members[1]);
 }

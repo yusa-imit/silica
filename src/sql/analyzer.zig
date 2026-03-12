@@ -290,6 +290,8 @@ pub const Analyzer = struct {
             .alter_role => |s| self.analyzeAlterRole(&s),
             .grant => |s| self.analyzeGrant(&s),
             .revoke => |s| self.analyzeRevoke(&s),
+            .grant_role => |s| self.analyzeGrantRole(&s),
+            .revoke_role => |s| self.analyzeRevokeRole(&s),
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
@@ -815,6 +817,40 @@ pub const Analyzer = struct {
         }
         if (stmt.privileges.len == 0) {
             self.addError(.invalid_expression, "at least one privilege must be specified", .{});
+        }
+    }
+
+    fn analyzeGrantRole(self: *Analyzer, stmt: *const ast.GrantRoleStmt) void {
+        // Validate role name is not empty
+        if (stmt.role.len == 0) {
+            self.addError(.invalid_expression, "role name cannot be empty", .{});
+        }
+        // Validate at least one member
+        if (stmt.members.len == 0) {
+            self.addError(.invalid_expression, "at least one member must be specified", .{});
+        }
+        // Validate each member name is not empty
+        for (stmt.members) |member| {
+            if (member.len == 0) {
+                self.addError(.invalid_expression, "member name cannot be empty", .{});
+            }
+        }
+    }
+
+    fn analyzeRevokeRole(self: *Analyzer, stmt: *const ast.RevokeRoleStmt) void {
+        // Validate role name is not empty
+        if (stmt.role.len == 0) {
+            self.addError(.invalid_expression, "role name cannot be empty", .{});
+        }
+        // Validate at least one member
+        if (stmt.members.len == 0) {
+            self.addError(.invalid_expression, "at least one member must be specified", .{});
+        }
+        // Validate each member name is not empty
+        for (stmt.members) |member| {
+            if (member.len == 0) {
+                self.addError(.invalid_expression, "member name cannot be empty", .{});
+            }
         }
     }
 

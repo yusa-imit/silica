@@ -314,6 +314,8 @@ pub const Planner = struct {
             .alter_role => self.planTransaction(),     // TODO: Milestone 17A
             .grant => self.planTransaction(),          // TODO: Milestone 17B
             .revoke => self.planTransaction(),         // TODO: Milestone 17B
+            .grant_role => self.planTransaction(),     // TODO: Milestone 17C
+            .revoke_role => self.planTransaction(),    // TODO: Milestone 17C
             .explain => |s| self.planExplain(s),
         };
     }
