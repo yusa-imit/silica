@@ -4871,3 +4871,102 @@ test "parse ALTER TABLE NO FORCE ROW LEVEL SECURITY" {
     try std.testing.expect(!alter.enable);
     try std.testing.expect(!alter.force);
 }
+
+// ── RLS Parser Edge Cases ───────────────────────────────────────────────
+
+test "parse CREATE POLICY with complex USING expression" {
+    var r = try testParseWithArena("CREATE POLICY complex ON t USING (a > 10 AND b < 20 OR c = 'value')");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqualStrings("complex", policy.policy_name);
+    try std.testing.expectEqualStrings("t", policy.table_name);
+    try std.testing.expect(policy.using_expr != null);
+}
+
+test "parse CREATE POLICY with nested function calls in WITH CHECK" {
+    var r = try testParseWithArena("CREATE POLICY func_check ON t WITH CHECK (validate(user_id, get_role()))");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expect(policy.with_check_expr != null);
+}
+
+test "parse CREATE POLICY with all clauses combined" {
+    var r = try testParseWithArena("CREATE POLICY full ON t AS PERMISSIVE FOR UPDATE USING (owner = me()) WITH CHECK (status IN ('active', 'pending'))");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqualStrings("full", policy.policy_name);
+    try std.testing.expectEqual(ast.PolicyType.permissive, policy.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.update, policy.command);
+    try std.testing.expect(policy.using_expr != null);
+    try std.testing.expect(policy.with_check_expr != null);
+}
+
+test "parse CREATE POLICY minimal (only name and table)" {
+    var r = try testParseWithArena("CREATE POLICY minimal ON users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqualStrings("minimal", policy.policy_name);
+    try std.testing.expectEqualStrings("users", policy.table_name);
+    try std.testing.expectEqual(ast.PolicyType.permissive, policy.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.all, policy.command);
+    try std.testing.expect(policy.using_expr == null);
+    try std.testing.expect(policy.with_check_expr == null);
+}
+
+test "parse CREATE POLICY with quoted identifiers" {
+    var r = try testParseWithArena("CREATE POLICY \"my-policy\" ON \"user-table\"");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqualStrings("my-policy", policy.policy_name);
+    try std.testing.expectEqualStrings("user-table", policy.table_name);
+}
+
+test "parse DROP POLICY with quoted identifiers" {
+    var r = try testParseWithArena("DROP POLICY \"old-policy\" ON \"legacy-table\"");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_policy);
+    const drop = r.stmt.drop_policy;
+    try std.testing.expectEqualStrings("old-policy", drop.policy_name);
+    try std.testing.expectEqualStrings("legacy-table", drop.table_name);
+}
+
+test "parse ALTER TABLE with quoted table name" {
+    var r = try testParseWithArena("ALTER TABLE \"my-table\" ENABLE ROW LEVEL SECURITY");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_table_rls);
+    const alter = r.stmt.alter_table_rls;
+    try std.testing.expectEqualStrings("my-table", alter.table_name);
+    try std.testing.expect(alter.enable);
+}
+
+test "parse CREATE POLICY FOR INSERT with WITH CHECK (no USING)" {
+    // INSERT policies typically only have WITH CHECK, not USING
+    var r = try testParseWithArena("CREATE POLICY ins ON t FOR INSERT WITH CHECK (dept = 'sales')");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyCommand.insert, policy.command);
+    try std.testing.expect(policy.using_expr == null);
+    try std.testing.expect(policy.with_check_expr != null);
+}
+
+test "parse CREATE POLICY with subquery in USING" {
+    var r = try testParseWithArena("CREATE POLICY sub ON t USING (user_id IN (SELECT id FROM allowed))");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expect(policy.using_expr != null);
+}
+
+test "parse CREATE POLICY with boolean literal in WITH CHECK" {
+    var r = try testParseWithArena("CREATE POLICY always ON t WITH CHECK (true)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expect(policy.with_check_expr != null);
+}
