@@ -2285,3 +2285,17 @@ test "ALTER ROLE: empty role name fails" {
     try std.testing.expect(found_invalid);
 }
 
+test "ALTER ROLE: multiple password specifications" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "ALTER ROLE user1 WITH PASSWORD 'secret1' PASSWORD 'secret2';",
+        schema.provider());
+    defer analyzer.deinit();
+
+    // Multiple passwords should be accepted (last one wins) - parser level validation
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
