@@ -292,6 +292,9 @@ pub const Analyzer = struct {
             .revoke => |s| self.analyzeRevoke(&s),
             .grant_role => |s| self.analyzeGrantRole(&s),
             .revoke_role => |s| self.analyzeRevokeRole(&s),
+            .create_policy => {},
+            .drop_policy => {},
+            .alter_table_rls => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

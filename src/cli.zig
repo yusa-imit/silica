@@ -703,6 +703,15 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .revoke_role => |r| {
             writer.print("Parsed: REVOKE {s} FROM {d} member(s)\n", .{ r.role, r.members.len }) catch {};
         },
+        .create_policy => |p| {
+            writer.print("Parsed: CREATE POLICY {s} ON {s}\n", .{ p.policy_name, p.table_name }) catch {};
+        },
+        .drop_policy => |p| {
+            writer.print("Parsed: DROP POLICY {s} ON {s}\n", .{ p.policy_name, p.table_name }) catch {};
+        },
+        .alter_table_rls => |a| {
+            writer.print("Parsed: ALTER TABLE {s} (RLS)\n", .{a.table_name}) catch {};
+        },
     }
 }
 
