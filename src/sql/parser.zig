@@ -738,8 +738,11 @@ pub const Parser = struct {
         if (self.check(.kw_role)) {
             return .{ .create_role = try self.parseCreateRole(false) };
         }
+        if (self.check(.kw_policy)) {
+            return .{ .create_policy = try self.parseCreatePolicy() };
+        }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, or ROLE after CREATE");
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY after CREATE");
         return error.ParseFailed;
     }
 
@@ -1120,7 +1123,8 @@ pub const Parser = struct {
         if (self.check(.kw_function)) return .{ .drop_function = try self.parseDropFunction() };
         if (self.check(.kw_trigger)) return .{ .drop_trigger = try self.parseDropTrigger() };
         if (self.check(.kw_role)) return .{ .drop_role = try self.parseDropRole() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, or ROLE after DROP");
+        if (self.check(.kw_policy)) return .{ .drop_policy = try self.parseDropPolicy() };
+        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY after DROP");
         return error.ParseFailed;
     }
 
@@ -1150,7 +1154,8 @@ pub const Parser = struct {
         _ = try self.expect(.kw_alter);
         if (self.check(.kw_trigger)) return .{ .alter_trigger = try self.parseAlterTrigger() };
         if (self.check(.kw_role)) return .{ .alter_role = try self.parseAlterRole() };
-        try self.addError(self.peek(), "expected TRIGGER or ROLE after ALTER");
+        if (self.check(.kw_table)) return try self.parseAlterTable();
+        try self.addError(self.peek(), "expected TRIGGER, ROLE, or TABLE after ALTER");
         return error.ParseFailed;
     }
 
@@ -1504,6 +1509,151 @@ pub const Parser = struct {
             .role = role,
             .members = members.toOwnedSlice(a) catch return error.OutOfMemory,
         };
+    }
+
+    // ── CREATE POLICY / DROP POLICY / ALTER TABLE RLS ───────────
+
+    fn parseCreatePolicy(self: *Parser) Error!ast.CreatePolicyStmt {
+        _ = try self.expect(.kw_policy);
+
+        const policy_name = try self.expectIdentifier();
+
+        _ = try self.expect(.kw_on);
+        const table_name = try self.expectIdentifier();
+
+        // Optional AS {PERMISSIVE | RESTRICTIVE}
+        var policy_type: ast.PolicyType = .permissive;
+        if (self.match(.kw_as)) {
+            if (self.match(.kw_permissive)) {
+                policy_type = .permissive;
+            } else if (self.match(.kw_restrictive)) {
+                policy_type = .restrictive;
+            } else {
+                try self.addError(self.peek(), "expected PERMISSIVE or RESTRICTIVE after AS");
+                return error.ParseFailed;
+            }
+        }
+
+        // Optional FOR {ALL | SELECT | INSERT | UPDATE | DELETE}
+        var command: ast.PolicyCommand = .all;
+        if (self.match(.kw_for)) {
+            if (self.match(.kw_all)) {
+                command = .all;
+            } else if (self.match(.kw_select)) {
+                command = .select;
+            } else if (self.match(.kw_insert)) {
+                command = .insert;
+            } else if (self.match(.kw_update)) {
+                command = .update;
+            } else if (self.match(.kw_delete)) {
+                command = .delete;
+            } else {
+                try self.addError(self.peek(), "expected ALL, SELECT, INSERT, UPDATE, or DELETE after FOR");
+                return error.ParseFailed;
+            }
+        }
+
+        // Optional USING (qual)
+        var using_expr: ?ast.Expr = null;
+        if (self.match(.kw_using)) {
+            _ = try self.expect(.left_paren);
+            const expr = try self.parseExpr(0);
+            using_expr = expr.*;
+            _ = try self.expect(.right_paren);
+        }
+
+        // Optional WITH CHECK (with_check)
+        var with_check_expr: ?ast.Expr = null;
+        if (self.match(.kw_with)) {
+            _ = try self.expect(.kw_check);
+            _ = try self.expect(.left_paren);
+            const expr = try self.parseExpr(0);
+            with_check_expr = expr.*;
+            _ = try self.expect(.right_paren);
+        }
+
+        return .{
+            .policy_name = policy_name,
+            .table_name = table_name,
+            .policy_type = policy_type,
+            .command = command,
+            .using_expr = using_expr,
+            .with_check_expr = with_check_expr,
+        };
+    }
+
+    fn parseDropPolicy(self: *Parser) Error!ast.DropPolicyStmt {
+        _ = try self.expect(.kw_policy);
+
+        var if_exists = false;
+        if (self.match(.kw_if)) {
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
+
+        const policy_name = try self.expectIdentifier();
+
+        _ = try self.expect(.kw_on);
+        const table_name = try self.expectIdentifier();
+
+        return .{
+            .policy_name = policy_name,
+            .table_name = table_name,
+            .if_exists = if_exists,
+        };
+    }
+
+    fn parseAlterTable(self: *Parser) Error!ast.Stmt {
+        _ = try self.expect(.kw_table);
+        const table_name = try self.expectIdentifier();
+
+        // Check for ROW LEVEL SECURITY keywords
+        if (self.match(.kw_enable)) {
+            return try self.parseAlterTableRLS(table_name, true);
+        } else if (self.match(.kw_disable)) {
+            return try self.parseAlterTableRLS(table_name, false);
+        } else if (self.match(.kw_force)) {
+            _ = try self.expect(.kw_row);
+            _ = try self.expect(.kw_level);
+            _ = try self.expect(.kw_security);
+            return .{ .alter_table_rls = .{
+                .table_name = table_name,
+                .enable = true,
+                .force = true,
+            } };
+        } else if (self.match(.kw_no)) {
+            _ = try self.expect(.kw_force);
+            _ = try self.expect(.kw_row);
+            _ = try self.expect(.kw_level);
+            _ = try self.expect(.kw_security);
+            return .{ .alter_table_rls = .{
+                .table_name = table_name,
+                .enable = false,
+                .force = false,
+            } };
+        }
+
+        try self.addError(self.peek(), "expected ENABLE, DISABLE, FORCE, or NO after ALTER TABLE");
+        return error.ParseFailed;
+    }
+
+    fn parseAlterTableRLS(self: *Parser, table_name: []const u8, enable: bool) Error!ast.Stmt {
+        // Already consumed ENABLE or DISABLE
+
+        var force = false;
+        if (self.match(.kw_force)) {
+            force = true;
+        }
+
+        _ = try self.expect(.kw_row);
+        _ = try self.expect(.kw_level);
+        _ = try self.expect(.kw_security);
+
+        return .{ .alter_table_rls = .{
+            .table_name = table_name,
+            .enable = enable,
+            .force = force,
+        } };
     }
 
     // ── CREATE VIEW / DROP VIEW ──────────────────────────────────
@@ -4548,4 +4698,176 @@ test "parse REVOKE role from multiple members" {
     try std.testing.expectEqualStrings("alice", revoke.members[0]);
     try std.testing.expectEqualStrings("bob", revoke.members[1]);
     try std.testing.expectEqualStrings("charlie", revoke.members[2]);
+}
+
+// ── Row-Level Security Tests ──────────────────────────────────
+
+test "parse CREATE POLICY simple" {
+    var r = try testParseWithArena("CREATE POLICY policy1 ON users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqualStrings("policy1", policy.policy_name);
+    try std.testing.expectEqualStrings("users", policy.table_name);
+    try std.testing.expectEqual(ast.PolicyType.permissive, policy.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.all, policy.command);
+    try std.testing.expect(policy.using_expr == null);
+    try std.testing.expect(policy.with_check_expr == null);
+}
+
+test "parse CREATE POLICY with AS PERMISSIVE" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 AS PERMISSIVE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyType.permissive, policy.policy_type);
+}
+
+test "parse CREATE POLICY with AS RESTRICTIVE" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 AS RESTRICTIVE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyType.restrictive, policy.policy_type);
+}
+
+test "parse CREATE POLICY FOR SELECT" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 FOR SELECT");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyCommand.select, policy.command);
+}
+
+test "parse CREATE POLICY FOR INSERT" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 FOR INSERT");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyCommand.insert, policy.command);
+}
+
+test "parse CREATE POLICY FOR UPDATE" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 FOR UPDATE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyCommand.update, policy.command);
+}
+
+test "parse CREATE POLICY FOR DELETE" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 FOR DELETE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqual(ast.PolicyCommand.delete, policy.command);
+}
+
+test "parse CREATE POLICY with USING" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 USING (user_id = 123)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expect(policy.using_expr != null);
+    try std.testing.expect(policy.with_check_expr == null);
+}
+
+test "parse CREATE POLICY with WITH CHECK" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 WITH CHECK (status = 'active')");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expect(policy.using_expr == null);
+    try std.testing.expect(policy.with_check_expr != null);
+}
+
+test "parse CREATE POLICY with USING and WITH CHECK" {
+    var r = try testParseWithArena("CREATE POLICY p1 ON t1 USING (user_id = 1) WITH CHECK (role = 'admin')");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expect(policy.using_expr != null);
+    try std.testing.expect(policy.with_check_expr != null);
+}
+
+test "parse CREATE POLICY full syntax" {
+    var r = try testParseWithArena("CREATE POLICY admin_policy ON documents AS RESTRICTIVE FOR SELECT USING (owner_id = current_user_id())");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .create_policy);
+    const policy = r.stmt.create_policy;
+    try std.testing.expectEqualStrings("admin_policy", policy.policy_name);
+    try std.testing.expectEqualStrings("documents", policy.table_name);
+    try std.testing.expectEqual(ast.PolicyType.restrictive, policy.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.select, policy.command);
+    try std.testing.expect(policy.using_expr != null);
+}
+
+test "parse DROP POLICY simple" {
+    var r = try testParseWithArena("DROP POLICY policy1 ON users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_policy);
+    const drop = r.stmt.drop_policy;
+    try std.testing.expectEqualStrings("policy1", drop.policy_name);
+    try std.testing.expectEqualStrings("users", drop.table_name);
+    try std.testing.expect(!drop.if_exists);
+}
+
+test "parse DROP POLICY IF EXISTS" {
+    var r = try testParseWithArena("DROP POLICY IF EXISTS old_policy ON accounts");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .drop_policy);
+    const drop = r.stmt.drop_policy;
+    try std.testing.expectEqualStrings("old_policy", drop.policy_name);
+    try std.testing.expectEqualStrings("accounts", drop.table_name);
+    try std.testing.expect(drop.if_exists);
+}
+
+test "parse ALTER TABLE ENABLE ROW LEVEL SECURITY" {
+    var r = try testParseWithArena("ALTER TABLE users ENABLE ROW LEVEL SECURITY");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_table_rls);
+    const alter = r.stmt.alter_table_rls;
+    try std.testing.expectEqualStrings("users", alter.table_name);
+    try std.testing.expect(alter.enable);
+    try std.testing.expect(!alter.force);
+}
+
+test "parse ALTER TABLE DISABLE ROW LEVEL SECURITY" {
+    var r = try testParseWithArena("ALTER TABLE logs DISABLE ROW LEVEL SECURITY");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_table_rls);
+    const alter = r.stmt.alter_table_rls;
+    try std.testing.expectEqualStrings("logs", alter.table_name);
+    try std.testing.expect(!alter.enable);
+    try std.testing.expect(!alter.force);
+}
+
+test "parse ALTER TABLE ENABLE FORCE ROW LEVEL SECURITY" {
+    var r = try testParseWithArena("ALTER TABLE sensitive ENABLE FORCE ROW LEVEL SECURITY");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_table_rls);
+    const alter = r.stmt.alter_table_rls;
+    try std.testing.expectEqualStrings("sensitive", alter.table_name);
+    try std.testing.expect(alter.enable);
+    try std.testing.expect(alter.force);
+}
+
+test "parse ALTER TABLE FORCE ROW LEVEL SECURITY" {
+    var r = try testParseWithArena("ALTER TABLE audit FORCE ROW LEVEL SECURITY");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_table_rls);
+    const alter = r.stmt.alter_table_rls;
+    try std.testing.expectEqualStrings("audit", alter.table_name);
+    try std.testing.expect(alter.enable);
+    try std.testing.expect(alter.force);
+}
+
+test "parse ALTER TABLE NO FORCE ROW LEVEL SECURITY" {
+    var r = try testParseWithArena("ALTER TABLE public_data NO FORCE ROW LEVEL SECURITY");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .alter_table_rls);
+    const alter = r.stmt.alter_table_rls;
+    try std.testing.expectEqualStrings("public_data", alter.table_name);
+    try std.testing.expect(!alter.enable);
+    try std.testing.expect(!alter.force);
 }
