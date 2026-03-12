@@ -2327,3 +2327,153 @@ test "ALTER ROLE: multiple password specifications" {
     try std.testing.expect(!analyzer.hasErrors());
 }
 
+test "GRANT: valid grant passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "GRANT SELECT ON TABLE users TO alice;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "GRANT: empty object name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    // Construct AST manually with empty object_name
+    const privileges = [_]ast.Privilege{.select};
+    const stmt = ast.GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "", // Empty!
+        .grantee = "alice",
+        .with_grant_option = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeGrant(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "GRANT: empty grantee fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const privileges = [_]ast.Privilege{.insert};
+    const stmt = ast.GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "products",
+        .grantee = "", // Empty!
+        .with_grant_option = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeGrant(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "GRANT: empty privileges fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const privileges: []const ast.Privilege = &.{}; // Empty!
+    const stmt = ast.GrantStmt{
+        .privileges = privileges,
+        .object_type = .table,
+        .object_name = "orders",
+        .grantee = "bob",
+        .with_grant_option = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeGrant(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "REVOKE: valid revoke passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "REVOKE UPDATE ON TABLE inventory FROM charlie;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "REVOKE: empty object name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const privileges = [_]ast.Privilege{.delete};
+    const stmt = ast.RevokeStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "", // Empty!
+        .grantee = "dave",
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeRevoke(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "REVOKE: empty grantee fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const privileges = [_]ast.Privilege{.all};
+    const stmt = ast.RevokeStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "admin_data",
+        .grantee = "", // Empty!
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeRevoke(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "REVOKE: empty privileges fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const privileges: []const ast.Privilege = &.{}; // Empty!
+    const stmt = ast.RevokeStmt{
+        .privileges = privileges,
+        .object_type = .table,
+        .object_name = "logs",
+        .grantee = "eve",
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeRevoke(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
