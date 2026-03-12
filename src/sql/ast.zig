@@ -666,6 +666,41 @@ pub const AlterRoleStmt = struct {
     options: RoleOptions = .{},
 };
 
+/// Privilege type for GRANT/REVOKE.
+pub const Privilege = enum {
+    select,
+    insert,
+    update,
+    delete,
+    all,
+};
+
+/// Object type for GRANT/REVOKE.
+pub const ObjectType = enum {
+    table,
+    schema,
+    function,
+    sequence,
+    database,
+};
+
+/// GRANT statement.
+pub const GrantStmt = struct {
+    privileges: []const Privilege,
+    object_type: ObjectType,
+    object_name: []const u8,
+    grantee: []const u8, // role name
+    with_grant_option: bool = false,
+};
+
+/// REVOKE statement.
+pub const RevokeStmt = struct {
+    privileges: []const Privilege,
+    object_type: ObjectType,
+    object_name: []const u8,
+    grantee: []const u8, // role name
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -693,6 +728,8 @@ pub const Stmt = union(enum) {
     create_role: CreateRoleStmt,
     drop_role: DropRoleStmt,
     alter_role: AlterRoleStmt,
+    grant: GrantStmt,
+    revoke: RevokeStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -1217,4 +1254,58 @@ test "AlterRoleStmt modify options" {
     try std.testing.expectEqualStrings("user1", stmt.name);
     try std.testing.expectEqual(false, stmt.options.login.?);
     try std.testing.expectEqualStrings("new_pass", stmt.options.password.?);
+}
+
+test "GrantStmt SELECT on table" {
+    const privileges = [_]Privilege{.select};
+    const stmt = GrantStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "users",
+        .grantee = "alice",
+        .with_grant_option = false,
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), stmt.privileges.len);
+    try std.testing.expectEqual(Privilege.select, stmt.privileges[0]);
+    try std.testing.expectEqual(ObjectType.table, stmt.object_type);
+    try std.testing.expectEqualStrings("users", stmt.object_name);
+    try std.testing.expectEqualStrings("alice", stmt.grantee);
+    try std.testing.expectEqual(false, stmt.with_grant_option);
+}
+
+test "GrantStmt ALL PRIVILEGES with grant option" {
+    const privileges = [_]Privilege{.all};
+    const stmt = GrantStmt{
+        .privileges = &privileges,
+        .object_type = .database,
+        .object_name = "mydb",
+        .grantee = "admin",
+        .with_grant_option = true,
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), stmt.privileges.len);
+    try std.testing.expectEqual(Privilege.all, stmt.privileges[0]);
+    try std.testing.expectEqual(ObjectType.database, stmt.object_type);
+    try std.testing.expectEqualStrings("mydb", stmt.object_name);
+    try std.testing.expectEqualStrings("admin", stmt.grantee);
+    try std.testing.expectEqual(true, stmt.with_grant_option);
+}
+
+test "RevokeStmt multiple privileges" {
+    const privileges = [_]Privilege{ .select, .insert, .update };
+    const stmt = RevokeStmt{
+        .privileges = &privileges,
+        .object_type = .table,
+        .object_name = "orders",
+        .grantee = "bob",
+    };
+
+    try std.testing.expectEqual(@as(usize, 3), stmt.privileges.len);
+    try std.testing.expectEqual(Privilege.select, stmt.privileges[0]);
+    try std.testing.expectEqual(Privilege.insert, stmt.privileges[1]);
+    try std.testing.expectEqual(Privilege.update, stmt.privileges[2]);
+    try std.testing.expectEqual(ObjectType.table, stmt.object_type);
+    try std.testing.expectEqualStrings("orders", stmt.object_name);
+    try std.testing.expectEqualStrings("bob", stmt.grantee);
 }
