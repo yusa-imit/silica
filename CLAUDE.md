@@ -958,3 +958,17 @@ gh issue create --repo yusa-imit/zuda \
 
 ---
 
+
+### v1.11.0 — Terminal Graphics & Effects
+- **status**: READY
+- **features**:
+  - Particle effects system (confetti, sparkles)
+  - Blur/transparency effects
+  - Sixel/Kitty graphics support
+  - Animated transitions
+- **integration**:
+  - Particle effects for query success notifications
+  - Blur for background panels
+  - Graphics for inline data visualization
+- **tests**: Verify rendering
+- **breaking**: None
