@@ -398,3 +398,18 @@ test "SCRAM-SHA-256 - different iterations" {
     const verified = try verifyPasswordScram(stored, "secret");
     try std.testing.expect(verified);
 }
+
+test "SCRAM-SHA-256 - empty password" {
+    const allocator = std.testing.allocator;
+
+    const stored = try storePasswordScram(allocator, "", .{});
+    defer allocator.free(stored);
+
+    // Empty password should work (though not recommended)
+    const verified = try verifyPasswordScram(stored, "");
+    try std.testing.expect(verified);
+
+    // Wrong password (non-empty) should fail
+    const wrong = try verifyPasswordScram(stored, "password");
+    try std.testing.expect(!wrong);
+}
