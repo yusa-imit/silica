@@ -1308,3 +1308,14 @@ test "SessionState - set unknown parameter (ignored)" {
     // Should not error, just ignore
     try session.setParameter("unknown_param", "value");
 }
+
+test "SessionState - invalid statement_timeout value" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    // Invalid timeout should return error
+    const result = session.setParameter("statement_timeout", "not_a_number");
+    try std.testing.expectError(error.InvalidCharacter, result);
+}
