@@ -91,6 +91,7 @@ pub const TokenType = enum {
     kw_replace,
     kw_with,
     kw_option,
+    kw_admin,
     kw_recursive,
     kw_materialized,
     kw_local,
@@ -761,6 +762,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "replace", .kw_replace },
         .{ "with", .kw_with },
         .{ "option", .kw_option },
+        .{ "admin", .kw_admin },
         .{ "recursive", .kw_recursive },
         .{ "materialized", .kw_materialized },
         .{ "local", .kw_local },
@@ -1675,11 +1677,11 @@ test "ROLE keyword" {
 }
 
 test "CREATE ROLE keywords" {
-    const sql = "CREATE ROLE admin LOGIN PASSWORD";
+    const sql = "CREATE ROLE manager LOGIN PASSWORD";
     try expectTokens(sql, &.{
         .kw_create,
         .kw_role,
-        .identifier, // admin
+        .identifier, // manager
         .kw_login,
         .kw_password,
     });
@@ -1756,13 +1758,13 @@ test "VALID UNTIL keywords" {
 }
 
 test "DROP ROLE keywords" {
-    const sql = "DROP ROLE IF EXISTS admin";
+    const sql = "DROP ROLE IF EXISTS my_role";
     try expectTokens(sql, &.{
         .kw_drop,
         .kw_role,
         .kw_if,
         .kw_exists,
-        .identifier, // admin
+        .identifier, // my_role
     });
 }
 
@@ -1775,4 +1777,8 @@ test "ALTER ROLE keywords" {
         .kw_with,
         .kw_login,
     });
+}
+
+test "ADMIN keyword" {
+    try expectSingleToken("admin", .kw_admin, "admin");
 }

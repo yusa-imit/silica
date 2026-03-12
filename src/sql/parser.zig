@@ -196,8 +196,8 @@ pub const Parser = struct {
             .kw_release => .{ .transaction = try self.parseRelease() },
             .kw_explain => .{ .explain = try self.parseExplain() },
             .kw_vacuum => .{ .vacuum = self.parseVacuum() },
-            .kw_grant => .{ .grant = try self.parseGrant() },
-            .kw_revoke => .{ .revoke = try self.parseRevoke() },
+            .kw_grant => try self.parseGrant(),
+            .kw_revoke => try self.parseRevoke(),
             else => {
                 try self.addError(t, "expected statement");
                 return error.ParseFailed;
@@ -1302,9 +1302,24 @@ pub const Parser = struct {
 
     // ── GRANT / REVOKE ────────────────────────────────────────────
 
-    fn parseGrant(self: *Parser) Error!ast.GrantStmt {
+    fn parseGrant(self: *Parser) Error!ast.Stmt {
         const a = self.alloc();
         _ = try self.expect(.kw_grant);
+
+        // Distinguish between role membership and object privileges:
+        // GRANT role TO user1, user2 (no keywords after GRANT)
+        // vs
+        // GRANT SELECT, INSERT ON table TO user (keywords after GRANT)
+
+        const is_role_grant = !self.check(.kw_all) and
+            !self.check(.kw_select) and
+            !self.check(.kw_insert) and
+            !self.check(.kw_update) and
+            !self.check(.kw_delete);
+
+        if (is_role_grant) {
+            return .{ .grant_role = try self.parseGrantRole() };
+        }
 
         // Parse privileges
         var privileges = std.ArrayListUnmanaged(ast.Privilege){};
@@ -1358,18 +1373,61 @@ pub const Parser = struct {
             with_grant_option = true;
         }
 
-        return .{
+        return .{ .grant = .{
             .privileges = privileges.toOwnedSlice(a) catch return error.OutOfMemory,
             .object_type = object_type,
             .object_name = object_name,
             .grantee = grantee,
             .with_grant_option = with_grant_option,
+        } };
+    }
+
+    fn parseGrantRole(self: *Parser) Error!ast.GrantRoleStmt {
+        const a = self.alloc();
+        // Already consumed GRANT keyword
+
+        // Parse role name
+        const role = try self.expectIdentifier();
+
+        // TO member [, member ...]
+        _ = try self.expect(.kw_to);
+
+        var members = std.ArrayListUnmanaged([]const u8){};
+        while (true) {
+            const member = try self.expectIdentifier();
+            members.append(a, member) catch return error.OutOfMemory;
+            if (!self.match(.comma)) break;
+        }
+
+        // Optional WITH ADMIN OPTION
+        var with_admin_option = false;
+        if (self.match(.kw_with)) {
+            _ = try self.expect(.kw_admin);
+            _ = try self.expect(.kw_option);
+            with_admin_option = true;
+        }
+
+        return .{
+            .role = role,
+            .members = members.toOwnedSlice(a) catch return error.OutOfMemory,
+            .with_admin_option = with_admin_option,
         };
     }
 
-    fn parseRevoke(self: *Parser) Error!ast.RevokeStmt {
+    fn parseRevoke(self: *Parser) Error!ast.Stmt {
         const a = self.alloc();
         _ = try self.expect(.kw_revoke);
+
+        // Distinguish between role membership and object privileges (same as GRANT)
+        const is_role_revoke = !self.check(.kw_all) and
+            !self.check(.kw_select) and
+            !self.check(.kw_insert) and
+            !self.check(.kw_update) and
+            !self.check(.kw_delete);
+
+        if (is_role_revoke) {
+            return .{ .revoke_role = try self.parseRevokeRole() };
+        }
 
         // Parse privileges (same as GRANT)
         var privileges = std.ArrayListUnmanaged(ast.Privilege){};
@@ -1417,11 +1475,34 @@ pub const Parser = struct {
         _ = try self.expect(.kw_from);
         const grantee = try self.expectIdentifier();
 
-        return .{
+        return .{ .revoke = .{
             .privileges = privileges.toOwnedSlice(a) catch return error.OutOfMemory,
             .object_type = object_type,
             .object_name = object_name,
             .grantee = grantee,
+        } };
+    }
+
+    fn parseRevokeRole(self: *Parser) Error!ast.RevokeRoleStmt {
+        const a = self.alloc();
+        // Already consumed REVOKE keyword
+
+        // Parse role name
+        const role = try self.expectIdentifier();
+
+        // FROM member [, member ...]
+        _ = try self.expect(.kw_from);
+
+        var members = std.ArrayListUnmanaged([]const u8){};
+        while (true) {
+            const member = try self.expectIdentifier();
+            members.append(a, member) catch return error.OutOfMemory;
+            if (!self.match(.comma)) break;
+        }
+
+        return .{
+            .role = role,
+            .members = members.toOwnedSlice(a) catch return error.OutOfMemory,
         };
     }
 
@@ -4396,4 +4477,75 @@ test "parse REVOKE multiple privileges" {
     try std.testing.expectEqual(ast.Privilege.insert, revoke.privileges[0]);
     try std.testing.expectEqual(ast.Privilege.update, revoke.privileges[1]);
     try std.testing.expectEqual(ast.Privilege.delete, revoke.privileges[2]);
+}
+
+// ── GRANT/REVOKE Role Membership ─────────────────────────────────
+
+test "parse GRANT role to single member" {
+    var r = try testParseWithArena("GRANT manager TO alice");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant_role);
+    const grant = r.stmt.grant_role;
+    try std.testing.expectEqualStrings("manager", grant.role);
+    try std.testing.expectEqual(@as(usize, 1), grant.members.len);
+    try std.testing.expectEqualStrings("alice", grant.members[0]);
+    try std.testing.expectEqual(false, grant.with_admin_option);
+}
+
+test "parse GRANT role to multiple members" {
+    var r = try testParseWithArena("GRANT admin TO alice, bob, charlie");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant_role);
+    const grant = r.stmt.grant_role;
+    try std.testing.expectEqualStrings("admin", grant.role);
+    try std.testing.expectEqual(@as(usize, 3), grant.members.len);
+    try std.testing.expectEqualStrings("alice", grant.members[0]);
+    try std.testing.expectEqualStrings("bob", grant.members[1]);
+    try std.testing.expectEqualStrings("charlie", grant.members[2]);
+    try std.testing.expectEqual(false, grant.with_admin_option);
+}
+
+test "parse GRANT role WITH ADMIN OPTION" {
+    var r = try testParseWithArena("GRANT superuser TO alice WITH ADMIN OPTION");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant_role);
+    const grant = r.stmt.grant_role;
+    try std.testing.expectEqualStrings("superuser", grant.role);
+    try std.testing.expectEqual(@as(usize, 1), grant.members.len);
+    try std.testing.expectEqualStrings("alice", grant.members[0]);
+    try std.testing.expectEqual(true, grant.with_admin_option);
+}
+
+test "parse GRANT role multiple members WITH ADMIN OPTION" {
+    var r = try testParseWithArena("GRANT dba TO alice, bob WITH ADMIN OPTION");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .grant_role);
+    const grant = r.stmt.grant_role;
+    try std.testing.expectEqualStrings("dba", grant.role);
+    try std.testing.expectEqual(@as(usize, 2), grant.members.len);
+    try std.testing.expectEqualStrings("alice", grant.members[0]);
+    try std.testing.expectEqualStrings("bob", grant.members[1]);
+    try std.testing.expectEqual(true, grant.with_admin_option);
+}
+
+test "parse REVOKE role from single member" {
+    var r = try testParseWithArena("REVOKE manager FROM alice");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .revoke_role);
+    const revoke = r.stmt.revoke_role;
+    try std.testing.expectEqualStrings("manager", revoke.role);
+    try std.testing.expectEqual(@as(usize, 1), revoke.members.len);
+    try std.testing.expectEqualStrings("alice", revoke.members[0]);
+}
+
+test "parse REVOKE role from multiple members" {
+    var r = try testParseWithArena("REVOKE admin FROM alice, bob, charlie");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .revoke_role);
+    const revoke = r.stmt.revoke_role;
+    try std.testing.expectEqualStrings("admin", revoke.role);
+    try std.testing.expectEqual(@as(usize, 3), revoke.members.len);
+    try std.testing.expectEqualStrings("alice", revoke.members[0]);
+    try std.testing.expectEqualStrings("bob", revoke.members[1]);
+    try std.testing.expectEqualStrings("charlie", revoke.members[2]);
 }
