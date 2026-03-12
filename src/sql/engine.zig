@@ -2767,6 +2767,30 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "ALTER ROLE" };
             },
+            .grant => |g| {
+                self.catalog.grantPermission(g) catch |err| {
+                    return switch (err) {
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "GRANT" };
+            },
+            .revoke => |r| {
+                self.catalog.revokePermission(r) catch |err| {
+                    return switch (err) {
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "REVOKE" };
+            },
             else => {},
         }
 
@@ -14279,5 +14303,65 @@ test "ALTER ROLE basic" {
     var r3 = try db.execSQL("ALTER ROLE test_user PASSWORD 'new_password';");
     defer r3.close(allocator);
     try std.testing.expectEqualStrings("ALTER ROLE", r3.message);
+}
+
+test "GRANT and REVOKE basic" {
+    const allocator = std.testing.allocator;
+    const path = "test_grant_revoke.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // GRANT SELECT on table to role
+    var r1 = try db.execSQL("GRANT SELECT ON users TO alice;");
+    defer r1.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r1.message);
+
+    // GRANT ALL PRIVILEGES
+    var r2 = try db.execSQL("GRANT ALL PRIVILEGES ON orders TO bob;");
+    defer r2.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r2.message);
+
+    // REVOKE privilege
+    var r3 = try db.execSQL("REVOKE SELECT ON users FROM alice;");
+    defer r3.close(allocator);
+    try std.testing.expectEqualStrings("REVOKE", r3.message);
+}
+
+test "GRANT multiple privileges" {
+    const allocator = std.testing.allocator;
+    const path = "test_grant_multiple.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // GRANT multiple privileges
+    var r1 = try db.execSQL("GRANT SELECT, INSERT, UPDATE ON products TO clerk;");
+    defer r1.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r1.message);
+
+    // REVOKE multiple privileges
+    var r2 = try db.execSQL("REVOKE INSERT, UPDATE, DELETE ON products FROM clerk;");
+    defer r2.close(allocator);
+    try std.testing.expectEqualStrings("REVOKE", r2.message);
+}
+
+test "GRANT with grant option" {
+    const allocator = std.testing.allocator;
+    const path = "test_grant_option.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // GRANT with grant option
+    var r1 = try db.execSQL("GRANT ALL ON mydb TO admin WITH GRANT OPTION;");
+    defer r1.close(allocator);
+    try std.testing.expectEqualStrings("GRANT", r1.message);
 }
 
