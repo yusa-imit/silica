@@ -2295,3 +2295,94 @@ test "plan ALTER TRIGGER DISABLE" {
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
+
+test "plan GRANT SELECT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "GRANT SELECT ON TABLE users TO alice;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan GRANT multiple privileges" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "GRANT SELECT, INSERT, UPDATE ON TABLE products TO bob;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan GRANT ALL PRIVILEGES" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "GRANT ALL PRIVILEGES ON TABLE admin_data TO superuser;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan GRANT with WITH GRANT OPTION" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "GRANT DELETE ON TABLE logs TO manager WITH GRANT OPTION;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan REVOKE SELECT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "REVOKE SELECT ON TABLE users FROM alice;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan REVOKE multiple privileges" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "REVOKE INSERT, UPDATE, DELETE ON TABLE restricted FROM user1;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan REVOKE ALL PRIVILEGES" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "REVOKE ALL PRIVILEGES ON TABLE sensitive FROM guest;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
