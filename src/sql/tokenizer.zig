@@ -137,6 +137,9 @@ pub const TokenType = enum {
     kw_password,
     kw_valid,
     kw_until,
+    kw_grant,
+    kw_revoke,
+    kw_privileges,
 
     // Keywords — DML
     kw_select,
@@ -804,6 +807,9 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "password", .kw_password },
         .{ "valid", .kw_valid },
         .{ "until", .kw_until },
+        .{ "grant", .kw_grant },
+        .{ "revoke", .kw_revoke },
+        .{ "privileges", .kw_privileges },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },
@@ -1676,6 +1682,27 @@ test "CREATE ROLE keywords" {
         .identifier, // admin
         .kw_login,
         .kw_password,
+    });
+}
+
+test "GRANT keyword" {
+    try expectSingleToken("grant", .kw_grant, "grant");
+}
+
+test "REVOKE keyword" {
+    try expectSingleToken("revoke", .kw_revoke, "revoke");
+}
+
+test "GRANT REVOKE keywords" {
+    const sql = "GRANT ALL PRIVILEGES ON users TO alice";
+    try expectTokens(sql, &.{
+        .kw_grant,
+        .kw_all,
+        .kw_privileges,
+        .kw_on,
+        .identifier, // users
+        .kw_to,
+        .identifier, // alice
     });
 }
 
