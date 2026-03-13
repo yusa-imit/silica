@@ -621,3 +621,88 @@ test "SlotManager: deactivate inactive slot" {
     const slot = try manager.getSlot("slot1");
     try std.testing.expectEqual(SlotState.inactive, slot.state);
 }
+
+test "SlotManager: mixed permanent and temporary slots with LSN updates" {
+    const allocator = std.testing.allocator;
+    var manager = SlotManager.init(allocator);
+    defer manager.deinit();
+
+    // Create mix of permanent and temporary slots
+    try manager.createSlot("perm1", false);
+    try manager.createSlot("temp1", true);
+    try manager.createSlot("perm2", false);
+    try manager.createSlot("temp2", true);
+
+    // Update LSNs with different values
+    try manager.updateSlotLSN("perm1", 1000, 2000);
+    try manager.updateSlotLSN("temp1", 500, 1000);
+    try manager.updateSlotLSN("perm2", 1500, 2500);
+    try manager.updateSlotLSN("temp2", 750, 1250);
+
+    // Min LSN should be 500 (temp1 has lowest)
+    try std.testing.expectEqual(@as(?LSN, 500), manager.getMinRestartLSN());
+
+    // Drop temporary slots
+    manager.dropTemporarySlots();
+
+    // Min LSN should now be 1000 (perm1 has lowest of remaining)
+    try std.testing.expectEqual(@as(?LSN, 1000), manager.getMinRestartLSN());
+
+    // Verify only permanent slots remain
+    try std.testing.expect(manager.slotExists("perm1"));
+    try std.testing.expect(manager.slotExists("perm2"));
+    try std.testing.expect(!manager.slotExists("temp1"));
+    try std.testing.expect(!manager.slotExists("temp2"));
+}
+
+test "SlotManager: activate and update LSN for multiple slots in sequence" {
+    const allocator = std.testing.allocator;
+    var manager = SlotManager.init(allocator);
+    defer manager.deinit();
+
+    // Create 5 slots
+    try manager.createSlot("slot1", false);
+    try manager.createSlot("slot2", false);
+    try manager.createSlot("slot3", false);
+    try manager.createSlot("slot4", false);
+    try manager.createSlot("slot5", false);
+
+    // Activate in sequence and update LSNs
+    try manager.activateSlot("slot1");
+    try manager.updateSlotLSN("slot1", 100, 200);
+
+    try manager.activateSlot("slot2");
+    try manager.updateSlotLSN("slot2", 50, 150);
+
+    try manager.activateSlot("slot3");
+    try manager.updateSlotLSN("slot3", 200, 300);
+
+    // Note: getMinRestartLSN includes all slots (active and inactive)
+    // Since slot4 and slot5 are created but not updated, they have LSN=0
+    // Min LSN should be 0
+    try std.testing.expectEqual(@as(?LSN, 0), manager.getMinRestartLSN());
+
+    // Update slot4 and slot5 LSNs
+    try manager.activateSlot("slot4");
+    try manager.updateSlotLSN("slot4", 300, 400);
+
+    try manager.activateSlot("slot5");
+    try manager.updateSlotLSN("slot5", 250, 350);
+
+    // Now min LSN should be 50 (slot2)
+    try std.testing.expectEqual(@as(?LSN, 50), manager.getMinRestartLSN());
+
+    // Deactivate slot2 and drop it
+    try manager.deactivateSlot("slot2");
+    try manager.dropSlot("slot2");
+
+    // Min LSN should now be 100 (slot1)
+    try std.testing.expectEqual(@as(?LSN, 100), manager.getMinRestartLSN());
+
+    // Verify all active slots
+    const slot1 = try manager.getSlot("slot1");
+    try std.testing.expectEqual(SlotState.active, slot1.state);
+
+    const slot3 = try manager.getSlot("slot3");
+    try std.testing.expectEqual(SlotState.active, slot3.state);
+}
