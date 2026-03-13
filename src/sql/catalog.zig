@@ -1964,6 +1964,267 @@ pub const Catalog = struct {
         return names.toOwnedSlice(allocator);
     }
 
+    // ── Row-Level Security Policy Management ───────────────────────────
+
+    /// RLS policy metadata stored in catalog.
+    pub const PolicyInfo = struct {
+        policy_name: []const u8,
+        table_name: []const u8,
+        policy_type: ast.PolicyType,
+        command: ast.PolicyCommand,
+        using_expr: ?[]const u8, // Serialized USING expression (optional)
+        with_check_expr: ?[]const u8, // Serialized WITH CHECK expression (optional)
+        allocator: Allocator,
+
+        pub fn deinit(self: PolicyInfo) void {
+            self.allocator.free(self.policy_name);
+            self.allocator.free(self.table_name);
+            if (self.using_expr) |expr| {
+                self.allocator.free(expr);
+            }
+            if (self.with_check_expr) |expr| {
+                self.allocator.free(expr);
+            }
+        }
+    };
+
+    fn makePolicyKey(self: *Catalog, table_name: []const u8, policy_name: []const u8) ![]u8 {
+        const prefix = "policy:";
+        // Key format: "policy:<table_name>:<policy_name>"
+        const key = try self.allocator.alloc(u8, prefix.len + table_name.len + 1 + policy_name.len);
+        @memcpy(key[0..prefix.len], prefix);
+        @memcpy(key[prefix.len..][0..table_name.len], table_name);
+        key[prefix.len + table_name.len] = ':';
+        @memcpy(key[prefix.len + table_name.len + 1 ..], policy_name);
+        return key;
+    }
+
+    /// Create a new RLS policy.
+    pub fn createPolicy(
+        self: *Catalog,
+        stmt: ast.CreatePolicyStmt,
+    ) !void {
+        const key = try self.makePolicyKey(stmt.table_name, stmt.policy_name);
+        defer self.allocator.free(key);
+
+        // Check if policy already exists
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            return CatalogError.TableAlreadyExists; // Reuse error for "already exists"
+        }
+
+        // Serialize policy metadata:
+        // [table_name_len: u16][table_name_bytes...]
+        // [policy_type: u8]
+        // [command: u8]
+        // [has_using: u8]
+        // if has_using:
+        //   [using_len: u32][using_bytes...]
+        // [has_with_check: u8]
+        // if has_with_check:
+        //   [with_check_len: u32][with_check_bytes...]
+
+        var total_size: usize = 0;
+
+        // Table name
+        total_size += 2 + stmt.table_name.len;
+
+        // Policy type
+        total_size += 1;
+
+        // Command
+        total_size += 1;
+
+        // USING expression
+        total_size += 1; // has_using flag
+        if (stmt.using_expr) |_| {
+            // For now, serialize as empty (executor not implemented yet)
+            total_size += 4; // using_len (0 for now)
+        }
+
+        // WITH CHECK expression
+        total_size += 1; // has_with_check flag
+        if (stmt.with_check_expr) |_| {
+            // For now, serialize as empty (executor not implemented yet)
+            total_size += 4; // with_check_len (0 for now)
+        }
+
+        const value_buf = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(value_buf);
+
+        var offset: usize = 0;
+
+        // Table name
+        std.mem.writeInt(u16, value_buf[offset..][0..2], @intCast(stmt.table_name.len), .little);
+        offset += 2;
+        @memcpy(value_buf[offset..][0..stmt.table_name.len], stmt.table_name);
+        offset += stmt.table_name.len;
+
+        // Policy type
+        value_buf[offset] = @intFromEnum(stmt.policy_type);
+        offset += 1;
+
+        // Command
+        value_buf[offset] = @intFromEnum(stmt.command);
+        offset += 1;
+
+        // USING expression
+        if (stmt.using_expr) |_| {
+            value_buf[offset] = 1;
+            offset += 1;
+            std.mem.writeInt(u32, value_buf[offset..][0..4], 0, .little);
+            offset += 4;
+        } else {
+            value_buf[offset] = 0;
+            offset += 1;
+        }
+
+        // WITH CHECK expression
+        if (stmt.with_check_expr) |_| {
+            value_buf[offset] = 1;
+            offset += 1;
+            std.mem.writeInt(u32, value_buf[offset..][0..4], 0, .little);
+            offset += 4;
+        } else {
+            value_buf[offset] = 0;
+            offset += 1;
+        }
+
+        try self.tree.insert(key, value_buf);
+    }
+
+    /// Retrieve an RLS policy by table and policy name.
+    pub fn getPolicy(self: *Catalog, table_name: []const u8, policy_name: []const u8) !PolicyInfo {
+        const key = try self.makePolicyKey(table_name, policy_name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value == null) return CatalogError.TypeNotFound; // Reuse error
+
+        defer self.allocator.free(value.?);
+
+        var offset: usize = 0;
+
+        // Table name
+        const table_name_len = std.mem.readInt(u16, value.?[offset..][0..2], .little);
+        offset += 2;
+        const table_name_stored = value.?[offset..][0..table_name_len];
+        offset += table_name_len;
+
+        // Policy type
+        const policy_type: ast.PolicyType = @enumFromInt(value.?[offset]);
+        offset += 1;
+
+        // Command
+        const command: ast.PolicyCommand = @enumFromInt(value.?[offset]);
+        offset += 1;
+
+        // USING expression
+        var using_expr: ?[]const u8 = null;
+        const has_using = value.?[offset];
+        offset += 1;
+        if (has_using == 1) {
+            const using_len = std.mem.readInt(u32, value.?[offset..][0..4], .little);
+            offset += 4;
+            if (using_len > 0) {
+                using_expr = try self.allocator.dupe(u8, value.?[offset..][0..using_len]);
+                offset += using_len;
+            }
+        }
+
+        // WITH CHECK expression
+        var with_check_expr: ?[]const u8 = null;
+        const has_with_check = value.?[offset];
+        offset += 1;
+        if (has_with_check == 1) {
+            const with_check_len = std.mem.readInt(u32, value.?[offset..][0..4], .little);
+            offset += 4;
+            if (with_check_len > 0) {
+                with_check_expr = try self.allocator.dupe(u8, value.?[offset..][0..with_check_len]);
+                offset += with_check_len;
+            }
+        }
+
+        return PolicyInfo{
+            .policy_name = try self.allocator.dupe(u8, policy_name),
+            .table_name = try self.allocator.dupe(u8, table_name_stored),
+            .policy_type = policy_type,
+            .command = command,
+            .using_expr = using_expr,
+            .with_check_expr = with_check_expr,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// Drop an RLS policy.
+    pub fn dropPolicy(self: *Catalog, table_name: []const u8, policy_name: []const u8, if_exists: bool) !void {
+        const key = try self.makePolicyKey(table_name, policy_name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        } else {
+            if (!if_exists) return CatalogError.TypeNotFound;
+        }
+    }
+
+    /// Check if an RLS policy exists.
+    pub fn policyExists(self: *Catalog, table_name: []const u8, policy_name: []const u8) !bool {
+        const key = try self.makePolicyKey(table_name, policy_name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
+    }
+
+    /// List all RLS policies for a specific table.
+    pub fn listPoliciesForTable(self: *Catalog, allocator: Allocator, table_name: []const u8) ![][]const u8 {
+        var cursor = Cursor.init(allocator, &self.tree);
+        defer cursor.deinit();
+
+        try cursor.seekFirst();
+
+        var names = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (names.items) |n| allocator.free(n);
+            names.deinit(allocator);
+        }
+
+        const policy_prefix = "policy:";
+        const table_prefix_len = policy_prefix.len + table_name.len + 1; // "policy:<table>:"
+
+        while (try cursor.next()) |entry| {
+            defer allocator.free(entry.value);
+            defer allocator.free(entry.key);
+
+            if (entry.key.len > table_prefix_len and
+                std.mem.eql(u8, entry.key[0..policy_prefix.len], policy_prefix))
+            {
+                // Check if key starts with "policy:<table>:"
+                const key_table_start = policy_prefix.len;
+                const key_table_end = key_table_start + table_name.len;
+                if (entry.key.len > key_table_end and
+                    std.mem.eql(u8, entry.key[key_table_start..key_table_end], table_name) and
+                    entry.key[key_table_end] == ':')
+                {
+                    const policy_name = entry.key[key_table_end + 1 ..];
+                    const name_copy = try allocator.dupe(u8, policy_name);
+                    errdefer allocator.free(name_copy);
+                    try names.append(allocator, name_copy);
+                }
+            }
+        }
+
+        return names.toOwnedSlice(allocator);
+    }
+
     // ── Role Management ─────────────────────────────────────────────────
 
     /// Role metadata stored in catalog.
@@ -4635,6 +4896,333 @@ test "Catalog getTrigger — nonexistent trigger" {
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getTrigger("does_not_exist"));
 }
+
+// ── RLS Policy Catalog Tests ────────────────────────────────────────────
+
+test "Catalog createPolicy — basic SELECT policy" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_basic.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "user_select_policy",
+        .table_name = "users",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("users", "user_select_policy");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("user_select_policy", info.policy_name);
+    try std.testing.expectEqualStrings("users", info.table_name);
+    try std.testing.expectEqual(ast.PolicyType.permissive, info.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.select, info.command);
+    try std.testing.expect(info.using_expr == null);
+    try std.testing.expect(info.with_check_expr == null);
+}
+
+test "Catalog createPolicy — restrictive INSERT policy with WITH CHECK" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_restrictive.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const with_check_expr = ast.Expr{
+        .boolean_literal = true,
+    };
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "restrict_insert",
+        .table_name = "documents",
+        .policy_type = .restrictive,
+        .command = .insert,
+        .using_expr = null,
+        .with_check_expr = with_check_expr,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("documents", "restrict_insert");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("restrict_insert", info.policy_name);
+    try std.testing.expectEqualStrings("documents", info.table_name);
+    try std.testing.expectEqual(ast.PolicyType.restrictive, info.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.insert, info.command);
+    try std.testing.expect(info.using_expr == null);
+    // WITH CHECK expression serialized as empty for now
+    try std.testing.expect(info.with_check_expr == null);
+}
+
+test "Catalog createPolicy — UPDATE policy with USING and WITH CHECK" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_update.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const using_expr = ast.Expr{
+        .boolean_literal = true,
+    };
+
+    const with_check_expr = ast.Expr{
+        .boolean_literal = false,
+    };
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "update_own_rows",
+        .table_name = "posts",
+        .policy_type = .permissive,
+        .command = .update,
+        .using_expr = using_expr,
+        .with_check_expr = with_check_expr,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("posts", "update_own_rows");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("update_own_rows", info.policy_name);
+    try std.testing.expectEqualStrings("posts", info.table_name);
+    try std.testing.expectEqual(ast.PolicyType.permissive, info.policy_type);
+    try std.testing.expectEqual(ast.PolicyCommand.update, info.command);
+    // Expressions serialized as empty for now
+    try std.testing.expect(info.using_expr == null);
+    try std.testing.expect(info.with_check_expr == null);
+}
+
+test "Catalog createPolicy — all commands policy" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_all.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "admin_policy",
+        .table_name = "secure_data",
+        .policy_type = .permissive,
+        .command = .all,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("secure_data", "admin_policy");
+    defer info.deinit();
+
+    try std.testing.expectEqual(ast.PolicyCommand.all, info.command);
+}
+
+test "Catalog dropPolicy — existing policy" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_drop.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "temp_policy",
+        .table_name = "users",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    // Verify it exists
+    try std.testing.expect(try tc.catalog.policyExists("users", "temp_policy"));
+
+    // Drop it
+    try tc.catalog.dropPolicy("users", "temp_policy", false);
+
+    // Verify it no longer exists
+    try std.testing.expect(!try tc.catalog.policyExists("users", "temp_policy"));
+}
+
+test "Catalog dropPolicy — IF EXISTS with nonexistent policy" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_drop_if_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Should not error with IF EXISTS
+    try tc.catalog.dropPolicy("users", "nonexistent", true);
+}
+
+test "Catalog dropPolicy — nonexistent without IF EXISTS" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_drop_error.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Should error without IF EXISTS
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropPolicy("users", "nonexistent", false));
+}
+
+test "Catalog policyExists — existing and nonexistent" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_exists.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "check_policy",
+        .table_name = "users",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    try std.testing.expect(try tc.catalog.policyExists("users", "check_policy"));
+    try std.testing.expect(!try tc.catalog.policyExists("users", "nonexistent"));
+    try std.testing.expect(!try tc.catalog.policyExists("other_table", "check_policy"));
+}
+
+test "Catalog listPoliciesForTable — multiple policies" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_list.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt1 = ast.CreatePolicyStmt{
+        .policy_name = "policy_a",
+        .table_name = "users",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    const stmt2 = ast.CreatePolicyStmt{
+        .policy_name = "policy_b",
+        .table_name = "users",
+        .policy_type = .restrictive,
+        .command = .insert,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    const stmt3 = ast.CreatePolicyStmt{
+        .policy_name = "policy_c",
+        .table_name = "posts",
+        .policy_type = .permissive,
+        .command = .update,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt1);
+    try tc.catalog.createPolicy(stmt2);
+    try tc.catalog.createPolicy(stmt3);
+
+    const users_policies = try tc.catalog.listPoliciesForTable(allocator, "users");
+    defer {
+        for (users_policies) |p| allocator.free(p);
+        allocator.free(users_policies);
+    }
+
+    const posts_policies = try tc.catalog.listPoliciesForTable(allocator, "posts");
+    defer {
+        for (posts_policies) |p| allocator.free(p);
+        allocator.free(posts_policies);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), users_policies.len);
+    try std.testing.expectEqual(@as(usize, 1), posts_policies.len);
+}
+
+test "Catalog listPoliciesForTable — no policies" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_list_empty.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const policies = try tc.catalog.listPoliciesForTable(allocator, "nonexistent_table");
+    defer {
+        for (policies) |p| allocator.free(p);
+        allocator.free(policies);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), policies.len);
+}
+
+test "Catalog createPolicy — duplicate policy error" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_duplicate.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "dup_policy",
+        .table_name = "users",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    // Attempting to create again should error
+    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createPolicy(stmt));
+}
+
+test "Catalog getPolicy — nonexistent policy" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_get_nonexistent.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getPolicy("users", "nonexistent"));
+}
+
+test "Catalog createPolicy — DELETE policy" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_delete.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "delete_own",
+        .table_name = "comments",
+        .policy_type = .permissive,
+        .command = .delete,
+        .using_expr = null,
+        .with_check_expr = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("comments", "delete_own");
+    defer info.deinit();
+
+    try std.testing.expectEqual(ast.PolicyCommand.delete, info.command);
+}
+
 // ── Role Catalog Tests ──────────────────────────────────────────────────
 
 test "Catalog createRole — basic role with defaults" {
