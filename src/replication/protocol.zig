@@ -170,9 +170,9 @@ pub const MessageTag = enum(u8) {
 
 /// Serialize frontend message to bytes
 pub fn serializeFrontendMessage(allocator: Allocator, msg: FrontendMessage) ![]u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
     switch (msg) {
         .start_replication => |sr| {
@@ -208,14 +208,14 @@ pub fn serializeFrontendMessage(allocator: Allocator, msg: FrontendMessage) ![]u
         },
     }
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Serialize backend message to bytes
 pub fn serializeBackendMessage(allocator: Allocator, msg: BackendMessage) ![]u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
     switch (msg) {
         .copyboth_response => {
@@ -251,7 +251,7 @@ pub fn serializeBackendMessage(allocator: Allocator, msg: BackendMessage) ![]u8 
         },
     }
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -412,4 +412,207 @@ test "serialize ERROR_RESPONSE" {
     defer testing.allocator.free(bytes);
 
     try testing.expectEqual(@as(u8, 'E'), bytes[0]);
+}
+
+// ── Edge Case Tests ──────────────────────────────────────────────────
+
+test "START_REPLICATION with empty slot name" {
+    const msg = FrontendMessage{
+        .start_replication = .{
+            .slot_name = "",
+            .start_lsn = 0,
+        },
+    };
+    const bytes = try serializeFrontendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'S'), bytes[0]);
+    // 1 (tag) + 4 (slot_name_len=0) + 0 (empty name) + 8 (start_lsn) = 13 bytes
+    try testing.expectEqual(@as(usize, 13), bytes.len);
+}
+
+test "START_REPLICATION with max LSN" {
+    const msg = FrontendMessage{
+        .start_replication = .{
+            .slot_name = "slot",
+            .start_lsn = std.math.maxInt(u64),
+        },
+    };
+    const bytes = try serializeFrontendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'S'), bytes[0]);
+    // Verify LSN is serialized correctly at max value
+    const lsn_offset = 1 + 4 + 4; // tag + len + "slot"
+    const lsn = std.mem.readInt(u64, bytes[lsn_offset..][0..8], .little);
+    try testing.expectEqual(std.math.maxInt(u64), lsn);
+}
+
+test "STANDBY_STATUS_UPDATE with zero LSNs" {
+    const msg = FrontendMessage{
+        .standby_status = .{
+            .write_lsn = 0,
+            .flush_lsn = 0,
+            .apply_lsn = 0,
+            .client_timestamp = 0,
+            .reply_requested = false,
+        },
+    };
+    const bytes = try serializeFrontendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 's'), bytes[0]);
+    try testing.expectEqual(@as(usize, 34), bytes.len);
+}
+
+test "STANDBY_STATUS_UPDATE with negative timestamp" {
+    const msg = FrontendMessage{
+        .standby_status = .{
+            .write_lsn = 100,
+            .flush_lsn = 100,
+            .apply_lsn = 100,
+            .client_timestamp = -123456789,
+            .reply_requested = true,
+        },
+    };
+    const bytes = try serializeFrontendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 's'), bytes[0]);
+    // Verify negative timestamp is preserved
+    const ts_offset = 1 + 8 + 8 + 8; // tag + write + flush + apply
+    const ts = std.mem.readInt(i64, bytes[ts_offset..][0..8], .little);
+    try testing.expectEqual(@as(i64, -123456789), ts);
+}
+
+test "CREATE_SLOT with very long slot name" {
+    var long_name: [1024]u8 = undefined;
+    @memset(&long_name, 'a');
+    const msg = FrontendMessage{
+        .create_slot = .{
+            .slot_name = &long_name,
+            .temporary = false,
+        },
+    };
+    const bytes = try serializeFrontendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'C'), bytes[0]);
+    // 1 (tag) + 4 (len) + 1024 (name) + 1 (temporary) = 1030 bytes
+    try testing.expectEqual(@as(usize, 1030), bytes.len);
+}
+
+test "WAL_DATA with empty data" {
+    const msg = BackendMessage{
+        .wal_data = .{
+            .wal_start = 1000,
+            .wal_end = 1000, // start == end means no data
+            .server_timestamp = 0,
+            .data = &[_]u8{},
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'w'), bytes[0]);
+    // 1 (tag) + 8 (start) + 8 (end) + 8 (timestamp) + 4 (data_len=0) + 0 (data) = 29 bytes
+    try testing.expectEqual(@as(usize, 29), bytes.len);
+}
+
+test "WAL_DATA with max LSN values" {
+    const wal_bytes = [_]u8{0xFF};
+    const msg = BackendMessage{
+        .wal_data = .{
+            .wal_start = std.math.maxInt(u64) - 1,
+            .wal_end = std.math.maxInt(u64),
+            .server_timestamp = std.math.maxInt(i64),
+            .data = &wal_bytes,
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'w'), bytes[0]);
+    try testing.expect(bytes.len > 0);
+}
+
+test "KEEPALIVE with negative timestamp" {
+    const msg = BackendMessage{
+        .keepalive = .{
+            .wal_end = 0,
+            .server_timestamp = std.math.minInt(i64),
+            .reply_requested = true,
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'k'), bytes[0]);
+    try testing.expectEqual(@as(usize, 18), bytes.len);
+}
+
+test "SYSTEM_INFO with empty strings" {
+    const msg = BackendMessage{
+        .system_info = .{
+            .system_id = "",
+            .timeline_id = 0,
+            .wal_position = 0,
+            .database_name = "",
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'i'), bytes[0]);
+    // 1 (tag) + 4 (system_id_len=0) + 0 (empty) + 4 (timeline) + 8 (wal_pos) + 4 (db_len=0) + 0 (empty) = 21 bytes
+    try testing.expectEqual(@as(usize, 21), bytes.len);
+}
+
+test "ERROR_RESPONSE with empty message" {
+    const msg = BackendMessage{
+        .error_response = .{
+            .message = "",
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'E'), bytes[0]);
+    // 1 (tag) + 4 (message_len=0) + 0 (empty) = 5 bytes
+    try testing.expectEqual(@as(usize, 5), bytes.len);
+}
+
+test "ReplicationSlot temporary flag" {
+    const slot = try ReplicationSlot.init(testing.allocator, "temp_slot", true);
+    var mutable_slot = slot;
+    defer mutable_slot.deinit();
+
+    try testing.expectEqual(true, slot.temporary);
+}
+
+test "ReplicationSlot LSN updates" {
+    var slot = try ReplicationSlot.init(testing.allocator, "lsn_test", false);
+    defer slot.deinit();
+
+    // Update LSNs
+    slot.restart_lsn = 1000;
+    slot.confirmed_flush_lsn = 500;
+
+    try testing.expectEqual(@as(LSN, 1000), slot.restart_lsn);
+    try testing.expectEqual(@as(LSN, 500), slot.confirmed_flush_lsn);
+}
+
+test "ReplicationSlot state transitions" {
+    var slot = try ReplicationSlot.init(testing.allocator, "state_test", false);
+    defer slot.deinit();
+
+    try testing.expectEqual(SlotState.inactive, slot.state);
+
+    slot.state = .active;
+    slot.active_since = std.time.microTimestamp();
+    try testing.expectEqual(SlotState.active, slot.state);
+    try testing.expect(slot.active_since != null);
+
+    slot.state = .reserved;
+    try testing.expectEqual(SlotState.reserved, slot.state);
 }
