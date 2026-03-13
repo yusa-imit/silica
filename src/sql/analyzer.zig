@@ -292,9 +292,9 @@ pub const Analyzer = struct {
             .revoke => |s| self.analyzeRevoke(&s),
             .grant_role => |s| self.analyzeGrantRole(&s),
             .revoke_role => |s| self.analyzeRevokeRole(&s),
-            .create_policy => {},
-            .drop_policy => {},
-            .alter_table_rls => {},
+            .create_policy => |s| self.analyzeCreatePolicy(&s),
+            .drop_policy => |s| self.analyzeDropPolicy(&s),
+            .alter_table_rls => |s| self.analyzeAlterTableRLS(&s),
             .explain => |s| self.analyze(s.stmt.*),
         }
     }
@@ -855,6 +855,85 @@ pub const Analyzer = struct {
                 self.addError(.invalid_expression, "member name cannot be empty", .{});
             }
         }
+    }
+
+    // ── Row-Level Security Validation ───────────────────────────────
+
+    fn analyzeCreatePolicy(self: *Analyzer, stmt: *const ast.CreatePolicyStmt) void {
+        // Validate policy name is not empty
+        if (stmt.policy_name.len == 0) {
+            self.addError(.invalid_expression, "policy name cannot be empty", .{});
+        }
+
+        // Validate table name is not empty
+        if (stmt.table_name.len == 0) {
+            self.addError(.invalid_expression, "table name cannot be empty for policy", .{});
+        }
+
+        // Validate command-specific clause requirements
+        switch (stmt.command) {
+            .select, .delete => {
+                // SELECT/DELETE can only have USING clause
+                if (stmt.with_check_expr != null) {
+                    self.addError(.invalid_expression, "WITH CHECK clause is not allowed for SELECT/DELETE policies", .{});
+                }
+                // USING clause is optional (defaults to true if omitted)
+            },
+            .insert => {
+                // INSERT can only have WITH CHECK clause
+                if (stmt.using_expr != null) {
+                    self.addError(.invalid_expression, "USING clause is not allowed for INSERT policies", .{});
+                }
+                // WITH CHECK clause is optional (defaults to true if omitted)
+            },
+            .update => {
+                // UPDATE can have both USING and WITH CHECK
+                // Both are optional (default to true if omitted)
+            },
+            .all => {
+                // ALL command can have both clauses
+            },
+        }
+
+        // Validate USING expression if present
+        if (stmt.using_expr) |*expr| {
+            self.analyzeExpr(expr);
+        }
+
+        // Validate WITH CHECK expression if present
+        if (stmt.with_check_expr) |*expr| {
+            self.analyzeExpr(expr);
+        }
+
+        // Note: Table existence is checked at catalog layer during execution
+    }
+
+    fn analyzeDropPolicy(self: *Analyzer, stmt: *const ast.DropPolicyStmt) void {
+        // Validate policy name is not empty
+        if (stmt.policy_name.len == 0) {
+            self.addError(.invalid_expression, "policy name cannot be empty", .{});
+        }
+
+        // Validate table name is not empty
+        if (stmt.table_name.len == 0) {
+            self.addError(.invalid_expression, "table name cannot be empty for DROP POLICY", .{});
+        }
+
+        // Note: Policy existence is checked at catalog layer (IF EXISTS handled there)
+    }
+
+    fn analyzeAlterTableRLS(self: *Analyzer, stmt: *const ast.AlterTableRLSStmt) void {
+        // Validate table name is not empty
+        if (stmt.table_name.len == 0) {
+            self.addError(.invalid_expression, "table name cannot be empty for ALTER TABLE RLS", .{});
+        }
+
+        // Validate logical consistency: FORCE only makes sense with ENABLE
+        if (stmt.force and !stmt.enable) {
+            self.addError(.invalid_expression, "FORCE ROW LEVEL SECURITY requires ENABLE ROW LEVEL SECURITY", .{});
+        }
+
+        // Note: Table existence is checked at catalog layer during execution
     }
 
     // ── CTE Column Inference ────────────────────────────────────────
@@ -2513,6 +2592,357 @@ test "REVOKE: empty privileges fails" {
     defer analyzer.deinit();
 
     analyzer.analyzeRevoke(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+// ── Row-Level Security (RLS) Tests ────────────────────────────────
+
+test "CREATE POLICY: valid permissive SELECT policy passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const using_expr = ast.Expr{ .boolean_literal = true };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "select_policy",
+        .table_name = "documents",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = using_expr,
+        .with_check_expr = null,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE POLICY: valid restrictive UPDATE policy with both clauses passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const using_expr = ast.Expr{ .integer_literal = 1 };
+    const check_expr = ast.Expr{ .integer_literal = 2 };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "update_policy",
+        .table_name = "posts",
+        .policy_type = .restrictive,
+        .command = .update,
+        .using_expr = using_expr,
+        .with_check_expr = check_expr,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE POLICY: valid INSERT policy with WITH CHECK clause passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const check_expr = ast.Expr{ .boolean_literal = true };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "insert_check",
+        .table_name = "users",
+        .command = .insert,
+        .using_expr = null,
+        .with_check_expr = check_expr,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "CREATE POLICY: empty policy name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "", // Empty!
+        .table_name = "documents",
+        .command = .select,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "CREATE POLICY: empty table name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "valid_policy",
+        .table_name = "", // Empty!
+        .command = .delete,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "CREATE POLICY: SELECT with WITH CHECK clause fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const check_expr = ast.Expr{ .boolean_literal = true };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "bad_select",
+        .table_name = "data",
+        .command = .select,
+        .using_expr = null,
+        .with_check_expr = check_expr, // Invalid for SELECT!
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "CREATE POLICY: DELETE with WITH CHECK clause fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const check_expr = ast.Expr{ .boolean_literal = true };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "bad_delete",
+        .table_name = "logs",
+        .command = .delete,
+        .using_expr = null,
+        .with_check_expr = check_expr, // Invalid for DELETE!
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "CREATE POLICY: INSERT with USING clause fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const using_expr = ast.Expr{ .boolean_literal = true };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "bad_insert",
+        .table_name = "records",
+        .command = .insert,
+        .using_expr = using_expr, // Invalid for INSERT!
+        .with_check_expr = null,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "CREATE POLICY: ALL command with both clauses passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const using_expr = ast.Expr{ .boolean_literal = true };
+    const check_expr = ast.Expr{ .boolean_literal = false };
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "all_policy",
+        .table_name = "everything",
+        .command = .all,
+        .using_expr = using_expr,
+        .with_check_expr = check_expr,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeCreatePolicy(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP POLICY: valid drop passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.DropPolicyStmt{
+        .policy_name = "old_policy",
+        .table_name = "accounts",
+        .if_exists = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeDropPolicy(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP POLICY: valid drop with IF EXISTS passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.DropPolicyStmt{
+        .policy_name = "maybe_policy",
+        .table_name = "logs",
+        .if_exists = true,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeDropPolicy(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "DROP POLICY: empty policy name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.DropPolicyStmt{
+        .policy_name = "", // Empty!
+        .table_name = "data",
+        .if_exists = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeDropPolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "DROP POLICY: empty table name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.DropPolicyStmt{
+        .policy_name = "valid_policy",
+        .table_name = "", // Empty!
+        .if_exists = true,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeDropPolicy(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "ALTER TABLE RLS: valid ENABLE passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.AlterTableRLSStmt{
+        .table_name = "sensitive_data",
+        .enable = true,
+        .force = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeAlterTableRLS(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "ALTER TABLE RLS: valid DISABLE passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.AlterTableRLSStmt{
+        .table_name = "public_data",
+        .enable = false,
+        .force = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeAlterTableRLS(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "ALTER TABLE RLS: valid FORCE ENABLE passes" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.AlterTableRLSStmt{
+        .table_name = "audit_log",
+        .enable = true,
+        .force = true,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeAlterTableRLS(&stmt);
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "ALTER TABLE RLS: empty table name fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.AlterTableRLSStmt{
+        .table_name = "", // Empty!
+        .enable = true,
+        .force = false,
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeAlterTableRLS(&stmt);
+    try std.testing.expect(analyzer.hasErrors());
+}
+
+test "ALTER TABLE RLS: FORCE without ENABLE fails" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    const stmt = ast.AlterTableRLSStmt{
+        .table_name = "data",
+        .enable = false, // DISABLE
+        .force = true, // FORCE requires ENABLE!
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyzeAlterTableRLS(&stmt);
     try std.testing.expect(analyzer.hasErrors());
 }
 
