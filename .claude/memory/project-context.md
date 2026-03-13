@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 8 — Client-Server & Wire Protocol (Milestone 16 complete, Milestone 17 in progress)
+## Current Phase: Phase 8 — Client-Server & Wire Protocol (Milestones 15-17 complete)
 
 ### Completed Phases
 - **Phase 1**: Storage Foundation ✅ (v0.1.0)
@@ -254,7 +254,7 @@
 ### Current: Phase 8 — Client-Server & Wire Protocol
 - **Milestone 15**: Wire Protocol ✅ (15A Message Types, 15B Simple Query, 15C Extended Query)
 - **Milestone 16**: Server & Connection Management ✅ (16A TCP Server, 16B Session State, 16C Authentication, 16D Graceful Shutdown)
-- **Milestone 17**: Authorization (RBAC) IN PROGRESS
+- **Milestone 17**: Authorization (RBAC) ✅ COMPLETE
   - **17A Role Catalog** ✅ COMPLETE
     - [x] Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
     - [x] AST: CreateRoleStmt, DropRoleStmt, AlterRoleStmt, RoleOptions struct
@@ -275,21 +275,25 @@
     - [x] Tokenizer, AST, Parser: GRANT/REVOKE role TO/FROM members
     - [x] Catalog: grantRole, revokeRole, hasRoleMembership with WITH ADMIN OPTION
     - [x] Analyzer, Planner, Engine: Full integration (5 integration tests)
-  - **17D Row-Level Security** IN PROGRESS
+  - **17D Row-Level Security** ✅ COMPLETE
     - [x] Tokenizer: POLICY, SECURITY, LEVEL, PERMISSIVE, RESTRICTIVE, FORCE, USING keywords (7 keywords, 3 tests)
     - [x] AST: CreatePolicyStmt, DropPolicyStmt, AlterTableRLSStmt, PolicyCommand, PolicyType (8 tests)
     - [x] Parser: CREATE POLICY, DROP POLICY, ALTER TABLE RLS (28 tests: 11 basic + 10 edge cases for CREATE, 3 DROP, 5 ALTER)
     - [x] Analyzer: analyzeCreatePolicy, analyzeDropPolicy, analyzeAlterTableRLS (18 comprehensive tests)
     - [x] Catalog: PolicyInfo, createPolicy, getPolicy, dropPolicy, policyExists, listPoliciesForTable (13 tests: basic/restrictive, all commands, IF EXISTS, duplicate error, list by table)
-    - [ ] Planner: Policy DDL planning
-    - [ ] Engine: Policy DDL integration + enforcement
+    - [x] Planner: CREATE/DROP POLICY and ALTER TABLE RLS return PlanType.transaction (12 tests: all policy types/commands)
+    - [x] Engine: CREATE POLICY/DROP POLICY/ALTER TABLE RLS DDL handlers (3 integration tests)
+    - **LIMITATION**: Policy enforcement NOT yet implemented — definitions stored in catalog only
+    - **FUTURE WORK**: Policy evaluation during DML, USING/WITH CHECK expression execution, table RLS enable/disable state
   - [ ] 17E information_schema views
   - [ ] 17F Default privileges
 
-## Test Coverage (as of 2026-03-13 14:00 UTC)
+## Test Coverage (as of 2026-03-13 22:00 UTC)
 - tokenizer.zig: 78 tests (includes role, GRANT/REVOKE, RLS keywords)
 - ast.zig: 26 tests (includes role, GRANT/REVOKE, RLS AST nodes)
 - parser.zig: 229 tests (228 passing + 1 skipped; includes role, GRANT/REVOKE, RLS parsers)
 - catalog.zig: 110 tests (includes 13 RLS policy catalog tests + role/permission tests)
-- analyzer.zig: 84 tests (includes RLS analyzer validation)
-- Total: 1757 tests (1756 passing, 1 skipped: RLS subquery test triggering bug #1)
+- analyzer.zig: 84 tests (includes 18 RLS analyzer tests)
+- planner.zig: 91 tests (includes 12 RLS planner tests: 6 CREATE POLICY, 2 DROP POLICY, 4 ALTER TABLE RLS)
+- engine.zig: 427 tests (includes 3 RLS integration tests: CREATE/DROP POLICY, ALTER TABLE RLS, UPDATE with both clauses)
+- Total: 1769 tests (1768 passing, 1 skipped: RLS subquery test triggering bug #1)
