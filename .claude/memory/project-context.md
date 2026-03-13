@@ -296,4 +296,4 @@
 - analyzer.zig: 84 tests (includes 18 RLS analyzer tests)
 - planner.zig: 91 tests (includes 12 RLS planner tests: 6 CREATE POLICY, 2 DROP POLICY, 4 ALTER TABLE RLS)
 - engine.zig: 427 tests (includes 3 RLS integration tests: CREATE/DROP POLICY, ALTER TABLE RLS, UPDATE with both clauses)
-- Total: 1769 tests (1768 passing, 1 skipped: RLS subquery test triggering bug #1)
+- Total: 1773 tests (1772 passing, 1 skipped: RLS subquery test triggering bug #1)
