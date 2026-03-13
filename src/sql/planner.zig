@@ -2391,3 +2391,159 @@ test "plan REVOKE ALL PRIVILEGES" {
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
+
+test "plan CREATE POLICY basic SELECT" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE POLICY view_policy ON users FOR SELECT USING (id = current_user_id());",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE POLICY PERMISSIVE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE POLICY allow_read ON data AS PERMISSIVE FOR SELECT USING (public = true);",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE POLICY RESTRICTIVE" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE POLICY block_sensitive ON logs AS RESTRICTIVE FOR ALL USING (level != 'DEBUG');",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE POLICY INSERT with WITH CHECK" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE POLICY insert_check ON posts FOR INSERT WITH CHECK (author_id = current_user_id());",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE POLICY UPDATE with both clauses" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = current_user()) WITH CHECK (user_id = current_user());",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan CREATE POLICY ALL command" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "CREATE POLICY all_access ON public_table FOR ALL USING (true);",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP POLICY simple" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP POLICY old_policy ON users;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan DROP POLICY IF EXISTS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "DROP POLICY IF EXISTS maybe_policy ON accounts;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan ALTER TABLE ENABLE RLS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "ALTER TABLE sensitive_data ENABLE ROW LEVEL SECURITY;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan ALTER TABLE DISABLE RLS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "ALTER TABLE public_data DISABLE ROW LEVEL SECURITY;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan ALTER TABLE FORCE RLS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "ALTER TABLE admin_logs FORCE ROW LEVEL SECURITY;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+test "plan ALTER TABLE NO FORCE RLS" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "ALTER TABLE normal_table NO FORCE ROW LEVEL SECURITY;",
+        &arena, &schema);
+
+    try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
