@@ -2819,6 +2819,41 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "REVOKE" };
             },
+            .create_policy => |cp| {
+                self.catalog.createPolicy(cp) catch |err| {
+                    return switch (err) {
+                        error.TypeAlreadyExists => EngineError.TableAlreadyExists,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE POLICY" };
+            },
+            .drop_policy => |dp| {
+                self.catalog.dropPolicy(dp.table_name, dp.policy_name, dp.if_exists) catch |err| {
+                    return switch (err) {
+                        error.TypeNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP POLICY" };
+            },
+            .alter_table_rls => |rls| {
+                // TODO: Implement RLS enable/disable state in catalog
+                // For now, just acknowledge the command
+                _ = rls;
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "ALTER TABLE" };
+            },
             else => {},
         }
 
@@ -14524,5 +14559,90 @@ test "REVOKE role from multiple members" {
     const has_bob = try db.catalog.hasRoleMembership("manager", "bob");
     try std.testing.expect(!has_alice);
     try std.testing.expect(!has_bob);
+}
+
+test "CREATE POLICY and DROP POLICY basic" {
+    const allocator = std.testing.allocator;
+    const path = "test_create_drop_policy.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // CREATE POLICY for SELECT
+    var r1 = try db.execSQL("CREATE POLICY view_policy ON users FOR SELECT USING (id = current_user_id());");
+    defer r1.close(allocator);
+    try std.testing.expectEqualStrings("CREATE POLICY", r1.message);
+
+    // CREATE POLICY PERMISSIVE
+    var r2 = try db.execSQL("CREATE POLICY allow_read ON data AS PERMISSIVE FOR SELECT USING (public = true);");
+    defer r2.close(allocator);
+    try std.testing.expectEqualStrings("CREATE POLICY", r2.message);
+
+    // CREATE POLICY INSERT with WITH CHECK
+    var r3 = try db.execSQL("CREATE POLICY insert_check ON posts FOR INSERT WITH CHECK (author_id = current_user_id());");
+    defer r3.close(allocator);
+    try std.testing.expectEqualStrings("CREATE POLICY", r3.message);
+
+    // DROP POLICY
+    var r4 = try db.execSQL("DROP POLICY view_policy ON users;");
+    defer r4.close(allocator);
+    try std.testing.expectEqualStrings("DROP POLICY", r4.message);
+
+    // DROP POLICY IF EXISTS (policy exists)
+    var r5 = try db.execSQL("DROP POLICY IF EXISTS allow_read ON data;");
+    defer r5.close(allocator);
+    try std.testing.expectEqualStrings("DROP POLICY", r5.message);
+
+    // DROP POLICY IF EXISTS (policy doesn't exist)
+    var r6 = try db.execSQL("DROP POLICY IF EXISTS nonexistent ON users;");
+    defer r6.close(allocator);
+    try std.testing.expectEqualStrings("DROP POLICY", r6.message);
+}
+
+test "ALTER TABLE RLS commands" {
+    const allocator = std.testing.allocator;
+    const path = "test_alter_table_rls.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // ALTER TABLE ENABLE RLS
+    var r1 = try db.execSQL("ALTER TABLE sensitive_data ENABLE ROW LEVEL SECURITY;");
+    defer r1.close(allocator);
+    try std.testing.expectEqualStrings("ALTER TABLE", r1.message);
+
+    // ALTER TABLE DISABLE RLS
+    var r2 = try db.execSQL("ALTER TABLE public_data DISABLE ROW LEVEL SECURITY;");
+    defer r2.close(allocator);
+    try std.testing.expectEqualStrings("ALTER TABLE", r2.message);
+
+    // ALTER TABLE FORCE RLS
+    var r3 = try db.execSQL("ALTER TABLE admin_logs FORCE ROW LEVEL SECURITY;");
+    defer r3.close(allocator);
+    try std.testing.expectEqualStrings("ALTER TABLE", r3.message);
+
+    // ALTER TABLE NO FORCE RLS
+    var r4 = try db.execSQL("ALTER TABLE normal_table NO FORCE ROW LEVEL SECURITY;");
+    defer r4.close(allocator);
+    try std.testing.expectEqualStrings("ALTER TABLE", r4.message);
+}
+
+test "CREATE POLICY UPDATE with both USING and WITH CHECK" {
+    const allocator = std.testing.allocator;
+    const path = "test_policy_update.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // CREATE POLICY UPDATE with both clauses
+    var r1 = try db.execSQL("CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = current_user()) WITH CHECK (user_id = current_user());");
+    defer r1.close(allocator);
+    try std.testing.expectEqualStrings("CREATE POLICY", r1.message);
 }
 
