@@ -869,6 +869,68 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
 ---
 
+### v1.10.0 — Mouse & Gamepad Input (status: READY)
+
+**sailor v1.10.0 released** (2026-03-12) — Mouse and gamepad input support
+
+- **New features**: Mouse event handling, widget-level mouse interaction, gamepad/controller support, touch gestures, input mapping
+- **Impact on silica**: MEDIUM — Mouse support useful for interactive SQL shell
+  - Click to select tables/columns in schema browser
+  - Scroll through large query results with mouse wheel
+  - Drag column borders to resize result table columns
+  - Gamepad support not relevant for SQL shell
+- [ ] `build.zig.zon`에 sailor v1.10.0 의존성 업데이트
+- [ ] Consider mouse interaction for schema browser and result table widgets
+
+### v1.11.0 — Terminal Graphics & Effects (status: READY)
+
+**sailor v1.11.0 released** (2026-03-12) — Terminal graphics protocols and visual effects
+
+- **New features**: Sixel/Kitty graphics protocols, animated transitions, particle effects, blur/transparency
+- **Impact on silica**: LOW — Graphics effects not essential for SQL shell
+  - Sixel/Kitty could display BLOB images stored in database
+  - Particle effects for successful query execution
+  - Transitions for smoother navigation between schema/results views
+- [ ] `build.zig.zon`에 sailor v1.11.0 의존성 업데이트
+- [ ] (Optional) Add transitions for smoother view switching
+
+### v1.12.0 — Enterprise & Accessibility (status: READY)
+
+**sailor v1.12.0 released** (2026-03-13) — Enterprise features and accessibility
+
+- **New features**: Session recording/playback, audit logging, high contrast themes, screen reader support, keyboard navigation
+- **Impact on silica**: HIGH — Enterprise features critical for production SQL clients
+  - Session recording enables reproducing SQL shell bugs from user reports
+  - Audit logging tracks SQL queries for compliance (GDPR, SOC2, HIPAA)
+  - High contrast themes for accessibility
+  - Screen reader support for visually impaired database administrators
+- [ ] `build.zig.zon`에 sailor v1.12.0 의존성 업데이트
+- [ ] Implement audit logging for SQL queries (CRITICAL for production use)
+- [ ] Enable high contrast themes for SQL shell
+- [ ] 기존 테스트 전체 통과 확인
+
+### v1.13.0 — Advanced Text Editing & Rich Input (status: READY)
+
+**sailor v1.13.0 released** (2026-03-14) — Multi-cursor editing and rich text input
+
+- **New features**: Syntax highlighting, code editor widget, autocomplete widget, multi-cursor editing, rich text input
+- **Impact on silica**: VERY HIGH — Directly improves SQL editing experience
+  - Syntax highlighting for SQL queries (keywords, strings, numbers, comments)
+  - Code editor widget for multi-line SQL queries with line numbers and undo/redo
+  - Autocomplete widget for SQL keyword/table/column completion (CRITICAL for UX)
+  - Multi-cursor editing for bulk SQL updates (update multiple values simultaneously)
+  - Rich text input for query comments and documentation
+- [ ] `build.zig.zon`에 sailor v1.13.0 의존성 업데이트
+- [ ] Integrate code editor widget for SQL query input (HIGH PRIORITY)
+- [ ] Add SQL syntax highlighting lexer
+- [ ] Integrate autocomplete widget for SQL completion (CRITICAL)
+- [ ] (Optional) Use multi-cursor for bulk UPDATE statements
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: PRIORITY UPGRADE — Code editor and autocomplete widgets are game-changers for SQL shell user experience.
+
+---
+
 ## zuda Migration
 
 silica는 현재 자체 구현한 자료구조/알고리즘을 `zuda` 라이브러리(https://github.com/yusa-imit/zuda)로 점진적으로 대체할 예정이다.
