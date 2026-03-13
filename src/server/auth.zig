@@ -413,3 +413,119 @@ test "SCRAM-SHA-256 - empty password" {
     const wrong = try verifyPasswordScram(stored, "password");
     try std.testing.expect(!wrong);
 }
+
+test "MD5 - very long password" {
+    const allocator = std.testing.allocator;
+
+    // 1024-character password (boundary test)
+    var long_password: [1024]u8 = undefined;
+    @memset(&long_password, 'a');
+
+    const stored = try storePasswordMd5(allocator, &long_password, "user");
+    defer allocator.free(stored);
+
+    // Should still produce valid hash
+    try std.testing.expect(std.mem.startsWith(u8, stored, "md5"));
+    try std.testing.expectEqual(35, stored.len);
+
+    // Verify with same long password
+    var random = std.Random.DefaultPrng.init(12345);
+    const salt = generateMd5Salt(random.random());
+    const hash = try hashPasswordMd5(allocator, &long_password, "user", salt);
+    defer allocator.free(hash);
+    const verified = try verifyPasswordMd5(allocator, hash, &long_password, "user", salt);
+    try std.testing.expect(verified);
+}
+
+test "MD5 - special characters in password" {
+    const allocator = std.testing.allocator;
+
+    const special_password = "p@$$w0rd!#%^&*(){}[]<>?/\\|";
+    const stored = try storePasswordMd5(allocator, special_password, "alice");
+    defer allocator.free(stored);
+
+    var random = std.Random.DefaultPrng.init(54321);
+    const salt = generateMd5Salt(random.random());
+    const hash = try hashPasswordMd5(allocator, special_password, "alice", salt);
+    defer allocator.free(hash);
+    const verified = try verifyPasswordMd5(allocator, hash, special_password, "alice", salt);
+    try std.testing.expect(verified);
+
+    // Wrong password should fail
+    const wrong = try verifyPasswordMd5(allocator, hash, "different", "alice", salt);
+    try std.testing.expect(!wrong);
+}
+
+test "MD5 - empty username" {
+    const allocator = std.testing.allocator;
+
+    const stored = try storePasswordMd5(allocator, "password", "");
+    defer allocator.free(stored);
+
+    // Should produce valid hash even with empty username
+    try std.testing.expect(std.mem.startsWith(u8, stored, "md5"));
+}
+
+test "SCRAM-SHA-256 - very long password" {
+    const allocator = std.testing.allocator;
+
+    // 2048-character password (extreme boundary test)
+    var long_password: [2048]u8 = undefined;
+    for (0..2048) |i| {
+        long_password[i] = @as(u8, @intCast((i % 26) + 'a'));
+    }
+
+    const stored = try storePasswordScram(allocator, &long_password, .{});
+    defer allocator.free(stored);
+
+    // Verify with same long password
+    const verified = try verifyPasswordScram(stored, &long_password);
+    try std.testing.expect(verified);
+
+    // Slight variation should fail
+    long_password[1024] = 'Z';
+    const wrong = try verifyPasswordScram(stored, &long_password);
+    try std.testing.expect(!wrong);
+}
+
+test "SCRAM-SHA-256 - special characters in password" {
+    const allocator = std.testing.allocator;
+
+    const special_password = "αβγδε!@#$%^&*(){}[]<>?/\\|\"':;,.~`\n\t\r";
+    const stored = try storePasswordScram(allocator, special_password, .{});
+    defer allocator.free(stored);
+
+    const verified = try verifyPasswordScram(stored, special_password);
+    try std.testing.expect(verified);
+
+    // Different special chars should fail
+    const wrong = try verifyPasswordScram(stored, "different!@#$");
+    try std.testing.expect(!wrong);
+}
+
+test "MD5 - username and password with null bytes" {
+    const allocator = std.testing.allocator;
+
+    // Passwords/usernames should not contain null bytes in practice,
+    // but the hash function should handle them correctly
+    const password_with_null = "pass\x00word";
+    const username_with_null = "user\x00name";
+
+    const stored = try storePasswordMd5(allocator, password_with_null, username_with_null);
+    defer allocator.free(stored);
+
+    // Should produce valid hash
+    try std.testing.expect(std.mem.startsWith(u8, stored, "md5"));
+}
+
+test "SCRAM-SHA-256 - password with embedded nulls" {
+    const allocator = std.testing.allocator;
+
+    const password_with_null = "pass\x00word\x00test";
+    const stored = try storePasswordScram(allocator, password_with_null, .{});
+    defer allocator.free(stored);
+
+    // Should handle null bytes correctly
+    const verified = try verifyPasswordScram(stored, password_with_null);
+    try std.testing.expect(verified);
+}
