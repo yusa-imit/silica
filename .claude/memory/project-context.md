@@ -249,22 +249,41 @@
 - **Milestone 15**: Wire Protocol ✅ (15A Message Types, 15B Simple Query, 15C Extended Query)
 - **Milestone 16**: Server & Connection Management ✅ (16A TCP Server, 16B Session State, 16C Authentication, 16D Graceful Shutdown)
 - **Milestone 17**: Authorization (RBAC) IN PROGRESS
-  - [x] 17A Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
-  - [x] 17A AST: CreateRoleStmt, DropRoleStmt, AlterRoleStmt, RoleOptions struct
-  - [x] 17A Parser: parseCreateRole, parseDropRole, parseAlterRole with full syntax support
-  - [x] 17A Catalog: Role storage with 'role:' key prefix (RoleInfo, createRole, getRole, dropRole, roleExists, alterRole, listRoles)
-  - [ ] 17A Analyzer: Role statement validation
-  - [ ] 17A Planner: Role DDL planning (PlanType.transaction)
-  - [ ] 17A Engine: Role DDL integration (execSQL switch)
-  - [ ] 17B GRANT/REVOKE on database objects
-  - [ ] 17C Role inheritance and membership
-  - [ ] 17D Row-level security policies
+  - **17A Role Catalog** ✅ COMPLETE
+    - [x] Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
+    - [x] AST: CreateRoleStmt, DropRoleStmt, AlterRoleStmt, RoleOptions struct
+    - [x] Parser: parseCreateRole, parseDropRole, parseAlterRole with full syntax support
+    - [x] Catalog: Role storage with 'role:' key prefix (RoleInfo, createRole, getRole, dropRole, roleExists, alterRole, listRoles)
+    - [x] Analyzer: Role statement validation (analyzeCreateRole, analyzeDropRole, analyzeAlterRole)
+    - [x] Planner: Role DDL planning (PlanType.transaction)
+    - [x] Engine: Role DDL integration (CREATE/DROP/ALTER ROLE in execSQL)
+  - **17B GRANT/REVOKE on tables** ✅ COMPLETE
+    - [x] Tokenizer: GRANT, REVOKE, PRIVILEGES keywords
+    - [x] AST: GrantStmt, RevokeStmt, Privilege enum, ObjectType enum
+    - [x] Parser: parseGrant, parseRevoke with full syntax (8 tests)
+    - [x] Catalog: Permission storage with bitmask (grantPermission, revokePermission, hasPermission, 11 tests)
+    - [x] Analyzer: GRANT/REVOKE validation (analyzeGrant, analyzeRevoke, 8 tests)
+    - [x] Planner: GRANT/REVOKE planning (7 tests)
+    - [x] Engine: GRANT/REVOKE DDL integration (3 integration tests)
+  - **17C Role Membership** ✅ COMPLETE
+    - [x] Tokenizer, AST, Parser: GRANT/REVOKE role TO/FROM members
+    - [x] Catalog: grantRole, revokeRole, hasRoleMembership with WITH ADMIN OPTION
+    - [x] Analyzer, Planner, Engine: Full integration (5 integration tests)
+  - **17D Row-Level Security** IN PROGRESS
+    - [x] Tokenizer: POLICY, SECURITY, LEVEL, PERMISSIVE, RESTRICTIVE, FORCE, USING keywords (7 keywords, 3 tests)
+    - [x] AST: CreatePolicyStmt, DropPolicyStmt, AlterTableRLSStmt, PolicyCommand, PolicyType (8 tests)
+    - [x] Parser: CREATE POLICY, DROP POLICY, ALTER TABLE RLS (28 tests: 11 basic + 10 edge cases for CREATE, 3 DROP, 5 ALTER)
+    - [x] Analyzer: analyzeCreatePolicy, analyzeDropPolicy, analyzeAlterTableRLS (18 comprehensive tests)
+    - [x] Catalog: PolicyInfo, createPolicy, getPolicy, dropPolicy, policyExists, listPoliciesForTable (13 tests: basic/restrictive, all commands, IF EXISTS, duplicate error, list by table)
+    - [ ] Planner: Policy DDL planning
+    - [ ] Engine: Policy DDL integration + enforcement
   - [ ] 17E information_schema views
   - [ ] 17F Default privileges
 
-## Test Coverage (as of 2026-03-12 06:00 UTC)
-- tokenizer.zig: 92 tests (includes 10 role keyword tests)
-- ast.zig: 29 tests (includes 6 role AST tests)
-- parser.zig: 309 tests (includes 14 role parser tests)
-- catalog.zig: 99 tests (includes 14 role catalog tests: basic, all options, NOLOGIN, OR REPLACE, duplicate, drop, IF EXISTS, roleExists, alterRole, listRoles, getRole error)
-- Total: 1715 tests (all passing)
+## Test Coverage (as of 2026-03-13 14:00 UTC)
+- tokenizer.zig: 78 tests (includes role, GRANT/REVOKE, RLS keywords)
+- ast.zig: 26 tests (includes role, GRANT/REVOKE, RLS AST nodes)
+- parser.zig: 229 tests (228 passing + 1 skipped; includes role, GRANT/REVOKE, RLS parsers)
+- catalog.zig: 110 tests (includes 13 RLS policy catalog tests + role/permission tests)
+- analyzer.zig: 84 tests (includes RLS analyzer validation)
+- Total: 1757 tests (1756 passing, 1 skipped: RLS subquery test triggering bug #1)
