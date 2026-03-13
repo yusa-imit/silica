@@ -454,3 +454,120 @@ test "WalSender read WAL chunk when no data" {
 
     try std.testing.expectEqual(@as(?usize, null), result);
 }
+
+// Edge case tests
+
+test "WalSender — very large LSN values" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = try slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Test with LSN near u64 max
+    const large_lsn: LSN = std.math.maxInt(u64) - 1000;
+    sender.updateWalEnd(large_lsn);
+    try std.testing.expectEqual(large_lsn, sender.wal_end);
+
+    // Create WAL data message with large LSN
+    var msg = sender.createWalDataMessage(large_lsn - 100, large_lsn, "test");
+    try std.testing.expectEqual(large_lsn - 100, msg.wal_data.start_lsn);
+    try std.testing.expectEqual(large_lsn, msg.wal_data.end_lsn);
+}
+
+test "WalSender — very long system ID and database name" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = try slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    // 1024-byte system ID
+    var long_system_id: [1024]u8 = undefined;
+    @memset(&long_system_id, 'x');
+    const system_id_str = long_system_id[0..];
+
+    var sender = try WalSender.init(allocator, &slot_mgr, system_id_str, 1, .{});
+    defer sender.deinit();
+
+    // 1024-byte database name
+    var long_db_name: [1024]u8 = undefined;
+    @memset(&long_db_name, 'd');
+    const db_name_str = long_db_name[0..];
+
+    var msg = try sender.createSystemInfoMessage(allocator, db_name_str);
+    defer {
+        allocator.free(msg.system_info.system_id);
+        allocator.free(msg.system_info.database_name);
+    }
+
+    try std.testing.expectEqualStrings(system_id_str, msg.system_info.system_id);
+    try std.testing.expectEqualStrings(db_name_str, msg.system_info.database_name);
+}
+
+test "WalSender — zero keepalive interval" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = try slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 0 });
+    defer sender.deinit();
+
+    // With zero interval, should always return true
+    try std.testing.expectEqual(true, sender.shouldSendKeepalive());
+}
+
+test "WalSender — multiple consecutive keepalive calls" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = try slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 50 });
+    defer sender.deinit();
+
+    // Wait for interval
+    std.time.sleep(60 * std.time.ns_per_ms);
+
+    // First call should trigger
+    try std.testing.expectEqual(true, sender.shouldSendKeepalive());
+    _ = sender.createKeepaliveMessage(false);
+
+    // Immediately after, should not trigger
+    try std.testing.expectEqual(false, sender.shouldSendKeepalive());
+
+    // Call again immediately
+    try std.testing.expectEqual(false, sender.shouldSendKeepalive());
+}
+
+test "WalSender — empty WAL data chunk" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = try slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Create message with empty data
+    var msg = sender.createWalDataMessage(0, 0, "");
+    try std.testing.expectEqual(@as(usize, 0), msg.wal_data.data.len);
+    try std.testing.expectEqual(@as(LSN, 0), msg.wal_data.start_lsn);
+    try std.testing.expectEqual(@as(LSN, 0), msg.wal_data.end_lsn);
+}
+
+test "WalSender — stop replication when not active" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = try slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Stop without starting (should be no-op)
+    sender.stopReplication();
+    try std.testing.expectEqual(@as(?[]const u8, null), sender.active_slot_name);
+}

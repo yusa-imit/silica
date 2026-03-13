@@ -457,3 +457,145 @@ test "WalReceiver continuous WAL application" {
     try receiver.processWalData(250, 300, "chunk3");
     try std.testing.expectEqual(@as(LSN, 300), receiver.apply_lsn);
 }
+
+// Edge case tests
+
+test "WalReceiver — very large replication lag" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    receiver.apply_lsn = 1000;
+
+    // Test with very large primary WAL end (near u64 max)
+    const large_lsn: LSN = std.math.maxInt(u64) - 100;
+    const lag = receiver.getReplicationLag(large_lsn);
+    try std.testing.expectEqual(@as(i64, @as(i64, @intCast(large_lsn)) - 1000), lag);
+}
+
+test "WalReceiver — empty primary conninfo" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    try std.testing.expectEqualStrings("", receiver.primary_conninfo);
+}
+
+test "WalReceiver — multiple disconnect calls" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    try receiver.connect(0);
+    try std.testing.expectEqual(true, receiver.connected);
+
+    receiver.disconnect();
+    try std.testing.expectEqual(false, receiver.connected);
+
+    // Second disconnect should be no-op
+    receiver.disconnect();
+    try std.testing.expectEqual(false, receiver.connected);
+}
+
+test "WalReceiver — process WAL data with zero-length data" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    try receiver.connect(0);
+
+    // Process empty chunk
+    try receiver.processWalData(0, 0, "");
+    try std.testing.expectEqual(@as(LSN, 0), receiver.apply_lsn);
+}
+
+test "WalReceiver — very long slot name" {
+    const allocator = std.testing.allocator;
+
+    // 1024-byte slot name
+    var long_slot_name: [1024]u8 = undefined;
+    @memset(&long_slot_name, 's');
+    const slot_name_str = long_slot_name[0..];
+
+    var msg = try WalReceiver.createStartReplicationMessage(allocator, slot_name_str, 1000);
+    defer allocator.free(msg.start_replication.slot_name);
+
+    try std.testing.expectEqualStrings(slot_name_str, msg.start_replication.slot_name);
+    try std.testing.expectEqual(@as(LSN, 1000), msg.start_replication.start_lsn);
+}
+
+test "WalReceiver — zero status interval" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+        .status_interval_ms = 0,
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    // With zero interval, should always return true
+    try std.testing.expectEqual(true, receiver.shouldSendStatus());
+}
+
+test "WalReceiver — keepalive with reply not requested" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    const reply_requested = receiver.processKeepalive(5000, false);
+    try std.testing.expectEqual(false, reply_requested);
+}
+
+test "WalReceiver — process WAL data updates all LSN fields" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    try receiver.connect(0);
+
+    try receiver.processWalData(0, 1000, "test-data");
+
+    // All LSN fields should be updated
+    try std.testing.expectEqual(@as(LSN, 1000), receiver.write_lsn);
+    try std.testing.expectEqual(@as(LSN, 1000), receiver.flush_lsn);
+    try std.testing.expectEqual(@as(LSN, 1000), receiver.apply_lsn);
+}
