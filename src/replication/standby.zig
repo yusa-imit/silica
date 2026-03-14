@@ -271,3 +271,115 @@ test "StandbyCoordinator warm standby mode (future feature)" {
     const result = coord.registerReadOnlyTxn(100);
     try std.testing.expectError(StandbyCoordinator.Error.NotInStandbyMode, result);
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+test "StandbyCoordinator concurrent txn registration" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    // Register many transactions concurrently (simulated)
+    try coord.registerReadOnlyTxn(1);
+    try coord.registerReadOnlyTxn(2);
+    try coord.registerReadOnlyTxn(3);
+    try coord.registerReadOnlyTxn(4);
+    try coord.registerReadOnlyTxn(5);
+
+    try std.testing.expectEqual(@as(usize, 5), coord.getActiveReadOnlyTxnCount());
+
+    // Unregister in different order
+    coord.unregisterReadOnlyTxn(3);
+    coord.unregisterReadOnlyTxn(1);
+    coord.unregisterReadOnlyTxn(5);
+
+    try std.testing.expectEqual(@as(usize, 2), coord.getActiveReadOnlyTxnCount());
+}
+
+test "StandbyCoordinator large transaction ID" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    const large_txn_id: u64 = 0xFFFFFFFFFFFFFFFF;
+    try coord.registerReadOnlyTxn(large_txn_id);
+    try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
+
+    coord.unregisterReadOnlyTxn(large_txn_id);
+    try std.testing.expectEqual(@as(usize, 0), coord.getActiveReadOnlyTxnCount());
+}
+
+test "StandbyCoordinator multiple WAL apply cycles" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    // Cycle 1
+    coord.beginWalApply();
+    try std.testing.expect(coord.wal_apply_in_progress);
+    coord.endWalApply();
+    try std.testing.expect(!coord.wal_apply_in_progress);
+
+    // Cycle 2
+    coord.beginWalApply();
+    try std.testing.expect(coord.wal_apply_in_progress);
+    coord.endWalApply();
+    try std.testing.expect(!coord.wal_apply_in_progress);
+
+    // Cycle 3
+    coord.beginWalApply();
+    try std.testing.expect(coord.wal_apply_in_progress);
+    coord.endWalApply();
+    try std.testing.expect(!coord.wal_apply_in_progress);
+}
+
+test "StandbyCoordinator register duplicate transaction ID" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    try coord.registerReadOnlyTxn(100);
+    try coord.registerReadOnlyTxn(100); // Duplicate allowed (same txn could have multiple snapshots)
+    try std.testing.expectEqual(@as(usize, 2), coord.getActiveReadOnlyTxnCount());
+
+    coord.unregisterReadOnlyTxn(100); // Removes first instance
+    try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
+}
+
+test "StandbyCoordinator cancelConflictingQuery" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    try coord.registerReadOnlyTxn(100);
+    try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
+
+    coord.cancelConflictingQuery(100);
+    try std.testing.expectEqual(@as(usize, 0), coord.getActiveReadOnlyTxnCount());
+}
+
+test "StandbyCoordinator empty state operations" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    // Operations on empty state should be no-op or return expected values
+    try std.testing.expect(!coord.hasActiveReadOnlyTxns());
+    try std.testing.expectEqual(@as(usize, 0), coord.getActiveReadOnlyTxnCount());
+    coord.unregisterReadOnlyTxn(999); // No-op
+    coord.cancelConflictingQuery(999); // No-op
+}
+
+test "StandbyCoordinator conflict check with zero txn ID" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    const conflict = try coord.checkConflict(0);
+    try std.testing.expect(!conflict);
+}
+
+test "StandbyCoordinator register after unregister same txn" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    try coord.registerReadOnlyTxn(100);
+    coord.unregisterReadOnlyTxn(100);
+    try coord.registerReadOnlyTxn(100); // Re-register same ID
+    try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
+}
