@@ -135,6 +135,23 @@ pub const StandbyCoordinator = struct {
         self.unregisterReadOnlyTxn(txn_id);
         // TODO: Signal the connection handler to abort this transaction
     }
+
+    /// Transition from standby mode to read-write (promotion)
+    pub fn transitionToReadWrite(self: *StandbyCoordinator) Error!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Wait for active read-only transactions to finish
+        // Production version would use a condition variable
+        if (self.read_only_txns.items.len > 0) {
+            // For now, just clear them (in production, wait or cancel)
+            self.read_only_txns.clearRetainingCapacity();
+        }
+
+        // Transition to primary mode (disabled standby)
+        self.mode = .disabled;
+        self.wal_apply_in_progress = false;
+    }
 };
 
 // ============================================================================
@@ -406,4 +423,47 @@ test "StandbyCoordinator — memory stress test with many transactions" {
     // Verify we can register again after mass cleanup
     try coord.registerReadOnlyTxn(2000);
     try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
+}
+
+test "StandbyCoordinator — transitionToReadWrite from hot standby" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    try std.testing.expect(coord.isStandbyMode());
+    try std.testing.expect(coord.isHotStandby());
+
+    // Transition to read-write
+    try coord.transitionToReadWrite();
+
+    try std.testing.expect(!coord.isStandbyMode());
+    try std.testing.expect(!coord.isHotStandby());
+    try std.testing.expectEqual(StandbyCoordinator.StandbyMode.disabled, coord.mode);
+}
+
+test "StandbyCoordinator — transitionToReadWrite clears active transactions" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    // Register some transactions
+    try coord.registerReadOnlyTxn(1);
+    try coord.registerReadOnlyTxn(2);
+    try std.testing.expectEqual(@as(usize, 2), coord.getActiveReadOnlyTxnCount());
+
+    // Transition to read-write (should clear active transactions)
+    try coord.transitionToReadWrite();
+
+    try std.testing.expectEqual(@as(usize, 0), coord.getActiveReadOnlyTxnCount());
+}
+
+test "StandbyCoordinator — transitionToReadWrite clears WAL apply flag" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    coord.beginWalApply();
+    try std.testing.expect(coord.wal_apply_in_progress);
+
+    // Transition to read-write (should clear WAL apply flag)
+    try coord.transitionToReadWrite();
+
+    try std.testing.expect(!coord.wal_apply_in_progress);
 }
