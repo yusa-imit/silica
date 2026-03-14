@@ -2,99 +2,45 @@
 
 ## Current Status
 
-- **Latest release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current phase**: Phase 5 — Advanced SQL (per CLAUDE.md header)
-- **Note**: Phase 4 (MVCC) status may need verification — check git tags and test status
-- **Blockers**: None
+- **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
+- **Current development**: Phase 9 — Streaming Replication (Milestone 18 complete, Milestone 19 upcoming)
+- **Tests**: 1773+ passing, 0 memory leaks
 - **Branch**: `main`
+- **Blockers**: zuda migrations blocked until zuda releases target modules
+- **Known bugs**: #3 (Flaky AutoVacuumDaemon test)
+
+> **Note**: Phases 4-8 were completed iteratively without tagged releases. All work is on `main` branch. Git tags for v0.4.0+ will be created when appropriate release points are determined.
 
 ---
 
 ## Active Milestones
 
-### Phase 4: MVCC & Full Transactions
+### Milestone 19: Replication Operations (Phase 9)
 
-**Milestone 6**: MVCC Core
-- Tuple versioning with `(xmin, xmax)` transaction IDs
-- Transaction ID management
-- Snapshot isolation
-- Visibility rules
-- READ COMMITTED / REPEATABLE READ isolation levels
-- Row-level locking
-- Concurrent writer conflict detection
+- [ ] Synchronous replication mode
+- [ ] Replica promotion (pg_promote equivalent)
+- [ ] Cascading replication
+- [ ] Base backup (pg_basebackup equivalent)
+- [ ] Replication monitoring (pg_stat_replication equivalent)
 
-**Milestone 7**: VACUUM & SSI
-- Dead tuple reclamation
-- Auto-vacuum
-- Free space map
-- SERIALIZABLE via SSI (rw-antidependency tracking)
-- Deadlock detection
-- Savepoints
+### Milestone 20: Statistics & Cost Model (Phase 10)
 
-### Phase 5: Advanced SQL (CURRENT per CLAUDE.md)
+- [ ] ANALYZE command (foundation started — Milestone 20A)
+- [ ] Histograms for column statistics
+- [ ] Selectivity estimation
+- [ ] I/O + CPU cost model
 
-**Milestone 8**: Views & CTEs
-- Views (regular, materialized, updatable)
-- CTEs (`WITH`, `WITH RECURSIVE`)
-- Set operations (UNION/INTERSECT/EXCEPT)
-- `DISTINCT ON`
+### Milestone 21: Advanced Optimization (Phase 10)
 
-**Milestone 9**: Window Functions
-- `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`
-- Frame specs (ROWS/RANGE/GROUPS)
-- WindowAgg operator
+- [ ] DP join ordering
+- [ ] Hash/merge join selection
+- [ ] Subquery decorrelation
+- [ ] Index-only scans
+- [ ] EXPLAIN ANALYZE
 
-**Milestone 10**: Advanced Data Types
-- DATE/TIME/TIMESTAMP/INTERVAL
-- NUMERIC/DECIMAL
-- UUID, SERIAL
-- ARRAY, ENUM
-- Domain types, type coercion matrix
+---
 
-### Phase 6: JSON & Full-Text Search
-
-**Milestone 11**: JSON/JSONB
-- Binary storage, operators (`->`, `->>`, `@>`, `?`), functions
-- GIN index, SQL/JSON path
-
-**Milestone 12**: Full-Text Search
-- TSVECTOR/TSQUERY, `@@` operator, ranking
-- GIN index, text search configs
-
-### Phase 7: Stored Functions & Triggers
-
-**Milestone 13**: Stored Functions
-- SFL (Silica Function Language), scalar & set-returning, volatility categories
-
-**Milestone 14**: Triggers
-- Row/statement-level, BEFORE/AFTER/INSTEAD OF, OLD/NEW references, WHEN conditions
-
-### Phase 8: Client-Server & Wire Protocol
-
-**Milestone 15**: PostgreSQL Wire Protocol v3
-- Simple & extended query protocol, prepared statements, COPY, TLS
-
-**Milestone 16**: Server & Connection Management
-- Async I/O event loop, session state, authentication (SCRAM-SHA-256), `silica server` CLI
-
-**Milestone 17**: Authorization (RBAC)
-- Roles, GRANT/REVOKE, row-level security, `information_schema`
-
-### Phase 9: Streaming Replication
-
-**Milestone 18**: WAL Sender/Receiver
-- Replication slots, hot standby, replication protocol
-
-**Milestone 19**: Replication Operations
-- Synchronous mode, replica promotion, cascading replication, base backup, monitoring
-
-### Phase 10: Cost-Based Optimizer
-
-**Milestone 20**: Statistics & Cost Model
-- `ANALYZE`, histograms, selectivity estimation, I/O + CPU cost model
-
-**Milestone 21**: Advanced Optimization
-- DP join ordering, hash/merge join selection, subquery decorrelation, index-only scans, `EXPLAIN ANALYZE`
+## Upcoming Milestones
 
 ### Phase 11: Additional Index Types
 
@@ -116,11 +62,39 @@
 
 ## Completed Milestones
 
-| Phase | Name | Release | Summary |
-|-------|------|---------|---------|
-| Phase 1 | Storage Foundation | v0.1.0 | Page Manager, B+Tree, Buffer Pool, Overflow, CRC32C, Varint |
-| Phase 2 | SQL Core | v0.2.0 | Tokenizer, Parser, AST, Analyzer, Catalog, Planner, Optimizer, Executor, Engine, secondary indexes |
-| Phase 3 | WAL & Basic Transactions | v0.3.0 | WAL frame writer, commit, rollback, checkpoint, recovery, buffer pool WAL routing |
+| Phase | Milestone | Name | Release | Summary |
+|-------|-----------|------|---------|---------|
+| Phase 1 | 1-2 | Storage Foundation | v0.1.0 | Page Manager, B+Tree, Buffer Pool, Overflow, CRC32C, Varint |
+| Phase 2 | 3-4 | SQL Core | v0.2.0 | Tokenizer, Parser, AST, Analyzer, Catalog, Planner, Optimizer, Executor, Engine, secondary indexes |
+| Phase 3 | 5 | WAL & Basic Transactions | v0.3.0 | WAL frame writer, commit, rollback, checkpoint, recovery, buffer pool WAL routing |
+| Phase 4 | 6 | MVCC Core | — | Tuple versioning (xmin, xmax), transaction ID management, snapshot isolation, visibility rules, READ COMMITTED / REPEATABLE READ, row-level locking, concurrent writer conflict detection |
+| Phase 4 | 7 | VACUUM & SSI | — | Dead tuple reclamation, auto-vacuum, free space map, SERIALIZABLE via SSI (rw-antidependency tracking), deadlock detection, savepoints |
+| Phase 5 | 8 | Views & CTEs | — | Views (regular, materialized, updatable), CTEs (WITH, WITH RECURSIVE), set operations (UNION/INTERSECT/EXCEPT), DISTINCT ON |
+| Phase 5 | 9 | Window Functions | — | ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, frame specs (ROWS/RANGE/GROUPS), WindowAgg operator |
+| Phase 5 | 10 | Advanced Data Types | — | DATE/TIME/TIMESTAMP/INTERVAL, NUMERIC/DECIMAL, UUID, SERIAL, ARRAY, ENUM, domain types, type coercion matrix |
+| Phase 6 | 11 | JSON/JSONB | — | Binary storage, operators (->/->>/@>/?), functions, GIN index, SQL/JSON path |
+| Phase 6 | 12 | Full-Text Search | — | TSVECTOR/TSQUERY, @@ operator, ranking, GIN index, text search configs |
+| Phase 7 | 13 | Stored Functions | — | SFL (Silica Function Language), scalar & set-returning, volatility categories |
+| Phase 7 | 14 | Triggers | — | Row/statement-level, BEFORE/AFTER/INSTEAD OF, OLD/NEW references, WHEN conditions |
+| Phase 8 | 15 | Wire Protocol v3 | — | Simple & extended query protocol, prepared statements, COPY, TLS |
+| Phase 8 | 16 | Server & Connection Mgmt | — | Async I/O event loop, session state, authentication (SCRAM-SHA-256), `silica server` CLI |
+| Phase 8 | 17 | Authorization (RBAC) | — | Roles, GRANT/REVOKE, row-level security (RLS), information_schema |
+| Phase 9 | 18 | WAL Sender/Receiver | — | Replication protocol (18A), replication slot management (18B), WAL sender process (18C), WAL receiver process (18D), hot standby coordinator (18E) |
+
+### Closed Issues
+
+| # | Title | Closed |
+|---|-------|--------|
+| #2 | CI: net.Stream.Writer incompatibility on Linux | 2026-03-11 |
+| #1 | DuplicateKey error when inserting rows across multiple tables | 2026-03-02 |
+
+### Open Issues
+
+| # | Title | Labels | Status |
+|---|-------|--------|--------|
+| #3 | Flaky test: AutoVacuumDaemon — inserts only never trigger vacuum | bug | Open |
+| #4 | feat: migrate to zuda v1.0 for B+Tree and LRU cache | enhancement, from:zuda | Blocked on zuda |
+| #5 | feat: migrate data structures to zuda v1.0 | enhancement, from:zuda | Blocked on zuda |
 
 ---
 
@@ -163,7 +137,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.11.0 | terminal graphics | DONE | Particle effects, blur/transparency, Sixel/Kitty, transitions |
 | v1.12.0 | enterprise & accessibility | READY | Session recording, audit logging, WCAG AAA themes, screen reader |
 | v1.13.0 | text editing & rich input | READY | Syntax highlighting, code editor, autocomplete, multi-cursor |
-| v1.13.1 | bug fix (data viz overflow) | N/A | Integer overflow fix; no impact on silica currently |
+| v1.13.1 | bug fix (data viz overflow) | READY | Integer overflow fix; no direct impact on silica currently |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: CompletionPopup for SQL keyword/table/column completion
