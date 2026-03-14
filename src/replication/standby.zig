@@ -383,3 +383,27 @@ test "StandbyCoordinator register after unregister same txn" {
     try coord.registerReadOnlyTxn(100); // Re-register same ID
     try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
 }
+
+test "StandbyCoordinator — memory stress test with many transactions" {
+    var coord = try StandbyCoordinator.init(std.testing.allocator, .hot);
+    defer coord.deinit();
+
+    // Register 1000 transactions
+    var i: u64 = 0;
+    while (i < 1000) : (i += 1) {
+        try coord.registerReadOnlyTxn(i);
+    }
+    try std.testing.expectEqual(@as(usize, 1000), coord.getActiveReadOnlyTxnCount());
+
+    // Unregister all transactions
+    i = 0;
+    while (i < 1000) : (i += 1) {
+        coord.unregisterReadOnlyTxn(i);
+    }
+    try std.testing.expectEqual(@as(usize, 0), coord.getActiveReadOnlyTxnCount());
+    try std.testing.expect(!coord.hasActiveReadOnlyTxns());
+
+    // Verify we can register again after mass cleanup
+    try coord.registerReadOnlyTxn(2000);
+    try std.testing.expectEqual(@as(usize, 1), coord.getActiveReadOnlyTxnCount());
+}
