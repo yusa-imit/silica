@@ -3,8 +3,8 @@
 ## Current Status
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current development**: Phase 9 — Streaming Replication (Milestone 18 complete, Milestone 19 upcoming)
-- **Tests**: 1994/1995 passing (1 skipped), 0 memory leaks
+- **Current development**: Phase 9 — Streaming Replication (Milestone 18 complete, Milestone 19 in progress: 19A-19C complete)
+- **Tests**: 2059/2060 passing (1 skipped), 0 memory leaks
 - **Branch**: `main`
 - **Blockers**: zuda migrations blocked until zuda releases target modules
 - **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
@@ -17,11 +17,13 @@
 
 ### Milestone 19: Replication Operations (Phase 9)
 
-- [ ] Synchronous replication mode
-- [ ] Replica promotion (pg_promote equivalent)
-- [ ] Cascading replication
-- [ ] Base backup (pg_basebackup equivalent)
-- [ ] Replication monitoring (pg_stat_replication equivalent)
+- [x] Synchronous replication mode (19A complete)
+- [x] Replica promotion (pg_promote equivalent) (19B complete)
+- [x] Cascading replication (19C complete)
+- [ ] Base backup (pg_basebackup equivalent) (19D)
+- [ ] Replication monitoring (pg_stat_replication equivalent) (19E)
+- [ ] Replication lag metrics and alerting hooks (19F)
+- [ ] Switchover procedure: controlled primary/replica swap (19G)
 
 ### Milestone 20: Statistics & Cost Model (Phase 10)
 
