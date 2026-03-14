@@ -40,6 +40,9 @@ pub const replication_slot = @import("replication/slot.zig");
 pub const replication_sender = @import("replication/sender.zig");
 pub const replication_receiver = @import("replication/receiver.zig");
 pub const replication_standby = @import("replication/standby.zig");
+pub const replication_sync = @import("replication/sync.zig");
+pub const replication_promotion = @import("replication/promotion.zig");
+pub const replication_cascade = @import("replication/cascade.zig");
 
 // Note: Server modules (wire, connection, server) are not imported here
 // to avoid circular dependencies (they import "silica"). Their tests
