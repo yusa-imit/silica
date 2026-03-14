@@ -1216,3 +1216,39 @@ test "Wal WalCorrupt error on truncated header" {
         try testing.expectEqual(error.FileNotFound, err);
     }
 }
+
+test "Wal many frame writes in single commit" {
+    // Verifies that writing many frames works correctly
+    const path = "test_wal_many_frames.db";
+    const wal_path = "test_wal_many_frames.db-wal";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    const page_size: usize = 512;
+
+    // Write 100 different pages before commit
+    var page_id: u32 = 0;
+    while (page_id < 100) : (page_id += 1) {
+        const page_data = try testing.allocator.alloc(u8, page_size);
+        defer testing.allocator.free(page_data);
+        @memset(page_data, @truncate(page_id));
+        try wal.writeFrame(page_id, page_data);
+    }
+
+    // Commit all frames (db_page_count=100)
+    try wal.commit(100);
+
+    // Verify all pages can be read back
+    page_id = 0;
+    while (page_id < 100) : (page_id += 1) {
+        const buf = try testing.allocator.alloc(u8, page_size);
+        defer testing.allocator.free(buf);
+        const found = try wal.readPage(page_id, buf);
+        try testing.expect(found);
+        const expected: u8 = @truncate(page_id);
+        try testing.expectEqual(expected, buf[0]);
+    }
+}

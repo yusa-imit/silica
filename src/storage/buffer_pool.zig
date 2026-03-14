@@ -1235,3 +1235,43 @@ test "BufferPool multiple pin of same page" {
     // Final unpin
     pool.unpinPage(pid, false);
 }
+
+test "BufferPool sequential operations with page reuse" {
+    // Verifies that reusing the same small set of pages works correctly
+    // (simulates high locality workload without actual concurrency)
+    const allocator = std.testing.allocator;
+    const path = "test_bp_page_reuse.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Create 10 pages
+    var pids: [10]u32 = undefined;
+    const raw = try pager.allocPageBuf();
+    defer pager.freePageBuf(raw);
+    for (&pids) |*pid| {
+        pid.* = try pager.allocPage();
+        @memset(raw, 0);
+        const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
+        hdr.serialize(raw[0..PAGE_HEADER_SIZE]);
+        try pager.writePage(pid.*, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 5);
+    defer pool.deinit();
+
+    // Perform many operations reusing the same pages (high locality)
+    var round: usize = 0;
+    while (round < 20) : (round += 1) {
+        for (pids) |pid| {
+            // Fetch, read, unpin
+            const frame = try pool.fetchPage(pid);
+            _ = frame.data[PAGE_HEADER_SIZE];
+            pool.unpinPage(pid, false);
+        }
+    }
+
+    // All operations completed successfully
+    try std.testing.expect(pool.pageCount() <= 5);
+}
