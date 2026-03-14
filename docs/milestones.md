@@ -4,10 +4,10 @@
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
 - **Current development**: Phase 9 — Streaming Replication (Milestone 18 complete, Milestone 19 upcoming)
-- **Tests**: 1773+ passing, 0 memory leaks
+- **Tests**: 1994/1995 passing (1 skipped), 0 memory leaks
 - **Branch**: `main`
 - **Blockers**: zuda migrations blocked until zuda releases target modules
-- **Known bugs**: #3 (Flaky AutoVacuumDaemon test)
+- **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
 
 > **Note**: Phases 4-8 were completed iteratively without tagged releases. All work is on `main` branch. Git tags for v0.4.0+ will be created when appropriate release points are determined.
 
