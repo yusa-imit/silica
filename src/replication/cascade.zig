@@ -374,3 +374,173 @@ test "CascadeCoordinator: cascade depth progression" {
     defer leaf.deinit();
     try testing.expectEqual(@as(u32, 3), leaf.getDownstreamCascadeDepth());
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+test "CascadeCoordinator: forwardWalData on primary (no-op)" {
+    var primary = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .enable_forwarding = true },
+        null,
+        0,
+    );
+    defer primary.deinit();
+
+    const data = [_]u8{ 1, 2, 3, 4 };
+    try primary.forwardWalData(100, 104, &data);
+
+    // Primary has no upstream, so forwarding should be no-op
+    try testing.expectEqual(@as(LSN, 0), primary.last_forwarded_lsn);
+    try testing.expectEqual(CascadeRole.primary, primary.getRole());
+}
+
+test "CascadeCoordinator: forwardWalData on leaf (no-op)" {
+    var leaf = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .enable_forwarding = true },
+        "host=upstream",
+        1,
+    );
+    defer leaf.deinit();
+
+    const data = [_]u8{ 1, 2, 3, 4 };
+    try leaf.forwardWalData(100, 104, &data);
+
+    // Leaf has no downstream, so forwarding should be no-op
+    try testing.expectEqual(@as(LSN, 0), leaf.last_forwarded_lsn);
+    try testing.expectEqual(CascadeRole.leaf, leaf.getRole());
+}
+
+test "CascadeCoordinator: role transition from leaf to intermediate" {
+    var coordinator = try CascadeCoordinator.init(
+        test_allocator,
+        .{},
+        "host=primary",
+        1,
+    );
+    defer coordinator.deinit();
+
+    // Initially a leaf (has upstream, no downstream)
+    try testing.expectEqual(CascadeRole.leaf, coordinator.getRole());
+
+    // Simulate adding a downstream sender (would normally be a real WalSender)
+    var dummy_sender: sender.WalSender = undefined;
+    try coordinator.registerDownstream(&dummy_sender);
+
+    // Now it's intermediate (has both upstream and downstream)
+    try testing.expectEqual(CascadeRole.intermediate, coordinator.getRole());
+    try testing.expectEqual(@as(usize, 1), coordinator.getDownstreamCount());
+
+    // Remove downstream, back to leaf
+    coordinator.unregisterDownstream(&dummy_sender);
+    try testing.expectEqual(CascadeRole.leaf, coordinator.getRole());
+    try testing.expectEqual(@as(usize, 0), coordinator.getDownstreamCount());
+}
+
+test "CascadeCoordinator: unregister non-existent downstream (no-op)" {
+    var coordinator = try CascadeCoordinator.init(test_allocator, .{}, null, 0);
+    defer coordinator.deinit();
+
+    var dummy_sender: sender.WalSender = undefined;
+    // Unregistering a sender that was never registered should be a no-op
+    coordinator.unregisterDownstream(&dummy_sender);
+    try testing.expectEqual(@as(usize, 0), coordinator.getDownstreamCount());
+}
+
+test "CascadeCoordinator: max depth boundary" {
+    const config = Config{ .max_cascade_depth = 3 };
+
+    // Depth 3 (at max) should succeed
+    var at_max = try CascadeCoordinator.init(test_allocator, config, "host=up", 3);
+    defer at_max.deinit();
+    try testing.expectEqual(@as(u32, 3), at_max.cascade_depth);
+
+    // Depth 4 (exceeds max) should fail
+    const over_max = CascadeCoordinator.init(test_allocator, config, "host=up", 4);
+    try testing.expectError(Error.MaxCascadeDepthExceeded, over_max);
+}
+
+test "CascadeCoordinator: validateDownstreamConnection at max depth" {
+    var coordinator = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .max_cascade_depth = 2 },
+        "host=primary",
+        2, // at max depth
+    );
+    defer coordinator.deinit();
+
+    // Should reject downstream connection when at max depth
+    const result = coordinator.validateDownstreamConnection("system-id-abc");
+    try testing.expectError(Error.MaxCascadeDepthExceeded, result);
+}
+
+test "CascadeCoordinator: validateDownstreamConnection below max" {
+    var coordinator = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .max_cascade_depth = 4 },
+        "host=primary",
+        2, // below max
+    );
+    defer coordinator.deinit();
+
+    // Should allow downstream connection when below max depth
+    try coordinator.validateDownstreamConnection("system-id-xyz");
+}
+
+test "CascadeCoordinator: empty upstream_conninfo for primary" {
+    var primary = try CascadeCoordinator.init(test_allocator, .{}, null, 0);
+    defer primary.deinit();
+
+    try testing.expect(primary.upstream_conninfo == null);
+    try testing.expect(!primary.isCascadingEnabled());
+}
+
+test "CascadeCoordinator: topology info for intermediate with multiple downstream" {
+    var intermediate = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .enable_forwarding = true },
+        "host=primary",
+        1,
+    );
+    defer intermediate.deinit();
+
+    var sender1: sender.WalSender = undefined;
+    var sender2: sender.WalSender = undefined;
+    var sender3: sender.WalSender = undefined;
+
+    try intermediate.registerDownstream(&sender1);
+    try intermediate.registerDownstream(&sender2);
+    try intermediate.registerDownstream(&sender3);
+
+    const info = intermediate.getTopologyInfo();
+    try testing.expectEqual(@as(u32, 1), info.cascade_depth);
+    try testing.expectEqual(CascadeRole.intermediate, info.role);
+    try testing.expectEqual(@as(usize, 3), info.downstream_count);
+    try testing.expect(info.has_upstream);
+}
+
+test "CascadeCoordinator: forwardWalData updates last_forwarded_lsn" {
+    var intermediate = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .enable_forwarding = true },
+        "host=primary",
+        1,
+    );
+    defer intermediate.deinit();
+
+    // Add a downstream to make it intermediate role
+    var dummy_sender: sender.WalSender = undefined;
+    try intermediate.registerDownstream(&dummy_sender);
+
+    try testing.expectEqual(CascadeRole.intermediate, intermediate.getRole());
+
+    const data1 = [_]u8{ 1, 2, 3 };
+    try intermediate.forwardWalData(100, 103, &data1);
+    try testing.expectEqual(@as(LSN, 103), intermediate.last_forwarded_lsn);
+
+    const data2 = [_]u8{ 4, 5, 6, 7 };
+    try intermediate.forwardWalData(103, 107, &data2);
+    try testing.expectEqual(@as(LSN, 107), intermediate.last_forwarded_lsn);
+}
