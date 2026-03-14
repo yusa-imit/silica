@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 8 — Client-Server & Wire Protocol (Milestones 15-17 complete)
+## Current Phase: Phase 9 — Streaming Replication (Milestone 18 complete, Milestone 19 upcoming)
 
 ### Completed Phases
 - **Phase 1**: Storage Foundation ✅ (v0.1.0)
@@ -162,6 +162,21 @@
     - Commit de67353: fix(replication): fix Zig 0.15 API compatibility issues
     - All 1876 tests passing
     - CI status: in_progress (waiting for confirmation)
+  - **2026-03-14 20:00 UTC**: Stabilization session - Documentation & Test Coverage (STABILIZATION MODE)
+    - **Activity**: Updated milestones.md test count and added hot standby edge case test
+    - CI status: Green (latest run successful)
+    - GitHub Issues: 3 open (1 bug #3 flaky test, 2 zuda migrations #4/#5)
+    - Test count: 1994/1995 passing (1 skipped), 0 memory leaks
+    - Reverted uncommitted TableStats struct (Milestone 20 work-in-progress)
+    - Updated docs/milestones.md: test count 1773+ → 1994/1995 passing (commit 9da1956)
+    - Added comprehensive edge case test: "Hot standby prevents CREATE TABLE"
+      - Verifies EngineError.TransactionError for DDL writes in hot standby mode
+      - Validates read-only SELECT operations remain functional
+      - Test count increased: 1891 → 1892 passing (commit 428a5c6)
+    - Milestone 18E (Hot Standby) edge case coverage now complete:
+      - INSERT/UPDATE/DELETE/DROP TABLE/CREATE TABLE all tested in standby mode
+      - All 5 write operations properly blocked, SELECT verified functional
+    - Updated .claude/memory/project-context.md: Current Phase updated to Phase 9
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
