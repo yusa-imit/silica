@@ -929,6 +929,13 @@ sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
 **Note**: PRIORITY UPGRADE — Code editor and autocomplete widgets are game-changers for SQL shell user experience.
 
+#### v1.13.1 Patch (2026-03-14)
+
+**Critical bug fix** for data visualization widgets (Histogram, TimeSeriesChart, ScatterPlot):
+- **Fixed**: Integer overflow panic when rendering analytics data (#9 from:zr)
+- **Impact**: No direct impact on silica (not using data viz widgets yet), but prevents future crashes if widgets are adopted
+- **Action**: No migration needed — patch release, fully backward compatible
+
 ---
 
 ## zuda Migration
