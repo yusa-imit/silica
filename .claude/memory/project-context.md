@@ -177,6 +177,17 @@
       - INSERT/UPDATE/DELETE/DROP TABLE/CREATE TABLE all tested in standby mode
       - All 5 write operations properly blocked, SELECT verified functional
     - Updated .claude/memory/project-context.md: Current Phase updated to Phase 9
+  - **2026-03-15 02:30 UTC**: CI memory leak fix (FEATURE MODE → STABILIZATION MODE)
+    - **MODE**: Hour 2 (feature mode) but switched to stabilization due to CI RED
+    - **BUG**: CI failed with memory leak in test "SyncCoordinator: register same standby twice" (commit 06a9c55)
+    - Root cause: registerStandby() duplicated name_copy on every call but never freed old entry when re-registering
+    - Memory leak location: sync.zig:77 (allocator.dupe(u8, name)) leaked when put() replaced existing entry
+    - Fix (commit 99233f4): Added fetchRemove() before put() to free old entry
+    - Change: Check if standby already registered, remove and free old entry before inserting new one
+    - Test result: 2022/2023 tests passed, 1 skipped, 0 leaks (local verification)
+    - CI status: in_progress (9+ minutes running, unusually long)
+    - GitHub Issues: 3 open (unchanged from previous session)
+    - **LESSON**: StringHashMap.put() replaces value but keeps old key, causing leak if key is heap-allocated
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
