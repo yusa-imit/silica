@@ -69,7 +69,7 @@ pub const WalReceiver = struct {
             .last_status_update = std.time.microTimestamp(),
             .connected = false,
             .wal_file = null,
-            .apply_buffer = std.ArrayList(u8).init(allocator),
+            .apply_buffer = std.ArrayList(u8){},
         };
     }
 
@@ -77,7 +77,7 @@ pub const WalReceiver = struct {
         if (self.wal_file) |*file| {
             file.close();
         }
-        self.apply_buffer.deinit();
+        self.apply_buffer.deinit(self.allocator);
     }
 
     /// Connect to primary and start replication
@@ -108,7 +108,7 @@ pub const WalReceiver = struct {
         }
 
         // Write to WAL buffer
-        try self.apply_buffer.appendSlice(data);
+        try self.apply_buffer.appendSlice(self.allocator, data);
         self.write_lsn = wal_end;
 
         // TODO: Actual WAL file writing and application
@@ -119,7 +119,7 @@ pub const WalReceiver = struct {
 
     /// Process keepalive message
     pub fn processKeepalive(
-        self: *WalReceiver,
+        _: *WalReceiver,
         wal_end: LSN,
         reply_requested: bool,
     ) !bool {
@@ -373,7 +373,7 @@ test "WalReceiver should send status" {
     try std.testing.expectEqual(false, receiver.shouldSendStatus());
 
     // Wait for interval
-    std.time.sleep(110 * std.time.ns_per_ms);
+    std.Thread.sleep(110 * std.time.ns_per_ms);
 
     // Now should send
     try std.testing.expectEqual(true, receiver.shouldSendStatus());
@@ -391,7 +391,7 @@ test "WalReceiver create identify system message" {
 test "WalReceiver create start replication message" {
     const allocator = std.testing.allocator;
 
-    var msg = try WalReceiver.createStartReplicationMessage(allocator, "test-slot", 5000);
+    const msg = try WalReceiver.createStartReplicationMessage(allocator, "test-slot", 5000);
     defer allocator.free(msg.start_replication.slot_name);
 
     try std.testing.expectEqualStrings("test-slot", msg.start_replication.slot_name);
@@ -401,13 +401,13 @@ test "WalReceiver create start replication message" {
 test "WalReceiver create slot messages" {
     const allocator = std.testing.allocator;
 
-    var create_msg = try WalReceiver.createCreateSlotMessage(allocator, "test-slot", true);
+    const create_msg = try WalReceiver.createCreateSlotMessage(allocator, "test-slot", true);
     defer allocator.free(create_msg.create_slot.slot_name);
 
     try std.testing.expectEqualStrings("test-slot", create_msg.create_slot.slot_name);
     try std.testing.expectEqual(true, create_msg.create_slot.temporary);
 
-    var drop_msg = try WalReceiver.createDropSlotMessage(allocator, "test-slot");
+    const drop_msg = try WalReceiver.createDropSlotMessage(allocator, "test-slot");
     defer allocator.free(drop_msg.drop_slot.slot_name);
 
     try std.testing.expectEqualStrings("test-slot", drop_msg.drop_slot.slot_name);
@@ -473,8 +473,8 @@ test "WalReceiver — very large replication lag" {
 
     receiver.apply_lsn = 1000;
 
-    // Test with very large primary WAL end (near u64 max)
-    const large_lsn: LSN = std.math.maxInt(u64) - 100;
+    // Test with very large primary WAL end (but within i64 range for lag calculation)
+    const large_lsn: LSN = std.math.maxInt(i64) - 100;
     const lag = receiver.getReplicationLag(large_lsn);
     try std.testing.expectEqual(@as(i64, @as(i64, @intCast(large_lsn)) - 1000), lag);
 }
@@ -490,7 +490,7 @@ test "WalReceiver — empty primary conninfo" {
     var receiver = try WalReceiver.init(allocator, config);
     defer receiver.deinit();
 
-    try std.testing.expectEqualStrings("", receiver.primary_conninfo);
+    try std.testing.expectEqualStrings("", receiver.config.primary_conninfo);
 }
 
 test "WalReceiver — multiple disconnect calls" {
@@ -541,7 +541,7 @@ test "WalReceiver — very long slot name" {
     @memset(&long_slot_name, 's');
     const slot_name_str = long_slot_name[0..];
 
-    var msg = try WalReceiver.createStartReplicationMessage(allocator, slot_name_str, 1000);
+    const msg = try WalReceiver.createStartReplicationMessage(allocator, slot_name_str, 1000);
     defer allocator.free(msg.start_replication.slot_name);
 
     try std.testing.expectEqualStrings(slot_name_str, msg.start_replication.slot_name);

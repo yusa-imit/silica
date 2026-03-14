@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const protocol = @import("protocol.zig");
 const slot = @import("slot.zig");
 const LSN = protocol.LSN;
+const SlotState = protocol.SlotState;
 const BackendMessage = protocol.BackendMessage;
 const FrontendMessage = protocol.FrontendMessage;
 
@@ -129,7 +130,7 @@ pub const WalSender = struct {
     ) !void {
         if (self.slot_name) |name| {
             // Update slot's confirmed flush LSN
-            try self.slot_manager.updateSlotLSN(name, flush_lsn);
+            try self.slot_manager.updateSlotLSN(name, null, flush_lsn);
         }
         _ = write_lsn;
         _ = apply_lsn;
@@ -222,7 +223,7 @@ pub const WalSender = struct {
 test "WalSender init and deinit" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(
@@ -243,7 +244,7 @@ test "WalSender init and deinit" {
 test "WalSender start replication" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     // Create slot
@@ -263,13 +264,13 @@ test "WalSender start replication" {
 
     // Verify slot is active
     const slot_info = try slot_mgr.getSlot("test-slot");
-    try std.testing.expectEqual(slot.SlotState.active, slot_info.state);
+    try std.testing.expectEqual(SlotState.active, slot_info.state);
 }
 
 test "WalSender stop replication" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     try slot_mgr.createSlot("test-slot", false);
@@ -285,13 +286,13 @@ test "WalSender stop replication" {
 
     // Verify slot is inactive
     const slot_info = try slot_mgr.getSlot("test-slot");
-    try std.testing.expectEqual(slot.SlotState.inactive, slot_info.state);
+    try std.testing.expectEqual(SlotState.inactive, slot_info.state);
 }
 
 test "WalSender process standby status" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     try slot_mgr.createSlot("test-slot", false);
@@ -314,7 +315,7 @@ test "WalSender process standby status" {
 test "WalSender create WAL data message" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
@@ -323,7 +324,7 @@ test "WalSender create WAL data message" {
     sender.current_lsn = 1000;
 
     const data = "test wal data";
-    var msg = try sender.createWalDataMessage(allocator, data);
+    const msg = try sender.createWalDataMessage(allocator, data);
     defer allocator.free(msg.wal_data.data);
 
     try std.testing.expectEqual(@as(LSN, 1000), msg.wal_data.wal_start);
@@ -337,7 +338,7 @@ test "WalSender create WAL data message" {
 test "WalSender create keepalive message" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
@@ -354,7 +355,7 @@ test "WalSender create keepalive message" {
 test "WalSender create system info message" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "test-system-id", 42, .{});
@@ -362,7 +363,7 @@ test "WalSender create system info message" {
 
     sender.wal_end = 8192;
 
-    var msg = try sender.createSystemInfoMessage(allocator, "testdb");
+    const msg = try sender.createSystemInfoMessage(allocator, "testdb");
     defer {
         allocator.free(msg.system_info.system_id);
         allocator.free(msg.system_info.database_name);
@@ -377,7 +378,7 @@ test "WalSender create system info message" {
 test "WalSender update WAL end" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
@@ -395,7 +396,7 @@ test "WalSender update WAL end" {
 test "WalSender should send keepalive" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 100 });
@@ -405,7 +406,7 @@ test "WalSender should send keepalive" {
     try std.testing.expectEqual(false, sender.shouldSendKeepalive());
 
     // Wait for interval
-    std.time.sleep(110 * std.time.ns_per_ms);
+    std.Thread.sleep(110 * std.time.ns_per_ms);
 
     // Now should send
     try std.testing.expectEqual(true, sender.shouldSendKeepalive());
@@ -418,7 +419,7 @@ test "WalSender should send keepalive" {
 test "WalSender start replication with invalid LSN" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     try slot_mgr.createSlot("test-slot", false);
@@ -426,7 +427,7 @@ test "WalSender start replication with invalid LSN" {
 
     // Set restart LSN to 1000
     try slot_mgr.activateSlot("test-slot");
-    try slot_mgr.updateSlotLSN("test-slot", 1000);
+    try slot_mgr.updateSlotLSN("test-slot", 1000, null);
     try slot_mgr.deactivateSlot("test-slot");
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
@@ -440,7 +441,7 @@ test "WalSender start replication with invalid LSN" {
 test "WalSender read WAL chunk when no data" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
@@ -460,7 +461,7 @@ test "WalSender read WAL chunk when no data" {
 test "WalSender — very large LSN values" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
@@ -472,15 +473,17 @@ test "WalSender — very large LSN values" {
     try std.testing.expectEqual(large_lsn, sender.wal_end);
 
     // Create WAL data message with large LSN
-    var msg = sender.createWalDataMessage(large_lsn - 100, large_lsn, "test");
-    try std.testing.expectEqual(large_lsn - 100, msg.wal_data.start_lsn);
-    try std.testing.expectEqual(large_lsn, msg.wal_data.end_lsn);
+    sender.current_lsn = large_lsn - 100;
+    const msg = try sender.createWalDataMessage(allocator, "test");
+    defer allocator.free(msg.wal_data.data);
+    try std.testing.expectEqual(large_lsn - 100, msg.wal_data.wal_start);
+    try std.testing.expectEqual(large_lsn - 100 + 4, msg.wal_data.wal_end);
 }
 
 test "WalSender — very long system ID and database name" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     // 1024-byte system ID
@@ -496,7 +499,7 @@ test "WalSender — very long system ID and database name" {
     @memset(&long_db_name, 'd');
     const db_name_str = long_db_name[0..];
 
-    var msg = try sender.createSystemInfoMessage(allocator, db_name_str);
+    const msg = try sender.createSystemInfoMessage(allocator, db_name_str);
     defer {
         allocator.free(msg.system_info.system_id);
         allocator.free(msg.system_info.database_name);
@@ -509,7 +512,7 @@ test "WalSender — very long system ID and database name" {
 test "WalSender — zero keepalive interval" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 0 });
@@ -522,14 +525,14 @@ test "WalSender — zero keepalive interval" {
 test "WalSender — multiple consecutive keepalive calls" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 50 });
     defer sender.deinit();
 
     // Wait for interval
-    std.time.sleep(60 * std.time.ns_per_ms);
+    std.Thread.sleep(60 * std.time.ns_per_ms);
 
     // First call should trigger
     try std.testing.expectEqual(true, sender.shouldSendKeepalive());
@@ -545,29 +548,31 @@ test "WalSender — multiple consecutive keepalive calls" {
 test "WalSender — empty WAL data chunk" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
     defer sender.deinit();
 
     // Create message with empty data
-    var msg = sender.createWalDataMessage(0, 0, "");
+    sender.current_lsn = 0;
+    const msg = try sender.createWalDataMessage(allocator, "");
+    defer allocator.free(msg.wal_data.data);
     try std.testing.expectEqual(@as(usize, 0), msg.wal_data.data.len);
-    try std.testing.expectEqual(@as(LSN, 0), msg.wal_data.start_lsn);
-    try std.testing.expectEqual(@as(LSN, 0), msg.wal_data.end_lsn);
+    try std.testing.expectEqual(@as(LSN, 0), msg.wal_data.wal_start);
+    try std.testing.expectEqual(@as(LSN, 0), msg.wal_data.wal_end);
 }
 
 test "WalSender — stop replication when not active" {
     const allocator = std.testing.allocator;
 
-    var slot_mgr = try slot.SlotManager.init(allocator);
+    var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
     var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
     defer sender.deinit();
 
     // Stop without starting (should be no-op)
-    sender.stopReplication();
-    try std.testing.expectEqual(@as(?[]const u8, null), sender.active_slot_name);
+    try sender.stopReplication();
+    try std.testing.expectEqual(@as(?[]const u8, null), sender.slot_name);
 }
