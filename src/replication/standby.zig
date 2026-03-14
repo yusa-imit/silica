@@ -7,7 +7,7 @@ pub const StandbyCoordinator = struct {
     allocator: Allocator,
     mode: StandbyMode,
     wal_apply_in_progress: bool,
-    read_only_txns: std.ArrayList(u64), // List of active read-only transaction IDs
+    read_only_txns: std.ArrayListUnmanaged(u64), // List of active read-only transaction IDs
     mutex: std.Thread.Mutex,
 
     pub const StandbyMode = enum {
@@ -32,14 +32,14 @@ pub const StandbyCoordinator = struct {
             .allocator = allocator,
             .mode = mode,
             .wal_apply_in_progress = false,
-            .read_only_txns = std.ArrayList(u64).init(allocator),
+            .read_only_txns = .{},
             .mutex = std.Thread.Mutex{},
         };
     }
 
     /// Clean up resources
     pub fn deinit(self: *StandbyCoordinator) void {
-        self.read_only_txns.deinit();
+        self.read_only_txns.deinit(self.allocator);
     }
 
     /// Check if standby mode is enabled
@@ -61,7 +61,7 @@ pub const StandbyCoordinator = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.read_only_txns.append(txn_id);
+        try self.read_only_txns.append(self.allocator, txn_id);
     }
 
     /// Unregister a read-only transaction when it commits/aborts

@@ -34,6 +34,13 @@ pub const mvcc = @import("tx/mvcc.zig");
 pub const lock = @import("tx/lock.zig");
 pub const vacuum = @import("tx/vacuum.zig");
 
+// Replication modules
+pub const replication_protocol = @import("replication/protocol.zig");
+pub const replication_slot = @import("replication/slot.zig");
+pub const replication_sender = @import("replication/sender.zig");
+pub const replication_receiver = @import("replication/receiver.zig");
+pub const replication_standby = @import("replication/standby.zig");
+
 // Note: Server modules (wire, connection, server) are not imported here
 // to avoid circular dependencies (they import "silica"). Their tests
 // are run via the CLI test module which has proper module setup.
