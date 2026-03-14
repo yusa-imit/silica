@@ -58,6 +58,9 @@ const FreeSpaceMap = fsm_mod.FreeSpaceMap;
 const LockManager = lock_mod.LockManager;
 const LockTarget = lock_mod.LockTarget;
 const LockMode = lock_mod.LockMode;
+const standby_mod = @import("../replication/standby.zig");
+const StandbyCoordinator = standby_mod.StandbyCoordinator;
+const StandbyMode = standby_mod.StandbyCoordinator.StandbyMode;
 
 const Value = executor_mod.Value;
 const Row = executor_mod.Row;
@@ -350,6 +353,7 @@ pub const OpenOptions = struct {
     cache_size: u32 = 2000,
     wal_mode: bool = false,
     auto_vacuum: vacuum_mod.AutoVacuumConfig = .{},
+    standby_mode: StandbyMode = .disabled,
 };
 
 pub const EngineError = error{
@@ -533,6 +537,8 @@ pub const Database = struct {
     ssi_tracker: SsiTracker,
     /// Auto-vacuum daemon for background dead tuple reclamation.
     auto_vacuum: vacuum_mod.AutoVacuumDaemon,
+    /// Standby coordinator for hot standby read-only access on replicas.
+    standby_coordinator: StandbyCoordinator,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -575,6 +581,7 @@ pub const Database = struct {
             .fsm = FreeSpaceMap.init(allocator, pager.page_size),
             .ssi_tracker = SsiTracker.init(allocator),
             .auto_vacuum = vacuum_mod.AutoVacuumDaemon.init(allocator, opts.auto_vacuum),
+            .standby_coordinator = try StandbyCoordinator.init(allocator, opts.standby_mode),
         };
     }
 
@@ -590,6 +597,7 @@ pub const Database = struct {
         }
 
         self.auto_vacuum.deinit();
+        self.standby_coordinator.deinit();
         self.ssi_tracker.deinit();
         self.lock_manager.deinit();
         self.fsm.deinit();
@@ -1649,6 +1657,14 @@ pub const Database = struct {
             self.allocator.destroy(arena);
         }
 
+        // Check if write operations are allowed (standby mode check)
+        self.standby_coordinator.checkWriteAllowed() catch |err| {
+            return switch (err) {
+                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                else => EngineError.ExecutionError,
+            };
+        };
+
         const values_node = switch (plan.root.*) {
             .values => |v| v,
             else => return EngineError.ExecutionError,
@@ -1888,6 +1904,14 @@ pub const Database = struct {
             arena.deinit();
             self.allocator.destroy(arena);
         }
+
+        // Check if write operations are allowed (standby mode check)
+        self.standby_coordinator.checkWriteAllowed() catch |err| {
+            return switch (err) {
+                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                else => EngineError.ExecutionError,
+            };
+        };
 
         // Plan structure for UPDATE: Project(Filter(Scan)) or Project(Scan)
         // The Project node has columns with alias = column name to update
@@ -2219,6 +2243,14 @@ pub const Database = struct {
             self.allocator.destroy(arena);
         }
 
+        // Check if write operations are allowed (standby mode check)
+        self.standby_coordinator.checkWriteAllowed() catch |err| {
+            return switch (err) {
+                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                else => EngineError.ExecutionError,
+            };
+        };
+
         // Plan structure for DELETE: Filter(Scan) or Scan
         var scan_table: []const u8 = "";
         var predicate: ?*const ast_mod.Expr = null;
@@ -2476,6 +2508,17 @@ pub const Database = struct {
         // Handle DDL directly (before analysis/planning)
         switch (stmt) {
             .create_table => |ct| {
+                // Check if write operations are allowed (standby mode check)
+                self.standby_coordinator.checkWriteAllowed() catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    arena = null; // Prevent errdefer from double-freeing
+                    return switch (err) {
+                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        else => EngineError.ExecutionError,
+                    };
+                };
+
                 self.catalog.createTableFromAst(&ct) catch |err| {
                     return switch (err) {
                         error.TableAlreadyExists => EngineError.TableAlreadyExists,
@@ -2489,6 +2532,17 @@ pub const Database = struct {
                 return .{ .message = "CREATE TABLE" };
             },
             .drop_table => |dt| {
+                // Check if write operations are allowed (standby mode check)
+                self.standby_coordinator.checkWriteAllowed() catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    arena = null; // Prevent errdefer from double-freeing
+                    return switch (err) {
+                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        else => EngineError.ExecutionError,
+                    };
+                };
+
                 self.catalog.dropTable(dt.name, dt.if_exists) catch |err| {
                     return switch (err) {
                         error.TableNotFound => EngineError.TableNotFound,
@@ -14644,5 +14698,124 @@ test "CREATE POLICY UPDATE with both USING and WITH CHECK" {
     var r1 = try db.execSQL("CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = current_user()) WITH CHECK (user_id = current_user());");
     defer r1.close(allocator);
     try std.testing.expectEqualStrings("CREATE POLICY", r1.message);
+}
+
+// ============================================================================
+// Hot Standby Integration Tests
+// ============================================================================
+
+test "Hot standby prevents INSERT" {
+    const allocator = std.testing.allocator;
+    const path = "test_standby_insert.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create database on primary first
+    var db_primary = try Database.open(allocator, path, .{});
+    var r_create = try db_primary.execSQL("CREATE TABLE users (id INTEGER, name TEXT);");
+    r_create.close(allocator);
+    db_primary.close();
+
+    // Open as hot standby
+    var db = try Database.open(allocator, path, .{ .standby_mode = .hot });
+    defer db.close();
+
+    // INSERT should fail in hot standby
+    try std.testing.expectError(EngineError.TransactionError, db.execSQL("INSERT INTO users VALUES (1, 'Alice');"));
+}
+
+test "Hot standby prevents UPDATE" {
+    const allocator = std.testing.allocator;
+    const path = "test_standby_update.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create table on primary (disabled mode)
+    var db_primary = try Database.open(allocator, path, .{});
+    var r_create = try db_primary.execSQL("CREATE TABLE users (id INTEGER, name TEXT);");
+    r_create.close(allocator);
+    var r_insert = try db_primary.execSQL("INSERT INTO users VALUES (1, 'Alice');");
+    r_insert.close(allocator);
+    db_primary.close();
+
+    // Open as hot standby
+    var db = try Database.open(allocator, path, .{ .standby_mode = .hot });
+    defer db.close();
+
+    // UPDATE should fail in hot standby
+    try std.testing.expectError(EngineError.TransactionError, db.execSQL("UPDATE users SET name = 'Bob' WHERE id = 1;"));
+}
+
+test "Hot standby prevents DELETE" {
+    const allocator = std.testing.allocator;
+    const path = "test_standby_delete.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create table on primary (disabled mode)
+    var db_primary = try Database.open(allocator, path, .{});
+    var r_create = try db_primary.execSQL("CREATE TABLE users (id INTEGER, name TEXT);");
+    r_create.close(allocator);
+    var r_insert = try db_primary.execSQL("INSERT INTO users VALUES (1, 'Alice');");
+    r_insert.close(allocator);
+    db_primary.close();
+
+    // Open as hot standby
+    var db = try Database.open(allocator, path, .{ .standby_mode = .hot });
+    defer db.close();
+
+    // DELETE should fail in hot standby
+    try std.testing.expectError(EngineError.TransactionError, db.execSQL("DELETE FROM users WHERE id = 1;"));
+}
+
+test "Hot standby prevents DROP TABLE" {
+    const allocator = std.testing.allocator;
+    const path = "test_standby_drop.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create table on primary (disabled mode)
+    var db_primary = try Database.open(allocator, path, .{});
+    var r_create = try db_primary.execSQL("CREATE TABLE users (id INTEGER, name TEXT);");
+    r_create.close(allocator);
+    db_primary.close();
+
+    // Open as hot standby
+    var db = try Database.open(allocator, path, .{ .standby_mode = .hot });
+    defer db.close();
+
+    // DROP TABLE should fail in hot standby
+    try std.testing.expectError(EngineError.TransactionError, db.execSQL("DROP TABLE users;"));
+}
+
+test "Hot standby allows SELECT" {
+    const allocator = std.testing.allocator;
+    const path = "test_standby_select.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create table and insert data on primary
+    var db_primary = try Database.open(allocator, path, .{});
+    var r_create = try db_primary.execSQL("CREATE TABLE users (id INTEGER, name TEXT);");
+    r_create.close(allocator);
+    var r_insert = try db_primary.execSQL("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');");
+    r_insert.close(allocator);
+    db_primary.close();
+
+    // Open as hot standby
+    var db = try Database.open(allocator, path, .{ .standby_mode = .hot });
+    defer db.close();
+
+    // SELECT should work (read-only)
+    var r = try db.execSQL("SELECT * FROM users;");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), row_count);
 }
 
