@@ -62,8 +62,8 @@ pub const SyncCoordinator = struct {
     pub fn deinit(self: *SyncCoordinator) void {
         var it = self.standbys.iterator();
         while (it.next()) |entry| {
+            // entry.key_ptr.* and entry.value_ptr.name are the same pointer, free only once
             self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.name);
         }
         self.standbys.deinit();
         self.allocator.free(self.sync_standby_names);
@@ -75,9 +75,11 @@ pub const SyncCoordinator = struct {
         defer self.mutex.unlock();
 
         const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+
         const is_sync = self.isSyncStandby(name);
         const state = StandbyState{
-            .name = name_copy,
+            .name = name_copy, // Share the same allocation for key and state.name
             .is_sync = is_sync,
             .flush_lsn = 0,
             .last_update = std.time.microTimestamp(),
@@ -92,8 +94,8 @@ pub const SyncCoordinator = struct {
         defer self.mutex.unlock();
 
         if (self.standbys.fetchRemove(name)) |entry| {
+            // entry.key and entry.value.name are the same pointer, free only once
             self.allocator.free(entry.key);
-            self.allocator.free(entry.value.name);
         }
     }
 

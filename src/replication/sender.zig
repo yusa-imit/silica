@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const protocol = @import("protocol.zig");
 const slot = @import("slot.zig");
+const sync = @import("sync.zig");
 const LSN = protocol.LSN;
 const SlotState = protocol.SlotState;
 const BackendMessage = protocol.BackendMessage;
@@ -46,6 +47,8 @@ pub const WalSender = struct {
     config: Config,
     /// Replication slot manager
     slot_manager: *slot.SlotManager,
+    /// Synchronous replication coordinator (optional)
+    sync_coordinator: ?*sync.SyncCoordinator,
     /// Current slot name
     slot_name: ?[]const u8,
     /// Current streaming LSN (next position to send)
@@ -73,6 +76,7 @@ pub const WalSender = struct {
             .allocator = allocator,
             .config = config,
             .slot_manager = slot_manager,
+            .sync_coordinator = null,
             .slot_name = null,
             .current_lsn = 0,
             .last_keepalive = std.time.microTimestamp(),
@@ -81,6 +85,11 @@ pub const WalSender = struct {
             .timeline_id = timeline_id,
             .wal_end = 0,
         };
+    }
+
+    /// Set synchronous replication coordinator
+    pub fn setSyncCoordinator(self: *WalSender, coordinator: *sync.SyncCoordinator) void {
+        self.sync_coordinator = coordinator;
     }
 
     pub fn deinit(self: *WalSender) void {
@@ -110,11 +119,21 @@ pub const WalSender = struct {
         }
         self.slot_name = try self.allocator.dupe(u8, slot_name);
         self.current_lsn = start_lsn;
+
+        // Register with synchronous replication coordinator
+        if (self.sync_coordinator) |coord| {
+            try coord.registerStandby(slot_name);
+        }
     }
 
     /// Stop replication and deactivate slot
     pub fn stopReplication(self: *WalSender) !void {
         if (self.slot_name) |name| {
+            // Unregister from synchronous replication coordinator
+            if (self.sync_coordinator) |coord| {
+                coord.unregisterStandby(name);
+            }
+
             try self.slot_manager.deactivateSlot(name);
             self.allocator.free(name);
             self.slot_name = null;
@@ -131,6 +150,11 @@ pub const WalSender = struct {
         if (self.slot_name) |name| {
             // Update slot's confirmed flush LSN
             try self.slot_manager.updateSlotLSN(name, null, flush_lsn);
+
+            // Update synchronous replication coordinator
+            if (self.sync_coordinator) |coord| {
+                try coord.updateFlushLSN(name, flush_lsn);
+            }
         }
         _ = write_lsn;
         _ = apply_lsn;
@@ -575,4 +599,87 @@ test "WalSender — stop replication when not active" {
     // Stop without starting (should be no-op)
     try sender.stopReplication();
     try std.testing.expectEqual(@as(?[]const u8, null), sender.slot_name);
+}
+
+test "WalSender — setSyncCoordinator" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    var coordinator = try sync.SyncCoordinator.init(allocator, .on, "replica1");
+    defer coordinator.deinit();
+
+    sender.setSyncCoordinator(&coordinator);
+    try std.testing.expect(sender.sync_coordinator != null);
+}
+
+test "WalSender — register/unregister standby with coordinator" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    var coordinator = try sync.SyncCoordinator.init(allocator, .on, "replica1");
+    defer coordinator.deinit();
+    sender.setSyncCoordinator(&coordinator);
+
+    // Create slot
+    try slot_mgr.createSlot("replica1", false);
+
+    // Start replication (should register with coordinator)
+    try sender.startReplication("replica1", 0);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.getSyncStandbyCount());
+
+    // Stop replication (should unregister)
+    try sender.stopReplication();
+    try std.testing.expectEqual(@as(u32, 0), coordinator.getSyncStandbyCount());
+}
+
+test "WalSender — processStandbyStatus updates coordinator" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    var coordinator = try sync.SyncCoordinator.init(allocator, .on, "replica1");
+    defer coordinator.deinit();
+    sender.setSyncCoordinator(&coordinator);
+
+    // Create slot and start replication
+    try slot_mgr.createSlot("replica1", false);
+    try sender.startReplication("replica1", 0);
+
+    // Process standby status (should update flush LSN in coordinator)
+    try sender.processStandbyStatus(1000, 1000, 1000);
+
+    const min_lsn = coordinator.getMinSyncFlushLSN();
+    try std.testing.expectEqual(@as(LSN, 1000), min_lsn);
+}
+
+test "WalSender — works without coordinator (backward compat)" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Create slot and start replication without coordinator
+    try slot_mgr.createSlot("replica1", false);
+    try sender.startReplication("replica1", 0);
+
+    // Should work fine without coordinator
+    try sender.processStandbyStatus(1000, 1000, 1000);
+    try sender.stopReplication();
 }
