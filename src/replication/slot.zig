@@ -706,3 +706,58 @@ test "SlotManager: activate and update LSN for multiple slots in sequence" {
     const slot3 = try manager.getSlot("slot3");
     try std.testing.expectEqual(SlotState.active, slot3.state);
 }
+
+test "SlotManager — memory cleanup when dropping all slots" {
+    var manager = SlotManager.init(std.testing.allocator);
+    defer manager.deinit();
+
+    // Create 100 slots (mix of permanent and temporary)
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        const temporary = (i % 2 == 0); // Every other slot is temporary
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "slot{d}", .{i});
+        try manager.createSlot(name, temporary);
+    }
+
+    // Verify all slots exist
+    const all_slots = try manager.listSlots(std.testing.allocator);
+    defer {
+        for (all_slots) |slot_name| {
+            std.testing.allocator.free(slot_name);
+        }
+        std.testing.allocator.free(all_slots);
+    }
+    try std.testing.expectEqual(@as(usize, 100), all_slots.len);
+
+    // Drop all permanent slots (50 total)
+    i = 1; // Start with odd indices (permanent)
+    while (i < 100) : (i += 2) {
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "slot{d}", .{i});
+        try manager.dropSlot(name);
+    }
+
+    // Verify 50 temporary slots remain
+    const remaining = try manager.listSlots(std.testing.allocator);
+    defer {
+        for (remaining) |slot_name| {
+            std.testing.allocator.free(slot_name);
+        }
+        std.testing.allocator.free(remaining);
+    }
+    try std.testing.expectEqual(@as(usize, 50), remaining.len);
+
+    // Drop all temporary slots
+    manager.dropTemporarySlots();
+
+    // Verify all slots are gone
+    const final_slots = try manager.listSlots(std.testing.allocator);
+    defer {
+        for (final_slots) |slot_name| {
+            std.testing.allocator.free(slot_name);
+        }
+        std.testing.allocator.free(final_slots);
+    }
+    try std.testing.expectEqual(@as(usize, 0), final_slots.len);
+}
