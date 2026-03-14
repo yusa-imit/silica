@@ -14819,3 +14819,35 @@ test "Hot standby allows SELECT" {
     try std.testing.expectEqual(@as(usize, 2), row_count);
 }
 
+test "Hot standby prevents CREATE TABLE" {
+    const allocator = std.testing.allocator;
+    const path = "test_standby_create_table.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create initial table on primary (disabled mode)
+    var db_primary = try Database.open(allocator, path, .{});
+    var r_init = try db_primary.execSQL("CREATE TABLE initial_table (id INTEGER);");
+    r_init.close(allocator);
+    db_primary.close();
+
+    // Open as hot standby
+    var db = try Database.open(allocator, path, .{ .standby_mode = .hot });
+    defer db.close();
+
+    // CREATE TABLE should fail in hot standby
+    try std.testing.expectError(EngineError.TransactionError, db.execSQL("CREATE TABLE new_table (id INTEGER, name TEXT);"));
+
+    // Verify we can still SELECT from existing table
+    var r_select = try db.execSQL("SELECT * FROM initial_table;");
+    defer r_select.close(allocator);
+
+    var row_count: usize = 0;
+    while (try r_select.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), row_count);
+}
+
