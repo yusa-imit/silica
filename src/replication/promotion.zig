@@ -308,3 +308,133 @@ test "PromotionCoordinator: promotion stops WAL receiver" {
     // WAL receiver should be disconnected
     try std.testing.expect(!recv.connected);
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+test "PromotionCoordinator: promote only WAL receiver set" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    const recv_config = receiver.Config{
+        .primary_conninfo = "conninfo",
+        .slot_name = "slot1",
+    };
+    var recv = try receiver.WalReceiver.init(allocator, recv_config);
+    defer recv.deinit();
+
+    // Set only WAL receiver, not standby coordinator
+    coord.setWalReceiver(&recv);
+
+    const result = coord.promote(2);
+    try std.testing.expectError(Error.NotStandby, result);
+}
+
+test "PromotionCoordinator: promote only standby coordinator set" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    var standby_coord = try standby.StandbyCoordinator.init(allocator, .hot);
+    defer standby_coord.deinit();
+
+    // Set only standby coordinator, not WAL receiver
+    coord.setStandbyCoordinator(&standby_coord);
+
+    const result = coord.promote(2);
+    try std.testing.expectError(Error.NotStandby, result);
+}
+
+test "PromotionCoordinator: getDuration while in progress" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    // Manually set state to in_progress and start_time
+    coord.state = .in_progress;
+    coord.start_time = std.time.microTimestamp();
+
+    // getDuration should return elapsed time even if not complete
+    const duration = coord.getDuration();
+    try std.testing.expect(duration != null);
+    try std.testing.expect(duration.? >= 0);
+}
+
+test "PromotionCoordinator: multiple promotions without reset" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    const recv_config = receiver.Config{
+        .primary_conninfo = "conninfo",
+        .slot_name = "slot1",
+    };
+    var recv = try receiver.WalReceiver.init(allocator, recv_config);
+    defer recv.deinit();
+
+    var standby_coord = try standby.StandbyCoordinator.init(allocator, .hot);
+    defer standby_coord.deinit();
+
+    coord.setWalReceiver(&recv);
+    coord.setStandbyCoordinator(&standby_coord);
+
+    // First promotion succeeds
+    try coord.promote(2);
+    try std.testing.expectEqual(PromotionState.completed, coord.state);
+
+    // Second promotion without reset should fail (already primary)
+    const result = coord.promote(3);
+    try std.testing.expectError(Error.PromotionInProgress, result);
+}
+
+test "PromotionCoordinator: reset while in progress" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    // Set state to in_progress manually
+    coord.state = .in_progress;
+    coord.start_time = std.time.microTimestamp();
+    coord.new_timeline_id = 5;
+
+    coord.reset();
+
+    try std.testing.expectEqual(PromotionState.idle, coord.state);
+    try std.testing.expectEqual(@as(i64, 0), coord.start_time);
+    try std.testing.expectEqual(@as(u32, 0), coord.new_timeline_id);
+}
+
+test "PromotionCoordinator: isComplete returns false for failed state" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    coord.state = .failed;
+    try std.testing.expect(!coord.isComplete());
+}
+
+test "PromotionCoordinator: new_timeline_id persists after promotion" {
+    const allocator = std.testing.allocator;
+    var coord = PromotionCoordinator.init(allocator);
+    defer coord.deinit();
+
+    const recv_config = receiver.Config{
+        .primary_conninfo = "conninfo",
+        .slot_name = "slot1",
+    };
+    var recv = try receiver.WalReceiver.init(allocator, recv_config);
+    defer recv.deinit();
+
+    var standby_coord = try standby.StandbyCoordinator.init(allocator, .hot);
+    defer standby_coord.deinit();
+
+    coord.setWalReceiver(&recv);
+    coord.setStandbyCoordinator(&standby_coord);
+
+    const expected_timeline: u32 = 42;
+    try coord.promote(expected_timeline);
+
+    try std.testing.expectEqual(expected_timeline, coord.new_timeline_id);
+}
