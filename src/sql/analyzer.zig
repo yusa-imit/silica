@@ -274,6 +274,7 @@ pub const Analyzer = struct {
             .drop_index => {},
             .transaction => {},
             .vacuum => {},
+            .analyze => {},
             .create_view => |s| self.analyzeSelect(&s.select),
             .drop_view => {},
             .create_type => {},

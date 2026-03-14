@@ -237,6 +237,7 @@ pub const TokenType = enum {
 
     // Keywords — Utility
     kw_explain,
+    kw_analyze,
     kw_pragma,
     kw_vacuum,
 
@@ -910,6 +911,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "exclusive", .kw_exclusive },
         // Utility
         .{ "explain", .kw_explain },
+        .{ "analyze", .kw_analyze },
         .{ "pragma", .kw_pragma },
         .{ "vacuum", .kw_vacuum },
         // Types
@@ -1283,6 +1285,8 @@ test "invalid character" {
 
 test "EXPLAIN and PRAGMA" {
     try expectSingleToken("explain", .kw_explain, "explain");
+    try expectSingleToken("analyze", .kw_analyze, "analyze");
+    try expectSingleToken("ANALYZE", .kw_analyze, "ANALYZE");
     try expectSingleToken("pragma", .kw_pragma, "pragma");
     try expectSingleToken("vacuum", .kw_vacuum, "vacuum");
 }

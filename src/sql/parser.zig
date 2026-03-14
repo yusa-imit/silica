@@ -195,6 +195,7 @@ pub const Parser = struct {
             .kw_savepoint => .{ .transaction = try self.parseSavepoint() },
             .kw_release => .{ .transaction = try self.parseRelease() },
             .kw_explain => .{ .explain = try self.parseExplain() },
+            .kw_analyze => .{ .analyze = self.parseAnalyze() },
             .kw_vacuum => .{ .vacuum = self.parseVacuum() },
             .kw_grant => try self.parseGrant(),
             .kw_revoke => try self.parseRevoke(),
@@ -2136,6 +2137,18 @@ pub const Parser = struct {
 
     fn parseVacuum(self: *Parser) ast.VacuumStmt {
         _ = self.advance(); // consume VACUUM keyword
+        // Optional table name
+        const table_name = if (self.check(.identifier))
+            self.advance().lexeme(self.source)
+        else if (self.peek().type.isKeyword())
+            self.advance().lexeme(self.source) // allow keywords as table names
+        else
+            null;
+        return .{ .table_name = table_name };
+    }
+
+    fn parseAnalyze(self: *Parser) ast.AnalyzeStmt {
+        _ = self.advance(); // consume ANALYZE keyword
         // Optional table name
         const table_name = if (self.check(.identifier))
             self.advance().lexeme(self.source)
@@ -4975,4 +4988,27 @@ test "parse CREATE POLICY with boolean literal in WITH CHECK" {
     try std.testing.expect(r.stmt == .create_policy);
     const policy = r.stmt.create_policy;
     try std.testing.expect(policy.with_check_expr != null);
+}
+
+test "parse ANALYZE with table name" {
+    var r = try testParseWithArena("ANALYZE users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .analyze);
+    const analyze = r.stmt.analyze;
+    try std.testing.expectEqualStrings("users", analyze.table_name.?);
+}
+
+test "parse ANALYZE without table (all tables)" {
+    var r = try testParseWithArena("ANALYZE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .analyze);
+    const analyze = r.stmt.analyze;
+    try std.testing.expect(analyze.table_name == null);
+}
+
+test "parse ANALYZE case insensitive" {
+    var r = try testParseWithArena("analyze products");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .analyze);
+    try std.testing.expectEqualStrings("products", r.stmt.analyze.table_name.?);
 }

@@ -489,6 +489,12 @@ pub const VacuumStmt = struct {
     table_name: ?[]const u8 = null,
 };
 
+/// ANALYZE statement: collect table statistics for query optimization.
+pub const AnalyzeStmt = struct {
+    /// Optional table name to analyze. null = analyze all tables.
+    table_name: ?[]const u8 = null,
+};
+
 /// WITH CHECK OPTION type for updatable views.
 pub const CheckOption = enum {
     none,
@@ -765,6 +771,7 @@ pub const Stmt = union(enum) {
     drop_index: DropIndexStmt,
     transaction: TransactionStmt,
     explain: ExplainStmt,
+    analyze: AnalyzeStmt,
     vacuum: VacuumStmt,
     create_view: CreateViewStmt,
     drop_view: DropViewStmt,
@@ -1528,4 +1535,18 @@ test "AlterTableRLSStmt force enable" {
     try std.testing.expectEqualStrings("audit_log", stmt.table_name);
     try std.testing.expect(stmt.enable);
     try std.testing.expect(stmt.force);
+}
+
+test "AnalyzeStmt with table name" {
+    const stmt = AnalyzeStmt{
+        .table_name = "users",
+    };
+
+    try std.testing.expectEqualStrings("users", stmt.table_name.?);
+}
+
+test "AnalyzeStmt all tables" {
+    const stmt = AnalyzeStmt{};
+
+    try std.testing.expect(stmt.table_name == null);
 }

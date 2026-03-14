@@ -649,6 +649,13 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
                 writer.writeAll("Parsed: VACUUM\n") catch {};
             }
         },
+        .analyze => |a| {
+            if (a.table_name) |name| {
+                writer.print("Parsed: ANALYZE {s}\n", .{name}) catch {};
+            } else {
+                writer.writeAll("Parsed: ANALYZE\n") catch {};
+            }
+        },
         .create_view => |v| {
             writer.print("Parsed: CREATE VIEW {s}\n", .{v.name}) catch {};
         },
