@@ -145,6 +145,23 @@
     - auth.zig test count: 12 → 19 tests (all passing)
     - Commit dc4e708: test(auth): add 7 comprehensive edge case tests for authentication
     - CI green, all tests passing
+  - **2026-03-14 12:00 UTC**: Zig 0.15 API compatibility fixes (STABILIZATION MODE)
+    - **BUG**: CI red with 10 compilation errors in sender.zig and receiver.zig (from previous incomplete session)
+    - Root cause: Zig 0.15 ArrayList API changes, wrong function signatures, missing imports
+    - Files fixed: src/replication/sender.zig, src/replication/receiver.zig
+    - Changes:
+      - ArrayList.init(allocator) → ArrayList(T){}
+      - ArrayList.deinit() → deinit(allocator)
+      - ArrayList.appendSlice(data) → appendSlice(allocator, data)
+      - std.time.sleep → std.Thread.sleep
+      - SlotManager.updateSlotLSN now requires both restart_lsn and confirmed_flush_lsn parameters
+      - createWalDataMessage signature fixed (self, allocator, data)
+      - Added SlotState import to sender.zig
+      - Fixed test variable declarations (var → const)
+      - Fixed field references (active_slot_name → slot_name, primary_conninfo → config.primary_conninfo)
+    - Commit de67353: fix(replication): fix Zig 0.15 API compatibility issues
+    - All 1876 tests passing
+    - CI status: in_progress (waiting for confirmation)
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
