@@ -86,7 +86,7 @@ pub const PromotionCoordinator = struct {
 
     /// Promote standby to primary
     pub fn promote(self: *PromotionCoordinator, new_timeline_id: u32) !void {
-        if (self.state == .in_progress) {
+        if (self.state == .in_progress or self.state == .completed) {
             return Error.PromotionInProgress;
         }
 
