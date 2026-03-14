@@ -74,6 +74,11 @@ pub const SyncCoordinator = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        // If already registered, remove old entry to avoid leak
+        if (self.standbys.fetchRemove(name)) |entry| {
+            self.allocator.free(entry.key);
+        }
+
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
 
