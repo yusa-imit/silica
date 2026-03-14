@@ -22,3 +22,4 @@ Thumbs.db
 
 # Claude Code local settings (user-specific)
 .claude/settings.local.json
+.claude/scratchpad.md
