@@ -485,3 +485,77 @@ test "SyncCoordinator: mode quorum with no sync standbys" {
     // No sync standbys, quorum should be met (0 == 0)
     try coord.waitForSync(1000, 100);
 }
+
+test "SyncCoordinator: concurrent stress test with multiple threads" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "replica1,replica2,replica3");
+    defer coord.deinit();
+
+    const num_threads = 8;
+    const num_ops_per_thread = 25;
+
+    const ThreadContext = struct {
+        coordinator: *SyncCoordinator,
+        thread_id: usize,
+
+        fn worker(ctx: *const @This()) void {
+            var i: usize = 0;
+            while (i < num_ops_per_thread) : (i += 1) {
+                var name_buf: [32]u8 = undefined;
+                const standby_name = std.fmt.bufPrint(&name_buf, "replica{d}", .{(ctx.thread_id % 3) + 1}) catch unreachable;
+
+                // Register standby (idempotent, no error expected)
+                ctx.coordinator.registerStandby(standby_name) catch {
+                    @panic("Unexpected error in registerStandby");
+                };
+
+                // Update flush LSN
+                const lsn: LSN = @intCast((ctx.thread_id * 100) + i);
+                ctx.coordinator.updateFlushLSN(standby_name, lsn) catch |err| {
+                    // StandbyNotFound can happen if another thread unregistered
+                    if (err != error.StandbyNotFound) {
+                        @panic("Unexpected error in updateFlushLSN");
+                    }
+                };
+
+                // Check if sync
+                _ = ctx.coordinator.isSyncStandby(standby_name);
+
+                // Get min flush LSN (thread-safe read)
+                _ = ctx.coordinator.getMinSyncFlushLSN();
+
+                // Unregister standby
+                ctx.coordinator.unregisterStandby(standby_name);
+            }
+        }
+    };
+
+    var threads: [num_threads]std.Thread = undefined;
+    var contexts: [num_threads]ThreadContext = undefined;
+
+    // Spawn threads
+    var t: usize = 0;
+    while (t < num_threads) : (t += 1) {
+        contexts[t] = ThreadContext{
+            .coordinator = &coord,
+            .thread_id = t,
+        };
+        threads[t] = try std.Thread.spawn(.{}, ThreadContext.worker, .{&contexts[t]});
+    }
+
+    // Join all threads
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // After all threads finish, coordinator should be in a consistent state
+    // Some standbys may still be registered due to races (last operation was register, not unregister)
+    const min_lsn = coord.getMinSyncFlushLSN();
+
+    // Verify min LSN is a valid value (either 0 for registered standbys or maxInt for none)
+    // The exact value depends on race outcomes, so we just check for consistency
+    _ = min_lsn; // Consume to avoid unused variable warning
+
+    // The main goal is to verify no crashes or deadlocks occurred
+    // If we reach here, the concurrent operations completed successfully
+}

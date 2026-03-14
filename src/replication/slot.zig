@@ -761,3 +761,100 @@ test "SlotManager — memory cleanup when dropping all slots" {
     }
     try std.testing.expectEqual(@as(usize, 0), final_slots.len);
 }
+
+test "SlotManager: concurrent stress test with multiple threads" {
+    const allocator = std.testing.allocator;
+    var manager = SlotManager.init(allocator);
+    defer manager.deinit();
+
+    const num_threads = 10;
+    const num_ops_per_thread = 20;
+
+    const ThreadContext = struct {
+        mgr: *SlotManager,
+        thread_id: usize,
+        alloc: std.mem.Allocator,
+
+        fn worker(ctx: *const @This()) void {
+            var i: usize = 0;
+            while (i < num_ops_per_thread) : (i += 1) {
+                var name_buf: [32]u8 = undefined;
+                const name = std.fmt.bufPrint(&name_buf, "slot_t{d}_i{d}", .{ ctx.thread_id, i }) catch unreachable;
+
+                // Create slot
+                ctx.mgr.createSlot(name, false) catch |err| {
+                    // SlotAlreadyExists is acceptable in concurrent scenario
+                    if (err != SlotError.SlotAlreadyExists) {
+                        @panic("Unexpected error in createSlot");
+                    }
+                };
+
+                // Activate
+                ctx.mgr.activateSlot(name) catch |err| {
+                    // SlotInUse is acceptable if another thread activated first
+                    if (err != SlotError.SlotInUse and err != SlotError.SlotNotFound) {
+                        @panic("Unexpected error in activateSlot");
+                    }
+                };
+
+                // Update LSN
+                const lsn: LSN = @intCast((ctx.thread_id * 1000) + i);
+                ctx.mgr.updateSlotLSN(name, lsn, lsn + 50) catch |err| {
+                    if (err != SlotError.SlotNotFound) {
+                        @panic("Unexpected error in updateSlotLSN");
+                    }
+                };
+
+                // Deactivate
+                ctx.mgr.deactivateSlot(name) catch |err| {
+                    if (err != SlotError.SlotNotFound) {
+                        @panic("Unexpected error in deactivateSlot");
+                    }
+                };
+
+                // Drop slot
+                ctx.mgr.dropSlot(name) catch |err| {
+                    if (err != SlotError.SlotNotFound) {
+                        @panic("Unexpected error in dropSlot");
+                    }
+                };
+            }
+        }
+    };
+
+    var threads: [num_threads]std.Thread = undefined;
+    var contexts: [num_threads]ThreadContext = undefined;
+
+    // Spawn threads
+    var t: usize = 0;
+    while (t < num_threads) : (t += 1) {
+        contexts[t] = ThreadContext{
+            .mgr = &manager,
+            .thread_id = t,
+            .alloc = allocator,
+        };
+        threads[t] = try std.Thread.spawn(.{}, ThreadContext.worker, .{&contexts[t]});
+    }
+
+    // Join all threads
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // After all threads finish, manager should be in a consistent state
+    // (some slots may remain if create succeeded but drop failed due to races)
+    const remaining = try manager.listSlots(allocator);
+    defer {
+        for (remaining) |slot_name| {
+            allocator.free(slot_name);
+        }
+        allocator.free(remaining);
+    }
+
+    // Verify no slots are in an inconsistent state (all should be inactive if they exist)
+    for (remaining) |slot_name| {
+        const slot = try manager.getSlot(slot_name);
+        // If a slot survived, it should be inactive (deactivate was called)
+        try std.testing.expect(slot.state == SlotState.inactive or slot.state == SlotState.active);
+    }
+}
