@@ -268,10 +268,25 @@
 - [ ] Window functions (ROW_NUMBER, RANK, etc.) — Milestone 9
 - [ ] Advanced data types (DATE/TIME/TIMESTAMP, NUMERIC, UUID, ARRAY, ENUM) — Milestone 10
 
-### Current: Phase 8 — Client-Server & Wire Protocol
+### Phase 8 — Client-Server & Wire Protocol COMPLETE ✅
 - **Milestone 15**: Wire Protocol ✅ (15A Message Types, 15B Simple Query, 15C Extended Query)
 - **Milestone 16**: Server & Connection Management ✅ (16A TCP Server, 16B Session State, 16C Authentication, 16D Graceful Shutdown)
 - **Milestone 17**: Authorization (RBAC) ✅ COMPLETE
+
+### Phase 9 — Streaming Replication COMPLETE ✅
+- **Milestone 18**: WAL Sender & Receiver ✅ (18A Protocol, 18B Slot Mgmt, 18C Sender, 18D Receiver, 18E Hot Standby)
+
+### Current: Phase 10 — Cost-Based Optimizer & Performance
+- **Milestone 20**: Statistics & Cost Model IN PROGRESS
+  - **20A ANALYZE Command Foundation** IN PROGRESS
+    - [x] Tokenizer: kw_analyze keyword (2 tests)
+    - [x] AST: AnalyzeStmt struct (2 tests)
+    - [x] Parser: parseAnalyze() with 3 tests
+    - [x] Analyzer: empty analyze case
+    - [x] Planner: returns transaction plan
+    - [x] CLI: printStmtInfo case
+    - [ ] Catalog: TableStats storage (serializeStats/deserializeStats)
+    - [ ] Engine: ANALYZE execution (table sampling, compute stats)
   - **17A Role Catalog** ✅ COMPLETE
     - [x] Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
     - [x] AST: CreateRoleStmt, DropRoleStmt, AlterRoleStmt, RoleOptions struct
