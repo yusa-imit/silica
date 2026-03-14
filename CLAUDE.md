@@ -130,18 +130,19 @@ Leader (orchestrator)
 3. `.claude/memory/decisions.md` — 기술 결정 로그
 4. `.claude/memory/debugging.md` — 알려진 이슈와 해결법
 5. `.claude/memory/patterns.md` — 검증된 코드 패턴
+6. `docs/milestones.md` — 마일스톤 현황, 의존성 마이그레이션 추적
 
 **실행 사이클**:
 
 | Phase | 내용 | 비고 |
 |-------|------|------|
-| 1. 상태 파악 | `/status` 실행, git log·빌드·테스트 상태 점검 | 체크리스트에서 다음 미완료 항목 식별 |
+| 1. 상태 파악 | `/status` 실행, git log·빌드·테스트 상태 점검 | `docs/milestones.md`에서 다음 미완료 항목 식별 |
 | 1.5. 이슈 확인 | `gh issue list --state open --limit 10` | 아래 이슈 우선순위 프로토콜 참조 |
 | 2. 계획 | 구현 전략을 내부적으로 수립 (텍스트 출력) | `EnterPlanMode`/`ExitPlanMode` 사용 금지 — 비대화형 세션에서 블로킹됨 |
 | 3. 구현 → 검증 → 커밋 (반복) | 아래 **구현 루프** 참조 | 단위별로 즉시 커밋+푸시 |
 | 4. 코드 리뷰 | `/review` — PRD 준수·메모리 안전성·테스트 커버리지 확인 | 이슈 발견 시 수정 후 재커밋 |
 | 5. 릴리즈 판단 | 릴리즈 조건 충족 시 자동 릴리즈 | 아래 Release & Patch Policy 참조 |
-| 6. 메모리 갱신 | `.claude/memory/` 파일 업데이트 | 별도 커밋: `chore: update session memory` → push |
+| 6. 메모리 갱신 | `.claude/memory/` + `docs/milestones.md` 업데이트 | 별도 커밋: `chore: update session memory` → push |
 | 7. 세션 요약 | 구조화된 요약 출력 | 아래 템플릿 참조 |
 
 **구현 루프** (Phase 3 상세):
@@ -165,7 +166,7 @@ gh issue list --state open --limit 10 --json number,title,labels,createdAt
 | 우선순위 | 조건 | 행동 |
 |---------|------|------|
 | 1 (최우선) | `bug` 라벨 | 다른 작업보다 항상 우선 처리 |
-| 2 (높음) | `from:*` 라벨 (소비자 프로젝트 요청) | 현재 작업보다 우선 |
+| 2 (높음) | `migration` 라벨 (`from:sailor`, `from:zuda` 등) | 의존성 마이그레이션 — 현재 작업보다 우선 처리 |
 | 3 (보통) | `feature-request` + 현재 phase 범위 내 | 현재 작업과 병행 |
 | 4 (낮음) | `feature-request` + 미래 phase | 적어두고 넘어감 |
 
@@ -324,59 +325,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `ci`
 
 ## Implementation Roadmap
 
-전체 12 Phase, 25 Milestone. 자세한 체크리스트는 `docs/PRD.md` Section 11 참조.
-
-### Phase 1: Storage Foundation ✅
-- Page Manager, B+Tree, Buffer Pool, Overflow, CRC32C, Varint
-- 릴리즈: v0.1.0
-
-### Phase 2: SQL Core ✅
-- Tokenizer, Parser (Pratt precedence), AST, Semantic Analyzer
-- Schema Catalog (B+Tree backed), Query Planner, Rule-based Optimizer
-- Volcano-model Executor, Database Engine integration
-- Secondary indexes, WHERE with index selection
-
-### Phase 3: WAL & Basic Transactions ✅
-- WAL frame writer, commit, rollback, checkpoint, recovery
-- Buffer pool WAL routing, Engine WAL mode integration
-
-### Phase 4: MVCC & Full Transactions ← **CURRENT**
-- **Milestone 6**: MVCC Core — tuple versioning `(xmin, xmax)`, transaction ID management, snapshot isolation, visibility rules, READ COMMITTED / REPEATABLE READ, row-level locking, concurrent writer conflict detection
-- **Milestone 7**: VACUUM & SSI — dead tuple reclamation, auto-vacuum, free space map, SERIALIZABLE via SSI (rw-antidependency tracking), deadlock detection, savepoints
-
-### Phase 5: Advanced SQL
-- **Milestone 8**: Views (regular, materialized, updatable), CTEs (`WITH`, `WITH RECURSIVE`), set operations (UNION/INTERSECT/EXCEPT), `DISTINCT ON`
-- **Milestone 9**: Window functions — `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, frame specs (ROWS/RANGE/GROUPS), WindowAgg operator
-- **Milestone 10**: Advanced data types — DATE/TIME/TIMESTAMP/INTERVAL, NUMERIC/DECIMAL, UUID, SERIAL, ARRAY, ENUM, domain types, type coercion matrix
-
-### Phase 6: JSON & Full-Text Search
-- **Milestone 11**: JSON/JSONB — binary storage, operators (`->`, `->>`, `@>`, `?`), functions, GIN index, SQL/JSON path
-- **Milestone 12**: Full-text search — TSVECTOR/TSQUERY, `@@` operator, ranking, GIN index, text search configs
-
-### Phase 7: Stored Functions & Triggers
-- **Milestone 13**: Stored functions — SFL (Silica Function Language), scalar & set-returning, volatility categories
-- **Milestone 14**: Triggers — row/statement-level, BEFORE/AFTER/INSTEAD OF, OLD/NEW references, WHEN conditions
-
-### Phase 8: Client-Server & Wire Protocol
-- **Milestone 15**: PostgreSQL wire protocol v3 — simple & extended query protocol, prepared statements, COPY, TLS
-- **Milestone 16**: Server & connection management — async I/O event loop, session state, authentication (SCRAM-SHA-256), `silica server` CLI
-- **Milestone 17**: Authorization (RBAC) — roles, GRANT/REVOKE, row-level security, `information_schema`
-
-### Phase 9: Streaming Replication
-- **Milestone 18**: WAL sender/receiver — replication slots, hot standby, replication protocol
-- **Milestone 19**: Replication operations — synchronous mode, replica promotion, cascading replication, base backup, monitoring
-
-### Phase 10: Cost-Based Optimizer
-- **Milestone 20**: Statistics & cost model — `ANALYZE`, histograms, selectivity estimation, I/O + CPU cost model
-- **Milestone 21**: Advanced optimization — DP join ordering, hash/merge join selection, subquery decorrelation, index-only scans, `EXPLAIN ANALYZE`
-
-### Phase 11: Additional Index Types
-- **Milestone 22**: Hash, GiST, GIN indexes — `CREATE INDEX CONCURRENTLY`, bitmap index scans
-
-### Phase 12: Production Readiness
-- **Milestone 23**: Operational tools — `EXPLAIN ANALYZE`, `VACUUM`, monitoring views, config system
-- **Milestone 24**: Testing & certification — TPC-C/TPC-H benchmarks, jepsen-style testing, fuzz campaign, SQL conformance
-- **Milestone 25**: Documentation & packaging — API reference, ops guide, SQL reference, system packages
+12 phases, 25 milestones. See `docs/milestones.md` for full status, roadmap, and dependency tracking.
 
 ---
 
@@ -455,7 +404,7 @@ gh issue list --state open --label bug --limit 5
 
 **릴리즈 절차**:
 1. `build.zig.zon`의 version 업데이트
-2. CLAUDE.md phase 체크리스트에 완료 표시
+2. `docs/milestones.md` phase 체크리스트에 완료 표시
 3. 커밋: `chore: bump version to v0.X.0`
 4. 태그: `git tag -a v0.X.0 -m "Release v0.X.0: <phase 요약>"`
 5. 푸시: `git push && git push origin v0.X.0`
@@ -494,571 +443,41 @@ gh issue list --state open --label bug --limit 5
 
 ## Sailor Migration
 
-silica는 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점진적으로 도입한다.
-각 버전이 READY 상태가 되면, 해당 세션에서 마이그레이션을 수행한다.
+- **Current in silica**: v1.11.0
+- **Latest available**: v1.13.1
+- **Repo**: https://github.com/yusa-imit/sailor
+- **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for full version status table.
 
-### 마이그레이션 프로토콜
-
-1. 세션 시작 시 이 섹션을 확인한다
+**Protocol**:
+1. 세션 시작 시 `docs/milestones.md`의 sailor 버전 테이블을 확인한다
 2. `status: READY`인 미완료 마이그레이션이 있으면, 현재 작업보다 **우선** 수행한다
-3. 마이그레이션 완료 후 `status: DONE`으로 변경하고 커밋한다
+3. 마이그레이션 완료 후 `docs/milestones.md`에서 `status: DONE`으로 변경하고 커밋한다
 4. `zig build test` 통과 확인 필수
 
-### sailor 이슈 발행 프로토콜
-
-sailor 라이브러리를 사용하는 중 버그를 발견하거나, 필요한 기능이 없을 때 GitHub Issue를 발행한다.
-
-**버그 발행**:
-```bash
-gh issue create --repo yusa-imit/sailor \
-  --title "bug: <간단한 설명>" \
-  --label "bug,from:silica" \
-  --body "## 증상
-<어떤 문제가 발생했는지>
-
-## 재현 방법
-<코드 또는 단계>
-
-## 기대 동작
-<어떻게 동작해야 하는지>
-
-## 환경
-- sailor 버전: <version>
-- Zig 버전: 0.15.x
-- OS: <os>"
-```
-
-**기능 요청 발행**:
-```bash
-gh issue create --repo yusa-imit/sailor \
-  --title "feat: <필요한 기능>" \
-  --label "feature-request,from:silica" \
-  --body "## 필요한 이유
-<silica에서 왜 이 기능이 필요한지>
-
-## 제안하는 API
-<원하는 함수 시그니처나 사용 예시>
-
-## 현재 워크어라운드
-<없으면 '없음'>"
-```
-
-**발행 조건**:
-- sailor의 기존 API로 해결할 수 없는 문제일 때만 발행
-- 동일한 이슈가 이미 열려있는지 먼저 확인: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
-- 이슈 발행 후 현재 작업으로 복귀 (sailor 수정을 직접 하지 않음)
+**이슈 발행**:
+- 버그: `gh issue create --repo yusa-imit/sailor --label "bug,from:silica"`
+- 기능 요청: `gh issue create --repo yusa-imit/sailor --label "feature-request,from:silica"`
+- 동일 이슈 확인 먼저: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
 
 **로컬 워크어라운드 금지 (CRITICAL)**:
 - sailor에 버그가 있으면 **절대로 로컬에서 자체 구현으로 우회하지 않는다**
 - 반드시 sailor repo에 이슈를 발행하고, sailor 에이전트가 수정할 때까지 기다린다
-- sailor 에이전트(cron job)가 `from:*` 라벨 이슈를 최우선으로 처리한다
 - 수정이 릴리스되면 `zig fetch --save`로 sailor 의존성을 업데이트한다
 - 해당 기능이 아직 안 되면 그 기능을 사용하는 코드를 작성하지 않고 다른 작업으로 넘어간다
-
-### v0.1.0 — arg, color (status: DONE)
-
-sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
-
-**작업 내용**:
-- [x] `build.zig.zon`에 sailor 의존성 추가
-- [x] `build.zig`에 CLI executable 빌드 타겟 추가 (기존 library + 새 CLI)
-- [x] `src/cli.zig` 생성 — `sailor.arg`로 CLI 진입점 구현
-  - `silica <db_path>` — interactive SQL 셸 진입
-  - `--help`, `--version`, `--header`, `--csv`, `--json` 플래그
-- [x] 에러 출력에 `sailor.color` 적용
-- [x] 기존 테스트 전체 통과 확인
-- [x] 커밋: `feat: add CLI entry point with sailor v0.1.0`
-
-### v0.2.0 — REPL + fmt (status: DONE)
-
-**작업 내용**:
-- [x] `sailor.repl`로 interactive SQL 셸 구현
-  - 프롬프트: `silica> ` (기본), `   ...> ` (multi-line)
-  - 히스토리: `~/.silica_history`
-  - 자동완성: SQL 키워드, 테이블명, 컬럼명
-  - 하이라이팅: SQL 키워드 색상
-  - 멀티라인: `;`로 끝나지 않으면 계속 입력
-- [x] SQL tokenizer/parser 연결 (silica 자체 모듈)
-- [x] 커밋: `feat: add interactive SQL shell with sailor.repl`
-
-### v0.3.0 — fmt (status: DONE)
-
-**작업 내용**:
-- [x] 쿼리 결과 포매팅에 `sailor.fmt` 적용
-- [x] `.mode` 명령어 구현: table, csv, json, jsonl, plain
-- [x] `SELECT` 결과를 정렬된 테이블로 표시
-- [x] NULL 값 처리
-- [x] 커밋: `feat: add output modes with sailor.fmt`
-
-### v0.4.0 — tui (status: DONE)
-
-**작업 내용**:
-- [x] `silica --tui <db_path>` 모드 추가
-- [x] `sailor.tui` 위젯으로 구현:
-  - 좌측: 스키마 트리 (List 위젯 — 테이블 목록)
-  - 우측 상단: 쿼리 결과 (Table 위젯)
-  - 우측 하단: SQL 입력 (직접 구현 — sailor Input 위젯 버그로 인해)
-  - 하단: StatusBar (직접 구현 — sailor StatusBar 위젯 버그로 인해)
-- [x] 커밋: `feat: add TUI database browser with sailor.tui`
-- **Note**: sailor v0.4.0의 Input/StatusBar 위젯에 API 불일치 버그 발견 → https://github.com/yusa-imit/sailor/issues/4
-
-### v0.5.0 — advanced widgets (status: READY)
-
-**작업 내용**:
-- [x] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
-- [x] `build.zig.zon`에 sailor v0.5.1 패치 업데이트 (sailor#3, #4, #5, #6 수정)
-- [x] 스키마 사이드바 개선: 테이블+컬럼 계층 표시 (List 기반, 타입/제약조건 표시)
-- [ ] 쿼리 플랜 시각화: `Tree` 위젯으로 EXPLAIN 결과 계층 표시
-- [ ] SQL 편집기: `TextArea` 위젯으로 멀티라인 쿼리 에디터 교체
-- [ ] 성능 차트: `LineChart`로 쿼리 실행 시간 추이 그래프
-- [ ] 위험 쿼리 확인: `Dialog` 위젯으로 `DROP TABLE` 등 확인 프롬프트
-- [ ] 결과 알림: `Notification`으로 쿼리 성공/실패 메시지
-- [x] 커밋: `feat: enhance TUI schema sidebar with hierarchical table+column view`
-- **Note**: sailor#7 filed — `renderDiff` still uses `std.fmt.format` (cross-compile fails). `localRenderDiff` workaround kept until fixed.
-- **Note**: Phase 5 위젯 (Tree, TextArea, Dialog, Notification) now compile with v0.5.1 — ready for FEATURE mode integration
-
-### v1.0.0 — production ready (status: DONE)
-
-**첫 안정 릴리즈**: 모든 기능 완성, 종합 문서화 포함
-
-**v1.0.1 패치 릴리즈**: 크로스 컴파일 수정 (sailor#7 해결)
-- `renderDiff` std.fmt.format → writer.print 수정
-- x86_64-linux-gnu, x86_64-windows-msvc 크로스 컴파일 정상 동작 확인
-- API 변경 없음 — drop-in replacement
-
-**작업 내용**:
-- [x] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트 (v1.0.0 → v1.0.3 → v1.1.0 통합)
-- [ ] [Getting Started Guide](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/GUIDE.md) 참조하여 모범 사례 적용
-- [ ] [API Reference](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/API.md) 기반으로 기존 코드 리팩토링
-- [ ] 테마 시스템 활용: SQL TUI에 다크/라이트 모드 또는 SQL 신택스 하이라이팅 테마
-- [ ] 애니메이션 효과 추가 (선택사항): 쿼리 실행 프로그레스, 결과 로딩
-- [ ] 성능 최적화: sailor 벤치마크 기반으로 렌더링 성능 개선
-- [x] 기존 테스트 전체 통과 확인
-- [x] 커밋: `chore: upgrade sailor dependency to v1.1.0`
-
-### v1.0.3 — bug fix release (status: DONE)
-
-**sailor v1.0.3 released** (2026-03-02) — Zig 0.15.2 compatibility patch
-
-- **Bug fix**: Tree widget ArrayList API updated for Zig 0.15.2
-- **Impact on silica**: None (silica doesn't use Tree widget)
-- [x] `build.zig.zon`에 sailor v1.1.0으로 통합 업데이트 (v1.0.3 포함)
-- [x] 기존 테스트 전체 통과 확인
-
-**Note**: This is an optional upgrade. Tree widget fix doesn't affect silica's current functionality.
-
-### v1.1.0 — Accessibility & Internationalization (status: DONE)
-
-**sailor v1.1.0 released** (2026-03-02) — Accessibility and i18n features
-
-- **New features**:
-  - Accessibility module (screen reader hints, semantic labels)
-  - Focus management system (tab order, focus ring)
-  - Keyboard navigation protocol (custom key bindings)
-  - Unicode width calculation (CJK, emoji proper sizing)
-  - Bidirectional text support (RTL rendering for Arabic/Hebrew)
-- **Impact on silica**: High priority — critical for SQL shell internationalization
-  - Unicode width fixes essential for proper CJK/emoji data display
-  - RTL support enables Arabic/Hebrew text in query results
-  - Keyboard navigation improves SQL shell interactivity
-  - Accessibility features enhance screen reader support for database tools
-- [x] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트
-- [x] 기존 테스트 전체 통과 확인
-- [ ] Consider keyboard bindings for SQL history navigation (Ctrl+R)
-- [ ] Test Unicode width with CJK column data
-
-**Note**: Non-breaking upgrade. Unicode/RTL improvements automatically benefit international database content display.
-
-### v1.2.0 — Layout & Composition (READY)
-
-**sailor v1.2.0 released** (2026-03-02) — Advanced layout and composition features
-
-- **New features**:
-  - Grid layout system (CSS Grid-inspired 2D constraint solver)
-  - ScrollView widget (virtual scrolling for large content)
-  - Overlay/z-index system (non-modal popups, tooltips, dropdown menus)
-  - Widget composition helpers (split panes, resizable borders)
-  - Responsive breakpoints (adaptive layouts based on terminal size)
-- **Impact on silica**: High priority — enables rich TUI shell interface
-  - Grid layout for SQL editor + results + schema browser layout
-  - ScrollView for large query results and table browsing
-  - Overlay system for autocomplete suggestions and help tooltips
-  - Split panes for query editor / results split view
-  - Responsive layouts for adapting to terminal size
-- [x] `build.zig.zon`에 sailor v1.2.0 의존성 업데이트
-- [ ] Implement split-pane TUI: query editor (top) + results (bottom)
-- [ ] Add ScrollView for large result sets
-- [ ] Add Grid layout for 3-pane layout (editor | results | schema)
-- [x] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. Layout features are critical for rich SQL shell TUI with split views and scrollable results.
-
-### v1.3.0 — Performance & Developer Experience (status: READY)
-
-**sailor v1.3.0 released** (2026-03-02) — Performance optimization and debugging tools
-
-- **New features**:
-  - RenderBudget: Frame time tracking with automatic frame skip for 60fps
-  - LazyBuffer: Dirty region tracking (only render changed cells)
-  - EventBatcher: Coalesce rapid events (resize storms, key bursts)
-  - DebugOverlay: Visual debugging (layout rects, FPS, event log)
-  - ThemeWatcher: Hot-reload JSON themes without restart
-- **Impact on silica**: High priority — critical for SQL shell performance
-  - Lazy rendering essential for large result sets (skip unchanged cells)
-  - Event batching handles resize during long-running queries
-  - DebugOverlay critical for shell TUI development
-  - ThemeWatcher enables SQL syntax highlighting theme iteration
-- [x] `build.zig.zon`에 sailor v1.3.0 의존성 업데이트
-- [ ] Integrate LazyBuffer for result table rendering (reduce overhead on large queries)
-  - Only redraw changed cells (e.g., cursor position, highlighted row)
-  - Skip entire table when only status bar updates
-- [ ] Add DebugOverlay toggle (Alt+D) for shell development
-- [ ] Consider ThemeWatcher for SQL syntax theme hot-reload
-- [x] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. Performance features are opt-in. SQL shell result viewer will see major performance improvement with lazy rendering (90%+ cell skip on partial updates).
-
-### v1.4.0 — Advanced Input & Forms (status: READY)
-
-**sailor v1.4.0 released** (2026-03-03) — Form widgets and input validation
-
-- **New features**:
-  - Form widget: Field validation, submit/cancel handlers, error display
-  - Select/Dropdown widget: Single/multi-select with keyboard navigation
-  - Checkbox widget: Single and grouped checkboxes with state management
-  - RadioGroup widget: Mutually exclusive selection
-  - Validators module: Comprehensive input validation (email, URL, IPv4, numeric, patterns)
-  - Input masks: SSN, phone, dates, credit card formatting
-- **Impact on silica**: High priority — critical for SQL shell interactive features
-  - Form widget for connection parameters (host, port, database, credentials)
-  - Validators essential for connection strings, table names, column constraints
-  - Select widget for table/column selection in query builder
-  - Checkbox for query options (EXPLAIN, ANALYZE, transaction mode)
-  - RadioGroup for format selection (table, csv, json, jsonl)
-  - Input masks for date/time column entry, numeric constraints
-- [x] `build.zig.zon`에 sailor v1.4.0 의존성 업데이트
-- [ ] (Recommended) Implement connection editor using Form widget with validation
-- [ ] (Recommended) Add visual query builder using Select/Checkbox widgets
-- [ ] Add table/column name validation using validators module
-- [ ] Add format selector using RadioGroup (replace .mode command)
-- [x] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. Form features enable interactive connection editor and visual query builder for SQL shell TUI.
-
-### v1.5.0 — State Management & Testing (status: READY)
-
-**sailor v1.5.0 released** (2026-03-07) — Testing utilities and state management
-
-- **New features**:
-  - Widget snapshot testing: assertSnapshot() method for pixel-perfect verification
-  - Example test suite: 10 comprehensive integration test patterns
-  - Previously released: Event bus, Command pattern, MockTerminal, EventSimulator
-- **Impact on silica**: HIGH — Critical for SQL shell testing
-  - MockTerminal enables comprehensive shell rendering tests
-  - assertSnapshot() verifies exact query result table output
-  - Example patterns guide silica's TUI test suite
-  - Event bus useful for shell component communication (results → pagination → export)
-  - Command pattern enables query history undo/redo (future feature)
-- [ ] `build.zig.zon`에 sailor v1.5.0 의존성 업데이트
-- [ ] Add snapshot tests for result table rendering
-- [ ] Add snapshot tests for query editor with syntax highlighting
-- [ ] Test command history with Command pattern
-- [ ] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. Testing utilities dramatically improve test coverage for SQL shell rendering quality and correctness.
-
-### v1.6.0 — Data Visualization & Advanced Charts (status: READY)
-
-**sailor v1.6.0 released** (2026-03-08) — Advanced data visualization widgets
-
-- **New features**:
-  - ScatterPlot: X-Y coordinate plotting with markers and multiple series
-  - Histogram: Frequency distribution bars (vertical/horizontal)
-  - TimeSeriesChart: Time-based line chart with Unix timestamp support
-  - Heatmap & PieChart (previously released)
-- **Impact on silica**: HIGH — Critical for query performance visualization
-  - Histogram for query execution time distribution
-  - TimeSeriesChart for database growth over time (table row count)
-  - ScatterPlot for index selectivity analysis (cardinality vs. scan cost)
-  - Heatmap for table access patterns (hot spots visualization)
-  - PieChart for storage distribution across tables
-- [ ] `build.zig.zon`에 sailor v1.6.0 의존성 업데이트
-- [ ] (Recommended) Add Histogram widget for query time distribution in TUI
-- [ ] (Recommended) Add TimeSeriesChart for monitoring table growth
-- [ ] (Recommended) Add ScatterPlot for index analysis dashboard
-- [ ] 기존 테스트 전체 통과 확인
-
-
-**sailor v1.6.1 patch released** (2026-03-08) — Critical bug fixes for v1.6.0 widgets
-
-- **Bug fixes**:
-  - PieChart: Fixed integer overflow in coordinate calculation (prevented panics)
-  - Multiple widgets: Fixed API compilation errors (Color.rgb, buffer.set, u16 casts)
-- **Impact on zr**: None (zr doesn't use v1.6.0 widgets yet)
-- [ ] Optional: Update to v1.6.1 for stable data visualization widgets
-
-### v1.7.0 — Advanced Layout & Rendering (status: READY)
-
-**sailor v1.7.0 released** (2026-03-09) — Advanced layout and rendering features
-
-- **New features**:
-  - FlexBox layout: CSS flexbox-inspired with justify/align (16 tests)
-  - Viewport clipping: Efficient rendering of large virtual buffers (14 tests)
-  - Shadow & 3D border effects: Visual depth for widgets (15 tests)
-  - Custom widget traits: Extensible widget protocol
-  - Layout caching: LRU cache for constraint computation (13 tests)
-- **Impact on silica**: HIGH — Essential for SQL TUI performance and UX
-  - FlexBox enables responsive query editor + result viewer layouts
-  - Viewport clipping crucial for efficient scrolling through large query results
-  - Shadow effects improve visual hierarchy (query pane vs. result pane)
-  - Layout caching significantly improves performance for complex dashboard layouts
-  - Custom widget traits enable SQL-specific widgets (syntax highlighter, schema tree)
-- [ ] `build.zig.zon`에 sailor v1.7.0 의존성 업데이트
-- [ ] (Recommended) Apply viewport clipping to large result set rendering
-- [ ] (Recommended) Use FlexBox for query editor layout
-- [ ] (Recommended) Add shadow effects to dialog boxes
-
-### v1.8.0 — Network & Async Integration (status: READY)
-
-**sailor v1.8.0 released** (2026-03-10) — Network and async widgets
-
-- **New features**:
-  - HttpClient widget: Download progress visualization with speed/stats (16 tests)
-  - WebSocket widget: Live data feed with auto-scroll (16 tests)
-  - AsyncEventLoop: Non-blocking I/O for network operations (8 tests)
-  - TaskRunner widget: Parallel operation status indicator (20 tests)
-  - LogViewer widget: Tail -f style with filtering and search (20 tests)
-- **Impact on silica**: HIGH — LogViewer crucial for SQL query logging
-  - LogViewer perfect for displaying query execution logs and EXPLAIN output
-  - AsyncEventLoop enables non-blocking SQL query execution in TUI
-  - TaskRunner useful for visualizing multi-query execution progress
-  - HttpClient could support remote database connection progress
-- [ ] `build.zig.zon`에 sailor v1.8.0 의존성 업데이트
-- [ ] (Recommended) Use LogViewer for query log display in TUI mode
-- [ ] (Recommended) Apply AsyncEventLoop for non-blocking query execution
-- [ ] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. LogViewer widget highly recommended for SQL shell logging features.
-- [ ] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. All features are opt-in. High priority for TUI performance enhancements.
-
-**Note**: Patch release, no breaking changes. Safe to upgrade when/if data visualization widgets are needed.
-**Note**: Non-breaking upgrade. Visualization widgets enable powerful performance monitoring and analytics features for SQL shell TUI.
-
-### v1.9.0 — Developer Tools & Ecosystem (status: READY)
-
-**sailor v1.9.0 released** (2026-03-11) — Developer tools and ecosystem improvements
-
-- **New features**:
-  - WidgetDebugger: Widget tree inspection with layout bounds visualization
-  - PerformanceProfiler: Frame timing & memory profiling with histogram display
-  - CompletionPopup: REPL tab completion popup (resolves repl.zig TODO)
-  - ThemeEditor: Live theme customization with RGB editing and preview (18 tests)
-  - Widget Gallery: Comprehensive catalog of 40+ widgets across 7 categories
-- **Impact on silica**: HIGH — Directly improves SQL shell user experience
-  - CompletionPopup is CRITICAL for SQL keyword/table/column completion
-  - PerformanceProfiler helps optimize TUI rendering for large result sets
-  - WidgetDebugger aids debugging schema browser and query result layouts
-  - ThemeEditor enables user-customizable SQL shell themes
-- [ ] `build.zig.zon`에 sailor v1.9.0 의존성 업데이트
-- [ ] Integrate CompletionPopup with SQL completion (HIGH PRIORITY)
-- [ ] 기존 테스트 전체 통과 확인
-
-**Note**: PRIORITY UPGRADE — CompletionPopup directly enhances SQL shell UX with keyword/table/column completion.
-
----
-
-### v1.10.0 — Mouse & Gamepad Input (status: READY)
-
-**sailor v1.10.0 released** (2026-03-12) — Mouse and gamepad input support
-
-- **New features**: Mouse event handling, widget-level mouse interaction, gamepad/controller support, touch gestures, input mapping
-- **Impact on silica**: MEDIUM — Mouse support useful for interactive SQL shell
-  - Click to select tables/columns in schema browser
-  - Scroll through large query results with mouse wheel
-  - Drag column borders to resize result table columns
-  - Gamepad support not relevant for SQL shell
-- [ ] `build.zig.zon`에 sailor v1.10.0 의존성 업데이트
-- [ ] Consider mouse interaction for schema browser and result table widgets
-
-### v1.11.0 — Terminal Graphics & Effects (status: READY)
-
-**sailor v1.11.0 released** (2026-03-12) — Terminal graphics protocols and visual effects
-
-- **New features**: Sixel/Kitty graphics protocols, animated transitions, particle effects, blur/transparency
-- **Impact on silica**: LOW — Graphics effects not essential for SQL shell
-  - Sixel/Kitty could display BLOB images stored in database
-  - Particle effects for successful query execution
-  - Transitions for smoother navigation between schema/results views
-- [ ] `build.zig.zon`에 sailor v1.11.0 의존성 업데이트
-- [ ] (Optional) Add transitions for smoother view switching
-
-### v1.12.0 — Enterprise & Accessibility (status: READY)
-
-**sailor v1.12.0 released** (2026-03-13) — Enterprise features and accessibility
-
-- **New features**: Session recording/playback, audit logging, high contrast themes, screen reader support, keyboard navigation
-- **Impact on silica**: HIGH — Enterprise features critical for production SQL clients
-  - Session recording enables reproducing SQL shell bugs from user reports
-  - Audit logging tracks SQL queries for compliance (GDPR, SOC2, HIPAA)
-  - High contrast themes for accessibility
-  - Screen reader support for visually impaired database administrators
-- [ ] `build.zig.zon`에 sailor v1.12.0 의존성 업데이트
-- [ ] Implement audit logging for SQL queries (CRITICAL for production use)
-- [ ] Enable high contrast themes for SQL shell
-- [ ] 기존 테스트 전체 통과 확인
-
-### v1.13.0 — Advanced Text Editing & Rich Input (status: READY)
-
-**sailor v1.13.0 released** (2026-03-14) — Multi-cursor editing and rich text input
-
-- **New features**: Syntax highlighting, code editor widget, autocomplete widget, multi-cursor editing, rich text input
-- **Impact on silica**: VERY HIGH — Directly improves SQL editing experience
-  - Syntax highlighting for SQL queries (keywords, strings, numbers, comments)
-  - Code editor widget for multi-line SQL queries with line numbers and undo/redo
-  - Autocomplete widget for SQL keyword/table/column completion (CRITICAL for UX)
-  - Multi-cursor editing for bulk SQL updates (update multiple values simultaneously)
-  - Rich text input for query comments and documentation
-- [ ] `build.zig.zon`에 sailor v1.13.0 의존성 업데이트
-- [ ] Integrate code editor widget for SQL query input (HIGH PRIORITY)
-- [ ] Add SQL syntax highlighting lexer
-- [ ] Integrate autocomplete widget for SQL completion (CRITICAL)
-- [ ] (Optional) Use multi-cursor for bulk UPDATE statements
-- [ ] 기존 테스트 전체 통과 확인
-
-**Note**: PRIORITY UPGRADE — Code editor and autocomplete widgets are game-changers for SQL shell user experience.
-
-#### v1.13.1 Patch (2026-03-14)
-
-**Critical bug fix** for data visualization widgets (Histogram, TimeSeriesChart, ScatterPlot):
-- **Fixed**: Integer overflow panic when rendering analytics data (#9 from:zr)
-- **Impact**: No direct impact on silica (not using data viz widgets yet), but prevents future crashes if widgets are adopted
-- **Action**: No migration needed — patch release, fully backward compatible
 
 ---
 
 ## zuda Migration
 
-silica는 현재 자체 구현한 자료구조/알고리즘을 `zuda` 라이브러리(https://github.com/yusa-imit/zuda)로 점진적으로 대체할 예정이다.
-zuda의 해당 구현이 완료되면 `from:zuda` 라벨 이슈가 발행된다.
+- **Current**: Not yet integrated. 3 migration targets (B+Tree, Buffer Pool, Deadlock Detection) — all PENDING.
+- **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for targets and status.
 
-### 마이그레이션 대상
+**Protocol**:
+1. zuda에서 `from:zuda` 라벨 이슈가 도착하면 status를 `READY`로 변경
+2. B+Tree: Cursor/overflow 지원 충분히 검증 후에만 마이그레이션 수행
+3. 일반: `build.zig.zon`에 zuda 추가, 자체 구현을 zuda import로 교체
+4. `zig build test` 전체 통과 확인 후 커밋
 
-| 자체 구현 | 파일 | zuda 대체 | status |
-|-----------|------|-----------|--------|
-| B+Tree | `src/storage/btree.zig` | `zuda.containers.trees.BTree` | PENDING |
-| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | `zuda.containers.hashing.LRUCache` | PENDING |
-| Deadlock Detection (DFS) | `src/tx/lock.zig` | `zuda.algorithms.graph.cycle_detection` | PENDING |
+**이슈 발행**: `gh issue create --repo yusa-imit/zuda --label "bug,from:silica"` (또는 `feature-request,from:silica`)
 
-### 마이그레이션 제외 (domain-specific)
-
-- `src/storage/fsm.zig` — 데이터베이스 전용 Free Space Map
-- `src/storage/page.zig` — 데이터베이스 전용 Pager
-- `src/storage/overflow.zig` — B+Tree 전용 오버플로우 체인
-- `src/tx/mvcc.zig` — 데이터베이스 전용 MVCC 로직
-- `src/tx/wal.zig` — 데이터베이스 전용 WAL
-- `src/tx/vacuum.zig` — 데이터베이스 전용 Vacuum
-- `src/util/varint.zig` — 데이터베이스 전용 LEB128 인코딩
-- `src/util/checksum.zig` — CRC32C (std 사용 가능)
-
-> silica의 B+Tree는 4300 LOC의 복잡한 구현이다. zuda의 BTree가 동일한 기능(Cursor, overflow, split/merge)을 지원하는지 충분히 검증한 후에만 마이그레이션을 수행한다.
-
-### 마이그레이션 프로토콜
-
-1. zuda에서 `from:zuda` 라벨 이슈가 도착하면 해당 마이그레이션의 status를 `READY`로 변경
-2. **B+Tree 마이그레이션 특별 절차**:
-   - zuda의 BTree가 silica의 Cursor (seekFirst/seekLast/seek/next/prev) 지원하는지 확인
-   - 오버플로우 페이지 처리 지원 확인
-   - 모든 기존 B+Tree 테스트를 zuda BTree 기반으로 포팅하여 동작 확인
-3. 일반 마이그레이션:
-   - `build.zig.zon`에 zuda 의존성 추가
-   - 자체 구현을 zuda import로 교체
-4. `zig build test` 전체 통과 확인
-5. status를 `DONE`으로 변경하고 커밋
-
-### zuda 이슈 발행 프로토콜
-
-zuda를 사용하는 중 버그를 발견하거나 필요한 기능이 없을 때:
-
-```bash
-gh issue create --repo yusa-imit/zuda \
-  --title "bug: <간단한 설명>" \
-  --label "bug,from:silica" \
-  --body "## 증상
-<어떤 문제가 발생했는지>
-
-## 재현 방법
-<코드 또는 단계>
-
-## 환경
-- zuda: <version>
-- zig: $(zig version)"
-```
-
-- **로컬 워크어라운드 금지**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기
-- zuda 에이전트가 `from:*` 라벨 이슈를 최우선 처리한다
-
-### v1.10.0 — Mouse & Gamepad Input (status: READY)
-
-**sailor v1.10.0 released** (2026-03-11) — Mouse, gamepad, and touch input support
-
-- **New features**:
-  - Mouse event handling: SGR protocol, click/drag/scroll/double-click (19 tests)
-  - Widget mouse interaction: Clickable, Draggable, Scrollable, Hoverable traits (17 tests)
-  - Gamepad/controller input: Buttons, analog sticks, triggers, multi-controller (13 tests)
-  - Touch gesture recognition: Tap, swipe, pinch, multi-touch support (18 tests)
-  - Input mapping: Remap mouse/gamepad/touch to keyboard events (16 tests)
-- **Impact on silica**: HIGH — Enables rich SQL shell interactions
-  - Mouse click for column/row selection in result tables
-  - Scrollable query results viewer
-  - Draggable column resize in table widget
-  - Touch gestures for mobile terminal support
-  - Input mapping for accessibility
-- [ ] Update `build.zig.zon` to sailor v1.10.0
-- [ ] Add mouse click support to SQL result table widget
-- [ ] Enable scrolling in large result sets
-- [ ] Consider draggable column resize for table formatting
-- [ ] All tests passing after upgrade
-
-**Priority**: HIGH — Significantly enhances SQL shell usability with mouse-enabled table interactions.
-
-**Note**: Non-breaking upgrade. Mouse support will make silica shell more intuitive for data exploration.
-
----
-
-
-### v1.11.0 — Terminal Graphics & Effects (status: DONE)
-
-**sailor v1.11.0 released** (2026-03-12) — Terminal graphics and visual effects
-
-- **New features**:
-  - Particle effects system (confetti, sparkles)
-  - Blur/transparency effects
-  - Sixel/Kitty graphics support
-  - Animated transitions
-- **Impact on silica**: Optional — enhances visual experience
-  - Particle effects for query success notifications (future feature)
-  - Blur for background panels (future feature)
-  - Graphics for inline data visualization (future feature)
-- [x] `build.zig.zon`에 sailor v1.11.0 의존성 업데이트
-- [x] 기존 테스트 전체 통과 확인
-
-**Note**: Non-breaking upgrade. Graphics features are opt-in and available for future TUI enhancements.
-
-### v1.12.0 — Enterprise & Accessibility (status: READY)
-
-**sailor v1.12.0 released** (2026-03-13) — Enterprise features and accessibility
-
-- **New features**:
-  - Session recording & playback (debug TUI interactions)
-  - Audit logging (10 event types, compliance tracking)
-  - 4 high contrast WCAG AAA themes (dark, light, amber, green)
-  - Screen reader enhancements (OSC8, ARIA, JSON modes)
-  - Keyboard navigation improvements (skip links, focus indicators, hints)
-- **Impact on silica**: Optional — improves accessibility and compliance
-  - Audit logging for query execution history (future compliance feature)
-  - High contrast themes for accessibility mode (future settings feature)
-  - Keyboard navigation hints in help display
-- **Migration**: No action required — all features are opt-in and additive
-- **Breaking**: None — fully backward compatible with v1.11.0
+**로컬 워크어라운드 금지 (CRITICAL)**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기.
