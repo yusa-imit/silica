@@ -355,3 +355,128 @@ test "SyncCoordinator: getMinSyncFlushLSN with no sync standbys" {
     const min_lsn = coord.getMinSyncFlushLSN();
     try std.testing.expectEqual(@as(LSN, 0), min_lsn);
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+test "SyncCoordinator: empty sync_standby_names" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1");
+    try std.testing.expectEqual(@as(u32, 0), coord.getSyncStandbyCount());
+
+    // No sync standbys, so waitForSync should timeout
+    const result = coord.waitForSync(1000, 50);
+    try std.testing.expectError(error.SyncTimeout, result);
+}
+
+test "SyncCoordinator: updateFlushLSN for non-existent standby" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "replica1");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1");
+
+    // Try to update non-existent standby
+    const result = coord.updateFlushLSN("replica2", 1000);
+    try std.testing.expectError(error.StandbyNotFound, result);
+}
+
+test "SyncCoordinator: register same standby twice" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "replica1");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1");
+    try std.testing.expectEqual(@as(u32, 1), coord.getSyncStandbyCount());
+
+    // Register again - should replace existing
+    try coord.registerStandby("replica1");
+    try std.testing.expectEqual(@as(u32, 1), coord.getSyncStandbyCount());
+}
+
+test "SyncCoordinator: unregister non-existent standby" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "replica1");
+    defer coord.deinit();
+
+    // Unregister standby that was never registered (should be no-op)
+    coord.unregisterStandby("replica1");
+    try std.testing.expectEqual(@as(u32, 0), coord.getSyncStandbyCount());
+}
+
+test "SyncCoordinator: getMinSyncFlushLSN with mixed sync and async standbys" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "replica1,replica2");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1"); // sync
+    try coord.registerStandby("replica2"); // sync
+    try coord.registerStandby("replica3"); // async (not in sync list)
+
+    try coord.updateFlushLSN("replica1", 1000);
+    try coord.updateFlushLSN("replica2", 2000);
+    try coord.updateFlushLSN("replica3", 500); // Lower LSN but async
+
+    // Should return min of sync standbys only (1000), not async (500)
+    const min_lsn = coord.getMinSyncFlushLSN();
+    try std.testing.expectEqual(@as(LSN, 1000), min_lsn);
+}
+
+test "SyncCoordinator: standby names with whitespace" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "  replica1  ,  replica2  ");
+    defer coord.deinit();
+
+    // Should match after trimming whitespace
+    try std.testing.expect(coord.isSyncStandby("replica1"));
+    try std.testing.expect(coord.isSyncStandby("replica2"));
+}
+
+test "SyncCoordinator: very large LSN values" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .on, "replica1");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1");
+
+    const max_lsn = std.math.maxInt(LSN);
+    try coord.updateFlushLSN("replica1", max_lsn);
+
+    const min_lsn = coord.getMinSyncFlushLSN();
+    try std.testing.expectEqual(max_lsn, min_lsn);
+
+    // Should succeed with max LSN
+    try coord.waitForSync(max_lsn, 100);
+}
+
+test "SyncCoordinator: waitForSync with partial quorum" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .quorum, "replica1,replica2");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1");
+    try coord.registerStandby("replica2");
+
+    // Only one standby confirms (not enough for quorum)
+    try coord.updateFlushLSN("replica1", 1000);
+
+    const result = coord.waitForSync(1000, 50);
+    try std.testing.expectError(error.SyncTimeout, result);
+}
+
+test "SyncCoordinator: mode quorum with no sync standbys" {
+    const allocator = std.testing.allocator;
+    var coord = try SyncCoordinator.init(allocator, .quorum, "");
+    defer coord.deinit();
+
+    try coord.registerStandby("replica1"); // async
+
+    try coord.updateFlushLSN("replica1", 1000);
+
+    // No sync standbys, quorum should be met (0 == 0)
+    try coord.waitForSync(1000, 100);
+}
