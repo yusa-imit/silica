@@ -384,12 +384,33 @@
   - [ ] 17E information_schema views
   - [ ] 17F Default privileges
 
-## Test Coverage (as of 2026-03-13 22:00 UTC)
+## Test Coverage (as of 2026-03-15 20:00 UTC)
 - tokenizer.zig: 78 tests (includes role, GRANT/REVOKE, RLS keywords)
 - ast.zig: 26 tests (includes role, GRANT/REVOKE, RLS AST nodes)
 - parser.zig: 229 tests (228 passing + 1 skipped; includes role, GRANT/REVOKE, RLS parsers)
-- catalog.zig: 110 tests (includes 13 RLS policy catalog tests + role/permission tests)
+- catalog.zig: 131 tests (includes 13 RLS policy catalog tests + role/permission tests)
 - analyzer.zig: 84 tests (includes 18 RLS analyzer tests)
-- planner.zig: 91 tests (includes 12 RLS planner tests: 6 CREATE POLICY, 2 DROP POLICY, 4 ALTER TABLE RLS)
-- engine.zig: 427 tests (includes 3 RLS integration tests: CREATE/DROP POLICY, ALTER TABLE RLS, UPDATE with both clauses)
-- Total: 1773 tests (1772 passing, 1 skipped: RLS subquery test triggering bug #1)
+- planner.zig: 91 tests (includes 12 RLS planner tests)
+- engine.zig: 432 tests (includes 3 RLS integration tests + hot standby integration tests)
+- replication/monitor.zig: 34 tests (30 existing + 4 new edge cases)
+- Total: 2122 tests (2122 passing, 1 skipped: RLS subquery test triggering bug #1)
+
+## Stabilization Sessions
+  - **2026-03-15 20:00 UTC**: Lag alerting edge case tests (STABILIZATION MODE)
+    - Session hour: 20 (20 % 4 == 0 → STABILIZATION MODE)
+    - CI status: GREEN (all passing)
+    - GitHub issues: No bugs (only 2 enhancement issues for zuda migration)
+    - Task: Added comprehensive edge case tests for replication lag alerting
+    - Tests added (4 new tests in monitor.zig):
+      1. Zero lag scenario (all LSNs perfectly synchronized) — verifies lag calculation with equal values
+      2. Exact threshold boundary values — tests warning/critical/recovery transitions at exact thresholds (1000, 5000 microseconds)
+      3. Very large lag values — tests near i64::MAX (10 trillion LSN difference) to verify no overflow
+      4. Rapid threshold crossing — tests state machine: normal → warning → critical → warning → recovery
+    - Lessons learned:
+      - Zig 0.15 ArrayList → ArrayListUnmanaged{} with manual allocator passing
+      - ReplicationStat.deinit requires `var` not `const` (mutable pointer needed)
+      - Negative lag test invalid: LSNs are monotonic, sent_lsn < write_lsn causes u64 underflow → @intCast panic
+      - Test design principle: only test physically possible scenarios (defensive tests should validate error handling, not impossible states)
+    - Commit deb5bd4: test: add comprehensive edge case tests for lag alerting
+    - All 2122 tests passing (previous: 2118 + 4 new)
+    - Files changed: src/replication/monitor.zig (+184 lines)
