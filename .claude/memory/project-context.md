@@ -349,7 +349,12 @@
     - [x] Analyzer: empty analyze case
     - [x] Planner: returns transaction plan
     - [x] CLI: printStmtInfo case
-    - [ ] Catalog: TableStats storage (serializeStats/deserializeStats)
+    - [x] Statistics infrastructure: TableStats/ColumnStats structures (commit 0c058fa)
+    - [x] Catalog storage: "stats:" key prefix, serialization/deserialization
+    - [x] Catalog methods: createTableStats, getTableStats, dropTableStats, tableStatsExist
+    - [x] Catalog methods: createColumnStats, getColumnStats, dropColumnStats
+    - [x] Test coverage: 27 tests (15 stats.zig + 12 catalog.zig including 14 edge case tests)
+    - [x] Memory leak fixes: errdefer cleanup in deserializeColumnStats
     - [ ] Engine: ANALYZE execution (table sampling, compute stats)
   - **17A Role Catalog** ✅ COMPLETE
     - [x] Tokenizer: Role keywords (ROLE, LOGIN, NOLOGIN, SUPERUSER, NOSUPERUSER, CREATEDB, NOCREATEDB, CREATEROLE, NOCREATEROLE, INHERIT, NOINHERIT, PASSWORD, VALID, UNTIL)
