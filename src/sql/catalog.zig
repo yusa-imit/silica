@@ -28,12 +28,16 @@ const btree_mod = @import("../storage/btree.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const page_mod = @import("../storage/page.zig");
 const ast = @import("ast.zig");
+const stats_mod = @import("stats.zig");
 
 const BTree = btree_mod.BTree;
 const Cursor = btree_mod.Cursor;
 const BufferPool = buffer_pool_mod.BufferPool;
 const Pager = page_mod.Pager;
 const SCHEMA_ROOT_PAGE_ID = page_mod.SCHEMA_ROOT_PAGE_ID;
+
+pub const TableStats = stats_mod.TableStats;
+pub const ColumnStats = stats_mod.ColumnStats;
 
 // ── Data Types ──────────────────────────────────────────────────────────
 
@@ -2223,6 +2227,126 @@ pub const Catalog = struct {
         }
 
         return names.toOwnedSlice(allocator);
+    }
+
+    // ── Statistics Catalog ──────────────────────────────────────────────
+
+    const STATS_KEY_PREFIX = "stats:";
+
+    fn makeTableStatsKey(self: *Catalog, table_name: []const u8) ![]u8 {
+        const key = try self.allocator.alloc(u8, STATS_KEY_PREFIX.len + table_name.len);
+        @memcpy(key[0..STATS_KEY_PREFIX.len], STATS_KEY_PREFIX);
+        @memcpy(key[STATS_KEY_PREFIX.len..], table_name);
+        return key;
+    }
+
+    fn makeColumnStatsKey(self: *Catalog, table_name: []const u8, column_name: []const u8) ![]u8 {
+        const key = try self.allocator.alloc(u8, STATS_KEY_PREFIX.len + table_name.len + 1 + column_name.len);
+        @memcpy(key[0..STATS_KEY_PREFIX.len], STATS_KEY_PREFIX);
+        @memcpy(key[STATS_KEY_PREFIX.len..][0..table_name.len], table_name);
+        key[STATS_KEY_PREFIX.len + table_name.len] = ':';
+        @memcpy(key[STATS_KEY_PREFIX.len + table_name.len + 1 ..], column_name);
+        return key;
+    }
+
+    /// Store table statistics.
+    pub fn createTableStats(self: *Catalog, table_name: []const u8, stats: TableStats) !void {
+        const key = try self.makeTableStatsKey(table_name);
+        defer self.allocator.free(key);
+
+        const value = try stats_mod.serializeTableStats(self.allocator, stats);
+        defer self.allocator.free(value);
+
+        try self.tree.insert(key, value);
+    }
+
+    /// Retrieve table statistics. Returns null if no stats exist.
+    pub fn getTableStats(self: *Catalog, table_name: []const u8) !?TableStats {
+        const key = try self.makeTableStatsKey(table_name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key) orelse return null;
+        defer self.allocator.free(value);
+
+        return try stats_mod.deserializeTableStats(value);
+    }
+
+    /// Delete table statistics.
+    pub fn dropTableStats(self: *Catalog, table_name: []const u8) !void {
+        const key = try self.makeTableStatsKey(table_name);
+        defer self.allocator.free(key);
+
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+        } else {
+            return; // No stats to drop — no-op
+        }
+
+        try self.tree.delete(key);
+    }
+
+    /// Store column statistics.
+    pub fn createColumnStats(
+        self: *Catalog,
+        table_name: []const u8,
+        column_name: []const u8,
+        stats: ColumnStats,
+    ) !void {
+        const key = try self.makeColumnStatsKey(table_name, column_name);
+        defer self.allocator.free(key);
+
+        const value = try stats_mod.serializeColumnStats(self.allocator, stats);
+        defer self.allocator.free(value);
+
+        try self.tree.insert(key, value);
+    }
+
+    /// Retrieve column statistics. Returns null if no stats exist.
+    pub fn getColumnStats(
+        self: *Catalog,
+        table_name: []const u8,
+        column_name: []const u8,
+    ) !?ColumnStats {
+        const key = try self.makeColumnStatsKey(table_name, column_name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key) orelse return null;
+        defer self.allocator.free(value);
+
+        return try stats_mod.deserializeColumnStats(self.allocator, value);
+    }
+
+    /// Delete column statistics.
+    pub fn dropColumnStats(
+        self: *Catalog,
+        table_name: []const u8,
+        column_name: []const u8,
+    ) !void {
+        const key = try self.makeColumnStatsKey(table_name, column_name);
+        defer self.allocator.free(key);
+
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+        } else {
+            return; // No stats to drop — no-op
+        }
+
+        try self.tree.delete(key);
+    }
+
+    /// Check if table statistics exist.
+    pub fn tableStatsExist(self: *Catalog, table_name: []const u8) !bool {
+        const key = try self.makeTableStatsKey(table_name);
+        defer self.allocator.free(key);
+
+        const value = try self.tree.get(self.allocator, key);
+        if (value) |v| {
+            self.allocator.free(v);
+            return true;
+        }
+        return false;
     }
 
     // ── Role Management ─────────────────────────────────────────────────
@@ -6075,4 +6199,179 @@ test "Catalog hasPermission — different grantees isolated" {
 
     try std.testing.expect(!try tc.catalog.hasPermission(.table, "data", "bob", .select));
     try std.testing.expect(try tc.catalog.hasPermission(.table, "data", "bob", .insert));
+}
+
+// ── Statistics Catalog Tests ────────────────────────────────────────────
+
+test "Catalog createTableStats and getTableStats" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_table_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create table stats
+    const stats = TableStats.init(1000);
+    try tc.catalog.createTableStats("users", stats);
+
+    // Retrieve stats
+    const retrieved = try tc.catalog.getTableStats("users");
+    try std.testing.expect(retrieved != null);
+    try std.testing.expectEqual(@as(u64, 1000), retrieved.?.row_count);
+    try std.testing.expectEqual(stats.last_analyze_time, retrieved.?.last_analyze_time);
+
+    // Non-existent table returns null
+    const missing = try tc.catalog.getTableStats("nonexistent");
+    try std.testing.expect(missing == null);
+}
+
+test "Catalog createColumnStats and getColumnStats" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_column_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create column stats
+    const stats = ColumnStats{
+        .distinct_count = 500,
+        .null_fraction = 0.1,
+        .avg_width = 12.5,
+        .correlation = 0.85,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+    try tc.catalog.createColumnStats("users", "age", stats);
+
+    // Retrieve stats
+    const retrieved = try tc.catalog.getColumnStats("users", "age");
+    try std.testing.expect(retrieved != null);
+    defer if (retrieved) |r| r.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 500), retrieved.?.distinct_count);
+    try std.testing.expectEqual(@as(f64, 0.1), retrieved.?.null_fraction);
+    try std.testing.expectEqual(@as(f64, 12.5), retrieved.?.avg_width);
+    try std.testing.expectEqual(@as(f64, 0.85), retrieved.?.correlation);
+
+    // Non-existent column returns null
+    const missing = try tc.catalog.getColumnStats("users", "nonexistent");
+    try std.testing.expect(missing == null);
+}
+
+test "Catalog dropTableStats" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_drop_table_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stats = TableStats.init(1000);
+    try tc.catalog.createTableStats("products", stats);
+
+    // Verify stats exist
+    try std.testing.expect(try tc.catalog.tableStatsExist("products"));
+
+    // Drop stats
+    try tc.catalog.dropTableStats("products");
+
+    // Verify stats are gone
+    try std.testing.expect(!try tc.catalog.tableStatsExist("products"));
+    const retrieved = try tc.catalog.getTableStats("products");
+    try std.testing.expect(retrieved == null);
+
+    // Dropping non-existent stats is a no-op
+    try tc.catalog.dropTableStats("nonexistent");
+}
+
+test "Catalog dropColumnStats" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_drop_column_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stats = ColumnStats{
+        .distinct_count = 200,
+        .null_fraction = 0.0,
+        .avg_width = 8.0,
+        .correlation = 1.0,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+    try tc.catalog.createColumnStats("orders", "quantity", stats);
+
+    // Verify stats exist
+    const retrieved = try tc.catalog.getColumnStats("orders", "quantity");
+    try std.testing.expect(retrieved != null);
+    if (retrieved) |r| r.deinit(allocator);
+
+    // Drop stats
+    try tc.catalog.dropColumnStats("orders", "quantity");
+
+    // Verify stats are gone
+    const missing = try tc.catalog.getColumnStats("orders", "quantity");
+    try std.testing.expect(missing == null);
+
+    // Dropping non-existent stats is a no-op
+    try tc.catalog.dropColumnStats("orders", "nonexistent");
+}
+
+test "Catalog tableStatsExist" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_table_stats_exist.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Initially no stats
+    try std.testing.expect(!try tc.catalog.tableStatsExist("inventory"));
+
+    // Create stats
+    const stats = TableStats.init(500);
+    try tc.catalog.createTableStats("inventory", stats);
+
+    // Now stats exist
+    try std.testing.expect(try tc.catalog.tableStatsExist("inventory"));
+}
+
+test "Catalog column stats with MCVs and histogram" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_full_column_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create MCVs (serialization will copy the data, so these are temporary)
+    const value1_data = [_]u8{ 0x01, 0x2A, 0x00, 0x00, 0x00 };
+    const mcvs = [_]stats_mod.MostCommonValue{
+        .{ .value = &value1_data, .frequency = 0.25 },
+    };
+
+    // Create histogram (serialization will copy the data, so these are temporary)
+    const lower_data = [_]u8{ 0x01, 0x00, 0x00, 0x00, 0x00 };
+    const upper_data = [_]u8{ 0x01, 0x64, 0x00, 0x00, 0x00 };
+    const buckets = [_]stats_mod.HistogramBucket{
+        .{ .lower = &lower_data, .upper = &upper_data, .count = 100 },
+    };
+
+    const stats = ColumnStats{
+        .distinct_count = 100,
+        .null_fraction = 0.0,
+        .avg_width = 4.0,
+        .correlation = 0.95,
+        .most_common_values = &mcvs,
+        .histogram_buckets = &buckets,
+    };
+
+    try tc.catalog.createColumnStats("metrics", "value", stats);
+
+    const retrieved = try tc.catalog.getColumnStats("metrics", "value");
+    try std.testing.expect(retrieved != null);
+    defer if (retrieved) |r| r.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), retrieved.?.most_common_values.len);
+    try std.testing.expectEqual(@as(f64, 0.25), retrieved.?.most_common_values[0].frequency);
+
+    try std.testing.expectEqual(@as(usize, 1), retrieved.?.histogram_buckets.len);
+    try std.testing.expectEqual(@as(u64, 100), retrieved.?.histogram_buckets[0].count);
 }
