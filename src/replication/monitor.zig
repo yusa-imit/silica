@@ -1348,3 +1348,187 @@ test "ReplicationMonitor: concurrent register/update/unregister stress" {
     // Count should be >= 0 (some may have been unregistered)
     try std.testing.expect(replica_count >= 0);
 }
+
+test "ReplicationMonitor: zero lag (all LSNs equal)" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // All LSNs equal means perfectly synchronized replica (zero lag)
+    try monitor.updateProgress("slot1", 5000, 5000, 5000, 5000);
+
+    var stat = try monitor.getStat("slot1");
+    defer stat.deinit(allocator);
+
+    try std.testing.expectEqual(@as(i64, 0), stat.write_lag_us);
+    try std.testing.expectEqual(@as(i64, 0), stat.flush_lag_us);
+    try std.testing.expectEqual(@as(i64, 0), stat.replay_lag_us);
+}
+
+test "ReplicationMonitor: exact threshold boundary values" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 1000,
+        .write_lag_critical_us = 5000,
+        .flush_lag_warning_us = 1000,
+        .flush_lag_critical_us = 5000,
+        .replay_lag_warning_us = 1000,
+        .replay_lag_critical_us = 5000,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        last_severity: ?AlertSeverity,
+        last_lag: i64,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (std.mem.eql(u8, alert.lag_type, "write")) {
+                ctx.last_severity = alert.severity;
+                ctx.last_lag = alert.lag_us;
+            }
+        }
+    };
+    var alert_ctx = AlertContext{ .last_severity = null, .last_lag = 0 };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Test exactly at warning threshold (should trigger)
+    try monitor.updateProgress("slot1", 2000, 1000, 1000, 1000);
+    try monitor.checkLagThresholds();
+    try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.last_severity.?);
+    try std.testing.expectEqual(@as(i64, 1000), alert_ctx.last_lag);
+
+    // Reset
+    alert_ctx.last_severity = null;
+
+    // Test exactly at critical threshold (should trigger)
+    try monitor.updateProgress("slot1", 6000, 1000, 1000, 1000);
+    try monitor.checkLagThresholds();
+    try std.testing.expectEqual(AlertSeverity.critical, alert_ctx.last_severity.?);
+    try std.testing.expectEqual(@as(i64, 5000), alert_ctx.last_lag);
+
+    // Reset
+    alert_ctx.last_severity = null;
+
+    // Test one below warning threshold (should trigger recovery)
+    try monitor.updateProgress("slot1", 1999, 1000, 1000, 1000);
+    try monitor.checkLagThresholds();
+    try std.testing.expectEqual(AlertSeverity.recovery, alert_ctx.last_severity.?);
+    try std.testing.expectEqual(@as(i64, 999), alert_ctx.last_lag);
+}
+
+test "ReplicationMonitor: very large lag values" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 1_000_000_000, // 1 billion microseconds
+        .write_lag_critical_us = 1_000_000_000_000, // 1 trillion microseconds
+        .flush_lag_warning_us = 1_000_000_000,
+        .flush_lag_critical_us = 1_000_000_000_000,
+        .replay_lag_warning_us = 1_000_000_000,
+        .replay_lag_critical_us = 1_000_000_000_000,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        alert_count: usize,
+        last_lag: i64,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.alert_count += 1;
+            ctx.last_lag = alert.lag_us;
+        }
+    };
+    var alert_ctx = AlertContext{ .alert_count = 0, .last_lag = 0 };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Test very large lag value (near i64 max safe range)
+    const very_large_lsn: LSN = 10_000_000_000_000; // 10 trillion
+    try monitor.updateProgress("slot1", very_large_lsn, 100_000, 100_000, 100_000);
+    try monitor.checkLagThresholds();
+
+    // Should trigger critical alert
+    try std.testing.expect(alert_ctx.alert_count > 0);
+    // Verify lag calculation doesn't overflow
+    var stat = try monitor.getStat("slot1");
+    defer stat.deinit(allocator);
+    try std.testing.expect(stat.write_lag_us > 1_000_000_000_000);
+}
+
+test "ReplicationMonitor: rapid threshold crossing" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        severities: std.ArrayListUnmanaged(AlertSeverity),
+        allocator_ctx: Allocator,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (std.mem.eql(u8, alert.lag_type, "write")) {
+                ctx.severities.append(ctx.allocator_ctx, alert.severity) catch unreachable;
+            }
+        }
+    };
+    var alert_ctx = AlertContext{
+        .severities = std.ArrayListUnmanaged(AlertSeverity){},
+        .allocator_ctx = allocator,
+    };
+    defer alert_ctx.severities.deinit(allocator);
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Rapid state transitions: normal → warning → critical → warning → recovery
+    try monitor.updateProgress("slot1", 1000, 900, 900, 900); // Normal (lag=100, but first check)
+    try monitor.checkLagThresholds();
+
+    try monitor.updateProgress("slot1", 1000, 800, 800, 800); // Warning (lag=200)
+    try monitor.checkLagThresholds();
+
+    try monitor.updateProgress("slot1", 1000, 400, 400, 400); // Critical (lag=600)
+    try monitor.checkLagThresholds();
+
+    try monitor.updateProgress("slot1", 1000, 700, 700, 700); // Back to warning (lag=300)
+    try monitor.checkLagThresholds();
+
+    try monitor.updateProgress("slot1", 1000, 950, 950, 950); // Recovery (lag=50)
+    try monitor.checkLagThresholds();
+
+    // Verify all transitions were captured (should have at least warning, critical, recovery, recovery)
+    try std.testing.expect(alert_ctx.severities.items.len >= 4);
+    // First should be warning
+    try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.severities.items[0]);
+    // Then critical
+    try std.testing.expectEqual(AlertSeverity.critical, alert_ctx.severities.items[1]);
+    // Then recovery (from critical to warning)
+    try std.testing.expectEqual(AlertSeverity.recovery, alert_ctx.severities.items[2]);
+    // Final recovery (from warning to normal)
+    try std.testing.expectEqual(AlertSeverity.recovery, alert_ctx.severities.items[3]);
+}
