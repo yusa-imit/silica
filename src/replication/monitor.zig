@@ -19,6 +19,66 @@ pub const Error = error{
     SlotNotFound,
 } || Allocator.Error;
 
+/// Alert severity level
+pub const AlertSeverity = enum(u8) {
+    /// Warning: lag exceeds warning threshold
+    warning = 0,
+    /// Critical: lag exceeds critical threshold
+    critical = 1,
+    /// Recovery: lag returned below warning threshold
+    recovery = 2,
+};
+
+/// Lag alert event
+pub const LagAlert = struct {
+    /// Slot name
+    slot_name: []const u8,
+    /// Application name
+    application_name: []const u8,
+    /// Alert severity
+    severity: AlertSeverity,
+    /// Current lag in microseconds
+    lag_us: i64,
+    /// Lag type (write/flush/replay)
+    lag_type: []const u8,
+    /// Timestamp when alert was triggered
+    timestamp: i64,
+};
+
+/// Alert callback function type
+pub const AlertCallback = *const fn (alert: LagAlert, user_data: ?*anyopaque) void;
+
+/// Lag alert configuration
+pub const LagAlertConfig = struct {
+    /// Warning threshold for write lag (microseconds)
+    write_lag_warning_us: i64,
+    /// Critical threshold for write lag (microseconds)
+    write_lag_critical_us: i64,
+    /// Warning threshold for flush lag (microseconds)
+    flush_lag_warning_us: i64,
+    /// Critical threshold for flush lag (microseconds)
+    flush_lag_critical_us: i64,
+    /// Warning threshold for replay lag (microseconds)
+    replay_lag_warning_us: i64,
+    /// Critical threshold for replay lag (microseconds)
+    replay_lag_critical_us: i64,
+    /// Enable alerting
+    enabled: bool,
+
+    /// Default configuration with sensible thresholds
+    pub fn default() LagAlertConfig {
+        return .{
+            .write_lag_warning_us = 5_000_000, // 5 seconds
+            .write_lag_critical_us = 30_000_000, // 30 seconds
+            .flush_lag_warning_us = 10_000_000, // 10 seconds
+            .flush_lag_critical_us = 60_000_000, // 60 seconds
+            .replay_lag_warning_us = 30_000_000, // 30 seconds
+            .replay_lag_critical_us = 300_000_000, // 5 minutes
+            .enabled = true,
+        };
+    }
+};
+
 /// Replication state (from PostgreSQL pg_stat_replication)
 pub const ReplicationState = enum(u8) {
     /// Starting up
@@ -106,6 +166,22 @@ pub const ReplicationStat = struct {
     }
 };
 
+/// Alert state per slot
+const AlertState = struct {
+    /// Whether write lag is in warning state
+    write_warning: bool,
+    /// Whether write lag is in critical state
+    write_critical: bool,
+    /// Whether flush lag is in warning state
+    flush_warning: bool,
+    /// Whether flush lag is in critical state
+    flush_critical: bool,
+    /// Whether replay lag is in warning state
+    replay_warning: bool,
+    /// Whether replay lag is in critical state
+    replay_critical: bool,
+};
+
 /// Replication monitor tracks active replication connections
 pub const ReplicationMonitor = struct {
     /// Memory allocator
@@ -118,6 +194,14 @@ pub const ReplicationMonitor = struct {
     wal_sender: ?*sender.WalSender,
     /// WAL receiver reference (optional)
     wal_receiver: ?*receiver.WalReceiver,
+    /// Lag alert configuration
+    alert_config: LagAlertConfig,
+    /// Alert callback function
+    alert_callback: ?AlertCallback,
+    /// User data for alert callback
+    alert_user_data: ?*anyopaque,
+    /// Alert states by slot name (tracks current alert status to prevent duplicate alerts)
+    alert_states: std.StringHashMap(AlertState),
 
     pub fn init(allocator: Allocator) ReplicationMonitor {
         return .{
@@ -126,6 +210,10 @@ pub const ReplicationMonitor = struct {
             .stats = std.StringHashMap(ReplicationStat).init(allocator),
             .wal_sender = null,
             .wal_receiver = null,
+            .alert_config = LagAlertConfig.default(),
+            .alert_callback = null,
+            .alert_user_data = null,
+            .alert_states = std.StringHashMap(AlertState).init(allocator),
         };
     }
 
@@ -140,6 +228,13 @@ pub const ReplicationMonitor = struct {
             self.allocator.free(entry.key_ptr.*); // Free the hashmap key
         }
         self.stats.deinit();
+
+        // Free alert state keys
+        var alert_it = self.alert_states.iterator();
+        while (alert_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.alert_states.deinit();
     }
 
     /// Set WAL sender for monitoring
@@ -154,6 +249,163 @@ pub const ReplicationMonitor = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.wal_receiver = wal_receiver;
+    }
+
+    /// Configure lag alerting
+    pub fn setAlertConfig(self: *ReplicationMonitor, config: LagAlertConfig) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.alert_config = config;
+    }
+
+    /// Set alert callback
+    pub fn setAlertCallback(
+        self: *ReplicationMonitor,
+        callback: ?AlertCallback,
+        user_data: ?*anyopaque,
+    ) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.alert_callback = callback;
+        self.alert_user_data = user_data;
+    }
+
+    /// Check lag thresholds and trigger alerts if necessary
+    /// Call this periodically (e.g., every second) to monitor lag
+    pub fn checkLagThresholds(self: *ReplicationMonitor) Error!void {
+        if (!self.alert_config.enabled) {
+            return;
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var it = self.stats.iterator();
+        while (it.next()) |entry| {
+            const slot_name = entry.key_ptr.*;
+            const stat = entry.value_ptr.*;
+
+            // Get or create alert state for this slot
+            const gop = try self.alert_states.getOrPut(slot_name);
+            if (!gop.found_existing) {
+                gop.key_ptr.* = try self.allocator.dupe(u8, slot_name);
+                gop.value_ptr.* = AlertState{
+                    .write_warning = false,
+                    .write_critical = false,
+                    .flush_warning = false,
+                    .flush_critical = false,
+                    .replay_warning = false,
+                    .replay_critical = false,
+                };
+            }
+
+            // Check write lag
+            try self.checkSingleLagThreshold(
+                slot_name,
+                stat.application_name,
+                stat.write_lag_us,
+                "write",
+                self.alert_config.write_lag_warning_us,
+                self.alert_config.write_lag_critical_us,
+                &gop.value_ptr.write_warning,
+                &gop.value_ptr.write_critical,
+            );
+
+            // Check flush lag
+            try self.checkSingleLagThreshold(
+                slot_name,
+                stat.application_name,
+                stat.flush_lag_us,
+                "flush",
+                self.alert_config.flush_lag_warning_us,
+                self.alert_config.flush_lag_critical_us,
+                &gop.value_ptr.flush_warning,
+                &gop.value_ptr.flush_critical,
+            );
+
+            // Check replay lag
+            try self.checkSingleLagThreshold(
+                slot_name,
+                stat.application_name,
+                stat.replay_lag_us,
+                "replay",
+                self.alert_config.replay_lag_warning_us,
+                self.alert_config.replay_lag_critical_us,
+                &gop.value_ptr.replay_warning,
+                &gop.value_ptr.replay_critical,
+            );
+        }
+    }
+
+    /// Check a single lag threshold (internal helper)
+    fn checkSingleLagThreshold(
+        self: *ReplicationMonitor,
+        slot_name: []const u8,
+        application_name: []const u8,
+        current_lag: i64,
+        lag_type: []const u8,
+        warning_threshold: i64,
+        critical_threshold: i64,
+        warning_state: *bool,
+        critical_state: *bool,
+    ) Error!void {
+        const callback = self.alert_callback orelse return;
+
+        // Check critical threshold
+        if (current_lag >= critical_threshold) {
+            if (!critical_state.*) {
+                // Transition to critical
+                critical_state.* = true;
+                warning_state.* = true; // Critical implies warning
+                callback(.{
+                    .slot_name = slot_name,
+                    .application_name = application_name,
+                    .severity = .critical,
+                    .lag_us = current_lag,
+                    .lag_type = lag_type,
+                    .timestamp = std.time.microTimestamp(),
+                }, self.alert_user_data);
+            }
+        } else if (current_lag >= warning_threshold) {
+            if (!warning_state.*) {
+                // Transition to warning
+                warning_state.* = true;
+                critical_state.* = false;
+                callback(.{
+                    .slot_name = slot_name,
+                    .application_name = application_name,
+                    .severity = .warning,
+                    .lag_us = current_lag,
+                    .lag_type = lag_type,
+                    .timestamp = std.time.microTimestamp(),
+                }, self.alert_user_data);
+            } else if (critical_state.*) {
+                // Downgrade from critical to warning
+                critical_state.* = false;
+                callback(.{
+                    .slot_name = slot_name,
+                    .application_name = application_name,
+                    .severity = .recovery,
+                    .lag_us = current_lag,
+                    .lag_type = lag_type,
+                    .timestamp = std.time.microTimestamp(),
+                }, self.alert_user_data);
+            }
+        } else {
+            if (warning_state.* or critical_state.*) {
+                // Recovery: lag returned below warning threshold
+                warning_state.* = false;
+                critical_state.* = false;
+                callback(.{
+                    .slot_name = slot_name,
+                    .application_name = application_name,
+                    .severity = .recovery,
+                    .lag_us = current_lag,
+                    .lag_type = lag_type,
+                    .timestamp = std.time.microTimestamp(),
+                }, self.alert_user_data);
+            }
+        }
     }
 
     /// Register a new replication connection
@@ -216,6 +468,11 @@ pub const ReplicationMonitor = struct {
             self.allocator.free(kv.key);
         } else {
             return error.SlotNotFound;
+        }
+
+        // Clean up alert state
+        if (self.alert_states.fetchRemove(slot_name)) |kv| {
+            self.allocator.free(kv.key);
         }
     }
 
@@ -667,6 +924,347 @@ test "ReplicationMonitor: setWalSender and setWalReceiver" {
 
     monitor.setWalReceiver(&wal_receiver);
     try std.testing.expect(monitor.wal_receiver != null);
+}
+
+// ============================================================================
+// Lag Alerting Tests
+// ============================================================================
+
+test "LagAlertConfig: default values" {
+    const config = LagAlertConfig.default();
+    try std.testing.expectEqual(@as(i64, 5_000_000), config.write_lag_warning_us);
+    try std.testing.expectEqual(@as(i64, 30_000_000), config.write_lag_critical_us);
+    try std.testing.expectEqual(@as(i64, 10_000_000), config.flush_lag_warning_us);
+    try std.testing.expectEqual(@as(i64, 60_000_000), config.flush_lag_critical_us);
+    try std.testing.expectEqual(@as(i64, 30_000_000), config.replay_lag_warning_us);
+    try std.testing.expectEqual(@as(i64, 300_000_000), config.replay_lag_critical_us);
+    try std.testing.expect(config.enabled);
+}
+
+test "ReplicationMonitor: set alert config" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const custom_config = LagAlertConfig{
+        .write_lag_warning_us = 1_000_000,
+        .write_lag_critical_us = 5_000_000,
+        .flush_lag_warning_us = 2_000_000,
+        .flush_lag_critical_us = 10_000_000,
+        .replay_lag_warning_us = 3_000_000,
+        .replay_lag_critical_us = 15_000_000,
+        .enabled = false,
+    };
+
+    monitor.setAlertConfig(custom_config);
+    try std.testing.expectEqual(@as(i64, 1_000_000), monitor.alert_config.write_lag_warning_us);
+    try std.testing.expect(!monitor.alert_config.enabled);
+}
+
+test "ReplicationMonitor: alert callback on warning threshold" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    // Configure low thresholds to trigger alerts easily
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    // Track alerts
+    const AlertContext = struct {
+        count: usize,
+        last_severity: AlertSeverity,
+        last_lag_type: []const u8,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.count += 1;
+            ctx.last_severity = alert.severity;
+            ctx.last_lag_type = alert.lag_type;
+        }
+    };
+    var alert_ctx = AlertContext{ .count = 0, .last_severity = .warning, .last_lag_type = "" };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    // Register replica
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Update progress with lag exceeding warning threshold for all 3 types
+    try monitor.updateProgress("slot1", 1000, 850, 850, 850);
+
+    // Check thresholds (should trigger 3 warnings: write, flush, replay)
+    try monitor.checkLagThresholds();
+
+    try std.testing.expectEqual(@as(usize, 3), alert_ctx.count);
+    try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.last_severity);
+    try std.testing.expectEqualStrings("replay", alert_ctx.last_lag_type);
+}
+
+test "ReplicationMonitor: alert callback on critical threshold" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        count: usize,
+        last_severity: AlertSeverity,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.count += 1;
+            ctx.last_severity = alert.severity;
+        }
+    };
+    var alert_ctx = AlertContext{ .count = 0, .last_severity = .warning };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Update with lag exceeding critical threshold (triggers 3 critical alerts)
+    try monitor.updateProgress("slot1", 1000, 400, 400, 400);
+    try monitor.checkLagThresholds();
+
+    try std.testing.expectEqual(@as(usize, 3), alert_ctx.count);
+    try std.testing.expectEqual(AlertSeverity.critical, alert_ctx.last_severity);
+}
+
+test "ReplicationMonitor: alert recovery" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        count: usize,
+        alerts: [15]AlertSeverity,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.alerts[ctx.count] = alert.severity;
+            ctx.count += 1;
+        }
+    };
+    var alert_ctx = AlertContext{ .count = 0, .alerts = undefined };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Trigger warning (3 alerts: write, flush, replay)
+    try monitor.updateProgress("slot1", 1000, 850, 850, 850);
+    try monitor.checkLagThresholds();
+
+    // Trigger critical (3 alerts: write, flush, replay)
+    try monitor.updateProgress("slot1", 1000, 400, 400, 400);
+    try monitor.checkLagThresholds();
+
+    // Recovery to below warning threshold (3 recovery alerts: write, flush, replay)
+    try monitor.updateProgress("slot1", 1000, 950, 950, 950);
+    try monitor.checkLagThresholds();
+
+    // Should have 9 alerts total (3 per state: warning -> critical -> recovery)
+    try std.testing.expectEqual(@as(usize, 9), alert_ctx.count);
+    try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.alerts[0]);
+    try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.alerts[1]);
+    try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.alerts[2]);
+    try std.testing.expectEqual(AlertSeverity.critical, alert_ctx.alerts[3]);
+    try std.testing.expectEqual(AlertSeverity.critical, alert_ctx.alerts[4]);
+    try std.testing.expectEqual(AlertSeverity.critical, alert_ctx.alerts[5]);
+    try std.testing.expectEqual(AlertSeverity.recovery, alert_ctx.alerts[6]);
+    try std.testing.expectEqual(AlertSeverity.recovery, alert_ctx.alerts[7]);
+    try std.testing.expectEqual(AlertSeverity.recovery, alert_ctx.alerts[8]);
+}
+
+test "ReplicationMonitor: no duplicate alerts" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        count: usize,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            _ = alert;
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.count += 1;
+        }
+    };
+    var alert_ctx = AlertContext{ .count = 0 };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Trigger warning for all 3 lag types (write=150, flush=150, replay=150)
+    try monitor.updateProgress("slot1", 1000, 850, 850, 850);
+    try monitor.checkLagThresholds();
+
+    // Same lag level - should not trigger duplicate alerts
+    try monitor.checkLagThresholds();
+    try monitor.checkLagThresholds();
+
+    // Should have exactly 3 alerts (1 per lag type: write, flush, replay)
+    try std.testing.expectEqual(@as(usize, 3), alert_ctx.count);
+}
+
+test "ReplicationMonitor: alerts disabled" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = false, // Disabled
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        count: usize,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            _ = alert;
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.count += 1;
+        }
+    };
+    var alert_ctx = AlertContext{ .count = 0 };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+    try monitor.updateProgress("slot1", 1000, 400, 400, 400);
+    try monitor.checkLagThresholds();
+
+    // No alerts should be triggered
+    try std.testing.expectEqual(@as(usize, 0), alert_ctx.count);
+}
+
+test "ReplicationMonitor: alert state cleanup on unregister" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 100,
+        .flush_lag_critical_us = 500,
+        .replay_lag_warning_us = 100,
+        .replay_lag_critical_us = 500,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        count: usize,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            _ = alert;
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            ctx.count += 1;
+        }
+    };
+    var alert_ctx = AlertContext{ .count = 0 };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+    try monitor.updateProgress("slot1", 1000, 850, 850, 850);
+    try monitor.checkLagThresholds();
+
+    // Should have alert state
+    try std.testing.expectEqual(@as(usize, 1), monitor.alert_states.count());
+
+    // Unregister should clean up alert state
+    try monitor.unregisterConnection("slot1");
+    try std.testing.expectEqual(@as(usize, 0), monitor.alert_states.count());
+}
+
+test "ReplicationMonitor: multiple lag types alert independently" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const config = LagAlertConfig{
+        .write_lag_warning_us = 100,
+        .write_lag_critical_us = 500,
+        .flush_lag_warning_us = 200,
+        .flush_lag_critical_us = 600,
+        .replay_lag_warning_us = 300,
+        .replay_lag_critical_us = 700,
+        .enabled = true,
+    };
+    monitor.setAlertConfig(config);
+
+    const AlertContext = struct {
+        write_alerts: usize,
+        flush_alerts: usize,
+        replay_alerts: usize,
+
+        fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
+            if (std.mem.eql(u8, alert.lag_type, "write")) {
+                ctx.write_alerts += 1;
+            } else if (std.mem.eql(u8, alert.lag_type, "flush")) {
+                ctx.flush_alerts += 1;
+            } else if (std.mem.eql(u8, alert.lag_type, "replay")) {
+                ctx.replay_alerts += 1;
+            }
+        }
+    };
+    var alert_ctx = AlertContext{ .write_alerts = 0, .flush_alerts = 0, .replay_alerts = 0 };
+    monitor.setAlertCallback(AlertContext.callback, @ptrCast(&alert_ctx));
+
+    try monitor.registerConnection("slot1", "walreceiver", "192.168.1.10", 5432);
+
+    // Trigger write lag only
+    try monitor.updateProgress("slot1", 1000, 850, 950, 950);
+    try monitor.checkLagThresholds();
+
+    try std.testing.expectEqual(@as(usize, 1), alert_ctx.write_alerts);
+    try std.testing.expectEqual(@as(usize, 0), alert_ctx.flush_alerts);
+    try std.testing.expectEqual(@as(usize, 0), alert_ctx.replay_alerts);
 }
 
 // ============================================================================
