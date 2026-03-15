@@ -110,6 +110,19 @@ pub const BackendMessage = union(enum) {
     error_response: struct {
         message: []const u8,
     },
+
+    /// BACKUP_DATA: base backup file data
+    /// Sent in response to BASE_BACKUP request
+    backup_data: struct {
+        /// File path relative to data directory
+        file_path: []const u8,
+        /// File size in bytes
+        file_size: u64,
+        /// File data chunk
+        data: []const u8,
+        /// True if this is the last chunk for this file
+        is_last_chunk: bool,
+    },
 };
 
 /// Replication slot information
@@ -166,6 +179,7 @@ pub const MessageTag = enum(u8) {
     keepalive = 'k',
     system_info = 'i',
     error_response = 'E',
+    backup_data = 'b',
 };
 
 /// Serialize frontend message to bytes
@@ -248,6 +262,15 @@ pub fn serializeBackendMessage(allocator: Allocator, msg: BackendMessage) ![]u8 
             try writer.writeByte(@intFromEnum(MessageTag.error_response));
             try writer.writeInt(u32, @intCast(er.message.len), .little);
             try writer.writeAll(er.message);
+        },
+        .backup_data => |bd| {
+            try writer.writeByte(@intFromEnum(MessageTag.backup_data));
+            try writer.writeInt(u32, @intCast(bd.file_path.len), .little);
+            try writer.writeAll(bd.file_path);
+            try writer.writeInt(u64, bd.file_size, .little);
+            try writer.writeInt(u32, @intCast(bd.data.len), .little);
+            try writer.writeAll(bd.data);
+            try writer.writeByte(if (bd.is_last_chunk) 1 else 0);
         },
     }
 
@@ -615,4 +638,40 @@ test "ReplicationSlot state transitions" {
 
     slot.state = .reserved;
     try testing.expectEqual(SlotState.reserved, slot.state);
+}
+
+test "BACKUP_DATA serialization" {
+    const msg = BackendMessage{
+        .backup_data = .{
+            .file_path = "base/16384/1234",
+            .file_size = 8192,
+            .data = "test data chunk",
+            .is_last_chunk = false,
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'b'), bytes[0]);
+    // Verify structure: tag + path_len + path + file_size + data_len + data + is_last_chunk
+    const expected_len = 1 + 4 + 15 + 8 + 4 + 15 + 1;
+    try testing.expectEqual(@as(usize, expected_len), bytes.len);
+}
+
+test "BACKUP_DATA with last chunk flag" {
+    const msg = BackendMessage{
+        .backup_data = .{
+            .file_path = "pg_wal/000000010000000000000001",
+            .file_size = 16777216,
+            .data = "final chunk",
+            .is_last_chunk = true,
+        },
+    };
+    const bytes = try serializeBackendMessage(testing.allocator, msg);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(u8, 'b'), bytes[0]);
+    // Verify last chunk flag is set
+    const last_byte = bytes[bytes.len - 1];
+    try testing.expectEqual(@as(u8, 1), last_byte);
 }
