@@ -41,6 +41,7 @@ const PlanNode = planner_mod.PlanNode;
 const LogicalPlan = planner_mod.LogicalPlan;
 const PlanType = planner_mod.PlanType;
 const BTree = btree_mod.BTree;
+const Cursor = btree_mod.Cursor;
 const BufferPool = buffer_pool_mod.BufferPool;
 const Pager = page_mod.Pager;
 const wal_mod = @import("../tx/wal.zig");
@@ -53,6 +54,7 @@ const IsolationLevel = mvcc_mod.IsolationLevel;
 const SsiTracker = mvcc_mod.SsiTracker;
 const lock_mod = @import("../tx/lock.zig");
 const vacuum_mod = @import("../tx/vacuum.zig");
+const stats_mod = @import("stats.zig");
 const fsm_mod = @import("../storage/fsm.zig");
 const FreeSpaceMap = fsm_mod.FreeSpaceMap;
 const LockManager = lock_mod.LockManager;
@@ -2565,6 +2567,14 @@ pub const Database = struct {
                 } else |_| {}
                 return result;
             },
+            .analyze => |a| {
+                const result = self.executeAnalyze(a.table_name);
+                if (result) |_| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                } else |_| {}
+                return result;
+            },
             .transaction => |txn| {
                 arena.?.deinit();
                 self.allocator.destroy(arena.?);
@@ -2993,6 +3003,188 @@ pub const Database = struct {
         self.commitWal() catch {};
 
         return .{ .message = "VACUUM" };
+    }
+
+    // ── ANALYZE ──────────────────────────────────────────────────────
+
+    fn executeAnalyze(self: *Database, table_name: ?[]const u8) EngineError!QueryResult {
+        // ANALYZE can run inside a transaction (read-only operation)
+
+        if (table_name) |name| {
+            // Analyze a specific table
+            try self.analyzeTable(name);
+        } else {
+            // Analyze all tables
+            const tables = self.catalog.listTables(self.allocator) catch return EngineError.StorageError;
+            defer {
+                for (tables) |t| self.allocator.free(t);
+                self.allocator.free(tables);
+            }
+
+            for (tables) |tbl_name| {
+                self.analyzeTable(tbl_name) catch continue; // Skip errors, continue with other tables
+            }
+        }
+
+        return .{ .message = "ANALYZE" };
+    }
+
+    /// Collect and store statistics for a single table.
+    fn analyzeTable(self: *Database, table_name: []const u8) EngineError!void {
+        const table_info = self.catalog.getTable(table_name) catch return EngineError.TableNotFound;
+        defer table_info.deinit(self.allocator);
+
+        // Scan the table to collect statistics
+        var row_count: u64 = 0;
+        var column_values = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){}; // col_name -> value list
+        defer {
+            var it = column_values.iterator();
+            while (it.next()) |entry| {
+                for (entry.value_ptr.items) |val| self.allocator.free(val);
+                entry.value_ptr.deinit(self.allocator);
+            }
+            column_values.deinit(self.allocator);
+        }
+
+        // Initialize value lists for each column
+        for (table_info.columns) |col| {
+            const list = std.ArrayListUnmanaged([]const u8){};
+            column_values.put(self.allocator, col.name, list) catch return EngineError.OutOfMemory;
+        }
+
+        // Scan all tuples in the table
+        var tree = BTree.init(self.pool, table_info.data_root_page_id);
+        var cursor = Cursor.init(self.allocator, &tree);
+        defer cursor.deinit();
+
+        cursor.seekFirst() catch {}; // Empty table is ok
+
+        while (cursor.next() catch null) |entry| {
+            defer self.allocator.free(entry.key);
+            defer self.allocator.free(entry.value);
+
+            row_count += 1;
+
+            // Deserialize row to collect column values
+            const values = executor_mod.deserializeRow(self.allocator, entry.value) catch continue;
+            defer {
+                for (values) |v| v.free(self.allocator);
+                self.allocator.free(values);
+            }
+
+            // Store values for each column (for distinct count, null fraction, etc.)
+            for (table_info.columns, 0..) |col, i| {
+                if (i < values.len) {
+                    const val = values[i];
+                    // Serialize the value to bytes for comparison
+                    const serialized = self.serializeValueForStats(val) catch return EngineError.OutOfMemory;
+                    var list = column_values.getPtr(col.name).?;
+                    list.append(self.allocator, serialized) catch return EngineError.OutOfMemory;
+                } else {
+                    // Column not present in this row (schema evolution)
+                    const null_bytes = self.allocator.dupe(u8, &[_]u8{0x00}) catch return EngineError.OutOfMemory;
+                    var list = column_values.getPtr(col.name).?;
+                    list.append(self.allocator, null_bytes) catch return EngineError.OutOfMemory;
+                }
+            }
+        }
+
+        // Create and store table stats
+        const table_stats = stats_mod.TableStats.init(row_count);
+        self.catalog.createTableStats(table_name, table_stats) catch return EngineError.StorageError;
+
+        // Create and store column stats
+        for (table_info.columns) |col| {
+            const values = column_values.get(col.name).?;
+
+            // Calculate column statistics
+            const distinct_count = self.countDistinct(values.items);
+            const null_fraction = calculateNullFraction(values.items);
+            const avg_width = calculateAvgWidth(values.items);
+
+            // For now, create simple stats without histograms/MCVs (those are complex)
+            const col_stats = stats_mod.ColumnStats{
+                .distinct_count = distinct_count,
+                .null_fraction = null_fraction,
+                .avg_width = avg_width,
+                .correlation = 0.0, // TODO: calculate correlation with row order
+                .most_common_values = &.{},
+                .histogram_buckets = &.{},
+            };
+
+            self.catalog.createColumnStats(table_name, col.name, col_stats) catch return EngineError.StorageError;
+        }
+    }
+
+    /// Serialize a value to bytes for statistics collection.
+    fn serializeValueForStats(self: *Database, val: Value) EngineError![]const u8 {
+        var buf = std.ArrayListUnmanaged(u8){};
+        const writer = buf.writer(self.allocator);
+
+        switch (val) {
+            .null_value => try writer.writeByte(0x00),
+            .integer => |i| {
+                try writer.writeByte(0x01);
+                try writer.writeInt(i64, i, .little);
+            },
+            .real => |r| {
+                try writer.writeByte(0x02);
+                try writer.writeAll(std.mem.asBytes(&r));
+            },
+            .text => |t| {
+                try writer.writeByte(0x03);
+                try writer.writeAll(t);
+            },
+            .blob => |b| {
+                try writer.writeByte(0x04);
+                try writer.writeAll(b);
+            },
+            .boolean => |b| {
+                try writer.writeByte(0x05);
+                try writer.writeByte(if (b) 1 else 0);
+            },
+            else => try writer.writeByte(0xFF), // Unsupported type marker
+        }
+
+        return try buf.toOwnedSlice(self.allocator);
+    }
+
+    /// Count distinct values in a list.
+    fn countDistinct(self: *Database, values: []const []const u8) u64 {
+        var seen = std.StringHashMapUnmanaged(void){};
+        defer seen.deinit(self.allocator);
+
+        for (values) |val| {
+            seen.put(self.allocator, val, {}) catch continue;
+        }
+
+        return seen.count();
+    }
+
+    /// Calculate fraction of NULL values.
+    fn calculateNullFraction(values: []const []const u8) f64 {
+        if (values.len == 0) return 0.0;
+
+        var null_count: u64 = 0;
+        for (values) |val| {
+            if (val.len > 0 and val[0] == 0x00) { // NULL tag
+                null_count += 1;
+            }
+        }
+
+        return @as(f64, @floatFromInt(null_count)) / @as(f64, @floatFromInt(values.len));
+    }
+
+    /// Calculate average storage width in bytes.
+    fn calculateAvgWidth(values: []const []const u8) f64 {
+        if (values.len == 0) return 0.0;
+
+        var total_width: u64 = 0;
+        for (values) |val| {
+            total_width += val.len;
+        }
+
+        return @as(f64, @floatFromInt(total_width)) / @as(f64, @floatFromInt(values.len));
     }
 
     // ── Auto-Vacuum ──────────────────────────────────────────────────
@@ -14849,5 +15041,107 @@ test "Hot standby prevents CREATE TABLE" {
         row_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), row_count);
+}
+
+test "ANALYZE collects table statistics" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table and insert data
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER);");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users VALUES (1, 'Alice', 30);");
+    defer r2.close(allocator);
+
+    var r3 = try db.execSQL("INSERT INTO users VALUES (2, 'Bob', 25);");
+    defer r3.close(allocator);
+
+    var r4 = try db.execSQL("INSERT INTO users VALUES (3, 'Charlie', 30);");
+    defer r4.close(allocator);
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE users;");
+    defer r_analyze.close(allocator);
+    try std.testing.expectEqualStrings("ANALYZE", r_analyze.message.?);
+
+    // Verify table stats were stored
+    const table_key = try db.catalog.allocator.alloc(u8, "stats:users".len);
+    defer db.catalog.allocator.free(table_key);
+    @memcpy(table_key, "stats:users");
+
+    const table_stats_data = try db.catalog.tree.get(table_key);
+    defer db.catalog.allocator.free(table_stats_data);
+
+    const table_stats = try stats_mod.deserializeTableStats(table_stats_data);
+    try std.testing.expectEqual(@as(u64, 3), table_stats.row_count);
+
+    // Verify column stats were stored (check 'age' column)
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:users:age".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:users:age");
+
+    const col_stats_data = try db.catalog.tree.get(col_key);
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // We have 2 distinct ages: 30 (Alice, Charlie) and 25 (Bob)
+    try std.testing.expectEqual(@as(u64, 2), col_stats.distinct_count);
+    try std.testing.expectEqual(@as(f64, 0.0), col_stats.null_fraction); // No nulls
+}
+
+test "ANALYZE all tables" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_all.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create two tables
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER);");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE TABLE t2 (name TEXT);");
+    defer r2.close(allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1), (2);");
+    defer r3.close(allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES ('foo'), ('bar'), ('baz');");
+    defer r4.close(allocator);
+
+    // Run ANALYZE without table name (analyze all)
+    var r_analyze = try db.execSQL("ANALYZE;");
+    defer r_analyze.close(allocator);
+    try std.testing.expectEqualStrings("ANALYZE", r_analyze.message.?);
+
+    // Verify t1 stats
+    const t1_key = try db.catalog.allocator.alloc(u8, "stats:t1".len);
+    defer db.catalog.allocator.free(t1_key);
+    @memcpy(t1_key, "stats:t1");
+
+    const t1_stats_data = try db.catalog.tree.get(t1_key);
+    defer db.catalog.allocator.free(t1_stats_data);
+
+    const t1_stats = try stats_mod.deserializeTableStats(t1_stats_data);
+    try std.testing.expectEqual(@as(u64, 2), t1_stats.row_count);
+
+    // Verify t2 stats
+    const t2_key = try db.catalog.allocator.alloc(u8, "stats:t2".len);
+    defer db.catalog.allocator.free(t2_key);
+    @memcpy(t2_key, "stats:t2");
+
+    const t2_stats_data = try db.catalog.tree.get(t2_key);
+    defer db.catalog.allocator.free(t2_stats_data);
+
+    const t2_stats = try stats_mod.deserializeTableStats(t2_stats_data);
+    try std.testing.expectEqual(@as(u64, 3), t2_stats.row_count);
 }
 
