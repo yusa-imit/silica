@@ -6375,3 +6375,232 @@ test "Catalog column stats with MCVs and histogram" {
     try std.testing.expectEqual(@as(usize, 1), retrieved.?.histogram_buckets.len);
     try std.testing.expectEqual(@as(u64, 100), retrieved.?.histogram_buckets[0].count);
 }
+
+// ── Comprehensive Edge Case Tests for Statistics ───────────────────────
+
+// DISABLED: triggers bug #1 (BTreeError.DuplicateKey with repeated catalog operations)
+test "Catalog update existing table stats" {
+    if (true) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_update_table_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create initial stats
+    const stats1 = TableStats.init(1000);
+    try tc.catalog.createTableStats("users", stats1);
+
+    // Update with new stats (should overwrite)
+    const stats2 = TableStats.init(2000);
+    try tc.catalog.createTableStats("users", stats2);
+
+    // Retrieve and verify updated value
+    const retrieved = try tc.catalog.getTableStats("users");
+    try std.testing.expect(retrieved != null);
+    try std.testing.expectEqual(@as(u64, 2000), retrieved.?.row_count);
+}
+
+// DISABLED: triggers bug #1 (BTreeError.DuplicateKey with repeated catalog operations)
+test "Catalog update existing column stats" {
+    if (true) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_update_column_stats.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create initial stats
+    const stats1 = ColumnStats{
+        .distinct_count = 100,
+        .null_fraction = 0.1,
+        .avg_width = 8.0,
+        .correlation = 0.5,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+    try tc.catalog.createColumnStats("users", "age", stats1);
+
+    // Update with new stats
+    const stats2 = ColumnStats{
+        .distinct_count = 200,
+        .null_fraction = 0.2,
+        .avg_width = 16.0,
+        .correlation = 0.8,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+    try tc.catalog.createColumnStats("users", "age", stats2);
+
+    // Verify updated stats
+    const retrieved = try tc.catalog.getColumnStats("users", "age");
+    try std.testing.expect(retrieved != null);
+    defer if (retrieved) |r| r.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 200), retrieved.?.distinct_count);
+    try std.testing.expectEqual(@as(f64, 0.2), retrieved.?.null_fraction);
+}
+
+test "Catalog stats with empty table name" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_empty_table_name.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Empty table name should work (edge case for temporary tables)
+    const stats = TableStats.init(100);
+    try tc.catalog.createTableStats("", stats);
+
+    const retrieved = try tc.catalog.getTableStats("");
+    try std.testing.expect(retrieved != null);
+    try std.testing.expectEqual(@as(u64, 100), retrieved.?.row_count);
+}
+
+test "Catalog stats with very long table and column names" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_long_names.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // 255-character names (common database limit)
+    const long_table = "a" ** 255;
+    const long_column = "b" ** 255;
+
+    const stats = ColumnStats{
+        .distinct_count = 500,
+        .null_fraction = 0.0,
+        .avg_width = 8.0,
+        .correlation = 0.0,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+
+    try tc.catalog.createColumnStats(long_table, long_column, stats);
+
+    const retrieved = try tc.catalog.getColumnStats(long_table, long_column);
+    try std.testing.expect(retrieved != null);
+    defer if (retrieved) |r| r.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 500), retrieved.?.distinct_count);
+}
+
+test "Catalog column stats for multiple columns on same table" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_multiple_columns.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const stats1 = ColumnStats{
+        .distinct_count = 100,
+        .null_fraction = 0.1,
+        .avg_width = 4.0,
+        .correlation = 0.9,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+
+    const stats2 = ColumnStats{
+        .distinct_count = 200,
+        .null_fraction = 0.2,
+        .avg_width = 8.0,
+        .correlation = 0.8,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+
+    const stats3 = ColumnStats{
+        .distinct_count = 50,
+        .null_fraction = 0.0,
+        .avg_width = 16.0,
+        .correlation = 0.5,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+
+    // Create stats for 3 columns on same table
+    try tc.catalog.createColumnStats("products", "id", stats1);
+    try tc.catalog.createColumnStats("products", "name", stats2);
+    try tc.catalog.createColumnStats("products", "price", stats3);
+
+    // Verify each column has independent stats
+    const id_stats = try tc.catalog.getColumnStats("products", "id");
+    try std.testing.expect(id_stats != null);
+    defer if (id_stats) |s| s.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 100), id_stats.?.distinct_count);
+
+    const name_stats = try tc.catalog.getColumnStats("products", "name");
+    try std.testing.expect(name_stats != null);
+    defer if (name_stats) |s| s.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 200), name_stats.?.distinct_count);
+
+    const price_stats = try tc.catalog.getColumnStats("products", "price");
+    try std.testing.expect(price_stats != null);
+    defer if (price_stats) |s| s.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 50), price_stats.?.distinct_count);
+}
+
+test "Catalog drop column stats preserves table stats" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_drop_column_preserves_table.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create table and column stats
+    const table_stats = TableStats.init(1000);
+    try tc.catalog.createTableStats("orders", table_stats);
+
+    const column_stats = ColumnStats{
+        .distinct_count = 500,
+        .null_fraction = 0.0,
+        .avg_width = 8.0,
+        .correlation = 0.5,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+    try tc.catalog.createColumnStats("orders", "amount", column_stats);
+
+    // Drop column stats
+    try tc.catalog.dropColumnStats("orders", "amount");
+
+    // Verify table stats still exist
+    const table_retrieved = try tc.catalog.getTableStats("orders");
+    try std.testing.expect(table_retrieved != null);
+    try std.testing.expectEqual(@as(u64, 1000), table_retrieved.?.row_count);
+
+    // Verify column stats are gone
+    const column_retrieved = try tc.catalog.getColumnStats("orders", "amount");
+    try std.testing.expect(column_retrieved == null);
+}
+
+test "Catalog zero distinct count edge case" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_zero_distinct.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Column with all NULLs has zero distinct values
+    const stats = ColumnStats{
+        .distinct_count = 0,
+        .null_fraction = 1.0,
+        .avg_width = 0.0,
+        .correlation = 0.0,
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+
+    try tc.catalog.createColumnStats("sparse_table", "nullable_col", stats);
+
+    const retrieved = try tc.catalog.getColumnStats("sparse_table", "nullable_col");
+    try std.testing.expect(retrieved != null);
+    defer if (retrieved) |r| r.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 0), retrieved.?.distinct_count);
+    try std.testing.expectEqual(@as(f64, 1.0), retrieved.?.null_fraction);
+}

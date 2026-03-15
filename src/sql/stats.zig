@@ -214,6 +214,7 @@ pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnSta
 
         if (pos + lower_len > data.len) return error.InvalidData;
         const lower = try allocator.dupe(u8, data[pos..][0..lower_len]);
+        errdefer allocator.free(lower);
         pos += lower_len;
 
         if (pos + 2 > data.len) return error.InvalidData;
@@ -222,6 +223,7 @@ pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnSta
 
         if (pos + upper_len > data.len) return error.InvalidData;
         const upper = try allocator.dupe(u8, data[pos..][0..upper_len]);
+        errdefer allocator.free(upper);
         pos += upper_len;
 
         if (pos + 8 > data.len) return error.InvalidData;
@@ -370,4 +372,198 @@ test "ColumnStats deserialization with invalid data" {
     @memset(buf[8..40], 0);
     std.mem.writeInt(u16, buf[32..34], 5, .little); // 5 MCVs claimed but no data
     try testing.expectError(error.InvalidData, deserializeColumnStats(alloc, &buf));
+}
+
+// ── Comprehensive Edge Case Tests ──────────────────────────────────────
+
+test "ColumnStats with extreme f64 values" {
+    const alloc = testing.allocator;
+
+    const stats = ColumnStats{
+        .distinct_count = 0, // Zero distinct values (empty column)
+        .null_fraction = 1.0, // All nulls
+        .avg_width = 0.0, // Zero width
+        .correlation = -1.0, // Negative correlation
+        .most_common_values = &.{},
+        .histogram_buckets = &.{},
+    };
+
+    const data = try serializeColumnStats(alloc, stats);
+    defer alloc.free(data);
+
+    var deserialized = try deserializeColumnStats(alloc, data);
+    defer deserialized.deinit(alloc);
+
+    try testing.expectEqual(@as(u64, 0), deserialized.distinct_count);
+    try testing.expectEqual(@as(f64, 1.0), deserialized.null_fraction);
+    try testing.expectEqual(@as(f64, 0.0), deserialized.avg_width);
+    try testing.expectEqual(@as(f64, -1.0), deserialized.correlation);
+}
+
+test "ColumnStats with many MCVs" {
+    const alloc = testing.allocator;
+
+    // Create 10 MCVs to test serialization of larger arrays
+    var mcv_list = std.ArrayListUnmanaged(MostCommonValue){};
+    defer {
+        for (mcv_list.items) |mcv| mcv.deinit(alloc);
+        mcv_list.deinit(alloc);
+    }
+
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        const value = try alloc.alloc(u8, 5);
+        value[0] = 0x01; // integer tag
+        std.mem.writeInt(u32, value[1..5], i, .little);
+        try mcv_list.append(alloc, .{ .value = value, .frequency = @as(f64, @floatFromInt(i)) / 100.0 });
+    }
+
+    const stats = ColumnStats{
+        .distinct_count = 1000,
+        .null_fraction = 0.05,
+        .avg_width = 16.0,
+        .correlation = 0.5,
+        .most_common_values = mcv_list.items,
+        .histogram_buckets = &.{},
+    };
+
+    const data = try serializeColumnStats(alloc, stats);
+    defer alloc.free(data);
+
+    var deserialized = try deserializeColumnStats(alloc, data);
+    defer deserialized.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 10), deserialized.most_common_values.len);
+    try testing.expectEqual(@as(f64, 0.09), deserialized.most_common_values[9].frequency);
+}
+
+test "ColumnStats with many histogram buckets" {
+    const alloc = testing.allocator;
+
+    // Create 20 histogram buckets
+    var bucket_list = std.ArrayListUnmanaged(HistogramBucket){};
+    defer {
+        for (bucket_list.items) |bucket| bucket.deinit(alloc);
+        bucket_list.deinit(alloc);
+    }
+
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const lower = try alloc.alloc(u8, 5);
+        lower[0] = 0x01;
+        std.mem.writeInt(u32, lower[1..5], i * 10, .little);
+
+        const upper = try alloc.alloc(u8, 5);
+        upper[0] = 0x01;
+        std.mem.writeInt(u32, upper[1..5], (i + 1) * 10 - 1, .little);
+
+        try bucket_list.append(alloc, .{ .lower = lower, .upper = upper, .count = 50 });
+    }
+
+    const stats = ColumnStats{
+        .distinct_count = 1000,
+        .null_fraction = 0.0,
+        .avg_width = 4.0,
+        .correlation = 0.0,
+        .most_common_values = &.{},
+        .histogram_buckets = bucket_list.items,
+    };
+
+    const data = try serializeColumnStats(alloc, stats);
+    defer alloc.free(data);
+
+    var deserialized = try deserializeColumnStats(alloc, data);
+    defer deserialized.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 20), deserialized.histogram_buckets.len);
+    try testing.expectEqual(@as(u64, 50), deserialized.histogram_buckets[0].count);
+}
+
+test "TableStats with zero row count" {
+    const alloc = testing.allocator;
+
+    const stats = TableStats{
+        .row_count = 0,
+        .last_analyze_time = 0,
+    };
+
+    const data = try serializeTableStats(alloc, stats);
+    defer alloc.free(data);
+
+    const deserialized = try deserializeTableStats(data);
+    try testing.expectEqual(@as(u64, 0), deserialized.row_count);
+    try testing.expectEqual(@as(i64, 0), deserialized.last_analyze_time);
+}
+
+test "TableStats with maximum row count" {
+    const alloc = testing.allocator;
+
+    const stats = TableStats{
+        .row_count = std.math.maxInt(u64),
+        .last_analyze_time = std.math.maxInt(i64),
+    };
+
+    const data = try serializeTableStats(alloc, stats);
+    defer alloc.free(data);
+
+    const deserialized = try deserializeTableStats(data);
+    try testing.expectEqual(std.math.maxInt(u64), deserialized.row_count);
+    try testing.expectEqual(std.math.maxInt(i64), deserialized.last_analyze_time);
+}
+
+test "ColumnStats truncated histogram bucket data" {
+    const alloc = testing.allocator;
+
+    // Create a buffer with a truncated histogram bucket (missing upper bound)
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(alloc);
+
+    const writer = buf.writer(alloc);
+    try writer.writeInt(u64, 100, .little); // distinct_count
+    try writer.writeAll(&std.mem.toBytes(@as(f64, 0.1))); // null_fraction
+    try writer.writeAll(&std.mem.toBytes(@as(f64, 8.0))); // avg_width
+    try writer.writeAll(&std.mem.toBytes(@as(f64, 0.5))); // correlation
+    try writer.writeInt(u16, 0, .little); // mcv_count = 0
+    try writer.writeInt(u16, 1, .little); // bucket_count = 1
+    try writer.writeInt(u16, 5, .little); // lower_len = 5
+    try writer.writeAll(&[_]u8{ 0x01, 0x00, 0x00, 0x00, 0x00 }); // lower data
+    // Missing upper bound and count
+
+    const data = try buf.toOwnedSlice(alloc);
+    defer alloc.free(data);
+
+    // deserializeColumnStats will allocate lower bound but fail on upper bound
+    // The errdefer in deserializeColumnStats should clean up the partial allocation
+    const result = deserializeColumnStats(alloc, data);
+    try testing.expectError(error.InvalidData, result);
+}
+
+test "ColumnStats with empty value in MCV" {
+    const alloc = testing.allocator;
+
+    const empty_value = try alloc.alloc(u8, 0);
+    defer alloc.free(empty_value);
+
+    const mcvs = [_]MostCommonValue{
+        .{ .value = empty_value, .frequency = 0.5 },
+    };
+
+    const stats = ColumnStats{
+        .distinct_count = 1,
+        .null_fraction = 0.5,
+        .avg_width = 0.0,
+        .correlation = 0.0,
+        .most_common_values = &mcvs,
+        .histogram_buckets = &.{},
+    };
+
+    const data = try serializeColumnStats(alloc, stats);
+    defer alloc.free(data);
+
+    var deserialized = try deserializeColumnStats(alloc, data);
+    defer deserialized.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 1), deserialized.most_common_values.len);
+    try testing.expectEqual(@as(usize, 0), deserialized.most_common_values[0].value.len);
+    try testing.expectEqual(@as(f64, 0.5), deserialized.most_common_values[0].frequency);
 }
