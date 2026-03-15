@@ -15067,14 +15067,14 @@ test "ANALYZE collects table statistics" {
     // Run ANALYZE
     var r_analyze = try db.execSQL("ANALYZE users;");
     defer r_analyze.close(allocator);
-    try std.testing.expectEqualStrings("ANALYZE", r_analyze.message.?);
+    try std.testing.expectEqualStrings("ANALYZE", r_analyze.message);
 
     // Verify table stats were stored
     const table_key = try db.catalog.allocator.alloc(u8, "stats:users".len);
     defer db.catalog.allocator.free(table_key);
     @memcpy(table_key, "stats:users");
 
-    const table_stats_data = try db.catalog.tree.get(table_key);
+    const table_stats_data = (try db.catalog.tree.get(db.catalog.allocator, table_key)).?;
     defer db.catalog.allocator.free(table_stats_data);
 
     const table_stats = try stats_mod.deserializeTableStats(table_stats_data);
@@ -15085,7 +15085,7 @@ test "ANALYZE collects table statistics" {
     defer db.catalog.allocator.free(col_key);
     @memcpy(col_key, "stats:users:age");
 
-    const col_stats_data = try db.catalog.tree.get(col_key);
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
     defer db.catalog.allocator.free(col_stats_data);
 
     var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
@@ -15120,14 +15120,14 @@ test "ANALYZE all tables" {
     // Run ANALYZE without table name (analyze all)
     var r_analyze = try db.execSQL("ANALYZE;");
     defer r_analyze.close(allocator);
-    try std.testing.expectEqualStrings("ANALYZE", r_analyze.message.?);
+    try std.testing.expectEqualStrings("ANALYZE", r_analyze.message);
 
     // Verify t1 stats
     const t1_key = try db.catalog.allocator.alloc(u8, "stats:t1".len);
     defer db.catalog.allocator.free(t1_key);
     @memcpy(t1_key, "stats:t1");
 
-    const t1_stats_data = try db.catalog.tree.get(t1_key);
+    const t1_stats_data = (try db.catalog.tree.get(db.catalog.allocator, t1_key)).?;
     defer db.catalog.allocator.free(t1_stats_data);
 
     const t1_stats = try stats_mod.deserializeTableStats(t1_stats_data);
@@ -15138,7 +15138,7 @@ test "ANALYZE all tables" {
     defer db.catalog.allocator.free(t2_key);
     @memcpy(t2_key, "stats:t2");
 
-    const t2_stats_data = try db.catalog.tree.get(t2_key);
+    const t2_stats_data = (try db.catalog.tree.get(db.catalog.allocator, t2_key)).?;
     defer db.catalog.allocator.free(t2_stats_data);
 
     const t2_stats = try stats_mod.deserializeTableStats(t2_stats_data);
