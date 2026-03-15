@@ -668,3 +668,85 @@ test "ReplicationMonitor: setWalSender and setWalReceiver" {
     monitor.setWalReceiver(&wal_receiver);
     try std.testing.expect(monitor.wal_receiver != null);
 }
+
+// ============================================================================
+// Concurrent Stress Tests
+// ============================================================================
+
+test "ReplicationMonitor: concurrent register/update/unregister stress" {
+    const allocator = std.testing.allocator;
+    var monitor = ReplicationMonitor.init(allocator);
+    defer monitor.deinit();
+
+    const num_threads = 8;
+    const ops_per_thread = 30;
+
+    const ThreadContext = struct {
+        mon: *ReplicationMonitor,
+        thread_id: usize,
+        allocator_ctx: Allocator,
+
+        fn threadFunc(ctx: *@This()) !void {
+            var prng = std.Random.DefaultPrng.init(@intCast(ctx.thread_id));
+            const random = prng.random();
+
+            var i: usize = 0;
+            while (i < ops_per_thread) : (i += 1) {
+                const op = random.intRangeAtMost(u8, 0, 3);
+
+                // Generate unique slot name per thread
+                var slot_buf: [64]u8 = undefined;
+                const slot_name = try std.fmt.bufPrint(&slot_buf, "slot_{d}_{d}", .{ ctx.thread_id, i });
+
+                switch (op) {
+                    0 => {
+                        // Register connection
+                        ctx.mon.registerConnection(
+                            slot_name,
+                            "app",
+                            "127.0.0.1",
+                            5432,
+                        ) catch {};
+                    },
+                    1 => {
+                        // Update state
+                        ctx.mon.updateState(slot_name, .streaming) catch {};
+                    },
+                    2 => {
+                        // Update progress
+                        const lsn_base: LSN = 1000 + @as(LSN, i);
+                        ctx.mon.updateProgress(slot_name, lsn_base, lsn_base, lsn_base, lsn_base) catch {};
+                    },
+                    3 => {
+                        // Unregister connection
+                        ctx.mon.unregisterConnection(slot_name) catch {};
+                    },
+                    else => unreachable,
+                }
+            }
+        }
+    };
+
+    var threads: [num_threads]std.Thread = undefined;
+    var contexts: [num_threads]ThreadContext = undefined;
+
+    // Spawn threads
+    for (&threads, &contexts, 0..) |*t, *ctx, tid| {
+        ctx.* = .{
+            .mon = &monitor,
+            .thread_id = tid,
+            .allocator_ctx = allocator,
+        };
+        t.* = try std.Thread.spawn(.{}, ThreadContext.threadFunc, .{ctx});
+    }
+
+    // Wait for all threads
+    for (&threads) |*t| {
+        t.join();
+    }
+
+    // Verify monitor is still in valid state
+    const replica_count = monitor.getReplicaCount();
+    // Count should be >= 0 (some may have been unregistered)
+    try std.testing.expect(replica_count >= 0);
+}

@@ -544,3 +544,79 @@ test "CascadeCoordinator: forwardWalData updates last_forwarded_lsn" {
     try intermediate.forwardWalData(103, 107, &data2);
     try testing.expectEqual(@as(LSN, 107), intermediate.last_forwarded_lsn);
 }
+
+// ============================================================================
+// Concurrent Stress Tests
+// ============================================================================
+
+test "CascadeCoordinator: concurrent downstream register/unregister stress" {
+    var coordinator = try CascadeCoordinator.init(
+        test_allocator,
+        .{ .enable_forwarding = true },
+        "host=primary",
+        1,
+    );
+    defer coordinator.deinit();
+
+    const num_threads = 8;
+    const ops_per_thread = 25;
+
+    const ThreadContext = struct {
+        coord: *CascadeCoordinator,
+        thread_id: usize,
+
+        fn threadFunc(ctx: *@This()) void {
+            var prng = std.Random.DefaultPrng.init(@intCast(ctx.thread_id));
+            const random = prng.random();
+
+            // Create thread-local senders array
+            var senders: [5]sender.WalSender = undefined;
+
+            var i: usize = 0;
+            while (i < ops_per_thread) : (i += 1) {
+                const op = random.intRangeAtMost(u8, 0, 2);
+                const sender_idx = random.intRangeAtMost(usize, 0, 4);
+
+                switch (op) {
+                    0 => {
+                        // Register downstream
+                        ctx.coord.registerDownstream(&senders[sender_idx]) catch {};
+                    },
+                    1 => {
+                        // Unregister downstream
+                        ctx.coord.unregisterDownstream(&senders[sender_idx]);
+                    },
+                    2 => {
+                        // Forward WAL data
+                        const data = [_]u8{ 1, 2, 3, 4 };
+                        const lsn_base: LSN = 1000 + @as(LSN, i);
+                        ctx.coord.forwardWalData(lsn_base, lsn_base + 4, &data) catch {};
+                    },
+                    else => unreachable,
+                }
+            }
+        }
+    };
+
+    var threads: [num_threads]std.Thread = undefined;
+    var contexts: [num_threads]ThreadContext = undefined;
+
+    // Spawn threads
+    for (&threads, &contexts, 0..) |*t, *ctx, tid| {
+        ctx.* = .{
+            .coord = &coordinator,
+            .thread_id = tid,
+        };
+        t.* = try std.Thread.spawn(.{}, ThreadContext.threadFunc, .{ctx});
+    }
+
+    // Wait for all threads
+    for (&threads) |*t| {
+        t.join();
+    }
+
+    // Verify coordinator is still in valid state
+    const info = coordinator.getTopologyInfo();
+    try testing.expectEqual(@as(u32, 1), info.cascade_depth);
+    try testing.expect(info.role == CascadeRole.leaf or info.role == CascadeRole.intermediate);
+}
