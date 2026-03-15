@@ -683,3 +683,91 @@ test "WalSender — works without coordinator (backward compat)" {
     try sender.processStandbyStatus(1000, 1000, 1000);
     try sender.stopReplication();
 }
+
+// ============================================================================
+// Error Path Tests
+// ============================================================================
+
+test "WalSender — SlotNotFound error" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Try to start replication with non-existent slot
+    const result = sender.startReplication("nonexistent-slot", 0);
+    try std.testing.expectError(Error.SlotNotFound, result);
+}
+
+test "WalSender — SlotAlreadyActive error" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    try slot_mgr.createSlot("test-slot", false);
+    defer slot_mgr.dropSlot("test-slot") catch {};
+
+    // Activate the slot externally
+    try slot_mgr.activateSlot("test-slot");
+
+    // Try to start replication on already active slot
+    const result = sender.startReplication("test-slot", 0);
+    try std.testing.expectError(slot.SlotError.SlotInUse, result);
+}
+
+test "WalSender — stopReplication when not active is no-op" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Stop without starting should be no-op (doesn't error)
+    try sender.stopReplication();
+    try std.testing.expect(sender.slot_name == null);
+}
+
+test "WalSender — processStandbyStatus when not active is no-op" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Process status without active replication should be no-op (doesn't error)
+    try sender.processStandbyStatus(1000, 1000, 1000);
+    try std.testing.expect(sender.slot_name == null);
+}
+
+test "WalSender — LSN ordering validation" {
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    try slot_mgr.createSlot("test-slot", false);
+    defer slot_mgr.dropSlot("test-slot") catch {};
+
+    try sender.startReplication("test-slot", 0);
+
+    // Write LSN > Flush LSN > Apply LSN should succeed
+    try sender.processStandbyStatus(3000, 2000, 1000);
+
+    // Slot confirmed_flush_lsn should be updated to flush_lsn
+    const slot_info = try slot_mgr.getSlot("test-slot");
+    try std.testing.expectEqual(@as(LSN, 2000), slot_info.confirmed_flush_lsn);
+}

@@ -170,4 +170,99 @@ if (lm.hasConflict(xid, target, .exclusive)) {
 - releaseAllLocks: iterates both row_locks and table_locks hash maps
 - Custom hash map context for LockTarget (table_page_id + row_key composite key)
 
+### Zig 0.15 ArrayList pattern — VERIFIED
+```zig
+// Zig 0.15: ArrayList initialized without .init()
+var list = std.ArrayList(u8){}; // NOT ArrayList.init(allocator)
+defer list.deinit(allocator); // deinit takes allocator parameter
+
+// For appending, must pass allocator explicitly:
+try list.append(allocator, value);
+
+// Convert to owned slice:
+const slice = try list.toOwnedSlice(allocator);
+defer allocator.free(slice);
+```
+
+### Thread Mutex pattern (Zig 0.15) — VERIFIED
+```zig
+var mutex = std.Thread.Mutex{}; // Initialize with .{}
+defer {
+    mutex.lock();
+    defer mutex.unlock();
+    // Protected code
+}
+// OR one-liner:
+{
+    mutex.lock();
+    defer mutex.unlock();
+    // Protected code
+}
+```
+
+## Stress Testing Patterns (Milestone 19C/D)
+
+### Concurrent operations stress test
+```zig
+test "concurrent stress test" {
+    const allocator = std.testing.allocator;
+    var manager = SlotManager.init(allocator);
+    defer manager.deinit();
+
+    const num_threads = 10;
+    const ops_per_thread = 20;
+    var threads: [num_threads]std.Thread = undefined;
+
+    // Spawn threads performing create/activate/update/drop operations
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, workerFunction, .{&manager});
+    }
+
+    // Wait for all threads
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Verify final state consistency
+}
+```
+
+### High-locality workload stress test
+```zig
+test "sequential page reuse stress test" {
+    const allocator = std.testing.allocator;
+    var pool = try BufferPool.init(allocator, 10);  // Small pool
+    defer pool.deinit();
+
+    const num_rounds = 20;
+    const pages_per_round = 10;
+
+    // Repeatedly access same page range to verify LRU correctness
+    for (0..num_rounds) |round| {
+        for (0..pages_per_round) |i| {
+            const page_num = (round * pages_per_round) + i;
+            // Fetch, use, unpin
+        }
+    }
+}
+```
+
+### Bulk write capacity stress test
+```zig
+test "many frames in single commit" {
+    const allocator = std.testing.allocator;
+    var wal = try Wal.init(allocator, "test.wal", 4096);
+    defer wal.deinit();
+
+    const num_frames = 100;
+
+    // Write many frames before commit
+    for (0..num_frames) |i| {
+        try wal.writeFrame(page_data, @intCast(i));
+    }
+
+    try wal.commit();  // Verify bulk commit works
+}
+```
+
 <!-- Add new patterns as they are verified through implementation -->
