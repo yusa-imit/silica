@@ -419,3 +419,28 @@
     - Commit deb5bd4: test: add comprehensive edge case tests for lag alerting
     - All 2122 tests passing (previous: 2118 + 4 new)
     - Files changed: src/replication/monitor.zig (+184 lines)
+
+  - **2026-03-17 08:00 UTC**: Join operator edge case tests (STABILIZATION MODE)
+    - Session hour: 08 (08 % 4 == 0 → STABILIZATION MODE)
+    - CI status: GREEN (all passing)
+    - GitHub issues: 4 enhancement issues (sailor v1.14.0/v1.15.0, zuda v1.0) — no bugs
+    - Task: Added comprehensive edge case tests for HashJoinOp and MergeJoinOp
+    - Tests added (9 new tests in executor.zig):
+      1. HashJoinOp NULL join keys (SQL standard: NULL != NULL) — verifies proper NULL handling
+      2. HashJoinOp empty left side (probe side empty) — INNER join returns no rows
+      3. HashJoinOp both sides empty — degenerate case verification
+      4. HashJoinOp large duplicate group stress test — 50×50 = 2500 rows Cartesian product
+      5. MergeJoinOp NULL join keys (SQL standard compliance) — sorted order: 1 < NULL (Value.compare)
+      6. MergeJoinOp both sides empty — degenerate case verification
+      7. MergeJoinOp large duplicate group stress test — 50×50 = 2500 rows merge performance
+      8. HashJoinOp left outer join with no matches — verifies null-padding for unmatched left rows
+      9. MergeJoinOp left outer join with no matches — verifies null-padding with sorted inputs
+    - Lessons learned:
+      - Value.compare puts NULL AFTER all values (NULL > everything), so sorted order is [1, NULL] not [NULL, 1]
+      - MergeJoinOp.compareJoinKeys uses Value.compare which treats NULL=NULL as equal (.eq)
+      - BUT join condition evaluation (evalExpr with binary_op.equal) correctly implements SQL NULL semantics (NULL != NULL → false)
+      - Result: MergeJoinOp finds NULL=NULL as potential match, then filters it out during join condition evaluation (inefficient but correct)
+      - This is a **known limitation** documented in test comment, not a bug (produces correct results)
+    - Commit 5338931: test: add 9 comprehensive edge case tests for join operators
+    - Test count: 2283 → 2292 total tests (9 new edge cases, 3 still skipped from previous sessions)
+    - Files changed: src/sql/executor.zig (+274 lines)
