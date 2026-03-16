@@ -6819,6 +6819,280 @@ test "MergeJoinOp empty left side returns no rows" {
     try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
 }
 
+// ── Comprehensive Edge Case Tests for Join Operators ───────────────────
+
+test "HashJoinOp NULL join keys never match (SQL standard)" {
+    const allocator = std.testing.allocator;
+
+    // Left table with NULL key
+    var left = InMemorySource.init(allocator, &.{"id", "name"});
+    try left.addRow(&.{ Value.null_value, Value{ .text = "Alice" } });
+    try left.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Bob" } });
+    defer left.deinit();
+
+    // Right table with NULL key
+    var right = InMemorySource.init(allocator, &.{"id", "val"});
+    try right.addRow(&.{ Value.null_value, Value{ .integer = 100 } });
+    try right.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 200 } });
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "left" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "right" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Only Bob=1 matches right=1; NULL != NULL (SQL standard)
+    var r = (try hash_join.next()).?;
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r.values[0].integer);
+    try std.testing.expectEqualStrings("Bob", r.values[1].text);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp empty left side returns no rows for inner join" {
+    const allocator = std.testing.allocator;
+
+    // Empty left (probe) side
+    var left = InMemorySource.init(allocator, &.{"id"});
+    defer left.deinit();
+
+    // Right table has rows
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Empty probe side → no results
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp both sides empty returns no rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp large duplicate group stress test" {
+    const allocator = std.testing.allocator;
+
+    // Left table: 50 rows with same key
+    var left = InMemorySource.init(allocator, &.{"id"});
+    for (0..50) |_| {
+        try left.addRow(&.{Value{ .integer = 1 }});
+    }
+    defer left.deinit();
+
+    // Right table: 50 rows with same key
+    var right = InMemorySource.init(allocator, &.{"id"});
+    for (0..50) |_| {
+        try right.addRow(&.{Value{ .integer = 1 }});
+    }
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Cartesian product: 50 × 50 = 2500 rows
+    var count: usize = 0;
+    while (try hash_join.next()) |r| {
+        var row = r;
+        defer row.deinit();
+        try std.testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2500), count);
+}
+
+test "MergeJoinOp NULL join keys never match (SQL standard)" {
+    const allocator = std.testing.allocator;
+
+    // NOTE: This test documents a KNOWN LIMITATION in MergeJoinOp
+    // compareJoinKeys uses Value.compare which returns .eq for (NULL, NULL)
+    // BUT the join condition evaluation (evalExpr with binary_op.equal) correctly
+    // implements SQL semantics where NULL != NULL (isTruthy() returns false)
+    // So MergeJoinOp WILL find NULL=NULL as potential match, but then filter it
+    // out when evaluating the join condition. This is inefficient but correct.
+
+    // Left table with NULL key (sorted: Value.compare puts NULL last, so 1 < NULL)
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value.null_value});
+    defer left.deinit();
+
+    // Right table with NULL key (sorted: 1 < NULL)
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value.null_value});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    // Only integer 1 matches; NULL != NULL gets filtered by join condition eval
+    var r = (try merge_join.next()).?;
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r.values[0].integer);
+
+    try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
+}
+
+test "MergeJoinOp both sides empty returns no rows" {
+    const allocator = std.testing.allocator;
+
+    var left = InMemorySource.init(allocator, &.{"id"});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"id"});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
+}
+
+test "MergeJoinOp large duplicate group stress test" {
+    const allocator = std.testing.allocator;
+
+    // Left table: 50 rows with same key (sorted)
+    var left = InMemorySource.init(allocator, &.{"id"});
+    for (0..50) |_| {
+        try left.addRow(&.{Value{ .integer = 1 }});
+    }
+    defer left.deinit();
+
+    // Right table: 50 rows with same key (sorted)
+    var right = InMemorySource.init(allocator, &.{"id"});
+    for (0..50) |_| {
+        try right.addRow(&.{Value{ .integer = 1 }});
+    }
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    // Cartesian product: 50 × 50 = 2500 rows
+    var count: usize = 0;
+    while (try merge_join.next()) |r| {
+        var row = r;
+        defer row.deinit();
+        try std.testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2500), count);
+}
+
+test "HashJoinOp left outer join with no matches emits null-padded rows" {
+    const allocator = std.testing.allocator;
+
+    // Left table has rows not in right
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 10 }});
+    try left.addRow(&.{Value{ .integer = 20 }});
+    defer left.deinit();
+
+    // Right table has different keys
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .left, &cond);
+    defer hash_join.close();
+
+    // All left rows preserved with NULL padding
+    var r1 = (try hash_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 10), r1.values[0].integer);
+    try std.testing.expectEqual(Value.null_value, r1.values[1]);
+
+    var r2 = (try hash_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 20), r2.values[0].integer);
+    try std.testing.expectEqual(Value.null_value, r2.values[1]);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "MergeJoinOp left outer join with no matches emits null-padded rows" {
+    const allocator = std.testing.allocator;
+
+    // Left table: sorted
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 10 }});
+    try left.addRow(&.{Value{ .integer = 20 }});
+    defer left.deinit();
+
+    // Right table: sorted, different keys
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .left, &cond);
+    defer merge_join.close();
+
+    // All left rows preserved with NULL padding
+    var r1 = (try merge_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 10), r1.values[0].integer);
+    try std.testing.expectEqual(Value.null_value, r1.values[1]);
+
+    var r2 = (try merge_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 20), r2.values[0].integer);
+    try std.testing.expectEqual(Value.null_value, r2.values[1]);
+
+    try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
+}
+
 test "EmptyOp produces one dual row" {
     var empty = EmptyOp{ .allocator = std.testing.allocator };
     // EmptyOp produces exactly one row with no columns (DUAL table behavior)
