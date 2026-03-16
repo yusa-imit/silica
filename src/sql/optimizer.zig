@@ -155,11 +155,18 @@ pub const Optimizer = struct {
         const opt_left = try self.optimizeNode(join.left);
         const opt_right = try self.optimizeNode(join.right);
 
-        // Try DP-based join reordering for multi-way joins
-        // (only for INNER joins, ≤8 tables)
-        if (join.join_type == .inner) {
-            return self.tryDpJoinReordering(opt_left, opt_right, join.on_condition);
-        }
+        // TODO(21A): DP-based join reordering disabled — needs join condition tracking
+        // Currently, tryDpJoinReordering() creates joins with on_condition=null,
+        // turning INNER JOINs into cross joins (Cartesian products).
+        // This breaks queries like "SELECT * FROM users u JOIN orders o ON u.id = o.user_id"
+        // which expect filtered results, not all combinations.
+        //
+        // To fix: implement join condition extraction, validation, and reassignment
+        // during DP enumeration. Until then, fall back to simple binary joins.
+        //
+        // if (join.join_type == .inner) {
+        //     return self.tryDpJoinReordering(opt_left, opt_right, join.on_condition);
+        // }
 
         return self.createNode(.{ .join = .{
             .left = opt_left,
