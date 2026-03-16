@@ -466,3 +466,86 @@ test "CostEstimator: comparison - seq scan vs index scan selectivity" {
     try std.testing.expect(index_cost < seq_cost);
 }
 
+test "CostEstimator: sort cost with n=1 (edge case)" {
+    const estimator = CostEstimator.init(.{});
+
+    // Sort with single tuple: log2(1) = 0, so sort_cost = 1 * 0 * 0.01 = 0
+    // Result should be input_cost + 0 = input_cost
+    const input_cost = 10.0;
+    const cost = estimator.estimateSort(input_cost, 1);
+    try std.testing.expectApproxEqAbs(cost, input_cost, 0.01);
+}
+
+test "CostEstimator: nested loop join quadratic scaling" {
+    const estimator = CostEstimator.init(.{});
+
+    // Verify quadratic behavior: doubling both sides should quadruple join cost
+    const base_cost = estimator.estimateNestedLoopJoin(100.0, 100.0, 1000, 1000);
+    const scaled_cost = estimator.estimateNestedLoopJoin(200.0, 200.0, 2000, 2000);
+
+    // Join portion should scale quadratically: (2000 * 2000) / (1000 * 1000) = 4x
+    // But base costs also doubled, so total scaling is less than 4x
+    // scaled_cost should be > 2 * base_cost (more than linear)
+    try std.testing.expect(scaled_cost > 2.0 * base_cost);
+}
+
+test "CostEstimator: hash join linear scaling" {
+    const estimator = CostEstimator.init(.{});
+
+    // Verify linear behavior: doubling both sides should ~double join cost
+    const base_cost = estimator.estimateHashJoin(100.0, 100.0, 1000, 1000);
+    const scaled_cost = estimator.estimateHashJoin(200.0, 200.0, 2000, 2000);
+
+    // Hash join scales linearly: (2000 + 2000) / (1000 + 1000) = 2x
+    // Base costs also doubled, so total is ~2x
+    try std.testing.expect(scaled_cost > base_cost);
+    try std.testing.expect(scaled_cost < 3.0 * base_cost); // should be close to 2x
+}
+
+test "CostEstimator: aggregate with very large tuple count" {
+    const estimator = CostEstimator.init(.{});
+
+    const input_cost = 1000.0;
+    const large_n = 10_000_000; // 10 million tuples
+    const cost = estimator.estimateAggregate(input_cost, large_n);
+
+    // Aggregate cost should be input + (N * cpu_operator_cost)
+    // = 1000 + (10_000_000 * 0.0025) = 1000 + 25000 = 26000
+    const expected = input_cost + (@as(f64, @floatFromInt(large_n)) * 0.0025);
+    try std.testing.expectApproxEqAbs(cost, expected, 1.0);
+}
+
+test "CostEstimator: limit with small fraction edge case" {
+    const estimator = CostEstimator.init(.{});
+
+    const input_cost = 1000.0;
+    // LIMIT 10 from 1000 tuples (1% of data)
+    // Cost = input_cost * (limit / n_tuples) = 1000.0 * (10 / 1000) = 10.0
+    const cost = estimator.estimateLimit(input_cost, 10, 1000);
+
+    const expected = input_cost * (10.0 / 1000.0);
+    try std.testing.expectApproxEqAbs(cost, expected, 0.1);
+}
+
+test "CostEstimator: seq scan with extreme avg_row_size" {
+    const estimator = CostEstimator.init(.{});
+
+    // Row size larger than page size (should fallback)
+    const cost_large = estimator.estimateSeqScan(100, 8192, 0); // 8KB rows in 4KB pages
+
+    // Should still compute a reasonable cost (fallback: 1 row per page)
+    try std.testing.expect(cost_large > 0.0);
+}
+
+test "CostEstimator: index scan with maximum quals" {
+    const estimator = CostEstimator.init(.{});
+
+    // Very high number of WHERE clauses (100 quals)
+    const cost = estimator.estimateIndexScan(10, 1000, 100);
+
+    // Cost should include qual overhead: (1000 * 100 * 0.0025) = 250
+    // Total = (10 * 4.0) + (1000 * 0.005) + 250 = 40 + 5 + 250 = 295
+    const expected = (10.0 * 4.0) + (1000.0 * 0.005) + (1000.0 * 100.0 * 0.0025);
+    try std.testing.expectApproxEqAbs(cost, expected, 1.0);
+}
+
