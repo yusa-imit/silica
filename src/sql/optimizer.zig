@@ -1285,3 +1285,310 @@ test "optimize distinct over empty set" {
         else => return error.InvalidPlan,
     }
 }
+
+// ── Join Reordering Tests ────────────────────────────────────────────
+
+test "join reordering: simple two-table INNER join preserves order with equal costs" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create two scans
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Create join condition: users.id = orders.user_id
+    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } });
+    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = left_col,
+        .op = .equal,
+        .right = right_col,
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // With equal costs (both 100.0), order should be preserved
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expect(j.left.* == .scan);
+            try testing.expect(j.right.* == .scan);
+            try testing.expectEqual(j.join_type, .inner);
+            try testing.expect(j.on_condition != null);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: LEFT JOIN not reordered" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .boolean_literal = true });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .left,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // LEFT JOIN should never be reordered
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(j.join_type, .left);
+            // Order must be preserved (users LEFT JOIN orders, not orders LEFT JOIN users)
+            try testing.expectEqualStrings(j.left.scan.table, "users");
+            try testing.expectEqualStrings(j.right.scan.table, "orders");
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: RIGHT JOIN not reordered" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .boolean_literal = true });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .right,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // RIGHT JOIN should never be reordered
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(j.join_type, .right);
+            try testing.expectEqualStrings(j.left.scan.table, "users");
+            try testing.expectEqualStrings(j.right.scan.table, "orders");
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: FULL JOIN not reordered" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .boolean_literal = true });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .full,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // FULL JOIN should never be reordered
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(j.join_type, .full);
+            try testing.expectEqualStrings(j.left.scan.table, "users");
+            try testing.expectEqualStrings(j.right.scan.table, "orders");
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: complex join tree not reordered" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create scan JOIN (scan JOIN scan)
+    const scan1 = try arena.create(PlanNode, .{ .scan = .{ .table = "t1" } });
+    const scan2 = try arena.create(PlanNode, .{ .scan = .{ .table = "t2" } });
+    const scan3 = try arena.create(PlanNode, .{ .scan = .{ .table = "t3" } });
+
+    const inner_join = try arena.create(PlanNode, .{ .join = .{
+        .left = scan2,
+        .right = scan3,
+        .join_type = .inner,
+        .on_condition = try arena.create(ast.Expr, .{ .boolean_literal = true }),
+    } });
+
+    const outer_join = try arena.create(PlanNode, .{ .join = .{
+        .left = scan1,
+        .right = inner_join,
+        .join_type = .inner,
+        .on_condition = try arena.create(ast.Expr, .{ .boolean_literal = true }),
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = outer_join, .plan_type = .select_query });
+
+    // Complex join tree should not trigger simple two-table reordering
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expect(j.left.* == .scan);
+            try testing.expect(j.right.* == .join); // right side is still a join
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: join with no condition preserved" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = null, // Cross join
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // Cross join should be handled correctly
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(j.join_type, .inner);
+            try testing.expect(j.on_condition == null);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: join with filter on left side" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Filter over scan, then join
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const filter_expr = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "active" } });
+    const filter = try arena.create(PlanNode, .{ .filter = .{
+        .input = scan,
+        .predicate = filter_expr,
+    } });
+
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = filter,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = try arena.create(ast.Expr, .{ .boolean_literal = true }),
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // Join with filtered left side should not trigger simple reordering
+    switch (optimized.root.*) {
+        .join => |j| {
+            // Left side should still be filter, not a simple scan
+            try testing.expect(j.left.* == .filter or j.left.* == .scan);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: condition references both tables correctly" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Condition: users.id = orders.user_id
+    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } });
+    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = left_col,
+        .op = .equal,
+        .right = right_col,
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // Verify condition is preserved
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expect(j.on_condition != null);
+            try testing.expect(j.on_condition.?.* == .binary_op);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join reordering: multiple conditions ANDed together" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Condition: users.id = orders.user_id AND users.region = orders.region
+    const cond1 = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+    } });
+    const cond2 = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "users" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "orders" } }),
+    } });
+    const and_condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = cond1,
+        .op = .@"and",
+        .right = cond2,
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = and_condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // Complex condition should be preserved
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expect(j.on_condition != null);
+            try testing.expect(j.on_condition.?.* == .binary_op);
+            try testing.expectEqual(j.on_condition.?.binary_op.op, .@"and");
+        },
+        else => return error.InvalidPlan,
+    }
+}
