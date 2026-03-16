@@ -3,8 +3,8 @@
 ## Current Status
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current development**: Phase 10 — Statistics & Cost Model (Milestone 20A complete)
-- **Tests**: 2164 total (2163 passing, 1 skipped), 0 memory leaks
+- **Current development**: Phase 10 — Statistics & Cost Model (Milestone 20B complete)
+- **Tests**: 2184 total (2181 passing, 3 skipped), 0 memory leaks
 - **Branch**: `main`
 - **Blockers**: zuda migrations blocked until zuda releases target modules
 - **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
@@ -28,7 +28,7 @@
 ### Milestone 20: Statistics & Cost Model (Phase 10)
 
 - [x] ANALYZE command (20A complete — executor implemented with table/column stats collection)
-- [ ] Histograms for column statistics
+- [x] Histograms for column statistics (20B complete — equi-depth histograms with ~10 buckets, 9 tests)
 - [ ] Selectivity estimation
 - [ ] I/O + CPU cost model
 
