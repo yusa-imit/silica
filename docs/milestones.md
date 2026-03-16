@@ -34,7 +34,7 @@
 
 ### Milestone 21: Advanced Optimization (Phase 10)
 
-- [ ] DP join ordering
+- [x] DP join ordering (21A partial — simplified two-table join reordering; multi-way joins deferred)
 - [ ] Hash/merge join selection
 - [ ] Subquery decorrelation
 - [ ] Index-only scans
