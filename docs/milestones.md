@@ -3,8 +3,8 @@
 ## Current Status
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current development**: Phase 10 — Statistics & Cost Model (Milestone 20C complete)
-- **Tests**: 2204 total (2201 passing, 3 skipped), 0 memory leaks
+- **Current development**: Phase 10 — Advanced Optimization (Milestone 20 complete, Milestone 21 in progress)
+- **Tests**: 2244 total (2241 passing, 3 skipped), 0 memory leaks
 - **Branch**: `main`
 - **Blockers**: zuda migrations blocked until zuda releases target modules
 - **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
@@ -25,12 +25,12 @@
 - [x] Replication lag metrics and alerting hooks (19F complete)
 - [x] Switchover procedure: controlled primary/replica swap (19G complete — 25 tests)
 
-### Milestone 20: Statistics & Cost Model (Phase 10)
+### Milestone 20: Statistics & Cost Model (Phase 10) ✅ COMPLETE
 
 - [x] ANALYZE command (20A complete — executor implemented with table/column stats collection)
 - [x] Histograms for column statistics (20B complete — equi-depth histograms with ~10 buckets, 9 tests)
-- [x] Selectivity estimation (20C complete — SelectivityEstimator with equality/range/NULL/IN/LIKE/logical predicates, 13 tests)
-- [ ] I/O + CPU cost model
+- [x] Selectivity estimation (20C complete — SelectivityEstimator with equality/range/NULL/IN/LIKE/logical predicates, 25 tests)
+- [x] I/O + CPU cost model (20D complete — CostEstimator with seq/index scan, join, sort, aggregate costs; 23 tests)
 
 ### Milestone 21: Advanced Optimization (Phase 10)
 
