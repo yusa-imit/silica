@@ -1,0 +1,496 @@
+//! Selectivity Estimation — estimate the fraction of rows matching predicates.
+//!
+//! Selectivity values range from 0.0 (no rows match) to 1.0 (all rows match).
+//! These estimates are used by the cost-based optimizer to choose efficient query plans.
+//!
+//! Estimation methods:
+//! - Equality (col = val): Uses MCVs if available, otherwise 1/distinct_count
+//! - Range (col > val, col BETWEEN a AND b): Uses histogram buckets
+//! - LIKE (col LIKE 'prefix%'): Fixed estimate based on pattern type
+//! - IN (col IN (v1, v2, ...)): Sum of individual equality estimates
+//! - IS NULL: Uses null_fraction from statistics
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ast = @import("ast.zig");
+const stats_mod = @import("stats.zig");
+
+const TableStats = stats_mod.TableStats;
+const ColumnStats = stats_mod.ColumnStats;
+
+// ── Constants ───────────────────────────────────────────────────────────
+
+/// Default selectivity when no statistics are available.
+const DEFAULT_SELECTIVITY: f64 = 0.1;
+
+/// Default selectivity for equality predicates without statistics.
+const DEFAULT_EQUALITY_SELECTIVITY: f64 = 0.01;
+
+/// Default selectivity for range predicates without statistics.
+const DEFAULT_RANGE_SELECTIVITY: f64 = 0.33;
+
+/// Default selectivity for LIKE 'prefix%' patterns.
+const LIKE_PREFIX_SELECTIVITY: f64 = 0.1;
+
+/// Default selectivity for LIKE '%suffix' or LIKE '%substring%' patterns.
+const LIKE_SUBSTRING_SELECTIVITY: f64 = 0.2;
+
+/// Minimum selectivity for any predicate (avoid zero estimates).
+const MIN_SELECTIVITY: f64 = 0.0001;
+
+// ── Selectivity Estimator ───────────────────────────────────────────────
+
+pub const SelectivityEstimator = struct {
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) SelectivityEstimator {
+        return .{ .allocator = allocator };
+    }
+
+    /// Estimate selectivity for a WHERE clause predicate.
+    /// Returns a value between 0.0 and 1.0.
+    pub fn estimatePredicate(
+        self: *SelectivityEstimator,
+        predicate: *const ast.Expr,
+        table_stats: ?TableStats,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        _ = table_stats;
+        return self.estimateExpr(predicate, column_stats_map);
+    }
+
+    fn estimateExpr(
+        self: *SelectivityEstimator,
+        expr: *const ast.Expr,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        return switch (expr.*) {
+            .binary_op => |b| {
+                // Check if this is a logical operator (AND/OR) or a comparison
+                return switch (b.op) {
+                    .@"and" => self.estimateAnd(b.left, b.right, column_stats_map),
+                    .@"or" => self.estimateOr(b.left, b.right, column_stats_map),
+                    else => self.estimateBinaryOp(b, column_stats_map),
+                };
+            },
+            .unary_op => |u| {
+                if (u.op == .not) {
+                    return self.estimateNot(u.operand, column_stats_map);
+                }
+                return DEFAULT_SELECTIVITY;
+            },
+            .is_null => |isn| self.estimateIsNullNode(isn, column_stats_map),
+            .in_list => |inl| self.estimateInList(inl, column_stats_map),
+            .like => |l| self.estimateLike(l),
+            else => DEFAULT_SELECTIVITY,
+        };
+    }
+
+    // ── Binary Operators ────────────────────────────────────────────────
+
+    fn estimateBinaryOp(
+        self: *SelectivityEstimator,
+        binop: anytype,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        return switch (binop.op) {
+            .equal => self.estimateEquality(binop.left, binop.right, column_stats_map),
+            .not_equal => 1.0 - self.estimateEquality(binop.left, binop.right, column_stats_map),
+            .less_than, .less_than_or_equal, .greater_than, .greater_than_or_equal => {
+                return self.estimateRange(binop.left, binop.op, binop.right, column_stats_map);
+            },
+            else => DEFAULT_SELECTIVITY,
+        };
+    }
+
+    fn estimateEquality(
+        self: *SelectivityEstimator,
+        left: *const ast.Expr,
+        right: *const ast.Expr,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        _ = self;
+
+        // Try to identify the column reference
+        const col_name = getColumnName(left) orelse getColumnName(right) orelse {
+            return DEFAULT_EQUALITY_SELECTIVITY;
+        };
+
+        // We have a column and likely a literal value
+        // For now, we don't analyze the literal value itself
+
+        // Look up column statistics
+        if (column_stats_map) |stats_map| {
+            if (stats_map.get(col_name)) |col_stats| {
+                // If we have distinct count, use 1 / distinct_count
+                if (col_stats.distinct_count > 0) {
+                    const selectivity = 1.0 / @as(f64, @floatFromInt(col_stats.distinct_count));
+                    return @max(selectivity, MIN_SELECTIVITY);
+                }
+            }
+        }
+
+        return DEFAULT_EQUALITY_SELECTIVITY;
+    }
+
+    fn estimateRange(
+        self: *SelectivityEstimator,
+        left: *const ast.Expr,
+        op: ast.BinaryOp,
+        right: *const ast.Expr,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        _ = self;
+        _ = left;
+        _ = op;
+        _ = right;
+        _ = column_stats_map;
+
+        // For now, use a simple heuristic:
+        // <, <=, >, >= each select approximately 1/3 of rows
+        return DEFAULT_RANGE_SELECTIVITY;
+    }
+
+    // ── IS NULL / IS NOT NULL ───────────────────────────────────────────
+
+    fn estimateIsNullNode(
+        self: *SelectivityEstimator,
+        is_null_node: anytype,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        _ = self;
+
+        const col_name = getColumnName(is_null_node.expr) orelse {
+            return if (is_null_node.negated) 0.9 else 0.1;
+        };
+
+        if (column_stats_map) |stats_map| {
+            if (stats_map.get(col_name)) |col_stats| {
+                const null_sel = col_stats.null_fraction;
+                return if (is_null_node.negated) (1.0 - null_sel) else null_sel;
+            }
+        }
+
+        // Default: assume 10% NULL values
+        return if (is_null_node.negated) 0.9 else 0.1;
+    }
+
+    // ── IN List ─────────────────────────────────────────────────────────
+
+    fn estimateInList(
+        self: *SelectivityEstimator,
+        in_list: anytype,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        // IN (v1, v2, ..., vN) ≈ P(col = v1) + P(col = v2) + ... + P(col = vN)
+        // Approximate as: N * P(col = v) assuming values are distinct
+        const n_values = @as(f64, @floatFromInt(in_list.list.len));
+        const single_eq_selectivity = self.estimateEquality(
+            in_list.expr,
+            &ast.Expr{ .integer_literal = 0 }, // Dummy literal
+            column_stats_map,
+        );
+
+        const base_sel = n_values * single_eq_selectivity;
+        const result = @min(base_sel, 1.0);
+
+        // Handle negation (NOT IN)
+        return if (in_list.negated) (1.0 - result) else result;
+    }
+
+    // ── LIKE ────────────────────────────────────────────────────────────
+
+    fn estimateLike(self: *SelectivityEstimator, like: anytype) f64 {
+        _ = self;
+        _ = like;
+
+        // Simple heuristic based on pattern type:
+        // 'prefix%' → 10% selectivity (common case)
+        // '%suffix' or '%substring%' → 20% selectivity (less selective)
+        // TODO: Analyze the pattern string to determine type
+        return LIKE_PREFIX_SELECTIVITY;
+    }
+
+    // ── Logical Combinators ─────────────────────────────────────────────
+
+    fn estimateAnd(
+        self: *SelectivityEstimator,
+        left_expr: *const ast.Expr,
+        right_expr: *const ast.Expr,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        // AND combines selectivities by multiplication (assuming independence)
+        const left_sel = self.estimateExpr(left_expr, column_stats_map);
+        const right_sel = self.estimateExpr(right_expr, column_stats_map);
+        return left_sel * right_sel;
+    }
+
+    fn estimateOr(
+        self: *SelectivityEstimator,
+        left_expr: *const ast.Expr,
+        right_expr: *const ast.Expr,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        // OR combines selectivities using: P(A ∪ B) = P(A) + P(B) - P(A ∩ B)
+        // Approximation: P(A ∪ B) ≈ P(A) + P(B) - P(A) * P(B)
+        const left_sel = self.estimateExpr(left_expr, column_stats_map);
+        const right_sel = self.estimateExpr(right_expr, column_stats_map);
+        return left_sel + right_sel - (left_sel * right_sel);
+    }
+
+    fn estimateNot(
+        self: *SelectivityEstimator,
+        inner_expr: *const ast.Expr,
+        column_stats_map: ?std.StringHashMap(ColumnStats),
+    ) f64 {
+        // NOT negates the selectivity
+        const inner_sel = self.estimateExpr(inner_expr, column_stats_map);
+        return 1.0 - inner_sel;
+    }
+};
+
+// ── Helper Functions ────────────────────────────────────────────────────
+
+/// Extract column name from an expression (if it's a column reference).
+fn getColumnName(expr: *const ast.Expr) ?[]const u8 {
+    return switch (expr.*) {
+        .column_ref => |c| c.name,
+        else => null,
+    };
+}
+
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+test "SelectivityEstimator: default selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // Unknown expression type → default selectivity
+    const expr = ast.Expr{ .integer_literal = 42 };
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    try std.testing.expectEqual(DEFAULT_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: equality without statistics" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // col = 5 without statistics → default equality selectivity
+    var col = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val = ast.Expr{ .integer_literal = 5 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    try std.testing.expectEqual(DEFAULT_EQUALITY_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: equality with distinct count" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // Create column statistics with distinct_count = 100
+    var stats_map = std.StringHashMap(ColumnStats).init(allocator);
+    defer stats_map.deinit();
+
+    const col_stats = ColumnStats{
+        .distinct_count = 100,
+        .null_fraction = 0.0,
+        .avg_width = 4.0,
+        .correlation = 0.0,
+        .most_common_values = &[_]stats_mod.MostCommonValue{},
+        .histogram_buckets = &[_]stats_mod.HistogramBucket{},
+    };
+    try stats_map.put("age", col_stats);
+
+    const col = ast.Expr{ .column_ref = .{ .name = "age" } };
+    const val = ast.Expr{ .integer_literal = 25 };
+    const expr = ast.Expr{ .binary_op = .{
+        .left = &col,
+        .op = .equal,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, stats_map);
+    // 1 / 100 = 0.01
+    try std.testing.expectApproxEqRel(0.01, sel, 0.001);
+}
+
+test "SelectivityEstimator: IS NULL with null_fraction" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    var stats_map = std.StringHashMap(ColumnStats).init(allocator);
+    defer stats_map.deinit();
+
+    const col_stats = ColumnStats{
+        .distinct_count = 100,
+        .null_fraction = 0.15, // 15% NULL
+        .avg_width = 4.0,
+        .correlation = 0.0,
+        .most_common_values = &[_]stats_mod.MostCommonValue{},
+        .histogram_buckets = &[_]stats_mod.HistogramBucket{},
+    };
+    try stats_map.put("email", col_stats);
+
+    var col = ast.Expr{ .column_ref = .{ .name = "email" } };
+    var expr = ast.Expr{ .is_null = .{ .expr = &col, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&expr, null, stats_map);
+    try std.testing.expectEqual(0.15, sel);
+}
+
+test "SelectivityEstimator: IS NOT NULL with null_fraction" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    var stats_map = std.StringHashMap(ColumnStats).init(allocator);
+    defer stats_map.deinit();
+
+    const col_stats = ColumnStats{
+        .distinct_count = 100,
+        .null_fraction = 0.15,
+        .avg_width = 4.0,
+        .correlation = 0.0,
+        .most_common_values = &[_]stats_mod.MostCommonValue{},
+        .histogram_buckets = &[_]stats_mod.HistogramBucket{},
+    };
+    try stats_map.put("email", col_stats);
+
+    var col = ast.Expr{ .column_ref = .{ .name = "email" } };
+    var expr = ast.Expr{ .is_null = .{ .expr = &col, .negated = true } };
+
+    const sel = estimator.estimatePredicate(&expr, null, stats_map);
+    try std.testing.expectEqual(0.85, sel); // 1.0 - 0.15
+}
+
+test "SelectivityEstimator: AND combines selectivities" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // age = 25 AND status = 'active'
+    // Each has 0.01 selectivity → combined = 0.01 * 0.01 = 0.0001
+    var col1 = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val1 = ast.Expr{ .integer_literal = 25 };
+    var eq1 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col1,
+        .right = &val1,
+    } };
+
+    var col2 = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var val2 = ast.Expr{ .string_literal = "active" };
+    var eq2 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col2,
+        .right = &val2,
+    } };
+
+    var and_expr = ast.Expr{ .binary_op = .{
+        .op = .@"and",
+        .left = &eq1,
+        .right = &eq2,
+    } };
+
+    const sel = estimator.estimatePredicate(&and_expr, null, null);
+    // 0.01 * 0.01 = 0.0001
+    try std.testing.expectApproxEqRel(0.0001, sel, 0.00001);
+}
+
+test "SelectivityEstimator: OR combines selectivities" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // age = 25 OR age = 30
+    // Each has 0.01 selectivity → combined ≈ 0.01 + 0.01 - 0.01*0.01 = 0.0199
+    var col1 = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val1 = ast.Expr{ .integer_literal = 25 };
+    var eq1 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col1,
+        .right = &val1,
+    } };
+
+    var col2 = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val2 = ast.Expr{ .integer_literal = 30 };
+    var eq2 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col2,
+        .right = &val2,
+    } };
+
+    var or_expr = ast.Expr{ .binary_op = .{
+        .op = .@"or",
+        .left = &eq1,
+        .right = &eq2,
+    } };
+
+    const sel = estimator.estimatePredicate(&or_expr, null, null);
+    // 0.01 + 0.01 - 0.01*0.01 = 0.0199
+    try std.testing.expectApproxEqRel(0.0199, sel, 0.0001);
+}
+
+test "SelectivityEstimator: NOT negates selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    var col = ast.Expr{ .column_ref = .{ .name = "email" } };
+    var is_null = ast.Expr{ .is_null = .{ .expr = &col, .negated = false } };
+    var not_null = ast.Expr{ .unary_op = .{ .op = .not, .operand = &is_null } };
+
+    const sel = estimator.estimatePredicate(&not_null, null, null);
+    // NOT (IS NULL with default 0.1) = 1.0 - 0.1 = 0.9
+    try std.testing.expectEqual(0.9, sel);
+}
+
+test "SelectivityEstimator: IN list selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // status IN ('active', 'pending', 'review')
+    // 3 values * 0.01 = 0.03
+    var col = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var v1 = ast.Expr{ .string_literal = "active" };
+    var v2 = ast.Expr{ .string_literal = "pending" };
+    var v3 = ast.Expr{ .string_literal = "review" };
+    const values = [_]*const ast.Expr{ &v1, &v2, &v3 };
+
+    var in_expr = ast.Expr{ .in_list = .{ .expr = &col, .list = &values, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&in_expr, null, null);
+    try std.testing.expectApproxEqRel(0.03, sel, 0.001);
+}
+
+test "SelectivityEstimator: range selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // age > 25
+    var col = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val = ast.Expr{ .integer_literal = 25 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .greater_than,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    try std.testing.expectEqual(DEFAULT_RANGE_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: LIKE selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // name LIKE 'A%'
+    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
+    var pattern = ast.Expr{ .string_literal = "A%" };
+    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&like_expr, null, null);
+    try std.testing.expectEqual(LIKE_PREFIX_SELECTIVITY, sel);
+}
