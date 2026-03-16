@@ -494,3 +494,370 @@ test "SelectivityEstimator: LIKE selectivity" {
     const sel = estimator.estimatePredicate(&like_expr, null, null);
     try std.testing.expectEqual(LIKE_PREFIX_SELECTIVITY, sel);
 }
+
+// ── Edge Case Tests ─────────────────────────────────────────────────────
+
+test "SelectivityEstimator: NOT EQUAL selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // col != 5 → should be 1.0 - equality_selectivity
+    var col = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var val = ast.Expr{ .integer_literal = 5 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .not_equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    const expected = 1.0 - DEFAULT_EQUALITY_SELECTIVITY;
+    try std.testing.expectEqual(expected, sel);
+}
+
+test "SelectivityEstimator: negated LIKE" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // name NOT LIKE 'A%' → currently estimateLike doesn't check negated flag
+    // TODO: Implement negation support in estimateLike
+    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
+    var pattern = ast.Expr{ .string_literal = "A%" };
+    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = true } };
+
+    const sel = estimator.estimatePredicate(&like_expr, null, null);
+    // Current implementation ignores negated flag
+    try std.testing.expectEqual(LIKE_PREFIX_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: less_than_or_equal operator" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // age <= 30
+    var col = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val = ast.Expr{ .integer_literal = 30 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .less_than_or_equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    try std.testing.expectEqual(DEFAULT_RANGE_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: greater_than_or_equal operator" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // salary >= 50000
+    var col = ast.Expr{ .column_ref = .{ .name = "salary" } };
+    var val = ast.Expr{ .integer_literal = 50000 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .greater_than_or_equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    try std.testing.expectEqual(DEFAULT_RANGE_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: less_than operator" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // price < 100
+    var col = ast.Expr{ .column_ref = .{ .name = "price" } };
+    var val = ast.Expr{ .integer_literal = 100 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .less_than,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, null);
+    try std.testing.expectEqual(DEFAULT_RANGE_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: nested AND expressions" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // (age > 25 AND salary > 50000) AND department = 'eng'
+    var col1 = ast.Expr{ .column_ref = .{ .name = "age" } };
+    var val1 = ast.Expr{ .integer_literal = 25 };
+    var expr1 = ast.Expr{ .binary_op = .{
+        .op = .greater_than,
+        .left = &col1,
+        .right = &val1,
+    } };
+
+    var col2 = ast.Expr{ .column_ref = .{ .name = "salary" } };
+    var val2 = ast.Expr{ .integer_literal = 50000 };
+    var expr2 = ast.Expr{ .binary_op = .{
+        .op = .greater_than,
+        .left = &col2,
+        .right = &val2,
+    } };
+
+    var inner_and = ast.Expr{ .binary_op = .{
+        .op = .@"and",
+        .left = &expr1,
+        .right = &expr2,
+    } };
+
+    var col3 = ast.Expr{ .column_ref = .{ .name = "department" } };
+    var val3 = ast.Expr{ .string_literal = "eng" };
+    var expr3 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col3,
+        .right = &val3,
+    } };
+
+    var outer_and = ast.Expr{ .binary_op = .{
+        .op = .@"and",
+        .left = &inner_and,
+        .right = &expr3,
+    } };
+
+    const sel = estimator.estimatePredicate(&outer_and, null, null);
+    // Expected: DEFAULT_RANGE_SELECTIVITY * DEFAULT_RANGE_SELECTIVITY * DEFAULT_EQUALITY_SELECTIVITY
+    const expected = DEFAULT_RANGE_SELECTIVITY * DEFAULT_RANGE_SELECTIVITY * DEFAULT_EQUALITY_SELECTIVITY;
+    try std.testing.expectEqual(expected, sel);
+}
+
+test "SelectivityEstimator: nested OR expressions" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // (status = 1 OR status = 2) OR status = 3
+    var col1 = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var val1 = ast.Expr{ .integer_literal = 1 };
+    var expr1 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col1,
+        .right = &val1,
+    } };
+
+    var col2 = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var val2 = ast.Expr{ .integer_literal = 2 };
+    var expr2 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col2,
+        .right = &val2,
+    } };
+
+    var inner_or = ast.Expr{ .binary_op = .{
+        .op = .@"or",
+        .left = &expr1,
+        .right = &expr2,
+    } };
+
+    var col3 = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var val3 = ast.Expr{ .integer_literal = 3 };
+    var expr3 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col3,
+        .right = &val3,
+    } };
+
+    var outer_or = ast.Expr{ .binary_op = .{
+        .op = .@"or",
+        .left = &inner_or,
+        .right = &expr3,
+    } };
+
+    const sel = estimator.estimatePredicate(&outer_or, null, null);
+    // Expected: ((p1 + p2 - p1*p2) + p3 - (p1 + p2 - p1*p2)*p3)
+    const p = DEFAULT_EQUALITY_SELECTIVITY;
+    const inner = p + p - (p * p);
+    const expected = inner + p - (inner * p);
+    try std.testing.expectApproxEqAbs(expected, sel, 0.0001);
+}
+
+test "SelectivityEstimator: AND with zero selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // col = 5 AND <unknown> → should multiply selectivities
+    var col = ast.Expr{ .column_ref = .{ .name = "id" } };
+    var val = ast.Expr{ .integer_literal = 5 };
+    var expr1 = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    var unknown = ast.Expr{ .integer_literal = 42 }; // default selectivity
+
+    var and_expr = ast.Expr{ .binary_op = .{
+        .op = .@"and",
+        .left = &expr1,
+        .right = &unknown,
+    } };
+
+    const sel = estimator.estimatePredicate(&and_expr, null, null);
+    const expected = DEFAULT_EQUALITY_SELECTIVITY * DEFAULT_SELECTIVITY;
+    try std.testing.expectEqual(expected, sel);
+}
+
+test "SelectivityEstimator: OR with high selectivity" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // IS NOT NULL OR IS NOT NULL → should cap near 1.0
+    var col1 = ast.Expr{ .column_ref = .{ .name = "col1" } };
+    var isn1 = ast.Expr{ .is_null = .{ .expr = &col1, .negated = true } };
+
+    var col2 = ast.Expr{ .column_ref = .{ .name = "col2" } };
+    var isn2 = ast.Expr{ .is_null = .{ .expr = &col2, .negated = true } };
+
+    var or_expr = ast.Expr{ .binary_op = .{
+        .op = .@"or",
+        .left = &isn1,
+        .right = &isn2,
+    } };
+
+    const sel = estimator.estimatePredicate(&or_expr, null, null);
+    // Both IS NOT NULL default to 0.9, OR combines them
+    // P(A OR B) = P(A) + P(B) - P(A)*P(B) = 0.9 + 0.9 - 0.81 = 0.99
+    const expected = 0.9 + 0.9 - (0.9 * 0.9);
+    try std.testing.expectApproxEqAbs(expected, sel, 0.0001);
+}
+
+test "SelectivityEstimator: double NOT negation" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // NOT (NOT (col = 5)) → should return back to equality selectivity
+    var col = ast.Expr{ .column_ref = .{ .name = "id" } };
+    var val = ast.Expr{ .integer_literal = 5 };
+    var eq_expr = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    var inner_not = ast.Expr{ .unary_op = .{
+        .op = .not,
+        .operand = &eq_expr,
+    } };
+
+    var outer_not = ast.Expr{ .unary_op = .{
+        .op = .not,
+        .operand = &inner_not,
+    } };
+
+    const sel = estimator.estimatePredicate(&outer_not, null, null);
+    // Use approx comparison due to floating point precision (1.0 - (1.0 - 0.01))
+    try std.testing.expectApproxEqAbs(DEFAULT_EQUALITY_SELECTIVITY, sel, 0.0001);
+}
+
+test "SelectivityEstimator: IN list with single value" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // status IN (1) → should equal single equality
+    var col = ast.Expr{ .column_ref = .{ .name = "status" } };
+    var val = ast.Expr{ .integer_literal = 1 };
+    const values = [_]*const ast.Expr{&val};
+    var in_expr = ast.Expr{ .in_list = .{
+        .expr = &col,
+        .list = &values,
+        .negated = false,
+    } };
+
+    const sel = estimator.estimatePredicate(&in_expr, null, null);
+    try std.testing.expectEqual(DEFAULT_EQUALITY_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: IS NULL with zero null_fraction" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // Create column statistics with null_fraction = 0.0 (no nulls)
+    var stats_map = std.StringHashMap(ColumnStats).init(allocator);
+    defer stats_map.deinit();
+
+    var col_stats = ColumnStats{
+        .distinct_count = 1000,
+        .null_fraction = 0.0,
+        .avg_width = 8,
+        .correlation = 0.0,
+        .most_common_values = &[_]stats_mod.MostCommonValue{},
+        .histogram_buckets = &[_]stats_mod.HistogramBucket{},
+    };
+    defer col_stats.deinit(allocator);
+
+    try stats_map.put("id", col_stats);
+
+    // id IS NULL
+    var col = ast.Expr{ .column_ref = .{ .name = "id" } };
+    var isn = ast.Expr{ .is_null = .{ .expr = &col, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&isn, null, stats_map);
+    try std.testing.expectEqual(0.0, sel);
+}
+
+test "SelectivityEstimator: IS NOT NULL with 100% null_fraction" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // Create column statistics with null_fraction = 1.0 (all nulls)
+    var stats_map = std.StringHashMap(ColumnStats).init(allocator);
+    defer stats_map.deinit();
+
+    var col_stats = ColumnStats{
+        .distinct_count = 0,
+        .null_fraction = 1.0,
+        .avg_width = 0,
+        .correlation = 0.0,
+        .most_common_values = &[_]stats_mod.MostCommonValue{},
+        .histogram_buckets = &[_]stats_mod.HistogramBucket{},
+    };
+    defer col_stats.deinit(allocator);
+
+    try stats_map.put("optional_field", col_stats);
+
+    // optional_field IS NOT NULL
+    var col = ast.Expr{ .column_ref = .{ .name = "optional_field" } };
+    var isn = ast.Expr{ .is_null = .{ .expr = &col, .negated = true } };
+
+    const sel = estimator.estimatePredicate(&isn, null, stats_map);
+    try std.testing.expectEqual(0.0, sel);
+}
+
+test "SelectivityEstimator: equality with distinct_count = 1" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // Create column statistics with distinct_count = 1 (single unique value)
+    var stats_map = std.StringHashMap(ColumnStats).init(allocator);
+    defer stats_map.deinit();
+
+    var col_stats = ColumnStats{
+        .distinct_count = 1,
+        .null_fraction = 0.0,
+        .avg_width = 4,
+        .correlation = 0.0,
+        .most_common_values = &[_]stats_mod.MostCommonValue{},
+        .histogram_buckets = &[_]stats_mod.HistogramBucket{},
+    };
+    defer col_stats.deinit(allocator);
+
+    try stats_map.put("constant_col", col_stats);
+
+    // constant_col = 42 → selectivity should be 1/1 = 1.0
+    var col = ast.Expr{ .column_ref = .{ .name = "constant_col" } };
+    var val = ast.Expr{ .integer_literal = 42 };
+    var expr = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &col,
+        .right = &val,
+    } };
+
+    const sel = estimator.estimatePredicate(&expr, null, stats_map);
+    try std.testing.expectEqual(1.0, sel);
+}
