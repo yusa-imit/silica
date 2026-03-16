@@ -29,6 +29,7 @@ pub const executor = @import("sql/executor.zig");
 pub const engine = @import("sql/engine.zig");
 pub const stats = @import("sql/stats.zig");
 pub const selectivity = @import("sql/selectivity.zig");
+pub const cost = @import("sql/cost.zig");
 
 // Transaction modules
 pub const wal = @import("tx/wal.zig");
