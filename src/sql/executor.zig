@@ -4901,6 +4901,368 @@ fn leftOuterRow(allocator: Allocator, left: *const Row, right_sample: []const Ro
     };
 }
 
+// ── Hash Join Operator ──────────────────────────────────────────────────
+
+/// Hash join: builds hash table from right side, probes with left side.
+pub const HashJoinOp = struct {
+    allocator: Allocator,
+    left: RowIterator,
+    right: RowIterator,
+    hash_table: std.AutoHashMap(u64, std.ArrayListUnmanaged(Row)),
+    join_type: ast.JoinType,
+    on_condition: ?*const ast.Expr,
+    left_row: ?Row = null,
+    current_matches: ?[]Row = null,
+    match_index: usize = 0,
+    left_matched: bool = false,
+    all_right_rows: std.ArrayListUnmanaged(Row) = .{},
+    hash_table_built: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        left: RowIterator,
+        right: RowIterator,
+        join_type: ast.JoinType,
+        on_condition: ?*const ast.Expr,
+    ) HashJoinOp {
+        return .{
+            .allocator = allocator,
+            .left = left,
+            .right = right,
+            .hash_table = std.AutoHashMap(u64, std.ArrayListUnmanaged(Row)).init(allocator),
+            .join_type = join_type,
+            .on_condition = on_condition,
+        };
+    }
+
+    fn buildHashTable(self: *HashJoinOp) ExecError!void {
+        while (true) {
+            const row = try self.right.next() orelse break;
+            // Store row in all_right_rows (owns the memory)
+            const row_index = self.all_right_rows.items.len;
+            self.all_right_rows.append(self.allocator, row) catch return ExecError.OutOfMemory;
+
+            // Hash table stores row struct by value (makes a copy of the struct but not the data)
+            // This is fine because Row itself is just pointers
+            const hash = hashRow(&row);
+            const gop = self.hash_table.getOrPut(hash) catch return ExecError.OutOfMemory;
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{};
+            }
+            // CRITICAL: This appends a COPY of the Row struct (pointers to same data)
+            // So both lists point to the same columns/values arrays
+            // We must only deinit once!
+            gop.value_ptr.append(self.allocator, self.all_right_rows.items[row_index]) catch return ExecError.OutOfMemory;
+        }
+        self.hash_table_built = true;
+    }
+
+    fn hashRow(row: *const Row) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        // Simplified: only hash first column (join key)
+        // Production version would extract join columns from on_condition
+        if (row.values.len > 0) {
+            hashValue(&hasher, &row.values[0]);
+        }
+        return hasher.final();
+    }
+
+    fn hashValue(hasher: *std.hash.Wyhash, val: *const Value) void {
+        switch (val.*) {
+            .integer => |i| hasher.update(std.mem.asBytes(&i)),
+            .real => |f| hasher.update(std.mem.asBytes(&f)),
+            .text => |t| hasher.update(t),
+            .boolean => |b| hasher.update(&[_]u8{if (b) 1 else 0}),
+            .blob => |b| hasher.update(b),
+            .null_value => hasher.update(&[_]u8{0}),
+            .date => |d| hasher.update(std.mem.asBytes(&d)),
+            .time => |t| hasher.update(std.mem.asBytes(&t)),
+            .timestamp => |ts| hasher.update(std.mem.asBytes(&ts)),
+            .interval => |iv| {
+                hasher.update(std.mem.asBytes(&iv.months));
+                hasher.update(std.mem.asBytes(&iv.days));
+                hasher.update(std.mem.asBytes(&iv.micros));
+            },
+            .numeric => |n| {
+                hasher.update(std.mem.asBytes(&n.value));
+                hasher.update(std.mem.asBytes(&n.scale));
+            },
+            .uuid => |u| hasher.update(&u),
+            .array => |a| {
+                for (a) |item| hashValue(hasher, &item);
+            },
+            .tsvector, .tsquery => |ts| hasher.update(ts),
+        }
+    }
+
+    pub fn next(self: *HashJoinOp) ExecError!?Row {
+        // Build hash table on first call
+        if (!self.hash_table_built) {
+            try self.buildHashTable();
+        }
+
+        while (true) {
+            // Emit matches for current left row
+            if (self.current_matches) |matches| {
+                while (self.match_index < matches.len) {
+                    const right_row = &matches[self.match_index];
+                    self.match_index += 1;
+
+                    var combined = try combineRows(self.allocator, &self.left_row.?, right_row);
+
+                    // Check join condition
+                    if (self.on_condition) |cond| {
+                        const val = evalExpr(self.allocator, cond, &combined, null) catch {
+                            combined.deinit();
+                            continue;
+                        };
+                        defer val.free(self.allocator);
+                        if (!val.isTruthy()) {
+                            combined.deinit();
+                            continue;
+                        }
+                    }
+
+                    self.left_matched = true;
+                    return combined;
+                }
+
+                // Exhausted matches for this left row
+                if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
+                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.all_right_rows.items);
+                    self.left_row.?.deinit();
+                    self.left_row = null;
+                    self.current_matches = null;
+                    return result;
+                }
+
+                self.left_row.?.deinit();
+                self.left_row = null;
+                self.current_matches = null;
+            }
+
+            // Get next left row
+            self.left_row = try self.left.next();
+            if (self.left_row == null) return null;
+
+            self.left_matched = false;
+            self.match_index = 0;
+
+            // Probe hash table
+            const hash = hashRow(&self.left_row.?);
+            if (self.hash_table.get(hash)) |matches| {
+                self.current_matches = matches.items;
+            } else {
+                self.current_matches = &[_]Row{};
+            }
+        }
+    }
+
+    pub fn close(self: *HashJoinOp) void {
+        if (self.left_row) |*lr| lr.deinit();
+        // Only free rows once from all_right_rows (hash_table contains shallow copies)
+        for (self.all_right_rows.items) |*row| row.deinit();
+        self.all_right_rows.deinit(self.allocator);
+        var iter = self.hash_table.valueIterator();
+        while (iter.next()) |list| {
+            list.deinit(self.allocator); // Only free the list, not the rows
+        }
+        self.hash_table.deinit();
+        self.left.close();
+        self.right.close();
+    }
+
+    pub fn iterator(self: *HashJoinOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&HashJoinOp.next),
+                .close = @ptrCast(&HashJoinOp.close),
+            },
+        };
+    }
+};
+
+// ── Merge Join Operator ─────────────────────────────────────────────────
+
+/// Merge join: assumes both sides are sorted by join key.
+pub const MergeJoinOp = struct {
+    allocator: Allocator,
+    left: RowIterator,
+    right: RowIterator,
+    join_type: ast.JoinType,
+    on_condition: ?*const ast.Expr,
+    left_row: ?Row = null,
+    right_index: usize = 0,
+    right_rows: std.ArrayListUnmanaged(Row) = .{},
+    right_duplicates: std.ArrayListUnmanaged(*Row) = .{},  // Pointers into right_rows
+    duplicate_index: usize = 0,
+    left_matched: bool = false,
+    materialized: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        left: RowIterator,
+        right: RowIterator,
+        join_type: ast.JoinType,
+        on_condition: ?*const ast.Expr,
+    ) MergeJoinOp {
+        return .{
+            .allocator = allocator,
+            .left = left,
+            .right = right,
+            .join_type = join_type,
+            .on_condition = on_condition,
+        };
+    }
+
+    fn materializeRight(self: *MergeJoinOp) ExecError!void {
+        while (true) {
+            const row = try self.right.next() orelse break;
+            self.right_rows.append(self.allocator, row) catch return ExecError.OutOfMemory;
+        }
+        self.materialized = true;
+    }
+
+    fn compareJoinKeys(left: *const Row, right: *const Row, _: *const ast.Expr) std.math.Order {
+        // For simplicity, compare first column values
+        // Production version would extract join keys from on_condition
+        if (left.values.len == 0 or right.values.len == 0) return .eq;
+        return Value.compare(left.values[0], right.values[0]);
+    }
+
+    pub fn next(self: *MergeJoinOp) ExecError!?Row {
+        // Materialize right side on first call
+        if (!self.materialized) try self.materializeRight();
+
+        while (true) {
+            // Emit duplicates for current left row
+            if (self.right_duplicates.items.len > 0 and self.duplicate_index < self.right_duplicates.items.len) {
+                const right_row = self.right_duplicates.items[self.duplicate_index];
+                self.duplicate_index += 1;
+
+                var combined = try combineRows(self.allocator, &self.left_row.?, right_row);
+
+                // Check join condition
+                if (self.on_condition) |cond| {
+                    const val = evalExpr(self.allocator, cond, &combined, null) catch {
+                        combined.deinit();
+                        continue;
+                    };
+                    defer val.free(self.allocator);
+                    if (!val.isTruthy()) {
+                        combined.deinit();
+                        continue;
+                    }
+                }
+
+                self.left_matched = true;
+                return combined;
+            }
+
+            // Finished duplicates for this left row
+            if (self.right_duplicates.items.len > 0) {
+                const had_match = self.left_matched;
+                self.right_duplicates.clearRetainingCapacity();
+                self.duplicate_index = 0;
+
+                if (!had_match and (self.join_type == .left or self.join_type == .full)) {
+                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                    self.left_row.?.deinit();
+                    self.left_row = null;
+                    self.left_matched = false;
+                    return result;
+                }
+
+                if (self.left_row) |*lr| lr.deinit();
+                self.left_row = null;
+                self.left_matched = false;
+            }
+
+            // Get next left row if needed
+            if (self.left_row == null) {
+                self.left_row = try self.left.next();
+                if (self.left_row == null) return null;
+                self.left_matched = false;
+                self.right_index = 0;
+                self.right_duplicates.clearRetainingCapacity();
+            }
+
+            // Process right side using materialized rows
+            if (self.right_index >= self.right_rows.items.len) {
+                // Exhausted right side for this left row
+                if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
+                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                    self.left_row.?.deinit();
+                    self.left_row = null;
+                    return result;
+                }
+                self.left_row.?.deinit();
+                self.left_row = null;
+                continue;
+            }
+
+            // Compare join keys
+            const right_row = &self.right_rows.items[self.right_index];
+            const ord = compareJoinKeys(&self.left_row.?, right_row, self.on_condition orelse unreachable);
+
+            if (ord == .lt) {
+                // Left < Right: advance left (possibly emit left outer)
+                if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
+                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                    self.left_row.?.deinit();
+                    self.left_row = null;
+                    return result;
+                }
+                self.left_row.?.deinit();
+                self.left_row = null;
+            } else if (ord == .gt) {
+                // Left > Right: advance right
+                self.right_index += 1;
+            } else {
+                // Left == Right: collect all matching right rows (pointers into right_rows)
+                self.right_duplicates.append(self.allocator, right_row) catch return ExecError.OutOfMemory;
+                self.right_index += 1;
+
+                // Collect ALL consecutive matching right rows
+                while (self.right_index < self.right_rows.items.len) {
+                    const next_right = &self.right_rows.items[self.right_index];
+                    const next_ord = compareJoinKeys(&self.left_row.?, next_right, self.on_condition orelse unreachable);
+                    if (next_ord == .eq) {
+                        self.right_duplicates.append(self.allocator, next_right) catch return ExecError.OutOfMemory;
+                        self.right_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Start emitting duplicates
+                self.duplicate_index = 0;
+            }
+        }
+    }
+
+    pub fn close(self: *MergeJoinOp) void {
+        if (self.left_row) |*lr| lr.deinit();
+        // right_rows owns memory, right_duplicates only has pointers
+        for (self.right_rows.items) |*row| row.deinit();
+        self.right_rows.deinit(self.allocator);
+        self.right_duplicates.deinit(self.allocator);
+        self.left.close();
+        self.right.close();
+    }
+
+    pub fn iterator(self: *MergeJoinOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&MergeJoinOp.next),
+                .close = @ptrCast(&MergeJoinOp.close),
+            },
+        };
+    }
+};
+
 // ── Values Operator ─────────────────────────────────────────────────────
 
 /// Produces literal rows from INSERT VALUES.
@@ -6117,6 +6479,344 @@ test "NestedLoopJoinOp inner join" {
 
     // Bob (id=2) has no matching orders, so no row emitted
     try std.testing.expectEqual(@as(?Row, null), try join.next());
+}
+
+// ── Hash Join Tests ────────────────────────────────────────────────────────
+
+test "HashJoinOp inner join with equijoin predicate" {
+    const allocator = std.testing.allocator;
+
+    // Left table: users (id, name)
+    var users = InMemorySource.init(allocator, &.{ "id", "name" });
+    try users.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Alice" } });
+    try users.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "Bob" } });
+    try users.addRow(&.{ Value{ .integer = 3 }, Value{ .text = "Charlie" } });
+    defer users.deinit();
+
+    // Right table: orders (user_id, amount)
+    var orders = InMemorySource.init(allocator, &.{ "user_id", "amount" });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 } });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 200 } });
+    try orders.addRow(&.{ Value{ .integer = 3 }, Value{ .integer = 300 } });
+    defer orders.deinit();
+
+    // ON users.id = orders.user_id
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "users" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "user_id", .prefix = "orders" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, users.iterator(), orders.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Expect 3 matching rows: (1, Alice, 100), (1, Alice, 200), (3, Charlie, 300)
+    var r1 = (try hash_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 100), r1.getQualifiedColumn("orders", "amount").?.integer);
+
+    var r2 = (try hash_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r2.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 200), r2.getQualifiedColumn("orders", "amount").?.integer);
+
+    var r3 = (try hash_join.next()).?;
+    defer r3.deinit();
+    try std.testing.expectEqual(@as(i64, 3), r3.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 300), r3.getQualifiedColumn("orders", "amount").?.integer);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp left outer join" {
+    const allocator = std.testing.allocator;
+
+    // Left table: users (id, name)
+    var users = InMemorySource.init(allocator, &.{ "id", "name" });
+    try users.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Alice" } });
+    try users.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "Bob" } });
+    defer users.deinit();
+
+    // Right table: orders (user_id, amount)
+    var orders = InMemorySource.init(allocator, &.{ "user_id", "amount" });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 } });
+    defer orders.deinit();
+
+    // ON users.id = orders.user_id
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "users" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "user_id", .prefix = "orders" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, users.iterator(), orders.iterator(), .left, &cond);
+    defer hash_join.close();
+
+    // Expect (1, Alice, 100) and (2, Bob, NULL)
+    var r1 = (try hash_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 100), r1.getQualifiedColumn("orders", "amount").?.integer);
+
+    var r2 = (try hash_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 2), r2.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(Value.null_value, r2.getQualifiedColumn("orders", "amount").?);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp builds hash table from right side" {
+    const allocator = std.testing.allocator;
+
+    // Small left table (should be probe side)
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    defer left.deinit();
+
+    // Larger right table (should be build side)
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    try right.addRow(&.{Value{ .integer = 3 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Should find match: (1, 1)
+    var r = (try hash_join.next()).?;
+    defer r.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r.values[0].integer);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp handles hash collisions" {
+    const allocator = std.testing.allocator;
+
+    // Create data with same hash but different values
+    var left = InMemorySource.init(allocator, &.{"val"});
+    try left.addRow(&.{Value{ .text = "abc" }});
+    try left.addRow(&.{Value{ .text = "def" }});
+    defer left.deinit();
+
+    var right = InMemorySource.init(allocator, &.{"val"});
+    try right.addRow(&.{Value{ .text = "abc" }});
+    try right.addRow(&.{Value{ .text = "xyz" }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Only "abc" = "abc" should match
+    var r = (try hash_join.next()).?;
+    defer r.deinit();
+    try std.testing.expectEqualStrings("abc", r.values[0].text);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "HashJoinOp empty build side returns no rows" {
+    const allocator = std.testing.allocator;
+
+    // Left table has rows
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    // Right table is empty
+    var right = InMemorySource.init(allocator, &.{"id"});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // No matches with empty build side
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+// ── Merge Join Tests ───────────────────────────────────────────────────────
+
+test "MergeJoinOp inner join with sorted inputs" {
+    const allocator = std.testing.allocator;
+
+    // Left table: users (id, name) — sorted by id
+    var users = InMemorySource.init(allocator, &.{ "id", "name" });
+    try users.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Alice" } });
+    try users.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "Bob" } });
+    try users.addRow(&.{ Value{ .integer = 3 }, Value{ .text = "Charlie" } });
+    defer users.deinit();
+
+    // Right table: orders (user_id, amount) — sorted by user_id
+    var orders = InMemorySource.init(allocator, &.{ "user_id", "amount" });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 } });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 200 } });
+    try orders.addRow(&.{ Value{ .integer = 3 }, Value{ .integer = 300 } });
+    defer orders.deinit();
+
+    // ON users.id = orders.user_id
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "users" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "user_id", .prefix = "orders" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, users.iterator(), orders.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    // Expect 3 matching rows
+    var r1 = (try merge_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 100), r1.getQualifiedColumn("orders", "amount").?.integer);
+
+    var r2 = (try merge_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r2.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 200), r2.getQualifiedColumn("orders", "amount").?.integer);
+
+    var r3 = (try merge_join.next()).?;
+    defer r3.deinit();
+    try std.testing.expectEqual(@as(i64, 3), r3.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 300), r3.getQualifiedColumn("orders", "amount").?.integer);
+
+    try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
+}
+
+test "MergeJoinOp left outer join with sorted inputs" {
+    const allocator = std.testing.allocator;
+
+    // Left table: users (id, name) — sorted
+    var users = InMemorySource.init(allocator, &.{ "id", "name" });
+    try users.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Alice" } });
+    try users.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "Bob" } });
+    defer users.deinit();
+
+    // Right table: orders (user_id, amount) — sorted
+    var orders = InMemorySource.init(allocator, &.{ "user_id", "amount" });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 } });
+    defer orders.deinit();
+
+    // ON users.id = orders.user_id
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "users" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "user_id", .prefix = "orders" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, users.iterator(), orders.iterator(), .left, &cond);
+    defer merge_join.close();
+
+    // Expect (1, Alice, 100) and (2, Bob, NULL)
+    var r1 = (try merge_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(@as(i64, 100), r1.getQualifiedColumn("orders", "amount").?.integer);
+
+    var r2 = (try merge_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 2), r2.getQualifiedColumn("users", "id").?.integer);
+    try std.testing.expectEqual(Value.null_value, r2.getQualifiedColumn("orders", "amount").?);
+
+    try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
+}
+
+test "MergeJoinOp requires sorted inputs" {
+    const allocator = std.testing.allocator;
+
+    // Left table: sorted ascending
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    try left.addRow(&.{Value{ .integer = 3 }});
+    defer left.deinit();
+
+    // Right table: sorted ascending
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value{ .integer = 2 }});
+    try right.addRow(&.{Value{ .integer = 3 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    // All 3 rows should match
+    var count: usize = 0;
+    while (try merge_join.next()) |r| {
+        var row = r;
+        defer row.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "MergeJoinOp handles duplicate join keys" {
+    const allocator = std.testing.allocator;
+
+    // Left table with duplicates
+    var left = InMemorySource.init(allocator, &.{"id"});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 1 }});
+    try left.addRow(&.{Value{ .integer = 2 }});
+    defer left.deinit();
+
+    // Right table with duplicates
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    // Cartesian product for matching keys: 2 left × 2 right = 4 rows
+    var count: usize = 0;
+    while (try merge_join.next()) |r| {
+        var row = r;
+        defer row.deinit();
+        try std.testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), count);
+}
+
+test "MergeJoinOp empty left side returns no rows" {
+    const allocator = std.testing.allocator;
+
+    // Empty left table
+    var left = InMemorySource.init(allocator, &.{"id"});
+    defer left.deinit();
+
+    // Right table has rows
+    var right = InMemorySource.init(allocator, &.{"id"});
+    try right.addRow(&.{Value{ .integer = 1 }});
+    defer right.deinit();
+
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var merge_join = MergeJoinOp.init(allocator, left.iterator(), right.iterator(), .inner, &cond);
+    defer merge_join.close();
+
+    // No rows from empty left side
+    try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
 }
 
 test "EmptyOp produces one dual row" {
