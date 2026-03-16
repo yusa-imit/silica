@@ -4,7 +4,7 @@
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
 - **Current development**: Phase 10 — Advanced Optimization (Milestone 20 complete, Milestone 21 in progress)
-- **Tests**: 2244 total (2241 passing, 3 skipped), 0 memory leaks
+- **Tests**: 2254 total (10 new HashJoinOp/MergeJoinOp tests; status verification pending full test run)
 - **Branch**: `main`
 - **Blockers**: zuda migrations blocked until zuda releases target modules
 - **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
@@ -35,7 +35,7 @@
 ### Milestone 21: Advanced Optimization (Phase 10)
 
 - [x] DP join ordering (21A partial — simplified two-table join reordering; multi-way joins deferred)
-- [ ] Hash/merge join selection
+- [x] Hash/merge join selection (21B partial — HashJoinOp/MergeJoinOp executors implemented; cost-based selection in optimizer TBD)
 - [ ] Subquery decorrelation
 - [ ] Index-only scans
 - [ ] EXPLAIN ANALYZE
