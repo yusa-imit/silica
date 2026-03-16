@@ -3165,7 +3165,10 @@ pub const Database = struct {
         defer seen.deinit(self.allocator);
 
         for (values) |val| {
-            seen.put(self.allocator, val, {}) catch continue;
+            // Skip NULL values (0x00 tag) — only count non-NULL distinct values
+            if (val.len > 0 and val[0] != 0x00) {
+                seen.put(self.allocator, val, {}) catch continue;
+            }
         }
 
         return seen.count();
@@ -15673,5 +15676,278 @@ test "ANALYZE histogram on TEXT column" {
         total_count += bucket.count;
     }
     try std.testing.expectEqual(@as(u64, 5), total_count);
+}
+
+// ── Comprehensive Edge Case Tests for ANALYZE ──────────────────────
+
+test "ANALYZE with very large dataset (stress test)" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_large.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE large_data (id INTEGER, value INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 10,000 rows to stress test statistics collection
+    var i: u64 = 0;
+    while (i < 10000) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO large_data VALUES ({}, {});", .{ i, i % 1000 });
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE — should handle large dataset without error
+    var r_analyze = try db.execSQL("ANALYZE large_data;");
+    defer r_analyze.close(allocator);
+
+    // Verify table stats
+    const table_key = try db.catalog.allocator.alloc(u8, "stats:large_data".len);
+    defer db.catalog.allocator.free(table_key);
+    @memcpy(table_key, "stats:large_data");
+
+    const table_stats_data = (try db.catalog.tree.get(db.catalog.allocator, table_key)).?;
+    defer db.catalog.allocator.free(table_stats_data);
+
+    const table_stats = try stats_mod.deserializeTableStats(table_stats_data);
+    try std.testing.expectEqual(@as(u64, 10000), table_stats.row_count);
+
+    // Verify value column statistics
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:large_data:value".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:large_data:value");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have 1000 distinct values (0-999)
+    try std.testing.expectEqual(@as(u64, 1000), col_stats.distinct_count);
+    // Should have histogram buckets (capped at 10)
+    try std.testing.expectEqual(@as(usize, 10), col_stats.histogram_buckets.len);
+}
+
+test "ANALYZE with skewed data distribution" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_skewed.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE skewed (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 1000 rows: 990 with value 1, 10 with unique values 2-11
+    var i: u64 = 0;
+    while (i < 990) : (i += 1) {
+        var r = try db.execSQL("INSERT INTO skewed VALUES (1);");
+        defer r.close(allocator);
+    }
+    i = 2;
+    while (i < 12) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO skewed VALUES ({});", .{i});
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE skewed;");
+    defer r_analyze.close(allocator);
+
+    // Verify column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:skewed:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:skewed:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have 11 distinct values
+    try std.testing.expectEqual(@as(u64, 11), col_stats.distinct_count);
+    // Null fraction should be 0 (no NULLs)
+    try std.testing.expectEqual(@as(f64, 0.0), col_stats.null_fraction);
+    // Histogram should exist and cover the range
+    try std.testing.expect(col_stats.histogram_buckets.len > 0);
+}
+
+test "ANALYZE on multi-column table (independent statistics)" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_multicol.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with 3 columns
+    var r1 = try db.execSQL("CREATE TABLE multicol (a INTEGER, b TEXT, c INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 50 rows with different distributions per column
+    var i: u64 = 0;
+    while (i < 50) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO multicol VALUES ({}, 'text{}', {});", .{ i, i % 5, i * 2 });
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE multicol;");
+    defer r_analyze.close(allocator);
+
+    // Verify each column has independent statistics
+    // Column a: 50 distinct values
+    const col_a_key = try db.catalog.allocator.alloc(u8, "stats:multicol:a".len);
+    defer db.catalog.allocator.free(col_a_key);
+    @memcpy(col_a_key, "stats:multicol:a");
+
+    const col_a_data = (try db.catalog.tree.get(db.catalog.allocator, col_a_key)).?;
+    defer db.catalog.allocator.free(col_a_data);
+
+    var col_a_stats = try stats_mod.deserializeColumnStats(allocator, col_a_data);
+    defer col_a_stats.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 50), col_a_stats.distinct_count);
+
+    // Column b: 5 distinct values (text0-text4)
+    const col_b_key = try db.catalog.allocator.alloc(u8, "stats:multicol:b".len);
+    defer db.catalog.allocator.free(col_b_key);
+    @memcpy(col_b_key, "stats:multicol:b");
+
+    const col_b_data = (try db.catalog.tree.get(db.catalog.allocator, col_b_key)).?;
+    defer db.catalog.allocator.free(col_b_data);
+
+    var col_b_stats = try stats_mod.deserializeColumnStats(allocator, col_b_data);
+    defer col_b_stats.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 5), col_b_stats.distinct_count);
+
+    // Column c: 50 distinct values (even numbers 0-98)
+    const col_c_key = try db.catalog.allocator.alloc(u8, "stats:multicol:c".len);
+    defer db.catalog.allocator.free(col_c_key);
+    @memcpy(col_c_key, "stats:multicol:c");
+
+    const col_c_data = (try db.catalog.tree.get(db.catalog.allocator, col_c_key)).?;
+    defer db.catalog.allocator.free(col_c_data);
+
+    var col_c_stats = try stats_mod.deserializeColumnStats(allocator, col_c_data);
+    defer col_c_stats.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 50), col_c_stats.distinct_count);
+}
+
+test "ANALYZE on non-existent table returns error" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_nonexistent.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Attempt to ANALYZE non-existent table
+    const result = db.execSQL("ANALYZE nonexistent_table;");
+    try std.testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "ANALYZE with all NULL column" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_all_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE nulls (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 20 NULL values
+    var i: u64 = 0;
+    while (i < 20) : (i += 1) {
+        var r = try db.execSQL("INSERT INTO nulls VALUES (NULL);");
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE nulls;");
+    defer r_analyze.close(allocator);
+
+    // Verify column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:nulls:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:nulls:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // All NULL column: null_fraction = 1.0, distinct_count = 0
+    try std.testing.expectEqual(@as(f64, 1.0), col_stats.null_fraction);
+    try std.testing.expectEqual(@as(u64, 0), col_stats.distinct_count);
+    // Empty histogram (no non-NULL values)
+    try std.testing.expectEqual(@as(usize, 0), col_stats.histogram_buckets.len);
+}
+
+test "ANALYZE with mixed NULL and non-NULL values" {
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_mixed_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE mixed (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 40 non-NULL values and 10 NULLs
+    var i: u64 = 0;
+    while (i < 40) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO mixed VALUES ({});", .{i});
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+    i = 0;
+    while (i < 10) : (i += 1) {
+        var r = try db.execSQL("INSERT INTO mixed VALUES (NULL);");
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE mixed;");
+    defer r_analyze.close(allocator);
+
+    // Verify column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:mixed:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:mixed:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // null_fraction should be 10/50 = 0.2
+    try std.testing.expectEqual(@as(f64, 0.2), col_stats.null_fraction);
+    // distinct_count should be 40 (non-NULL values)
+    try std.testing.expectEqual(@as(u64, 40), col_stats.distinct_count);
+    // Histogram should be built from non-NULL values only
+    try std.testing.expect(col_stats.histogram_buckets.len > 0);
 }
 
