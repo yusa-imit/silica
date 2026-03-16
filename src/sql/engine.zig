@@ -3102,14 +3102,24 @@ pub const Database = struct {
             const null_fraction = calculateNullFraction(values.items);
             const avg_width = calculateAvgWidth(values.items);
 
-            // For now, create simple stats without histograms/MCVs (those are complex)
+            // Build histogram from non-NULL values
+            const histogram_buckets = try self.buildHistogram(values.items);
+            defer {
+                for (histogram_buckets) |bucket| {
+                    self.allocator.free(bucket.lower);
+                    self.allocator.free(bucket.upper);
+                }
+                self.allocator.free(histogram_buckets);
+            }
+
+            // Create column stats with histogram
             const col_stats = stats_mod.ColumnStats{
                 .distinct_count = distinct_count,
                 .null_fraction = null_fraction,
                 .avg_width = avg_width,
                 .correlation = 0.0, // TODO: calculate correlation with row order
                 .most_common_values = &.{},
-                .histogram_buckets = &.{},
+                .histogram_buckets = histogram_buckets,
             };
 
             self.catalog.createColumnStats(table_name, col.name, col_stats) catch return EngineError.StorageError;
@@ -3185,6 +3195,105 @@ pub const Database = struct {
         }
 
         return @as(f64, @floatFromInt(total_width)) / @as(f64, @floatFromInt(values.len));
+    }
+
+    /// Build an equi-depth histogram from column values.
+    /// Filters out NULL values, sorts remaining values, and creates ~10 buckets with equal row counts.
+    fn buildHistogram(self: *Database, values: []const []const u8) EngineError![]stats_mod.HistogramBucket {
+        // Filter out NULL values (marked with 0x00 tag)
+        var non_null = std.ArrayListUnmanaged([]const u8){};
+        defer non_null.deinit(self.allocator);
+
+        for (values) |val| {
+            if (val.len > 0 and val[0] != 0x00) { // Skip NULL marker
+                non_null.append(self.allocator, val) catch return EngineError.OutOfMemory;
+            }
+        }
+
+        // Empty column yields empty histogram
+        if (non_null.items.len == 0) {
+            return self.allocator.alloc(stats_mod.HistogramBucket, 0) catch return EngineError.OutOfMemory;
+        }
+
+        // Sort non-NULL values lexicographically
+        std.mem.sort([]const u8, non_null.items, {}, struct {
+            fn compare(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.compare);
+
+        // Count distinct values by iterating through sorted list
+        var distinct_count: usize = 1; // At least 1 since list is non-empty
+        for (1..non_null.items.len) |i| {
+            if (std.mem.order(u8, non_null.items[i - 1], non_null.items[i]) != .eq) {
+                distinct_count += 1;
+            }
+        }
+
+        // Determine bucket count: target ~10 buckets, but cap at number of distinct values
+        const target_bucket_count = @min(10, distinct_count);
+
+        // If only 1 distinct value, create single bucket
+        if (distinct_count == 1) {
+            var buckets = std.ArrayListUnmanaged(stats_mod.HistogramBucket){};
+            errdefer {
+                for (buckets.items) |bucket| {
+                    self.allocator.free(bucket.lower);
+                    self.allocator.free(bucket.upper);
+                }
+                buckets.deinit(self.allocator);
+            }
+
+            const lower = self.allocator.dupe(u8, non_null.items[0]) catch return EngineError.OutOfMemory;
+            errdefer self.allocator.free(lower);
+            const upper = self.allocator.dupe(u8, non_null.items[0]) catch return EngineError.OutOfMemory;
+            errdefer self.allocator.free(upper);
+
+            try buckets.append(self.allocator, .{
+                .lower = lower,
+                .upper = upper,
+                .count = @intCast(non_null.items.len),
+            });
+
+            return try buckets.toOwnedSlice(self.allocator);
+        }
+
+        // Build equi-depth histogram: divide sorted values into target_bucket_count buckets
+        var buckets = std.ArrayListUnmanaged(stats_mod.HistogramBucket){};
+        errdefer {
+            for (buckets.items) |bucket| {
+                self.allocator.free(bucket.lower);
+                self.allocator.free(bucket.upper);
+            }
+            buckets.deinit(self.allocator);
+        }
+
+        const rows_per_bucket = (non_null.items.len + target_bucket_count - 1) / target_bucket_count;
+        var bucket_idx: usize = 0;
+
+        while (bucket_idx < target_bucket_count and bucket_idx * rows_per_bucket < non_null.items.len) {
+            const start_idx = bucket_idx * rows_per_bucket;
+            const end_idx = @min((bucket_idx + 1) * rows_per_bucket - 1, non_null.items.len - 1);
+
+            if (start_idx > non_null.items.len - 1) break;
+
+            const lower = self.allocator.dupe(u8, non_null.items[start_idx]) catch return EngineError.OutOfMemory;
+            errdefer self.allocator.free(lower);
+            const upper = self.allocator.dupe(u8, non_null.items[end_idx]) catch return EngineError.OutOfMemory;
+            errdefer self.allocator.free(upper);
+
+            const bucket_count = end_idx - start_idx + 1;
+
+            try buckets.append(self.allocator, .{
+                .lower = lower,
+                .upper = upper,
+                .count = @intCast(bucket_count),
+            });
+
+            bucket_idx += 1;
+        }
+
+        return try buckets.toOwnedSlice(self.allocator);
     }
 
     // ── Auto-Vacuum ──────────────────────────────────────────────────
@@ -15143,5 +15252,426 @@ test "ANALYZE all tables" {
 
     const t2_stats = try stats_mod.deserializeTableStats(t2_stats_data);
     try std.testing.expectEqual(@as(u64, 3), t2_stats.row_count);
+}
+
+// ── Histogram Generation Tests (Milestone 20B) ──────────────────────────────
+
+test "ANALYZE generates histogram with basic values" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with integers 0-99 (100 rows)
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 100 rows with values 0 to 99
+    var i: u64 = 0;
+    while (i < 100) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO t VALUES ({});", .{i});
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve and verify histogram buckets
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:id".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:id");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have generated histogram buckets (not empty)
+    try std.testing.expect(col_stats.histogram_buckets.len > 0);
+
+    // Verify bucket properties
+    for (col_stats.histogram_buckets) |bucket| {
+        // Each bucket should have lower <= upper bound
+        try std.testing.expect(bucket.lower.len > 0 and bucket.upper.len > 0);
+        // Each bucket should have at least 1 row
+        try std.testing.expect(bucket.count > 0);
+    }
+}
+
+test "ANALYZE histogram with NULL values" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert values with NULLs
+    var r2 = try db.execSQL("INSERT INTO t VALUES (10), (20), (30), (NULL), (NULL), (40), (50);");
+    defer r2.close(allocator);
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have NULL fraction of 2/7 ≈ 0.2857
+    try std.testing.expect(col_stats.null_fraction > 0.2);
+    try std.testing.expect(col_stats.null_fraction < 0.3);
+
+    // Histogram bucket count should not include NULLs
+    var total_bucket_count: u64 = 0;
+    for (col_stats.histogram_buckets) |bucket| {
+        total_bucket_count += bucket.count;
+    }
+    // Total non-NULL rows = 7 - 2 = 5
+    try std.testing.expectEqual(@as(u64, 5), total_bucket_count);
+}
+
+test "ANALYZE histogram with duplicate values" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_duplicates.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 30 rows with only 3 distinct values (10 each)
+    var i: u64 = 0;
+    while (i < 10) : (i += 1) {
+        var r = try db.execSQL("INSERT INTO t VALUES (1), (2), (3);");
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Verify distinct count
+    try std.testing.expectEqual(@as(u64, 3), col_stats.distinct_count);
+
+    // Histogram buckets should be in sorted order
+    if (col_stats.histogram_buckets.len > 1) {
+        var j: usize = 0;
+        while (j < col_stats.histogram_buckets.len - 1) : (j += 1) {
+            const lower_cur = col_stats.histogram_buckets[j].lower;
+            const upper_next = col_stats.histogram_buckets[j + 1].upper;
+            // Verify ordering constraint: current.upper < next.lower (no overlap)
+            try std.testing.expect(lower_cur.len > 0 and upper_next.len > 0);
+        }
+    }
+
+    // Total count should match rows
+    var total_count: u64 = 0;
+    for (col_stats.histogram_buckets) |bucket| {
+        total_count += bucket.count;
+    }
+    try std.testing.expectEqual(@as(u64, 30), total_count);
+}
+
+test "ANALYZE histogram with fewer rows than buckets" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_few_rows.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert only 5 rows
+    var r2 = try db.execSQL("INSERT INTO t VALUES (10), (20), (30), (40), (50);");
+    defer r2.close(allocator);
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // With only 5 distinct values, histogram should have at most 5 buckets
+    try std.testing.expect(col_stats.histogram_buckets.len <= 5);
+
+    // Each row should be represented
+    var total_count: u64 = 0;
+    for (col_stats.histogram_buckets) |bucket| {
+        total_count += bucket.count;
+    }
+    try std.testing.expectEqual(@as(u64, 5), total_count);
+}
+
+test "ANALYZE histogram edge case: empty table" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table but don't insert anything
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Run ANALYZE on empty table
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Empty table should have 0 histogram buckets
+    try std.testing.expectEqual(@as(usize, 0), col_stats.histogram_buckets.len);
+    // Distinct count should be 0
+    try std.testing.expectEqual(@as(u64, 0), col_stats.distinct_count);
+}
+
+test "ANALYZE histogram edge case: single value repeated" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_single_value.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 50 rows with the same value
+    var i: u64 = 0;
+    while (i < 50) : (i += 1) {
+        var r = try db.execSQL("INSERT INTO t VALUES (42);");
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have exactly 1 distinct value
+    try std.testing.expectEqual(@as(u64, 1), col_stats.distinct_count);
+
+    // Should have exactly 1 histogram bucket with all 50 rows
+    try std.testing.expectEqual(@as(usize, 1), col_stats.histogram_buckets.len);
+    try std.testing.expectEqual(@as(u64, 50), col_stats.histogram_buckets[0].count);
+}
+
+test "ANALYZE histogram bucket bounds are correct" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_bounds.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 20 values: 0, 5, 10, ..., 95
+    var i: u64 = 0;
+    while (i < 20) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO t VALUES ({});", .{i * 5});
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Verify histogram buckets are sorted and non-overlapping
+    for (col_stats.histogram_buckets) |bucket| {
+        // Each bucket should have lower <= upper
+        try std.testing.expect(bucket.lower.len > 0 and bucket.upper.len > 0);
+        // Bucket should have at least 1 row
+        try std.testing.expect(bucket.count > 0);
+    }
+
+    // Verify total count matches row count
+    var total_count: u64 = 0;
+    for (col_stats.histogram_buckets) |bucket| {
+        total_count += bucket.count;
+    }
+    try std.testing.expectEqual(@as(u64, 20), total_count);
+}
+
+test "ANALYZE histogram maintains equi-depth distribution" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_equidepth.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (val INTEGER);");
+    defer r1.close(allocator);
+
+    // Insert 100 sequential values
+    var i: u64 = 0;
+    while (i < 100) : (i += 1) {
+        const query = try std.fmt.allocPrint(allocator, "INSERT INTO t VALUES ({});", .{i});
+        defer allocator.free(query);
+        var r = try db.execSQL(query);
+        defer r.close(allocator);
+    }
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:val".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:val");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have multiple buckets (more than 1)
+    try std.testing.expect(col_stats.histogram_buckets.len > 1);
+
+    // Verify bucket counts are relatively balanced (equi-depth property)
+    // Allow 30% variance to accommodate boundary distribution
+    if (col_stats.histogram_buckets.len > 0) {
+        var min_count: u64 = std.math.maxInt(u64);
+        var max_count: u64 = 0;
+        for (col_stats.histogram_buckets) |bucket| {
+            min_count = @min(min_count, bucket.count);
+            max_count = @max(max_count, bucket.count);
+        }
+
+        const expected_per_bucket = 100 / col_stats.histogram_buckets.len;
+        const tolerance = (expected_per_bucket * 30) / 100; // 30% variance
+
+        // Buckets should be roughly balanced
+        try std.testing.expect(max_count - min_count <= expected_per_bucket + tolerance);
+    }
+}
+
+test "ANALYZE histogram on TEXT column" {
+    const allocator = std.testing.allocator;
+    const path = "test_histogram_text.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with TEXT column
+    var r1 = try db.execSQL("CREATE TABLE t (name TEXT);");
+    defer r1.close(allocator);
+
+    // Insert text values
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('alice'), ('bob'), ('charlie'), ('dave'), ('eve');");
+    defer r2.close(allocator);
+
+    // Run ANALYZE
+    var r_analyze = try db.execSQL("ANALYZE t;");
+    defer r_analyze.close(allocator);
+
+    // Retrieve column stats
+    const col_key = try db.catalog.allocator.alloc(u8, "stats:t:name".len);
+    defer db.catalog.allocator.free(col_key);
+    @memcpy(col_key, "stats:t:name");
+
+    const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+    defer db.catalog.allocator.free(col_stats_data);
+
+    var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+    defer col_stats.deinit(allocator);
+
+    // Should have 5 distinct text values
+    try std.testing.expectEqual(@as(u64, 5), col_stats.distinct_count);
+
+    // Histogram bucket count should match or be less than distinct values
+    try std.testing.expect(col_stats.histogram_buckets.len <= 5);
+
+    // Each text value should be represented in buckets
+    var total_count: u64 = 0;
+    for (col_stats.histogram_buckets) |bucket| {
+        total_count += bucket.count;
+    }
+    try std.testing.expectEqual(@as(u64, 5), total_count);
 }
 
