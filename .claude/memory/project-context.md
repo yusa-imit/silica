@@ -545,3 +545,39 @@
 - Stress test design: always clean up state between iterations to avoid accumulation
 
 **CI Status**: Green — all tests passing, commit 9dc1b61 pushed
+
+## FEATURE Session (2026-03-18 06:00 UTC)
+
+**Focus**: Milestone 21 (Advanced Optimization) - Index-only scan infrastructure
+
+**Completed**:
+- Added `index_only: bool` flag to `PlanNode.Scan` struct (defaults to false)
+- Infrastructure foundation for index-only scan optimization
+- Commit ef7946d: "feat: add index_only flag to Scan plan node (Milestone 21)"
+
+**Analysis**:
+- Investigated subquery decorrelation complexity (requires Database handle threading through evalExpr)
+- Investigated index-only scan requirements:
+  - Current IndexInfo supports single-column indexes only
+  - CreateIndexStmt AST supports multi-column (`columns: []const OrderByItem`)
+  - Full implementation requires:
+    1. Multi-column index catalog storage
+    2. Column usage tracking through plan tree
+    3. Optimizer logic to detect covering indexes
+    4. Executor modification to skip heap fetch
+- Decision: Added infrastructure flag, full implementation deferred
+
+**Key Learnings**:
+- Index-only scans require covering indexes (multiple columns in one index)
+- Current system: single-column IndexInfo (column_name, column_index, root_page_id)
+- Parser already supports multi-column CREATE INDEX, but catalog doesn't store them
+- Optimizer operates on plan tree where column usage is context-dependent (hard to track)
+
+**Next Steps** (Future sessions):
+1. Implement multi-column index catalog storage
+2. Add column usage analysis in optimizer
+3. Implement canUseIndexOnlyScan() optimizer helper
+4. Modify ScanOp executor to skip heap fetch when index_only=true
+5. Add integration tests with multi-column indexes
+
+**Test Status**: 2311 tests (2311 passing, 3 skipped) — no changes this session
