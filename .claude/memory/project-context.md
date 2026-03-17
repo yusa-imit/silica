@@ -519,3 +519,29 @@
   - Built-in SQL functions are implemented in evalFunctionCall, no tokenizer keywords needed
 - **Commit**: 40b89a8 feat: implement NULLIF, GREATEST, LEAST SQL functions
 - **Test Status**: Implementation complete with 16 new tests (executor + integration)
+
+## Stabilization Session (2026-03-18 04:00 UTC)
+
+**Focus**: Stress testing and edge case coverage for BaseBackupCoordinator
+
+**Completed**:
+- Added 10 comprehensive stress tests for BaseBackupCoordinator (Milestone 19D)
+  - Concurrent startBackup attempts (mutex enforcement)
+  - Concurrent getBackupInfo reads (thread-safe reads)
+  - Concurrent addFileToBackup operations (file accumulation)
+  - Sequential backup lifecycle (50 iterations)
+  - Memory cleanup with 200 file additions
+  - Backup state transitions under load (30 cycles)
+  - Concurrent getBackupProgress during file additions
+  - Config preservation across 15 operations
+  - Backup_id uniqueness under rapid creation (25 backups)
+
+**Test Count**: 2311 tests total (2311 passing, 3 skipped; +10 stress tests from previous 2301)
+
+**Key Learnings**:
+- std.Thread.sleep vs std.time.sleep: Zig 0.15.2 uses Thread.sleep, not time.sleep
+- BaseBackupCoordinator semantics: completeBackup() keeps current_backup for later access; cancelBackup() clears it
+- Memory management pattern: must call cancelBackup() between backup iterations to prevent leaks
+- Stress test design: always clean up state between iterations to avoid accumulation
+
+**CI Status**: Green — all tests passing, commit 9dc1b61 pushed

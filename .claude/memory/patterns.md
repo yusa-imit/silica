@@ -266,3 +266,59 @@ test "many frames in single commit" {
 ```
 
 <!-- Add new patterns as they are verified through implementation -->
+
+## Zig 0.15.2 Specific Patterns
+
+### Thread sleep — VERIFIED
+```zig
+// CORRECT (Zig 0.15.2)
+std.Thread.sleep(100); // 100 nanoseconds
+
+// INCORRECT (old API)
+std.time.sleep(100); // Does not exist in 0.15.2
+```
+
+### Stress test patterns
+```zig
+test "concurrent stress test" {
+    const allocator = std.testing.allocator;
+    var shared_state = try MyStruct.init(allocator);
+    defer shared_state.deinit();
+
+    const worker = struct {
+        fn run(state: *MyStruct) void {
+            var i: usize = 0;
+            while (i < 50) : (i += 1) {
+                state.doOperation() catch {};
+                std.Thread.sleep(1000); // Small delay between ops
+            }
+        }
+    }.run;
+
+    // Launch N threads
+    var threads: [8]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, worker, .{&shared_state});
+    }
+    for (threads) |thread| {
+        thread.join();
+    }
+}
+```
+
+### Sequential lifecycle stress test
+```zig
+test "sequential lifecycle stress" {
+    const allocator = std.testing.allocator;
+    var coordinator = try Coordinator.init(allocator);
+    defer coordinator.deinit();
+
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        try coordinator.start();
+        try coordinator.doWork();
+        try coordinator.complete();
+        try coordinator.cleanup(); // CRITICAL: clean up between iterations
+    }
+}
+```
