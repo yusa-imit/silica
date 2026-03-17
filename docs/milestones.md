@@ -4,7 +4,7 @@
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
 - **Current development**: Phase 10 — Advanced Optimization (Milestone 20 complete, Milestone 21 in progress)
-- **Tests**: 2294/2297 passing, 3 skipped (5 new join algorithm selection tests; cost-based selection infrastructure complete)
+- **Tests**: 2301/2304 passing, 3 skipped (EXPLAIN/EXPLAIN ANALYZE complete with 4 integration tests; cost-based join selection infrastructure complete)
 - **Branch**: `main`
 - **Blockers**: zuda migrations blocked until zuda releases target modules
 - **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
@@ -38,7 +38,7 @@
 - [x] Hash/merge join selection (21B partial — HashJoinOp/MergeJoinOp executors + cost-based selection infrastructure complete; TEMPORARILY DISABLED until HashJoinOp join key extraction fixed [hardcoded to first column, needs ON condition parsing]; 5 optimizer tests)
 - [ ] Subquery decorrelation
 - [ ] Index-only scans
-- [ ] EXPLAIN ANALYZE
+- [x] EXPLAIN ANALYZE (21C complete — EXPLAIN and EXPLAIN ANALYZE syntax, plan text formatting via formatPlan(), arena-based memory management; runtime statistics collection deferred to future; 4 integration tests)
 
 ---
 
