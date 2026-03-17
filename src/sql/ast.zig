@@ -481,6 +481,8 @@ pub const TransactionMode = enum {
 /// EXPLAIN statement.
 pub const ExplainStmt = struct {
     stmt: *const Stmt,
+    /// If true, execute the query and show actual runtime statistics.
+    analyze: bool = false,
 };
 
 /// VACUUM statement — reclaim dead tuples from a table (or all tables).
@@ -1549,4 +1551,32 @@ test "AnalyzeStmt all tables" {
     const stmt = AnalyzeStmt{};
 
     try std.testing.expect(stmt.table_name == null);
+}
+
+test "ExplainStmt basic explain" {
+    const select_stmt = SelectStmt{
+        .columns = &[_]ResultColumn{},
+        .from = null,
+    };
+    const stmt = Stmt{ .select = select_stmt };
+    const explain_stmt = ExplainStmt{
+        .stmt = &stmt,
+        .analyze = false,
+    };
+
+    try std.testing.expect(!explain_stmt.analyze);
+}
+
+test "ExplainStmt with analyze option" {
+    const select_stmt = SelectStmt{
+        .columns = &[_]ResultColumn{},
+        .from = null,
+    };
+    const stmt = Stmt{ .select = select_stmt };
+    const explain_stmt = ExplainStmt{
+        .stmt = &stmt,
+        .analyze = true,
+    };
+
+    try std.testing.expect(explain_stmt.analyze);
 }

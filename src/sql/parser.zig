@@ -2125,12 +2125,16 @@ pub const Parser = struct {
 
     fn parseExplain(self: *Parser) Error!ast.ExplainStmt {
         _ = try self.expect(.kw_explain);
+
+        // Check for optional ANALYZE keyword
+        const analyze = self.match(.kw_analyze);
+
         const inner = try self.parseStatement() orelse {
             try self.addError(self.peek(), "expected statement after EXPLAIN");
             return error.ParseFailed;
         };
         const stmt_ptr = self.arena.create(ast.Stmt, inner) catch return error.OutOfMemory;
-        return .{ .stmt = stmt_ptr };
+        return .{ .stmt = stmt_ptr, .analyze = analyze };
     }
 
     // ── VACUUM ────────────────────────────────────────────────────
@@ -3245,6 +3249,23 @@ test "parse EXPLAIN" {
     defer r.deinit();
     try std.testing.expect(r.stmt == .explain);
     try std.testing.expect(r.stmt.explain.stmt.* == .select);
+    try std.testing.expect(!r.stmt.explain.analyze);
+}
+
+test "parse EXPLAIN ANALYZE" {
+    var r = try testParseWithArena("EXPLAIN ANALYZE SELECT * FROM t");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .explain);
+    try std.testing.expect(r.stmt.explain.stmt.* == .select);
+    try std.testing.expect(r.stmt.explain.analyze);
+}
+
+test "parse EXPLAIN ANALYZE INSERT" {
+    var r = try testParseWithArena("EXPLAIN ANALYZE INSERT INTO users (name) VALUES ('Alice')");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .explain);
+    try std.testing.expect(r.stmt.explain.stmt.* == .insert);
+    try std.testing.expect(r.stmt.explain.analyze);
 }
 
 test "parse multiple statements" {
