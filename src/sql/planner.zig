@@ -149,6 +149,8 @@ pub const PlanNode = union(enum) {
         table: []const u8,
         alias: ?[]const u8 = null,
         columns: []const ColumnRef = &.{},
+        /// Index-only scan flag: if true, all required columns are in the index, no heap fetch needed
+        index_only: bool = false,
     };
 
     pub const TableFunctionScan = struct {
