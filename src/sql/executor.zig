@@ -5031,8 +5031,11 @@ pub const HashJoinOp = struct {
 
     fn hashRow(row: *const Row) u64 {
         var hasher = std.hash.Wyhash.init(0);
-        // Simplified: only hash first column (join key)
-        // Production version would extract join columns from on_condition
+        // Simplified hash: uses first column as join key.
+        // The full ON condition is checked later during row combination (see next()).
+        // This approach is correct but may have more collisions than extracting
+        // exact join keys from the ON condition. Future optimization: parse
+        // ON condition to extract join column names and hash only those columns.
         if (row.values.len > 0) {
             hashValue(&hasher, &row.values[0]);
         }

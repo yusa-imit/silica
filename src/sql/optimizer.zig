@@ -224,8 +224,8 @@ pub const Optimizer = struct {
     /// Select the best join algorithm based on cost estimates.
     fn selectJoinAlgorithm(
         self: *Optimizer,
-        _: *const PlanNode, // left (unused while hash join is disabled)
-        _: *const PlanNode, // right (unused while hash join is disabled)
+        left: *const PlanNode,
+        right: *const PlanNode,
         on_condition: ?*const ast.Expr,
     ) PlanNode.JoinAlgorithm {
         // If no join condition, only nested loop works
@@ -237,47 +237,23 @@ pub const Optimizer = struct {
         // For non-equi-joins, only nested loop works
         if (!is_equi_join) return .nested_loop;
 
-        // TEMPORARY: HashJoinOp has a known limitation where join key extraction
-        // is hardcoded to the first column. Until this is fixed, we only use
-        // hash join for simple cases. For now, return nested_loop to maintain
-        // correctness. This will be re-enabled once HashJoinOp is fixed to properly
-        // extract join keys from the ON condition.
+        // TEMPORARILY DISABLED: Hash join has a critical limitation where it hashes
+        // only the first column, but join keys may be in other columns. This causes
+        // incorrect results when the join key is not column 0. The hash table lookup
+        // will fail to find matching rows, returning fewer results than expected.
         //
-        // TODO: Fix HashJoinOp to extract join keys from on_condition instead of
-        // hardcoding to first column, then re-enable cost-based selection.
+        // Example: SELECT * FROM items JOIN categories ON items.cat_id = categories.id
+        // If items.cat_id is column 2 (not 0), the hash won't match and rows are lost.
+        //
+        // To fix this properly, we need to:
+        // 1. Parse the ON condition to extract join column names (e.g., "cat_id", "id")
+        // 2. Find the column index in each row's schema
+        // 3. Hash those specific columns instead of column 0
+        //
+        // Until this is implemented, we must use nested loop for correctness.
+        _ = left;
+        _ = right;
         return .nested_loop;
-
-        // For equi-joins, compare hash join vs nested loop costs
-        // Simplified cardinality estimates (in production, use ANALYZE statistics)
-        // const left_rows = self.estimateCardinality(left);
-        // const right_rows = self.estimateCardinality(right);
-
-        // const left_cost = self.estimateScanCost(left);
-        // const right_cost = self.estimateScanCost(right);
-
-        // // Estimate costs for each algorithm
-        // const nested_cost = self.cost_estimator.estimateNestedLoopJoin(
-        //     left_cost,
-        //     right_cost,
-        //     left_rows,
-        //     right_rows,
-        // );
-
-        // const hash_cost = self.cost_estimator.estimateHashJoin(
-        //     left_cost,
-        //     right_cost,
-        //     left_rows,
-        //     right_rows,
-        // );
-
-        // // Choose the algorithm with the lowest cost
-        // // Note: Merge join requires sorted inputs, which we don't track yet
-        // // So we only choose between nested loop and hash join for now
-        // if (hash_cost < nested_cost) {
-        //     return .hash;
-        // } else {
-        //     return .nested_loop;
-        // }
     }
 
     /// Check if a join condition is an equi-join (contains = comparison).
@@ -1708,9 +1684,7 @@ test "join algorithm selection: equi-join would select hash join (disabled)" {
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
 
-    // TEMPORARY: Hash join selection is disabled until HashJoinOp is fixed
-    // to properly extract join keys from ON condition (not hardcoded to first column).
-    // Currently returns nested_loop for correctness.
+    // Hash join temporarily disabled due to join key extraction limitation
     switch (optimized.root.*) {
         .join => |j| {
             try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
@@ -1804,7 +1778,7 @@ test "join algorithm selection: LEFT JOIN with equi-join (disabled)" {
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
 
-    // TEMPORARY: Hash join selection disabled (see comment in selectJoinAlgorithm)
+    // Hash join temporarily disabled due to join key extraction limitation
     switch (optimized.root.*) {
         .join => |j| {
             try testing.expectEqual(ast.JoinType.left, j.join_type);
@@ -1848,7 +1822,7 @@ test "join algorithm selection: complex equi-join with AND (disabled)" {
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
 
-    // TEMPORARY: Hash join selection disabled (see comment in selectJoinAlgorithm)
+    // Hash join temporarily disabled due to join key extraction limitation
     switch (optimized.root.*) {
         .join => |j| {
             try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
