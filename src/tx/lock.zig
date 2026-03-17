@@ -1461,3 +1461,242 @@ test "LockManager — wouldDeadlock returns null when safe" {
 
     lm.releaseAllLocks(1);
 }
+
+test "LockManager stress — many sequential row locks" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    // Simulate 100 transactions each acquiring and releasing locks on different rows
+    const num_txns = 100;
+    const rows_per_txn = 10;
+
+    var txn: u32 = 1;
+    while (txn <= num_txns) : (txn += 1) {
+        var row: u64 = 0;
+        while (row < rows_per_txn) : (row += 1) {
+            const target = LockTarget{ .table_page_id = 1, .row_key = row + (txn * 1000) };
+            try lm.acquireRowLock(txn, target, .exclusive);
+        }
+
+        // Verify lock count
+        try std.testing.expectEqual(@as(usize, rows_per_txn), lm.activeRowLockCount());
+
+        // Release all locks for this txn
+        lm.releaseAllLocks(txn);
+        try std.testing.expectEqual(@as(usize, 0), lm.activeRowLockCount());
+    }
+}
+
+test "LockManager stress — many shared locks on same row" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 1, .row_key = 42 };
+    const num_readers = 50;
+
+    // Acquire shared locks from many transactions
+    var txn: u32 = 1;
+    while (txn <= num_readers) : (txn += 1) {
+        try lm.acquireRowLock(txn, target, .shared);
+    }
+
+    // Should have exactly 1 lock entry with many holders
+    try std.testing.expectEqual(@as(usize, 1), lm.activeRowLockCount());
+    const info = lm.row_locks.get(target).?;
+    try std.testing.expectEqual(@as(usize, num_readers), info.holders.items.len);
+
+    // Release all locks
+    txn = 1;
+    while (txn <= num_readers) : (txn += 1) {
+        lm.releaseRowLock(txn, target);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), lm.activeRowLockCount());
+}
+
+test "LockManager stress — table lock acquisition under load" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const num_txns = 50;
+    const table_page_id: u32 = 100;
+
+    // Acquire ACCESS_SHARE (read) locks from many transactions
+    var txn: u32 = 1;
+    while (txn <= num_txns) : (txn += 1) {
+        try lm.acquireTableLock(txn, table_page_id, .access_share);
+    }
+
+    // Verify table locks registered
+    const locks = lm.table_locks.get(table_page_id).?;
+    try std.testing.expectEqual(@as(usize, num_txns), locks.items.len);
+
+    // Release all table locks
+    txn = 1;
+    while (txn <= num_txns) : (txn += 1) {
+        lm.releaseAllLocks(txn);
+    }
+
+    // Table lock entry should be removed when empty
+    try std.testing.expect(lm.table_locks.get(table_page_id) == null);
+}
+
+test "LockManager stress — deadlock detection with wait edges" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    // Create a scenario with multiple transactions waiting on each other
+    // T1 holds R1, T2 holds R2
+    // T1 wants R2 (blocked by T2) → add wait edge T1→T2
+    // T2 wants R1 (blocked by T1) → would create cycle T2→T1
+
+    const r1 = LockTarget{ .table_page_id = 1, .row_key = 1 };
+    const r2 = LockTarget{ .table_page_id = 1, .row_key = 2 };
+
+    // T1 acquires R1
+    try lm.acquireRowLock(1, r1, .exclusive);
+
+    // T2 acquires R2
+    try lm.acquireRowLock(2, r2, .exclusive);
+
+    // T1 tries to acquire R2 (blocked by T2) — add wait edge T1→T2
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(1, r2, .exclusive));
+    try lm.addWaitEdge(1, 2); // T1 waits for T2
+
+    // T2 tries to acquire R1 (would create cycle T2→T1 since T1→T2 exists)
+    const victim = lm.wouldDeadlock(2, r1);
+    try std.testing.expect(victim != null); // Should detect deadlock
+    if (victim) |v| {
+        try std.testing.expectEqual(@as(u32, 1), v); // T1 is the blocker
+    }
+
+    lm.releaseAllLocks(1);
+    lm.releaseAllLocks(2);
+}
+
+test "LockManager stress — interleaved shared and exclusive lock requests" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 1, .row_key = 100 };
+
+    // Start with shared locks
+    try lm.acquireRowLock(1, target, .shared);
+    try lm.acquireRowLock(2, target, .shared);
+    try lm.acquireRowLock(3, target, .shared);
+
+    // Exclusive lock should conflict
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(4, target, .exclusive));
+
+    // Release one shared lock
+    lm.releaseRowLock(1, target);
+
+    // Still conflicts (other shared locks present)
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(4, target, .exclusive));
+
+    // Release remaining shared locks
+    lm.releaseRowLock(2, target);
+    lm.releaseRowLock(3, target);
+
+    // Now exclusive should succeed
+    try lm.acquireRowLock(4, target, .exclusive);
+
+    // No shared locks should be allowed now
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(5, target, .shared));
+
+    lm.releaseAllLocks(4);
+}
+
+test "LockManager stress — many different rows and tables" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    // Simulate multiple transactions accessing different tables and rows
+    const num_tables = 10;
+    const rows_per_table = 20;
+
+    var table: u32 = 1;
+    while (table <= num_tables) : (table += 1) {
+        var row: u64 = 0;
+        while (row < rows_per_table) : (row += 1) {
+            const target = LockTarget{ .table_page_id = table, .row_key = row };
+            try lm.acquireRowLock(table, target, .exclusive);
+        }
+    }
+
+    // Should have num_tables * rows_per_table locks
+    try std.testing.expectEqual(@as(usize, num_tables * rows_per_table), lm.activeRowLockCount());
+
+    // Release all locks
+    table = 1;
+    while (table <= num_tables) : (table += 1) {
+        lm.releaseAllLocks(table);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), lm.activeRowLockCount());
+}
+
+test "LockManager stress — lock upgrade (shared to exclusive, sole holder)" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 1, .row_key = 50 };
+
+    // T1 acquires shared lock (sole holder)
+    try lm.acquireRowLock(1, target, .shared);
+
+    // T1 upgrades to exclusive (allowed since sole holder)
+    try lm.acquireRowLock(1, target, .exclusive);
+
+    // Verify lock is now exclusive
+    const info = lm.row_locks.get(target).?;
+    try std.testing.expectEqual(LockMode.exclusive, info.mode);
+    try std.testing.expectEqual(@as(usize, 1), info.holders.items.len);
+
+    lm.releaseAllLocks(1);
+}
+
+test "LockManager stress — lock upgrade blocked by other holders" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    const target = LockTarget{ .table_page_id = 1, .row_key = 50 };
+
+    // T1 and T2 acquire shared locks
+    try lm.acquireRowLock(1, target, .shared);
+    try lm.acquireRowLock(2, target, .shared);
+
+    // T1 tries to upgrade to exclusive (blocked by T2's shared lock)
+    try std.testing.expectError(error.LockConflict, lm.acquireRowLock(1, target, .exclusive));
+
+    lm.releaseAllLocks(1);
+    lm.releaseAllLocks(2);
+}
+
+test "LockManager stress — memory cleanup with many allocations" {
+    const allocator = std.testing.allocator;
+    var lm = LockManager.init(allocator);
+    defer lm.deinit();
+
+    // Acquire and release locks repeatedly to stress allocator
+    const iterations = 100;
+    var i: usize = 0;
+    while (i < iterations) : (i += 1) {
+        const txn: u32 = @intCast(i + 1);
+        const target = LockTarget{ .table_page_id = 1, .row_key = @intCast(i) };
+
+        try lm.acquireRowLock(txn, target, .exclusive);
+        lm.releaseAllLocks(txn);
+    }
+
+    // All locks should be released
+    try std.testing.expectEqual(@as(usize, 0), lm.activeRowLockCount());
+}
