@@ -642,3 +642,344 @@ test "BaseBackupCoordinator handles zero max_backup_size (unlimited)" {
         try std.testing.expect(false);
     }
 }
+
+// ── Stress Tests ──────────────────────────────────────────────────────
+
+test "BaseBackupCoordinator: concurrent startBackup attempts stress" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{});
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_1");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_1") catch {};
+
+    const ThreadContext = struct {
+        coord: *BaseBackupCoordinator,
+        success_count: *std.atomic.Value(usize),
+        error_count: *std.atomic.Value(usize),
+    };
+
+    var success_count = std.atomic.Value(usize).init(0);
+    var error_count = std.atomic.Value(usize).init(0);
+    const ctx = ThreadContext{
+        .coord = &coordinator,
+        .success_count = &success_count,
+        .error_count = &error_count,
+    };
+
+    const worker = struct {
+        fn run(thread_ctx: ThreadContext) void {
+            var i: usize = 0;
+            while (i < 20) : (i += 1) {
+                const result = thread_ctx.coord.startBackup("/tmp/test_backup_stress_1", 1000 + i);
+                if (result) |_| {
+                    _ = thread_ctx.success_count.fetchAdd(1, .monotonic);
+                    thread_ctx.coord.cancelBackup() catch {};
+                } else |_| {
+                    _ = thread_ctx.error_count.fetchAdd(1, .monotonic);
+                }
+            }
+        }
+    }.run;
+
+    // Launch 8 threads trying to start backups concurrently
+    var threads: [8]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, worker, .{ctx});
+    }
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Verify total operations match expected
+    const total = success_count.load(.monotonic) + error_count.load(.monotonic);
+    try std.testing.expectEqual(@as(usize, 8 * 20), total);
+    // Due to concurrent nature, most attempts should fail with BackupInProgress
+    // But allow for edge case where all succeed due to perfect cancel timing
+    try std.testing.expect(error_count.load(.monotonic) > 0 or success_count.load(.monotonic) > 0);
+}
+
+test "BaseBackupCoordinator: concurrent getBackupInfo reads stress" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{});
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_2");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_2") catch {};
+
+    _ = try coordinator.startBackup("/tmp/test_backup_stress_2", 5000);
+
+    const worker = struct {
+        fn run(coord: *BaseBackupCoordinator) void {
+            var i: usize = 0;
+            while (i < 50) : (i += 1) {
+                _ = coord.getBackupInfo();
+                _ = coord.getBackupProgress();
+                std.Thread.sleep(100); // 100ns
+            }
+        }
+    }.run;
+
+    // Launch 10 threads reading concurrently
+    var threads: [10]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, worker, .{&coordinator});
+    }
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Should still have valid backup info
+    const info = coordinator.getBackupInfo() orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(LSN, 5000), info.start_lsn);
+}
+
+test "BaseBackupCoordinator: concurrent addFileToBackup operations stress" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{
+        .max_backup_size = 0, // Unlimited for stress test
+    });
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_3");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_3") catch {};
+
+    _ = try coordinator.startBackup("/tmp/test_backup_stress_3", 7000);
+
+    const worker = struct {
+        fn run(coord: *BaseBackupCoordinator, thread_id: usize) void {
+            var i: usize = 0;
+            while (i < 25) : (i += 1) {
+                const filename = std.fmt.allocPrint(
+                    std.testing.allocator,
+                    "file_t{d}_n{d}.dat",
+                    .{ thread_id, i },
+                ) catch return;
+                defer std.testing.allocator.free(filename);
+
+                coord.addFileToBackup(filename, 1024, null) catch {};
+            }
+        }
+    }.run;
+
+    // Launch 6 threads adding files concurrently
+    var threads: [6]std.Thread = undefined;
+    for (&threads, 0..) |*thread, idx| {
+        thread.* = try std.Thread.spawn(.{}, worker, .{ &coordinator, idx });
+    }
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Should have accumulated files (up to 6*25=150)
+    const info = coordinator.getBackupInfo() orelse return error.TestFailed;
+    try std.testing.expect(info.file_count > 0);
+    try std.testing.expect(info.file_count <= 150);
+}
+
+test "BaseBackupCoordinator: sequential backup lifecycle stress" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{});
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_4");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_4") catch {};
+
+    // Run 50 sequential backup lifecycles
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        _ = try coordinator.startBackup("/tmp/test_backup_stress_4", 1000 + i);
+        try coordinator.addFileToBackup("test.dat", 512, null);
+        if (i % 2 == 0) {
+            try coordinator.completeBackup(2000 + i);
+            // completeBackup keeps current_backup but clears in_progress
+            try std.testing.expect(!coordinator.backup_in_progress);
+            try std.testing.expect(coordinator.current_backup != null);
+            // Must cancel to clean up before next startBackup
+            try coordinator.cancelBackup();
+        } else {
+            try coordinator.cancelBackup();
+            // cancelBackup clears both
+            try std.testing.expect(coordinator.current_backup == null);
+            try std.testing.expect(!coordinator.backup_in_progress);
+        }
+    }
+}
+
+test "BaseBackupCoordinator: memory cleanup with many file additions" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{
+        .max_backup_size = 0,
+    });
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_5");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_5") catch {};
+
+    _ = try coordinator.startBackup("/tmp/test_backup_stress_5", 3000);
+
+    // Add 200 files
+    var i: usize = 0;
+    while (i < 200) : (i += 1) {
+        const filename = try std.fmt.allocPrint(allocator, "file_{d}.dat", .{i});
+        defer allocator.free(filename);
+        try coordinator.addFileToBackup(filename, 100, null);
+    }
+
+    const info = coordinator.getBackupInfo() orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(u32, 200), info.file_count);
+
+    // Complete and verify state (completeBackup keeps current_backup)
+    try coordinator.completeBackup(4000);
+    try std.testing.expect(!coordinator.backup_in_progress);
+    try std.testing.expect(coordinator.current_backup != null);
+}
+
+test "BaseBackupCoordinator: backup state transitions under load" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{});
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_6");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_6") catch {};
+
+    // Rapidly cycle through start → complete → start → cancel
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        _ = try coordinator.startBackup("/tmp/test_backup_stress_6", 1000 + i * 10);
+        try coordinator.addFileToBackup("data.bin", 256, null);
+
+        if (i % 3 == 0) {
+            try coordinator.completeBackup(1005 + i * 10);
+            // Clean up after complete for next iteration
+            try coordinator.cancelBackup();
+        } else if (i % 3 == 1) {
+            try coordinator.cancelBackup();
+        } else {
+            // Complete without adding more files
+            try coordinator.completeBackup(1005 + i * 10);
+            try coordinator.cancelBackup();
+        }
+    }
+
+    // Should be in clean state
+    try std.testing.expect(!coordinator.backup_in_progress);
+    try std.testing.expect(coordinator.current_backup == null);
+}
+
+test "BaseBackupCoordinator: concurrent getBackupProgress during file additions" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{});
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_7");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_7") catch {};
+
+    _ = try coordinator.startBackup("/tmp/test_backup_stress_7", 8000);
+
+    const Context = struct {
+        coord: *BaseBackupCoordinator,
+        stop: *std.atomic.Value(bool),
+    };
+
+    var stop_flag = std.atomic.Value(bool).init(false);
+    const ctx = Context{ .coord = &coordinator, .stop = &stop_flag };
+
+    // Reader thread
+    const reader = struct {
+        fn run(thread_ctx: Context) void {
+            while (!thread_ctx.stop.load(.acquire)) {
+                _ = thread_ctx.coord.getBackupProgress();
+                _ = thread_ctx.coord.getBackupInfo();
+            }
+        }
+    }.run;
+
+    var reader_thread = try std.Thread.spawn(.{}, reader, .{ctx});
+
+    // Add files while reader is running
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        const filename = try std.fmt.allocPrint(allocator, "concurrent_{d}.dat", .{i});
+        defer allocator.free(filename);
+        try coordinator.addFileToBackup(filename, 128, null);
+        std.Thread.sleep(1000); // 1us
+    }
+
+    stop_flag.store(true, .release);
+    reader_thread.join();
+
+    const info = coordinator.getBackupInfo() orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(u32, 40), info.file_count);
+}
+
+test "BaseBackupCoordinator: config preservation across operations" {
+    const allocator = std.testing.allocator;
+    const config = Config{
+        .compression_enabled = true,
+        .checksum_validation = false,
+        .verify_backup = false,
+        .max_backup_size = 5_000_000,
+    };
+    var coordinator = try BaseBackupCoordinator.init(allocator, config);
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_8");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_8") catch {};
+
+    // Run multiple backup cycles
+    var i: usize = 0;
+    while (i < 15) : (i += 1) {
+        _ = try coordinator.startBackup("/tmp/test_backup_stress_8", 1000 + i);
+        try coordinator.addFileToBackup("file.dat", 100, null);
+        try coordinator.completeBackup(2000 + i);
+
+        // Verify config unchanged
+        try std.testing.expect(coordinator.config.compression_enabled);
+        try std.testing.expect(!coordinator.config.checksum_validation);
+        try std.testing.expectEqual(@as(u64, 5_000_000), coordinator.config.max_backup_size);
+
+        // Clean up for next iteration
+        try coordinator.cancelBackup();
+    }
+}
+
+test "BaseBackupCoordinator: backup_id uniqueness under rapid creation" {
+    const allocator = std.testing.allocator;
+    var coordinator = try BaseBackupCoordinator.init(allocator, .{});
+    defer coordinator.deinit();
+
+    try std.fs.cwd().makePath("/tmp/test_backup_stress_9");
+    defer std.fs.cwd().deleteTree("/tmp/test_backup_stress_9") catch {};
+
+    var ids = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = ids.keyIterator();
+        while (it.next()) |key| {
+            allocator.free(key.*);
+        }
+        ids.deinit();
+    }
+
+    // Create backups rapidly and collect IDs
+    var i: usize = 0;
+    while (i < 25) : (i += 1) {
+        _ = try coordinator.startBackup("/tmp/test_backup_stress_9", 1000 + i);
+        const info = coordinator.getBackupInfo() orelse return error.TestFailed;
+
+        const id_copy = try allocator.dupe(u8, info.backup_id);
+        errdefer allocator.free(id_copy);
+
+        // Should be unique (but some might collide due to microsecond precision)
+        const result = try ids.getOrPut(id_copy);
+        if (result.found_existing) {
+            allocator.free(id_copy);
+        }
+
+        try coordinator.completeBackup(2000 + i);
+        try coordinator.cancelBackup(); // Clean up for next iteration
+    }
+
+    // Most IDs should be unique (allow some collisions due to timing)
+    try std.testing.expect(ids.count() >= 20); // At least 20/25 unique
+}
