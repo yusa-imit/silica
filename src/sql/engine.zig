@@ -16016,7 +16016,7 @@ test "EXPLAIN simple SELECT" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    _ = try db.execSQL("CREATE TABLE explain_test_1 (id INTEGER, name TEXT)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS explain_test_1 (id INTEGER, name TEXT)");
     _ = try db.execSQL("INSERT INTO explain_test_1 VALUES (1, 'Alice')");
 
     var result = try db.execSQL("EXPLAIN SELECT * FROM explain_test_1");
@@ -16032,8 +16032,8 @@ test "EXPLAIN with JOIN" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    _ = try db.execSQL("CREATE TABLE explain_test_2 (id INTEGER)");
-    _ = try db.execSQL("CREATE TABLE explain_test_3 (user_id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS explain_test_2 (id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS explain_test_3 (user_id INTEGER)");
 
     var result = try db.execSQL("EXPLAIN SELECT * FROM explain_test_2 JOIN explain_test_3 ON explain_test_2.id = explain_test_3.user_id");
     defer result.close(allocator);
@@ -16048,7 +16048,7 @@ test "EXPLAIN ANALYZE SELECT" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    _ = try db.execSQL("CREATE TABLE explain_test_4 (id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS explain_test_4 (id INTEGER)");
     _ = try db.execSQL("INSERT INTO explain_test_4 VALUES (1)");
 
     var result = try db.execSQL("EXPLAIN ANALYZE SELECT * FROM explain_test_4");
