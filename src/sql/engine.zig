@@ -2942,6 +2942,41 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "ALTER TABLE" };
             },
+            .explain => |ex| {
+                // EXPLAIN: analyze → plan → (optionally optimize) → format
+                const provider = self.schemaProvider();
+
+                var an = Analyzer.init(self.allocator, provider);
+                defer an.deinit();
+                an.analyze(ex.stmt.*);
+                if (an.hasErrors()) return EngineError.AnalysisError;
+
+                var plnr = Planner.init(arena.?, provider);
+                const plan = plnr.plan(ex.stmt.*) catch return EngineError.PlanError;
+
+                var opt = Optimizer.init(arena.?);
+                const optimized = opt.optimize(plan) catch return EngineError.PlanError;
+
+                // Format the plan as text using arena allocator
+                var plan_text = std.ArrayList(u8){};
+                defer plan_text.deinit(arena.?.allocator());
+
+                const writer = plan_text.writer(arena.?.allocator());
+                planner_mod.formatPlan(optimized.root, writer, 0) catch return EngineError.ExecutionError;
+
+                // If ANALYZE flag is set, execute the query and show runtime stats
+                if (ex.analyze) {
+                    // TODO: Collect runtime statistics during execution
+                    // For now, just append a note that ANALYZE is not yet implemented
+                    writer.writeAll("\n(ANALYZE: runtime statistics collection not yet implemented)\n") catch return EngineError.ExecutionError;
+                }
+
+                // Return plan text as a single-row result; owned by arena
+                const plan_str = plan_text.toOwnedSlice(arena.?.allocator()) catch return EngineError.OutOfMemory;
+
+                // Keep arena alive - will be freed in QueryResult.close()
+                return .{ .message = plan_str, ._arena = arena };
+            },
             else => {},
         }
 
@@ -11246,7 +11281,7 @@ test "EXCEPT with empty right side returns all left rows" {
 
 // ── Stabilization: EXPLAIN returns OK ───────────────────────────────────
 
-test "EXPLAIN SELECT returns OK message" {
+test "EXPLAIN SELECT returns plan text" {
     const path = "test_explain.db";
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -11256,9 +11291,10 @@ test "EXPLAIN SELECT returns OK message" {
     var r = try db.exec("EXPLAIN SELECT id FROM t");
     defer r.close(testing.allocator);
 
-    // EXPLAIN currently returns OK message (known limitation)
+    // EXPLAIN now returns plan text (not just "OK")
     try testing.expect(r.rows == null);
-    try testing.expectEqualStrings("OK", r.message);
+    try testing.expect(r.message.len > 0);
+    try testing.expect(std.mem.indexOf(u8, r.message, "Scan: t") != null);
 }
 
 // ── Stabilization: arithmetic edge case ─────────────────────────────────
@@ -15973,5 +16009,54 @@ test "ANALYZE with mixed NULL and non-NULL values" {
     try std.testing.expectEqual(@as(u64, 40), col_stats.distinct_count);
     // Histogram should be built from non-NULL values only
     try std.testing.expect(col_stats.histogram_buckets.len > 0);
+}
+
+test "EXPLAIN simple SELECT" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE explain_test_1 (id INTEGER, name TEXT)");
+    _ = try db.execSQL("INSERT INTO explain_test_1 VALUES (1, 'Alice')");
+
+    var result = try db.execSQL("EXPLAIN SELECT * FROM explain_test_1");
+    defer result.close(allocator);
+
+    // Result should be a message containing the plan
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Scan: explain_test_1") != null);
+}
+
+test "EXPLAIN with JOIN" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE explain_test_2 (id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE explain_test_3 (user_id INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN SELECT * FROM explain_test_2 JOIN explain_test_3 ON explain_test_2.id = explain_test_3.user_id");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    // Should contain Join node in plan
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Join") != null);
+}
+
+test "EXPLAIN ANALYZE SELECT" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE explain_test_4 (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO explain_test_4 VALUES (1)");
+
+    var result = try db.execSQL("EXPLAIN ANALYZE SELECT * FROM explain_test_4");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    // Should contain plan and note about ANALYZE not yet implemented
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Scan: explain_test_4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "ANALYZE") != null);
 }
 
