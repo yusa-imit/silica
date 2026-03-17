@@ -16060,3 +16060,166 @@ test "EXPLAIN ANALYZE SELECT" {
     try std.testing.expect(std.mem.indexOf(u8, result.message, "ANALYZE") != null);
 }
 
+// ── Comprehensive Edge Case Tests for EXPLAIN ──────────────────────────
+
+test "EXPLAIN edge case: complex nested subquery" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS orders (id INTEGER, total INTEGER)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS users (id INTEGER, name TEXT)");
+
+    var result = try db.execSQL("EXPLAIN SELECT * FROM users WHERE id IN (SELECT id FROM orders WHERE total > 100)");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Scan: users") != null);
+}
+
+test "EXPLAIN edge case: aggregation with GROUP BY" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS sales (product TEXT, amount INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN SELECT product, SUM(amount) FROM sales GROUP BY product");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Aggregate") != null);
+}
+
+test "EXPLAIN edge case: window function" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS scores (player TEXT, score INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN SELECT player, ROW_NUMBER() OVER (ORDER BY score DESC) FROM scores");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Window") != null);
+}
+
+test "EXPLAIN edge case: CTE (WITH clause)" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS products (id INTEGER, price INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN WITH expensive AS (SELECT * FROM products WHERE price > 1000) SELECT * FROM expensive");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    // Plan should show CTE materialization or scan
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Scan") != null);
+}
+
+test "EXPLAIN edge case: UNION ALL set operation" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS t1 (id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS t2 (id INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN SELECT id FROM t1 UNION ALL SELECT id FROM t2");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "SetOp") != null or
+                           std.mem.indexOf(u8, result.message, "Union") != null);
+}
+
+test "EXPLAIN edge case: ORDER BY with LIMIT" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS items (name TEXT, priority INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN SELECT * FROM items ORDER BY priority DESC LIMIT 10");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Sort") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Limit") != null);
+}
+
+test "EXPLAIN edge case: DISTINCT elimination" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS categories (name TEXT)");
+
+    var result = try db.execSQL("EXPLAIN SELECT DISTINCT name FROM categories");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Distinct") != null or
+                           std.mem.indexOf(u8, result.message, "Scan") != null);
+}
+
+test "EXPLAIN edge case: LEFT JOIN with filter" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS customers (id INTEGER, name TEXT)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS invoices (customer_id INTEGER, amount INTEGER)");
+
+    var result = try db.execSQL("EXPLAIN SELECT * FROM customers LEFT JOIN invoices ON customers.id = invoices.customer_id WHERE amount > 100");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Join") != null);
+}
+
+test "EXPLAIN edge case: cross join (Cartesian product)" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS colors (name TEXT)");
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS sizes (name TEXT)");
+
+    var result = try db.execSQL("EXPLAIN SELECT * FROM colors CROSS JOIN sizes");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Join") != null or
+                           std.mem.indexOf(u8, result.message, "Scan") != null);
+}
+
+test "EXPLAIN edge case: invalid query returns error" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // EXPLAIN should propagate analysis errors
+    const result = db.execSQL("EXPLAIN SELECT * FROM nonexistent_table");
+    try std.testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "EXPLAIN ANALYZE edge case: multiple aggregates" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS metrics (value INTEGER)");
+    _ = try db.execSQL("INSERT INTO metrics VALUES (10), (20), (30)");
+
+    var result = try db.execSQL("EXPLAIN ANALYZE SELECT COUNT(*), SUM(value), AVG(value) FROM metrics");
+    defer result.close(allocator);
+
+    try std.testing.expect(result.message.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "Aggregate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "ANALYZE") != null);
+}
+
