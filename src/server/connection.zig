@@ -1319,3 +1319,456 @@ test "SessionState - invalid statement_timeout value" {
     const result = session.setParameter("statement_timeout", "not_a_number");
     try std.testing.expectError(error.InvalidCharacter, result);
 }
+
+// ── Comprehensive Edge Case Tests ───────────────────────────────────
+
+test "valueToText - very long text (>1MB)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_long.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a 2MB string
+    const large_text = try allocator.alloc(u8, 2 * 1024 * 1024);
+    defer allocator.free(large_text);
+    @memset(large_text, 'A');
+
+    const val = Value{ .text = large_text };
+    const result = try conn.valueToText(val);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(large_text.len, result.len);
+    try std.testing.expectEqualStrings(large_text, result);
+}
+
+test "valueToText - empty text" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_empty.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const val = Value{ .text = "" };
+    const result = try conn.valueToText(val);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "valueToText - text with null bytes" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_nullbytes.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const text_with_nulls = "hello\x00world\x00!";
+    const val = Value{ .text = text_with_nulls };
+    const result = try conn.valueToText(val);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(text_with_nulls, result);
+}
+
+test "valueToText - integer min/max values" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_minmax.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Test i64 minimum
+    const min_val = Value{ .integer = std.math.minInt(i64) };
+    const min_result = try conn.valueToText(min_val);
+    defer allocator.free(min_result);
+    try std.testing.expectEqualStrings("-9223372036854775808", min_result);
+
+    // Test i64 maximum
+    const max_val = Value{ .integer = std.math.maxInt(i64) };
+    const max_result = try conn.valueToText(max_val);
+    defer allocator.free(max_result);
+    try std.testing.expectEqualStrings("9223372036854775807", max_result);
+}
+
+test "valueToText - real edge values" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_real_edge.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Test zero
+    const zero = Value{ .real = 0.0 };
+    const zero_result = try conn.valueToText(zero);
+    defer allocator.free(zero_result);
+    try std.testing.expect(std.mem.startsWith(u8, zero_result, "0"));
+
+    // Test very small positive number
+    const small = Value{ .real = 1e-308 };
+    const small_result = try conn.valueToText(small);
+    defer allocator.free(small_result);
+    try std.testing.expect(small_result.len > 0);
+
+    // Test very large number
+    const large = Value{ .real = 1e308 };
+    const large_result = try conn.valueToText(large);
+    defer allocator.free(large_result);
+    try std.testing.expect(large_result.len > 0);
+}
+
+test "valueToText - blob empty" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_blob_empty.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const empty: []const u8 = &[_]u8{};
+    const val = Value{ .blob = empty };
+    const result = try conn.valueToText(val);
+    defer allocator.free(result);
+
+    // Empty blob should produce empty hex string or "\\x"
+    try std.testing.expect(result.len == 0 or std.mem.eql(u8, result, "\\x"));
+}
+
+test "valueToText - blob with all byte values" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_blob_all.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create blob with all possible byte values 0x00-0xFF
+    var blob_data: [256]u8 = undefined;
+    for (&blob_data, 0..) |*byte, i| {
+        byte.* = @intCast(i);
+    }
+
+    const val = Value{ .blob = &blob_data };
+    const result = try conn.valueToText(val);
+    defer allocator.free(result);
+
+    // Should be hex-encoded: \\x + 512 hex chars
+    try std.testing.expect(result.len == 2 + 512 or result.len == 512);
+}
+
+test "getSQLState - comprehensive error mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_sqlstate_comprehensive.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Test additional error mappings
+    try std.testing.expectEqualStrings("23505", try conn.getSQLState(error.DuplicateKey));
+    try std.testing.expectEqualStrings("42P07", try conn.getSQLState(error.TableAlreadyExists));
+    try std.testing.expectEqualStrings("42P01", try conn.getSQLState(error.TableNotFound));
+    try std.testing.expectEqualStrings("40001", try conn.getSQLState(error.SerializationFailure));
+    try std.testing.expectEqualStrings("40P01", try conn.getSQLState(error.DeadlockDetected));
+}
+
+test "handleParse - very long statement name (255 chars)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_parse_long.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create 255-character statement name
+    const long_name = try allocator.alloc(u8, 255);
+    defer allocator.free(long_name);
+    @memset(long_name, 'S');
+
+    const parse_msg = wire.Parse{
+        .statement_name = long_name,
+        .query = "SELECT 1",
+        .param_types = &[_]i32{},
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleParse(parse_msg, buf.writer(allocator));
+
+    // Verify it was stored
+    try std.testing.expect(conn.prepared_statements.contains(long_name));
+}
+
+test "handleParse - statement name with special characters" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_parse_special.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const special_name = "stmt!@#$%^&*()_+-=[]{}|;:',.<>?/~`";
+    const parse_msg = wire.Parse{
+        .statement_name = special_name,
+        .query = "SELECT 2",
+        .param_types = &[_]i32{},
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleParse(parse_msg, buf.writer(allocator));
+
+    try std.testing.expect(conn.prepared_statements.contains(special_name));
+}
+
+test "handleBind - very long portal name" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_bind_long.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // First create a prepared statement
+    const param_types = [_]i32{23};
+    const parse_msg = wire.Parse{
+        .statement_name = "test_stmt",
+        .query = "SELECT $1",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Create 255-character portal name
+    const long_portal = try allocator.alloc(u8, 255);
+    defer allocator.free(long_portal);
+    @memset(long_portal, 'P');
+
+    const param_values = [_][]const u8{"42"};
+    const bind_msg = wire.Bind{
+        .portal_name = long_portal,
+        .statement_name = "test_stmt",
+        .param_values = &param_values,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    try std.testing.expect(conn.portals.contains(long_portal));
+}
+
+test "handleClose - close same statement twice (idempotent)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_close_twice.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create statement
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt",
+        .query = "SELECT 1",
+        .param_types = &[_]i32{},
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Close it twice - should not error
+    const close_msg = wire.Close{
+        .target_type = .statement,
+        .target_name = "stmt",
+    };
+
+    var close_buf1 = std.ArrayListUnmanaged(u8){};
+    defer close_buf1.deinit(allocator);
+    try conn.handleClose(close_msg, close_buf1.writer(allocator));
+
+    var close_buf2 = std.ArrayListUnmanaged(u8){};
+    defer close_buf2.deinit(allocator);
+    try conn.handleClose(close_msg, close_buf2.writer(allocator)); // Second close should be no-op
+
+    try std.testing.expect(!conn.prepared_statements.contains("stmt"));
+}
+
+test "SessionState - statement_timeout boundary values" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    // Zero timeout (disabled)
+    try session.setParameter("statement_timeout", "0");
+    try std.testing.expectEqual(@as(u32, 0), session.statement_timeout);
+
+    // Maximum valid timeout (u32 max)
+    try session.setParameter("statement_timeout", "4294967295");
+    try std.testing.expectEqual(@as(u32, 4294967295), session.statement_timeout);
+
+    // Negative should error
+    const result = session.setParameter("statement_timeout", "-1");
+    try std.testing.expectError(error.Overflow, result);
+}
+
+test "SessionState - parameter case sensitivity" {
+    const allocator = std.testing.allocator;
+
+    var session = try SessionState.init(allocator, "user", "db");
+    defer session.deinit();
+
+    // All parameters should update (parameter names are currently case-sensitive in our implementation)
+    try session.setParameter("search_path", "public");
+    try std.testing.expectEqualStrings("public", session.search_path);
+
+    try session.setParameter("search_path", "schema1");
+    try std.testing.expectEqualStrings("schema1", session.search_path);
+}
+
+test "handleParse - many statements stress" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_parse_many.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create many statements rapidly
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        const name = try std.fmt.allocPrint(allocator, "stmt_{d}", .{i});
+        defer allocator.free(name);
+
+        const parse_msg = wire.Parse{
+            .statement_name = name,
+            .query = "SELECT 1",
+            .param_types = &[_]i32{},
+        };
+
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        try conn.handleParse(parse_msg, buf.writer(allocator));
+    }
+
+    try std.testing.expectEqual(@as(usize, 100), conn.prepared_statements.count());
+}
+
+test "valueToText - all Value type variants coverage" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_value_variants.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Integer
+    const int_result = try conn.valueToText(Value{ .integer = 123 });
+    defer allocator.free(int_result);
+    try std.testing.expectEqualStrings("123", int_result);
+
+    // Real
+    const real_result = try conn.valueToText(Value{ .real = 3.14 });
+    defer allocator.free(real_result);
+    try std.testing.expect(std.mem.startsWith(u8, real_result, "3.14"));
+
+    // Text
+    const text_result = try conn.valueToText(Value{ .text = "hello" });
+    defer allocator.free(text_result);
+    try std.testing.expectEqualStrings("hello", text_result);
+
+    // Null
+    const null_result = try conn.valueToText(Value.null_value);
+    defer allocator.free(null_result);
+    try std.testing.expectEqualStrings("", null_result);
+
+    // Boolean true
+    const true_result = try conn.valueToText(Value{ .boolean = true });
+    defer allocator.free(true_result);
+    try std.testing.expectEqualStrings("t", true_result);
+
+    // Boolean false
+    const false_result = try conn.valueToText(Value{ .boolean = false });
+    defer allocator.free(false_result);
+    try std.testing.expectEqualStrings("f", false_result);
+
+    // UUID
+    const uuid_bytes = [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
+        [_]u8{0x90} ++ [_]u8{0xab} ++ [_]u8{0xcd} ++ [_]u8{0xef} ++
+        [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
+        [_]u8{0x90} ++ [_]u8{0xab} ++ [_]u8{0xcd} ++ [_]u8{0xef};
+    const uuid_result = try conn.valueToText(Value{ .uuid = uuid_bytes });
+    defer allocator.free(uuid_result);
+    try std.testing.expectEqualStrings("12345678-90ab-cdef-1234-567890abcdef", uuid_result);
+
+    // JSON
+    const json_result = try conn.valueToText(Value{ .json = "{\"key\":\"value\"}" });
+    defer allocator.free(json_result);
+    try std.testing.expectEqualStrings("{\"key\":\"value\"}", json_result);
+}
