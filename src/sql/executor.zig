@@ -2965,6 +2965,77 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         }
         return .null_value;
     }
+    if (std.ascii.eqlIgnoreCase(fc.name, "nullif")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const val1 = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer val1.free(allocator);
+        const val2 = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer val2.free(allocator);
+        // Return NULL if values are equal, otherwise return first value
+        const cmp = val1.compare(val2);
+        if (cmp == .eq) {
+            return .null_value;
+        }
+        return val1.dupe(allocator) catch return EvalError.OutOfMemory;
+    }
+    if (std.ascii.eqlIgnoreCase(fc.name, "greatest")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        var max_val: ?Value = null;
+        defer if (max_val) |v| v.free(allocator);
+
+        for (fc.args) |arg| {
+            const val = try evalExpr(allocator, arg, row, catalog);
+            // Skip NULL values in GREATEST/LEAST
+            if (val == .null_value) {
+                val.free(allocator);
+                continue;
+            }
+            if (max_val) |current_max| {
+                const cmp = val.compare(current_max);
+                if (cmp == .gt) {
+                    current_max.free(allocator);
+                    max_val = val;
+                } else {
+                    val.free(allocator);
+                }
+            } else {
+                max_val = val;
+            }
+        }
+        if (max_val) |v| {
+            return v.dupe(allocator) catch return EvalError.OutOfMemory;
+        }
+        return .null_value;
+    }
+    if (std.ascii.eqlIgnoreCase(fc.name, "least")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        var min_val: ?Value = null;
+        defer if (min_val) |v| v.free(allocator);
+
+        for (fc.args) |arg| {
+            const val = try evalExpr(allocator, arg, row, catalog);
+            // Skip NULL values in GREATEST/LEAST
+            if (val == .null_value) {
+                val.free(allocator);
+                continue;
+            }
+            if (min_val) |current_min| {
+                const cmp = val.compare(current_min);
+                if (cmp == .lt) {
+                    current_min.free(allocator);
+                    min_val = val;
+                } else {
+                    val.free(allocator);
+                }
+            } else {
+                min_val = val;
+            }
+        }
+        if (min_val) |v| {
+            return v.dupe(allocator) catch return EvalError.OutOfMemory;
+        }
+        return .null_value;
+    }
     if (std.ascii.eqlIgnoreCase(fc.name, "typeof")) {
         if (fc.args.len != 1) return EvalError.TypeError;
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
@@ -8451,6 +8522,155 @@ test "evalFunctionCall COALESCE" {
     const result4 = try evalFunctionCall(allocator, fc_text, &empty_row, null);
     defer result4.free(allocator);
     try std.testing.expectEqualStrings("hello", result4.text);
+}
+
+test "evalFunctionCall NULLIF" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // NULLIF(1, 1) → NULL (equal values)
+    const one_a = ast.Expr{ .integer_literal = 1 };
+    const one_b = ast.Expr{ .integer_literal = 1 };
+    const args_equal = [_]*const ast.Expr{ &one_a, &one_b };
+    const fc_equal = .{ .name = "nullif", .args = &args_equal, .distinct = false };
+
+    const result1 = try evalFunctionCall(allocator, fc_equal, &empty_row, null);
+    defer result1.free(allocator);
+    try std.testing.expect(result1 == .null_value);
+
+    // NULLIF(1, 2) → 1 (different values)
+    const one = ast.Expr{ .integer_literal = 1 };
+    const two = ast.Expr{ .integer_literal = 2 };
+    const args_diff = [_]*const ast.Expr{ &one, &two };
+    const fc_diff = .{ .name = "nullif", .args = &args_diff, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_diff, &empty_row, null);
+    defer result2.free(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result2.integer);
+
+    // NULLIF('hello', 'hello') → NULL (text equality)
+    const hello_a = ast.Expr{ .string_literal = "hello" };
+    const hello_b = ast.Expr{ .string_literal = "hello" };
+    const args_text = [_]*const ast.Expr{ &hello_a, &hello_b };
+    const fc_text = .{ .name = "nullif", .args = &args_text, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_text, &empty_row, null);
+    defer result3.free(allocator);
+    try std.testing.expect(result3 == .null_value);
+
+    // NULLIF('hello', 'world') → 'hello' (text inequality)
+    const hello = ast.Expr{ .string_literal = "hello" };
+    const world = ast.Expr{ .string_literal = "world" };
+    const args_text_diff = [_]*const ast.Expr{ &hello, &world };
+    const fc_text_diff = .{ .name = "nullif", .args = &args_text_diff, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_text_diff, &empty_row, null);
+    defer result4.free(allocator);
+    try std.testing.expectEqualStrings("hello", result4.text);
+}
+
+test "evalFunctionCall GREATEST" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // GREATEST(1, 2, 3) → 3
+    const one = ast.Expr{ .integer_literal = 1 };
+    const two = ast.Expr{ .integer_literal = 2 };
+    const three = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &one, &two, &three };
+    const fc = .{ .name = "greatest", .args = &args, .distinct = false };
+
+    const result1 = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result1.free(allocator);
+    try std.testing.expectEqual(@as(i64, 3), result1.integer);
+
+    // GREATEST(3, 1, 2) → 3 (order doesn't matter)
+    const args_unordered = [_]*const ast.Expr{ &three, &one, &two };
+    const fc_unordered = .{ .name = "greatest", .args = &args_unordered, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_unordered, &empty_row, null);
+    defer result2.free(allocator);
+    try std.testing.expectEqual(@as(i64, 3), result2.integer);
+
+    // GREATEST(NULL, 2, NULL, 3) → 3 (NULLs ignored)
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const args_nulls = [_]*const ast.Expr{ &null_expr, &two, &null_expr, &three };
+    const fc_nulls = .{ .name = "greatest", .args = &args_nulls, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_nulls, &empty_row, null);
+    defer result3.free(allocator);
+    try std.testing.expectEqual(@as(i64, 3), result3.integer);
+
+    // GREATEST(NULL, NULL) → NULL (all NULL)
+    const args_all_null = [_]*const ast.Expr{ &null_expr, &null_expr };
+    const fc_all_null = .{ .name = "greatest", .args = &args_all_null, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_all_null, &empty_row, null);
+    defer result4.free(allocator);
+    try std.testing.expect(result4 == .null_value);
+
+    // GREATEST with text values
+    const apple = ast.Expr{ .string_literal = "apple" };
+    const banana = ast.Expr{ .string_literal = "banana" };
+    const cherry = ast.Expr{ .string_literal = "cherry" };
+    const args_text = [_]*const ast.Expr{ &apple, &banana, &cherry };
+    const fc_text = .{ .name = "greatest", .args = &args_text, .distinct = false };
+
+    const result5 = try evalFunctionCall(allocator, fc_text, &empty_row, null);
+    defer result5.free(allocator);
+    try std.testing.expectEqualStrings("cherry", result5.text);
+}
+
+test "evalFunctionCall LEAST" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // LEAST(1, 2, 3) → 1
+    const one = ast.Expr{ .integer_literal = 1 };
+    const two = ast.Expr{ .integer_literal = 2 };
+    const three = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &one, &two, &three };
+    const fc = .{ .name = "least", .args = &args, .distinct = false };
+
+    const result1 = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result1.free(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result1.integer);
+
+    // LEAST(3, 1, 2) → 1 (order doesn't matter)
+    const args_unordered = [_]*const ast.Expr{ &three, &one, &two };
+    const fc_unordered = .{ .name = "least", .args = &args_unordered, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_unordered, &empty_row, null);
+    defer result2.free(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result2.integer);
+
+    // LEAST(NULL, 2, NULL, 1) → 1 (NULLs ignored)
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const args_nulls = [_]*const ast.Expr{ &null_expr, &two, &null_expr, &one };
+    const fc_nulls = .{ .name = "least", .args = &args_nulls, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_nulls, &empty_row, null);
+    defer result3.free(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result3.integer);
+
+    // LEAST(NULL, NULL) → NULL (all NULL)
+    const args_all_null = [_]*const ast.Expr{ &null_expr, &null_expr };
+    const fc_all_null = .{ .name = "least", .args = &args_all_null, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_all_null, &empty_row, null);
+    defer result4.free(allocator);
+    try std.testing.expect(result4 == .null_value);
+
+    // LEAST with text values
+    const apple = ast.Expr{ .string_literal = "apple" };
+    const banana = ast.Expr{ .string_literal = "banana" };
+    const cherry = ast.Expr{ .string_literal = "cherry" };
+    const args_text = [_]*const ast.Expr{ &apple, &banana, &cherry };
+    const fc_text = .{ .name = "least", .args = &args_text, .distinct = false };
+
+    const result5 = try evalFunctionCall(allocator, fc_text, &empty_row, null);
+    defer result5.free(allocator);
+    try std.testing.expectEqualStrings("apple", result5.text);
 }
 
 test "evalFunctionCall unknown function without catalog" {

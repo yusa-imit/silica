@@ -16193,3 +16193,151 @@ test "EXPLAIN ANALYZE edge case: multiple aggregates" {
     try std.testing.expect(std.mem.indexOf(u8, result.message, "ANALYZE") != null);
 }
 
+test "SQL function NULLIF integration" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS nullif_test (a INTEGER, b INTEGER, name TEXT)");
+    _ = try db.execSQL("INSERT INTO nullif_test VALUES (1, 1, 'same'), (1, 2, 'diff'), (NULL, 5, 'null_a')");
+
+    // NULLIF with equal values returns NULL
+    var result1 = try db.execSQL("SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'same'");
+    defer result1.close(allocator);
+    var row1 = (try result1.rows.?.next()).?;
+    defer row1.deinit();
+    const val1 = row1.getColumn("result").?;
+    try std.testing.expect(val1 == .null_value);
+
+    // NULLIF with different values returns first value
+    var result2 = try db.execSQL("SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'diff'");
+    defer result2.close(allocator);
+    var row2 = (try result2.rows.?.next()).?;
+    defer row2.deinit();
+    const val2 = row2.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 1), val2.integer);
+
+    // NULLIF with NULL first arg (NULL is not equal to anything)
+    var result3 = try db.execSQL("SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'null_a'");
+    defer result3.close(allocator);
+    var row3 = (try result3.rows.?.next()).?;
+    defer row3.deinit();
+    const val3 = row3.getColumn("result").?;
+    try std.testing.expect(val3 == .null_value);
+}
+
+test "SQL function GREATEST integration" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS greatest_test (a INTEGER, b INTEGER, c INTEGER)");
+    _ = try db.execSQL("INSERT INTO greatest_test VALUES (1, 2, 3), (5, NULL, 2), (NULL, NULL, NULL)");
+
+    // GREATEST with all values present
+    var result1 = try db.execSQL("SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a = 1");
+    defer result1.close(allocator);
+    var row1 = (try result1.rows.?.next()).?;
+    defer row1.deinit();
+    const val1 = row1.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 3), val1.integer);
+
+    // GREATEST with NULLs (NULLs are ignored)
+    var result2 = try db.execSQL("SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a = 5");
+    defer result2.close(allocator);
+    var row2 = (try result2.rows.?.next()).?;
+    defer row2.deinit();
+    const val2 = row2.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 5), val2.integer);
+
+    // GREATEST with all NULLs returns NULL
+    var result3 = try db.execSQL("SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a IS NULL AND b IS NULL");
+    defer result3.close(allocator);
+    var row3 = (try result3.rows.?.next()).?;
+    defer row3.deinit();
+    const val3 = row3.getColumn("result").?;
+    try std.testing.expect(val3 == .null_value);
+
+    // GREATEST with literals
+    var result4 = try db.execSQL("SELECT GREATEST(10, 20, 5) as result");
+    defer result4.close(allocator);
+    var row4 = (try result4.rows.?.next()).?;
+    defer row4.deinit();
+    const val4 = row4.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 20), val4.integer);
+}
+
+test "SQL function LEAST integration" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS least_test (a INTEGER, b INTEGER, c INTEGER)");
+    _ = try db.execSQL("INSERT INTO least_test VALUES (1, 2, 3), (5, NULL, 2), (NULL, NULL, NULL)");
+
+    // LEAST with all values present
+    var result1 = try db.execSQL("SELECT LEAST(a, b, c) as result FROM least_test WHERE a = 1");
+    defer result1.close(allocator);
+    var row1 = (try result1.rows.?.next()).?;
+    defer row1.deinit();
+    const val1 = row1.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 1), val1.integer);
+
+    // LEAST with NULLs (NULLs are ignored)
+    var result2 = try db.execSQL("SELECT LEAST(a, b, c) as result FROM least_test WHERE a = 5");
+    defer result2.close(allocator);
+    var row2 = (try result2.rows.?.next()).?;
+    defer row2.deinit();
+    const val2 = row2.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 2), val2.integer);
+
+    // LEAST with all NULLs returns NULL
+    var result3 = try db.execSQL("SELECT LEAST(a, b, c) as result FROM least_test WHERE a IS NULL AND b IS NULL");
+    defer result3.close(allocator);
+    var row3 = (try result3.rows.?.next()).?;
+    defer row3.deinit();
+    const val3 = row3.getColumn("result").?;
+    try std.testing.expect(val3 == .null_value);
+
+    // LEAST with literals
+    var result4 = try db.execSQL("SELECT LEAST(10, 20, 5) as result");
+    defer result4.close(allocator);
+    var row4 = (try result4.rows.?.next()).?;
+    defer row4.deinit();
+    const val4 = row4.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 5), val4.integer);
+}
+
+test "SQL function COALESCE integration" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS coalesce_test (a INTEGER, b INTEGER, c INTEGER)");
+    _ = try db.execSQL("INSERT INTO coalesce_test VALUES (NULL, NULL, 3), (NULL, 2, 3), (1, 2, 3)");
+
+    // COALESCE returns first non-NULL (third column)
+    var result1 = try db.execSQL("SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a IS NULL AND b IS NULL");
+    defer result1.close(allocator);
+    var row1 = (try result1.rows.?.next()).?;
+    defer row1.deinit();
+    const val1 = row1.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 3), val1.integer);
+
+    // COALESCE returns first non-NULL (second column)
+    var result2 = try db.execSQL("SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a IS NULL AND b = 2");
+    defer result2.close(allocator);
+    var row2 = (try result2.rows.?.next()).?;
+    defer row2.deinit();
+    const val2 = row2.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 2), val2.integer);
+
+    // COALESCE returns first non-NULL (first column)
+    var result3 = try db.execSQL("SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a = 1");
+    defer result3.close(allocator);
+    var row3 = (try result3.rows.?.next()).?;
+    defer row3.deinit();
+    const val3 = row3.getColumn("result").?;
+    try std.testing.expectEqual(@as(i64, 1), val3.integer);
+}
+
