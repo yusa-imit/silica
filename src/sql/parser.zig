@@ -2295,6 +2295,18 @@ pub const Parser = struct {
             },
             .kw_not => {
                 _ = self.advance();
+                // Check for NOT EXISTS
+                if (self.check(.kw_exists)) {
+                    _ = self.advance(); // consume EXISTS
+                    _ = try self.expect(.left_paren);
+                    const sel = try self.parseSelect();
+                    _ = try self.expect(.right_paren);
+                    const sel_ptr = self.arena.create(ast.SelectStmt, sel) catch return error.OutOfMemory;
+                    return self.arena.create(ast.Expr, .{ .exists = .{
+                        .subquery = sel_ptr,
+                        .negated = true,
+                    } }) catch return error.OutOfMemory;
+                }
                 const operand = try self.parseExpr(12);
                 return self.arena.create(ast.Expr, .{ .unary_op = .{
                     .op = .not,
@@ -2307,6 +2319,17 @@ pub const Parser = struct {
                 return self.arena.create(ast.Expr, .{ .unary_op = .{
                     .op = .bitwise_not,
                     .operand = operand,
+                } }) catch return error.OutOfMemory;
+            },
+            .kw_exists => {
+                _ = self.advance(); // consume EXISTS
+                _ = try self.expect(.left_paren);
+                const sel = try self.parseSelect();
+                _ = try self.expect(.right_paren);
+                const sel_ptr = self.arena.create(ast.SelectStmt, sel) catch return error.OutOfMemory;
+                return self.arena.create(ast.Expr, .{ .exists = .{
+                    .subquery = sel_ptr,
+                    .negated = false,
                 } }) catch return error.OutOfMemory;
             },
             .left_paren => {
@@ -5032,4 +5055,56 @@ test "parse ANALYZE case insensitive" {
     defer r.deinit();
     try std.testing.expect(r.stmt == .analyze);
     try std.testing.expectEqualStrings("products", r.stmt.analyze.table_name.?);
+}
+
+test "parse EXISTS subquery in WHERE" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expect(select_stmt.where.?.* == .exists);
+    try std.testing.expect(!select_stmt.where.?.exists.negated);
+    // Verify subquery is properly parsed
+    try std.testing.expect(select_stmt.where.?.exists.subquery.columns.len == 1);
+}
+
+test "parse NOT EXISTS subquery in WHERE" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expect(select_stmt.where.?.* == .exists);
+    try std.testing.expect(select_stmt.where.?.exists.negated);
+}
+
+test "parse EXISTS with complex subquery" {
+    var r = try testParseWithArena("SELECT name FROM products WHERE EXISTS (SELECT * FROM reviews WHERE reviews.product_id = products.id AND rating > 4)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expect(select_stmt.where.?.* == .exists);
+    try std.testing.expect(!select_stmt.where.?.exists.negated);
+}
+
+test "parse EXISTS in SELECT list" {
+    var r = try testParseWithArena("SELECT id, EXISTS (SELECT 1 FROM orders WHERE user_id = users.id) AS has_orders FROM users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.columns.len == 2);
+    try std.testing.expect(select_stmt.columns[1] == .expr);
+    try std.testing.expect(select_stmt.columns[1].expr.value.* == .exists);
+    try std.testing.expectEqualStrings("has_orders", select_stmt.columns[1].expr.alias.?);
+}
+
+test "parse multiple EXISTS in WHERE with AND" {
+    var r = try testParseWithArena("SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders) AND NOT EXISTS (SELECT 1 FROM reviews)");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expect(select_stmt.where.?.* == .binary_op);
 }
