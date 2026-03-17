@@ -498,3 +498,24 @@
   - Continue Milestone 21 (Advanced Optimization)
   - Fix hash join key extraction limitation
   - Complete EXISTS subquery execution
+
+### FEATURE Session (2026-03-17 22:00 UTC)
+- **Mode**: FEATURE (hour 22, hour % 4 == 2)
+- **Focus**: Implement standard SQL comparison functions
+- **Completed**:
+  - Implemented NULLIF(val1, val2): returns NULL if values equal, val1 otherwise
+  - Implemented GREATEST(...): returns largest value (NULLs ignored)
+  - Implemented LEAST(...): returns smallest value (NULLs ignored)
+  - COALESCE already existed (verified with test)
+  - Added 3 comprehensive executor unit tests (NULLIF, GREATEST, LEAST) with 12 test cases total
+  - Added 4 integration tests in engine.zig with real SQL queries
+  - All functions handle NULL values per SQL standard
+  - Works with all data types via Value.compare()
+- **Lessons learned**:
+  - Value.compare() takes Value by value, not by pointer (no & needed)
+  - QueryResult.rows.?.next() returns ?Row, not ?*Row (no dereference)
+  - getColumn() returns ?Value, not ?*const Value (no dereference)
+  - `:memory:` databases in tests can have table name conflicts - use unique names
+  - Built-in SQL functions are implemented in evalFunctionCall, no tokenizer keywords needed
+- **Commit**: 40b89a8 feat: implement NULLIF, GREATEST, LEAST SQL functions
+- **Test Status**: Implementation complete with 16 new tests (executor + integration)
