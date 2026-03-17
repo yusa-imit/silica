@@ -172,11 +172,22 @@ pub const PlanNode = union(enum) {
         alias: ?[]const u8 = null,
     };
 
+    pub const JoinAlgorithm = enum {
+        /// Nested loop join — O(n*m) complexity, works for any join condition
+        nested_loop,
+        /// Hash join — O(n+m) complexity, requires equi-join condition
+        hash,
+        /// Merge join — O(n+m) complexity, requires sorted inputs on join keys
+        merge,
+    };
+
     pub const Join = struct {
         left: *const PlanNode,
         right: *const PlanNode,
         join_type: ast.JoinType = .inner,
         on_condition: ?*const ast.Expr = null,
+        /// Join algorithm chosen by optimizer (default: nested_loop)
+        algorithm: JoinAlgorithm = .nested_loop,
     };
 
     pub const Sort = struct {

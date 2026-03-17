@@ -75,6 +75,8 @@ const LimitOp = executor_mod.LimitOp;
 const SortOp = executor_mod.SortOp;
 const AggregateOp = executor_mod.AggregateOp;
 const NestedLoopJoinOp = executor_mod.NestedLoopJoinOp;
+const HashJoinOp = executor_mod.HashJoinOp;
+const MergeJoinOp = executor_mod.MergeJoinOp;
 const ValuesOp = executor_mod.ValuesOp;
 const MaterializedOp = executor_mod.MaterializedOp;
 const EmptyOp = executor_mod.EmptyOp;
@@ -439,6 +441,8 @@ const OperatorChain = struct {
     sort: ?*SortOp = null,
     aggregate: ?*AggregateOp = null,
     join: ?*NestedLoopJoinOp = null,
+    hash_join: ?*HashJoinOp = null,
+    merge_join: ?*MergeJoinOp = null,
     values: ?*ValuesOp = null,
     empty: ?*EmptyOp = null,
     materialized: ?*MaterializedOp = null,
@@ -486,6 +490,8 @@ const OperatorChain = struct {
         if (self.sort) |s| allocator.destroy(s);
         if (self.aggregate) |a| allocator.destroy(a);
         if (self.join) |j| allocator.destroy(j);
+        if (self.hash_join) |hj| allocator.destroy(hj);
+        if (self.merge_join) |mj| allocator.destroy(mj);
         if (self.values) |v| allocator.destroy(v);
         if (self.empty) |e| allocator.destroy(e);
         if (self.materialized) |m| allocator.destroy(m);
@@ -1592,10 +1598,28 @@ pub const Database = struct {
     fn buildJoin(self: *Database, join: PlanNode.Join, ops: *OperatorChain) EngineError!RowIterator {
         const left = try self.buildIterator(join.left, ops);
         const right = try self.buildIterator(join.right, ops);
-        const join_op = self.allocator.create(NestedLoopJoinOp) catch return EngineError.OutOfMemory;
-        join_op.* = NestedLoopJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
-        ops.join = join_op;
-        return join_op.iterator();
+
+        // Use the algorithm selected by the optimizer
+        return switch (join.algorithm) {
+            .nested_loop => {
+                const join_op = self.allocator.create(NestedLoopJoinOp) catch return EngineError.OutOfMemory;
+                join_op.* = NestedLoopJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
+                ops.join = join_op;
+                return join_op.iterator();
+            },
+            .hash => {
+                const join_op = self.allocator.create(HashJoinOp) catch return EngineError.OutOfMemory;
+                join_op.* = HashJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
+                ops.hash_join = join_op;
+                return join_op.iterator();
+            },
+            .merge => {
+                const join_op = self.allocator.create(MergeJoinOp) catch return EngineError.OutOfMemory;
+                join_op.* = MergeJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
+                ops.merge_join = join_op;
+                return join_op.iterator();
+            },
+        };
     }
 
     fn buildDistinct(self: *Database, d: PlanNode.Distinct, ops: *OperatorChain) EngineError!RowIterator {

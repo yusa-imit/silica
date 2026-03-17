@@ -161,11 +161,15 @@ pub const Optimizer = struct {
             return self.tryDpJoinReordering(opt_left, opt_right, join.on_condition);
         }
 
+        // For non-INNER joins (LEFT, RIGHT, FULL), still select the algorithm
+        const algorithm = self.selectJoinAlgorithm(opt_left, opt_right, join.on_condition);
+
         return self.createNode(.{ .join = .{
             .left = opt_left,
             .right = opt_right,
             .join_type = join.join_type,
             .on_condition = join.on_condition,
+            .algorithm = algorithm,
         } });
     }
 
@@ -182,11 +186,14 @@ pub const Optimizer = struct {
 
         if (!is_simple_join) {
             // Fall back to simple binary join for complex join trees
+            // Still apply algorithm selection even for complex joins
+            const algorithm = self.selectJoinAlgorithm(left, right, on_condition);
             return self.createNode(.{ .join = .{
                 .left = left,
                 .right = right,
                 .join_type = .inner,
                 .on_condition = on_condition,
+                .algorithm = algorithm,
             } });
         }
 
@@ -199,25 +206,105 @@ pub const Optimizer = struct {
         // In a full implementation, we'd use cardinality estimates
         const should_swap = right_cost < left_cost;
 
-        if (should_swap) {
-            // Swap the order but keep the same condition
-            return self.createNode(.{ .join = .{
-                .left = right,
-                .right = left,
-                .join_type = .inner,
-                .on_condition = on_condition,
-            } });
-        } else {
-            // Keep original order
-            return self.createNode(.{ .join = .{
-                .left = left,
-                .right = right,
-                .join_type = .inner,
-                .on_condition = on_condition,
-            } });
-        }
+        // Select the best join algorithm
+        const final_left = if (should_swap) right else left;
+        const final_right = if (should_swap) left else right;
+        const algorithm = self.selectJoinAlgorithm(final_left, final_right, on_condition);
+
+        return self.createNode(.{ .join = .{
+            .left = final_left,
+            .right = final_right,
+            .join_type = .inner,
+            .on_condition = on_condition,
+            .algorithm = algorithm,
+        } });
     }
 
+
+    /// Select the best join algorithm based on cost estimates.
+    fn selectJoinAlgorithm(
+        self: *Optimizer,
+        _: *const PlanNode, // left (unused while hash join is disabled)
+        _: *const PlanNode, // right (unused while hash join is disabled)
+        on_condition: ?*const ast.Expr,
+    ) PlanNode.JoinAlgorithm {
+        // If no join condition, only nested loop works
+        if (on_condition == null) return .nested_loop;
+
+        // Check if the join condition is an equi-join (a.col = b.col)
+        const is_equi_join = self.isEquiJoin(on_condition.?);
+
+        // For non-equi-joins, only nested loop works
+        if (!is_equi_join) return .nested_loop;
+
+        // TEMPORARY: HashJoinOp has a known limitation where join key extraction
+        // is hardcoded to the first column. Until this is fixed, we only use
+        // hash join for simple cases. For now, return nested_loop to maintain
+        // correctness. This will be re-enabled once HashJoinOp is fixed to properly
+        // extract join keys from the ON condition.
+        //
+        // TODO: Fix HashJoinOp to extract join keys from on_condition instead of
+        // hardcoding to first column, then re-enable cost-based selection.
+        return .nested_loop;
+
+        // For equi-joins, compare hash join vs nested loop costs
+        // Simplified cardinality estimates (in production, use ANALYZE statistics)
+        // const left_rows = self.estimateCardinality(left);
+        // const right_rows = self.estimateCardinality(right);
+
+        // const left_cost = self.estimateScanCost(left);
+        // const right_cost = self.estimateScanCost(right);
+
+        // // Estimate costs for each algorithm
+        // const nested_cost = self.cost_estimator.estimateNestedLoopJoin(
+        //     left_cost,
+        //     right_cost,
+        //     left_rows,
+        //     right_rows,
+        // );
+
+        // const hash_cost = self.cost_estimator.estimateHashJoin(
+        //     left_cost,
+        //     right_cost,
+        //     left_rows,
+        //     right_rows,
+        // );
+
+        // // Choose the algorithm with the lowest cost
+        // // Note: Merge join requires sorted inputs, which we don't track yet
+        // // So we only choose between nested loop and hash join for now
+        // if (hash_cost < nested_cost) {
+        //     return .hash;
+        // } else {
+        //     return .nested_loop;
+        // }
+    }
+
+    /// Check if a join condition is an equi-join (contains = comparison).
+    fn isEquiJoin(_: *Optimizer, condition: *const ast.Expr) bool {
+        return switch (condition.*) {
+            .binary_op => |op| switch (op.op) {
+                .equal => true,
+                .@"and" => {
+                    // For AND, at least one side should be equi-join
+                    return true; // Simplified: assume AND with = is equi-join
+                },
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    /// Estimate the cardinality (row count) of a plan node.
+    fn estimateCardinality(_: *Optimizer, node: *const PlanNode) u32 {
+        // Simplified: return fixed estimates
+        // In production, this would use ANALYZE statistics from catalog
+        return switch (node.*) {
+            .scan => 1000, // Assume 1000 rows per table
+            .filter => 100, // Assume filter reduces to 10%
+            else => 100,
+        };
+    }
 
     fn estimateScanCost(_: *Optimizer, _: *const PlanNode) f64 {
         // Simplified: assume each table scan costs 100.0 units
@@ -1588,6 +1675,183 @@ test "join reordering: multiple conditions ANDed together" {
             try testing.expect(j.on_condition != null);
             try testing.expect(j.on_condition.?.* == .binary_op);
             try testing.expectEqual(j.on_condition.?.binary_op.op, .@"and");
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+// ── Join Algorithm Selection Tests ──────────────────────────────────────
+
+test "join algorithm selection: equi-join would select hash join (disabled)" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Equi-join condition: users.id = orders.user_id
+    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } });
+    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = left_col,
+        .op = .equal,
+        .right = right_col,
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // TEMPORARY: Hash join selection is disabled until HashJoinOp is fixed
+    // to properly extract join keys from ON condition (not hardcoded to first column).
+    // Currently returns nested_loop for correctness.
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join algorithm selection: non-equi-join uses nested loop" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Non-equi-join condition: users.age > orders.quantity
+    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "age", .prefix = "users" } });
+    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "quantity", .prefix = "orders" } });
+    const condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = left_col,
+        .op = .greater_than,
+        .right = right_col,
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // Non-equi-join can only use nested loop
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join algorithm selection: no condition uses nested loop" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = null, // Cross join (no condition)
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // Cross join (no condition) must use nested loop
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join algorithm selection: LEFT JOIN with equi-join (disabled)" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Equi-join condition
+    const condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .left,
+        .on_condition = condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // TEMPORARY: Hash join selection disabled (see comment in selectJoinAlgorithm)
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(ast.JoinType.left, j.join_type);
+            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "join algorithm selection: complex equi-join with AND (disabled)" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    // Complex equi-join: users.id = orders.user_id AND users.region = orders.region
+    const cond1 = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+    } });
+    const cond2 = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "users" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "orders" } }),
+    } });
+    const and_condition = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = cond1,
+        .op = .@"and",
+        .right = cond2,
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = and_condition,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // TEMPORARY: Hash join selection disabled (see comment in selectJoinAlgorithm)
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
         },
         else => return error.InvalidPlan,
     }
