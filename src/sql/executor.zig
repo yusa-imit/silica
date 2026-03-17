@@ -8673,6 +8673,236 @@ test "evalFunctionCall LEAST" {
     try std.testing.expectEqualStrings("apple", result5.text);
 }
 
+test "evalFunctionCall NULLIF edge cases" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // NULLIF(NULL, 1) → NULL (first arg NULL)
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const one = ast.Expr{ .integer_literal = 1 };
+    const args_null_first = [_]*const ast.Expr{ &null_expr, &one };
+    const fc_null_first = .{ .name = "nullif", .args = &args_null_first, .distinct = false };
+
+    const result1 = try evalFunctionCall(allocator, fc_null_first, &empty_row, null);
+    defer result1.free(allocator);
+    try std.testing.expect(result1 == .null_value);
+
+    // NULLIF(1, NULL) → 1 (second arg NULL, not equal)
+    const args_null_second = [_]*const ast.Expr{ &one, &null_expr };
+    const fc_null_second = .{ .name = "nullif", .args = &args_null_second, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_null_second, &empty_row, null);
+    defer result2.free(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result2.integer);
+
+    // NULLIF(NULL, NULL) → NULL (both NULL)
+    const args_both_null = [_]*const ast.Expr{ &null_expr, &null_expr };
+    const fc_both_null = .{ .name = "nullif", .args = &args_both_null, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_both_null, &empty_row, null);
+    defer result3.free(allocator);
+    try std.testing.expect(result3 == .null_value);
+
+    // NULLIF(1.5, 1.5) → NULL (real equality)
+    const real_a = ast.Expr{ .float_literal = 1.5 };
+    const real_b = ast.Expr{ .float_literal = 1.5 };
+    const args_real_eq = [_]*const ast.Expr{ &real_a, &real_b };
+    const fc_real_eq = .{ .name = "nullif", .args = &args_real_eq, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_real_eq, &empty_row, null);
+    defer result4.free(allocator);
+    try std.testing.expect(result4 == .null_value);
+
+    // NULLIF(1.5, 2.5) → 1.5 (real inequality)
+    const real_c = ast.Expr{ .float_literal = 1.5 };
+    const real_d = ast.Expr{ .float_literal = 2.5 };
+    const args_real_neq = [_]*const ast.Expr{ &real_c, &real_d };
+    const fc_real_neq = .{ .name = "nullif", .args = &args_real_neq, .distinct = false };
+
+    const result5 = try evalFunctionCall(allocator, fc_real_neq, &empty_row, null);
+    defer result5.free(allocator);
+    try std.testing.expectEqual(@as(f64, 1.5), result5.real);
+
+    // NULLIF(true, true) → NULL (boolean equality)
+    const bool_a = ast.Expr{ .boolean_literal = true };
+    const bool_b = ast.Expr{ .boolean_literal = true };
+    const args_bool_eq = [_]*const ast.Expr{ &bool_a, &bool_b };
+    const fc_bool_eq = .{ .name = "nullif", .args = &args_bool_eq, .distinct = false };
+
+    const result6 = try evalFunctionCall(allocator, fc_bool_eq, &empty_row, null);
+    defer result6.free(allocator);
+    try std.testing.expect(result6 == .null_value);
+
+    // NULLIF(true, false) → true (boolean inequality)
+    const bool_c = ast.Expr{ .boolean_literal = true };
+    const bool_d = ast.Expr{ .boolean_literal = false };
+    const args_bool_neq = [_]*const ast.Expr{ &bool_c, &bool_d };
+    const fc_bool_neq = .{ .name = "nullif", .args = &args_bool_neq, .distinct = false };
+
+    const result7 = try evalFunctionCall(allocator, fc_bool_neq, &empty_row, null);
+    defer result7.free(allocator);
+    try std.testing.expect(result7.boolean == true);
+
+    // NULLIF with wrong arity (0 args) → TypeError
+    const args_zero = [_]*const ast.Expr{};
+    const fc_zero = .{ .name = "nullif", .args = &args_zero, .distinct = false };
+    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_zero, &empty_row, null));
+
+    // NULLIF with wrong arity (1 arg) → TypeError
+    const args_one = [_]*const ast.Expr{&one};
+    const fc_one = .{ .name = "nullif", .args = &args_one, .distinct = false };
+    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_one, &empty_row, null));
+
+    // NULLIF with wrong arity (3 args) → TypeError
+    const two = ast.Expr{ .integer_literal = 2 };
+    const three = ast.Expr{ .integer_literal = 3 };
+    const args_three = [_]*const ast.Expr{ &one, &two, &three };
+    const fc_three = .{ .name = "nullif", .args = &args_three, .distinct = false };
+    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_three, &empty_row, null));
+}
+
+test "evalFunctionCall GREATEST edge cases" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // GREATEST(5) → 5 (single argument)
+    const five = ast.Expr{ .integer_literal = 5 };
+    const args_single = [_]*const ast.Expr{&five};
+    const fc_single = .{ .name = "greatest", .args = &args_single, .distinct = false };
+
+    const result1 = try evalFunctionCall(allocator, fc_single, &empty_row, null);
+    defer result1.free(allocator);
+    try std.testing.expectEqual(@as(i64, 5), result1.integer);
+
+    // GREATEST() → TypeError (zero arguments)
+    const args_zero = [_]*const ast.Expr{};
+    const fc_zero = .{ .name = "greatest", .args = &args_zero, .distinct = false };
+    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_zero, &empty_row, null));
+
+    // GREATEST with real values
+    const real_a = ast.Expr{ .float_literal = 1.5 };
+    const real_b = ast.Expr{ .float_literal = 2.7 };
+    const real_c = ast.Expr{ .float_literal = 0.9 };
+    const args_real = [_]*const ast.Expr{ &real_a, &real_b, &real_c };
+    const fc_real = .{ .name = "greatest", .args = &args_real, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_real, &empty_row, null);
+    defer result2.free(allocator);
+    try std.testing.expectEqual(@as(f64, 2.7), result2.real);
+
+    // GREATEST with boolean values
+    const bool_false = ast.Expr{ .boolean_literal = false };
+    const bool_true = ast.Expr{ .boolean_literal = true };
+    const args_bool = [_]*const ast.Expr{ &bool_false, &bool_true, &bool_false };
+    const fc_bool = .{ .name = "greatest", .args = &args_bool, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_bool, &empty_row, null);
+    defer result3.free(allocator);
+    try std.testing.expect(result3.boolean == true);
+
+    // GREATEST with negative numbers
+    const neg_ten = ast.Expr{ .integer_literal = -10 };
+    const neg_five = ast.Expr{ .integer_literal = -5 };
+    const zero = ast.Expr{ .integer_literal = 0 };
+    const args_neg = [_]*const ast.Expr{ &neg_ten, &neg_five, &zero };
+    const fc_neg = .{ .name = "greatest", .args = &args_neg, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_neg, &empty_row, null);
+    defer result4.free(allocator);
+    try std.testing.expectEqual(@as(i64, 0), result4.integer);
+
+    // GREATEST with very large numbers
+    const max_val = ast.Expr{ .integer_literal = std.math.maxInt(i64) };
+    const near_max = ast.Expr{ .integer_literal = std.math.maxInt(i64) - 1000 };
+    const args_large = [_]*const ast.Expr{ &max_val, &near_max };
+    const fc_large = .{ .name = "greatest", .args = &args_large, .distinct = false };
+
+    const result5 = try evalFunctionCall(allocator, fc_large, &empty_row, null);
+    defer result5.free(allocator);
+    try std.testing.expectEqual(std.math.maxInt(i64), result5.integer);
+
+    // GREATEST with empty string vs non-empty
+    const empty_str = ast.Expr{ .string_literal = "" };
+    const nonempty_str = ast.Expr{ .string_literal = "hello" };
+    const args_str = [_]*const ast.Expr{ &empty_str, &nonempty_str };
+    const fc_str = .{ .name = "greatest", .args = &args_str, .distinct = false };
+
+    const result6 = try evalFunctionCall(allocator, fc_str, &empty_row, null);
+    defer result6.free(allocator);
+    try std.testing.expectEqualStrings("hello", result6.text);
+}
+
+test "evalFunctionCall LEAST edge cases" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // LEAST(5) → 5 (single argument)
+    const five = ast.Expr{ .integer_literal = 5 };
+    const args_single = [_]*const ast.Expr{&five};
+    const fc_single = .{ .name = "least", .args = &args_single, .distinct = false };
+
+    const result1 = try evalFunctionCall(allocator, fc_single, &empty_row, null);
+    defer result1.free(allocator);
+    try std.testing.expectEqual(@as(i64, 5), result1.integer);
+
+    // LEAST() → TypeError (zero arguments)
+    const args_zero = [_]*const ast.Expr{};
+    const fc_zero = .{ .name = "least", .args = &args_zero, .distinct = false };
+    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_zero, &empty_row, null));
+
+    // LEAST with real values
+    const real_a = ast.Expr{ .float_literal = 1.5 };
+    const real_b = ast.Expr{ .float_literal = 2.7 };
+    const real_c = ast.Expr{ .float_literal = 0.9 };
+    const args_real = [_]*const ast.Expr{ &real_a, &real_b, &real_c };
+    const fc_real = .{ .name = "least", .args = &args_real, .distinct = false };
+
+    const result2 = try evalFunctionCall(allocator, fc_real, &empty_row, null);
+    defer result2.free(allocator);
+    try std.testing.expectEqual(@as(f64, 0.9), result2.real);
+
+    // LEAST with boolean values
+    const bool_false = ast.Expr{ .boolean_literal = false };
+    const bool_true = ast.Expr{ .boolean_literal = true };
+    const args_bool = [_]*const ast.Expr{ &bool_false, &bool_true, &bool_true };
+    const fc_bool = .{ .name = "least", .args = &args_bool, .distinct = false };
+
+    const result3 = try evalFunctionCall(allocator, fc_bool, &empty_row, null);
+    defer result3.free(allocator);
+    try std.testing.expect(result3.boolean == false);
+
+    // LEAST with negative numbers
+    const neg_ten = ast.Expr{ .integer_literal = -10 };
+    const neg_five = ast.Expr{ .integer_literal = -5 };
+    const zero = ast.Expr{ .integer_literal = 0 };
+    const args_neg = [_]*const ast.Expr{ &neg_ten, &neg_five, &zero };
+    const fc_neg = .{ .name = "least", .args = &args_neg, .distinct = false };
+
+    const result4 = try evalFunctionCall(allocator, fc_neg, &empty_row, null);
+    defer result4.free(allocator);
+    try std.testing.expectEqual(@as(i64, -10), result4.integer);
+
+    // LEAST with very small numbers
+    const min_val = ast.Expr{ .integer_literal = std.math.minInt(i64) };
+    const near_min = ast.Expr{ .integer_literal = std.math.minInt(i64) + 1000 };
+    const args_small = [_]*const ast.Expr{ &min_val, &near_min };
+    const fc_small = .{ .name = "least", .args = &args_small, .distinct = false };
+
+    const result5 = try evalFunctionCall(allocator, fc_small, &empty_row, null);
+    defer result5.free(allocator);
+    try std.testing.expectEqual(std.math.minInt(i64), result5.integer);
+
+    // LEAST with empty string vs non-empty
+    const empty_str = ast.Expr{ .string_literal = "" };
+    const nonempty_str = ast.Expr{ .string_literal = "hello" };
+    const args_str = [_]*const ast.Expr{ &empty_str, &nonempty_str };
+    const fc_str = .{ .name = "least", .args = &args_str, .distinct = false };
+
+    const result6 = try evalFunctionCall(allocator, fc_str, &empty_row, null);
+    defer result6.free(allocator);
+    try std.testing.expectEqualStrings("", result6.text);
+}
+
 test "evalFunctionCall unknown function without catalog" {
     // Test that calling an unknown function returns UnsupportedExpression when catalog is null
     const allocator = std.testing.allocator;
