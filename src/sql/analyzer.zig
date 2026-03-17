@@ -1083,6 +1083,9 @@ pub const Analyzer = struct {
             .subquery => {
                 // Subqueries have their own scope — skip deep analysis for now
             },
+            .exists => {
+                // EXISTS subqueries have their own scope — skip deep analysis for now
+            },
             .bind_parameter => {},
         }
     }

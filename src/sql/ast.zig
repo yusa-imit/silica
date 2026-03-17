@@ -237,6 +237,11 @@ pub const Expr = union(enum) {
     paren: *const Expr,
     /// Subquery expression (scalar subquery)
     subquery: *const SelectStmt,
+    /// EXISTS (subquery) — returns true if subquery has any rows
+    exists: struct {
+        subquery: *const SelectStmt,
+        negated: bool = false,
+    },
     /// Window function call: func(...) OVER (PARTITION BY ... ORDER BY ... frame)
     window_function: WindowFunctionExpr,
     /// ARRAY[expr, expr, ...] constructor
@@ -1579,4 +1584,34 @@ test "ExplainStmt with analyze option" {
     };
 
     try std.testing.expect(explain_stmt.analyze);
+}
+
+test "EXISTS expression basic" {
+    const subquery = SelectStmt{
+        .columns = &[_]ResultColumn{},
+        .from = null,
+    };
+    const exists_expr = Expr{
+        .exists = .{
+            .subquery = &subquery,
+            .negated = false,
+        },
+    };
+
+    try std.testing.expect(!exists_expr.exists.negated);
+}
+
+test "NOT EXISTS expression" {
+    const subquery = SelectStmt{
+        .columns = &[_]ResultColumn{},
+        .from = null,
+    };
+    const not_exists_expr = Expr{
+        .exists = .{
+            .subquery = &subquery,
+            .negated = true,
+        },
+    };
+
+    try std.testing.expect(not_exists_expr.exists.negated);
 }

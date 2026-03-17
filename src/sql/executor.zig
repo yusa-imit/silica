@@ -1968,6 +1968,7 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
         .subquery,
+        .exists,
         .bind_parameter,
         => return EvalError.UnsupportedExpression,
     }
