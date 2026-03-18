@@ -657,3 +657,88 @@ test "Server.waitForConnections - zero timeout means wait indefinitely" {
     try std.testing.expect(finished);
     try std.testing.expectEqual(@as(usize, 0), server.active_connections.load(.acquire));
 }
+
+test "Server.active_connections - stress test with many concurrent threads" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_concurrent_stress.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+        .max_connections = 1000, // High limit for stress test
+    });
+    defer server.deinit();
+
+    const num_threads = 20;
+    const ops_per_thread = 50;
+
+    // Spawn threads that increment/decrement connections rapidly
+    var threads: [num_threads]std.Thread = undefined;
+    var i: usize = 0;
+    while (i < num_threads) : (i += 1) {
+        threads[i] = try std.Thread.spawn(.{}, struct {
+            fn simulateConnections(s: *Server, count: usize) void {
+                var j: usize = 0;
+                while (j < count) : (j += 1) {
+                    // Increment (connection starts)
+                    _ = s.active_connections.fetchAdd(1, .acquire);
+
+                    // Simulate some work
+                    std.Thread.sleep(1 * std.time.ns_per_ms);
+
+                    // Decrement (connection ends)
+                    _ = s.active_connections.fetchSub(1, .release);
+                }
+            }
+        }.simulateConnections, .{ &server, ops_per_thread });
+    }
+
+    // Wait for all threads to complete
+    i = 0;
+    while (i < num_threads) : (i += 1) {
+        threads[i].join();
+    }
+
+    // Verify counter is back to zero (all connections finished)
+    try std.testing.expectEqual(@as(usize, 0), server.active_connections.load(.acquire));
+}
+
+test "Server.shutdown - stress test with rapid connections" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_server_shutdown_stress.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var server = try Server.init(allocator, .{
+        .database_path = db_path,
+        .max_connections = 500,
+    });
+    defer server.deinit();
+
+    // Simulate 100 rapid connections
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        _ = server.active_connections.fetchAdd(1, .acquire);
+    }
+
+    try std.testing.expectEqual(@as(usize, 100), server.active_connections.load(.acquire));
+
+    // Spawn background thread to gradually close connections
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn closeConnections(s: *Server) void {
+            var j: usize = 0;
+            while (j < 100) : (j += 1) {
+                std.Thread.sleep(2 * std.time.ns_per_ms);
+                _ = s.active_connections.fetchSub(1, .release);
+            }
+        }
+    }.closeConnections, .{&server});
+    thread.detach();
+
+    // Shutdown with sufficient timeout
+    const finished = server.shutdown(1000);
+    try std.testing.expect(finished);
+    try std.testing.expectEqual(@as(usize, 0), server.active_connections.load(.acquire));
+    try std.testing.expect(!server.running);
+}
