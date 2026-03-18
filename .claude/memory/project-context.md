@@ -226,6 +226,27 @@
     - Test count increase: 2110 → 2112 (added 2 concurrent stress tests)
     - All stress tests verify coordinators remain in valid state after concurrent operations
     - **LESSON**: Modules with mutex-protected state should have concurrent stress tests to verify thread safety
+  - **2026-03-18 12:00 UTC**: Stabilization session - Dependency migration & server stress tests (STABILIZATION MODE)
+    - **MODE**: Hour 12 (stabilization mode, hour % 4 == 0)
+    - CI status: Green (latest run successful)
+    - GitHub Issues: 4 open (2 sailor v1.16.0 migration, 2 zuda migration PENDING)
+    - Dependency migration priority protocol followed:
+      1. Upgraded sailor from v1.15.0 → v1.16.0 (commit cc7a228)
+      2. Features: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking
+      3. Zero breaking changes, all 2350 tests passing
+      4. Updated docs/milestones.md to reflect v1.16.0 status (commit 421e648)
+      5. Closed issues #8 and #9 (auto-closed by commit message)
+    - Test coverage assessment:
+      - All 43 source files have tests (100% coverage)
+      - Comprehensive edge case coverage verified across all modules
+      - Identified server.zig as opportunity for concurrent stress tests
+    - Added 2 new server stress tests:
+      1. Active connections with 20 threads × 50 rapid increments/decrements
+      2. Shutdown stress with 100 rapid connections and gradual closing
+    - Test result: 2350/2353 tests passed, 3 skipped, 0 failures (commit 65d622a)
+    - Test count increase: server.zig 11 → 13 tests
+    - All stress tests verify atomic counter correctness under high concurrency
+    - **LESSON**: Dependency migrations with READY status should be prioritized over other stabilization work
 
 ## Performance Targets
 - Point lookup (PK, cached): < 5 µs
