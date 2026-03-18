@@ -1830,3 +1830,178 @@ test "join algorithm selection: complex equi-join with AND (disabled)" {
         else => return error.InvalidPlan,
     }
 }
+
+test "optimize filter with OR predicate (not pushable)" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users", .alias = "u" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders", .alias = "o" } });
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+    } });
+
+    // Filter with OR spanning both tables: u.id = 1 OR o.id = 2
+    const left_cond = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "u" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .integer_literal = 1 }),
+    } });
+    const right_cond = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "o" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .integer_literal = 2 }),
+    } });
+    const or_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = left_cond,
+        .op = .@"or",
+        .right = right_cond,
+    } });
+
+    const filter_node = try arena.create(PlanNode, .{ .filter = .{
+        .input = join,
+        .predicate = or_pred,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = filter_node, .plan_type = .select_query });
+
+    // OR predicate referencing both tables should NOT be pushed down
+    switch (optimized.root.*) {
+        .filter => |f| {
+            // Filter should remain above join
+            switch (f.input.*) {
+                .join => {}, // Good — filter stayed above
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "optimize multiple filters on same scan" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+
+    // Build: Filter(age > 18) → Filter(active = true) → Scan(users)
+    const active_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "active", .prefix = null } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .boolean_literal = true }),
+    } });
+    const filter1 = try arena.create(PlanNode, .{ .filter = .{
+        .input = scan,
+        .predicate = active_pred,
+    } });
+
+    const age_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "age", .prefix = null } }),
+        .op = .greater_than,
+        .right = try arena.create(ast.Expr, .{ .integer_literal = 18 }),
+    } });
+    const filter2 = try arena.create(PlanNode, .{ .filter = .{
+        .input = filter1,
+        .predicate = age_pred,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = filter2, .plan_type = .select_query });
+
+    // Both filters should be preserved (we don't merge filters yet)
+    switch (optimized.root.*) {
+        .filter => |f1| {
+            switch (f1.input.*) {
+                .filter => |f2| {
+                    switch (f2.input.*) {
+                        .scan => {}, // Good — both filters present
+                        else => return error.InvalidPlan,
+                    }
+                },
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "optimize join reordering preserves join conditions" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
+
+    const join_cond = try arena.create(ast.Expr, .{ .binary_op = .{
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
+        .op = .equal,
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left_scan,
+        .right = right_scan,
+        .join_type = .inner,
+        .on_condition = join_cond,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
+
+    // After optimization, join condition must still be present
+    switch (optimized.root.*) {
+        .join => |j| {
+            try testing.expect(j.on_condition != null);
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "optimize empty input to aggregate" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const empty_node = try arena.create(PlanNode, .{ .empty = .{ .description = "empty set" } });
+    const agg_node = try arena.create(PlanNode, .{ .aggregate = .{
+        .input = empty_node,
+        .group_by = &.{},
+        .aggregates = &.{},
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = agg_node, .plan_type = .select_query });
+
+    // Aggregate over empty should be preserved (COUNT(*) = 0)
+    switch (optimized.root.*) {
+        .aggregate => |a| {
+            switch (a.input.*) {
+                .empty => {}, // Good — empty preserved
+                else => return error.InvalidPlan,
+            }
+        },
+        else => return error.InvalidPlan,
+    }
+}
+
+test "optimize sort with empty order by" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
+    const sort_node = try arena.create(PlanNode, .{ .sort = .{
+        .input = scan,
+        .order_by = &.{}, // Empty ORDER BY
+    } });
+
+    var opt = Optimizer.init(&arena);
+    const optimized = try opt.optimize(.{ .root = sort_node, .plan_type = .select_query });
+
+    // Sort with empty ORDER BY should be eliminated
+    switch (optimized.root.*) {
+        .scan => {}, // Good — sort eliminated
+        else => return error.InvalidPlan,
+    }
+}
