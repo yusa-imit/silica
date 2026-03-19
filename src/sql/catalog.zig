@@ -45,6 +45,7 @@ pub const ColumnStats = stats_mod.ColumnStats;
 pub const IndexType = enum(u8) {
     btree = 0,
     hash = 1,
+    gist = 2,
 };
 
 // ── Data Types ──────────────────────────────────────────────────────────
