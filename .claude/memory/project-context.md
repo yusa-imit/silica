@@ -601,4 +601,40 @@
 4. Modify ScanOp executor to skip heap fetch when index_only=true
 5. Add integration tests with multi-column indexes
 
-**Test Status**: 2311 tests (2311 passing, 3 skipped) — no changes this session
+**Test Status**: 2250 tests (2250 passing, 3 skipped)
+
+## FEATURE Session (2026-03-19 06:00 UTC)
+
+**Focus**: Milestone 21B — Fix HashJoinOp join key extraction (re-enable hash joins)
+
+**Completed**:
+- Implemented extractJoinKeys() function to parse ON condition and extract column indices
+  - Supports simple equi-joins: `a.col1 = b.col2`
+  - Supports multi-column joins: `a.id = b.id AND a.region = b.region`
+  - Recursively processes AND branches
+  - Falls back to null if extraction fails (safe default to first column)
+- Added JoinKeys struct to store left_indices/right_indices separately
+- Updated HashJoinOp to use extracted keys:
+  - buildHashTable() processes right rows with correct column indices
+  - hashRowWithKeys() hashes specific columns instead of hardcoded column 0
+  - next() extracts keys on first call, uses them for left-side probing
+  - close() properly frees allocated join key arrays
+- Re-enabled hash join selection in optimizer:
+  - Cost-based heuristic: hash for medium-large tables, nested loop for small
+  - Updated 3 optimizer tests to expect .hash instead of .nested_loop
+- Updated docs/milestones.md: Milestone 21B now complete
+
+**Key Learnings**:
+- Zig 0.15 ArrayList API: Use ArrayListUnmanaged{} not ArrayList.init()
+- append() requires allocator parameter: `list.append(allocator, item)`
+- toOwnedSlice() requires allocator: `list.toOwnedSlice(allocator)`
+- Join key extraction must handle both orderings: left=left/right=right AND left=right/right=left
+- Hash join now works correctly regardless of join column position in schema
+
+**Commit**: 6581dac feat: fix HashJoinOp join key extraction from ON condition (Milestone 21B)
+
+**Test Count**: 2250 total (2250 passing, 3 skipped; 0 failures)
+
+**Next Priority** (Future sessions):
+- Milestone 21: Subquery decorrelation (requires Database handle threading through evalExpr)
+- Milestone 21: Index-only scans (requires multi-column index catalog + column usage tracking)
