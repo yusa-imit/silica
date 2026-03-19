@@ -1920,6 +1920,10 @@ pub const Database = struct {
                     idx_hash.insert(idx_key, idx_val) catch {};
                     // Hash index root page ID doesn't change (no rebalancing like B+Tree)
                 },
+                .gist => {
+                    // GiST index implementation is complete but insert operations are not yet integrated
+                    // For now, skip GiST index maintenance during INSERT
+                },
             }
         }
     }
@@ -1940,6 +1944,10 @@ pub const Database = struct {
                 .hash => {
                     var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
                     idx_hash.delete(idx_key) catch {};
+                },
+                .gist => {
+                    // GiST index implementation is complete but delete operations are not yet integrated
+                    // For now, skip GiST index maintenance during DELETE
                 },
             }
         }
@@ -3020,6 +3028,8 @@ pub const Database = struct {
                 if (ci.index_type) |type_str| {
                     if (std.ascii.eqlIgnoreCase(type_str, "hash")) {
                         idx_type = catalog_mod.IndexType.hash;
+                    } else if (std.ascii.eqlIgnoreCase(type_str, "gist")) {
+                        idx_type = catalog_mod.IndexType.gist;
                     } else if (std.ascii.eqlIgnoreCase(type_str, "btree")) {
                         idx_type = catalog_mod.IndexType.btree;
                     }

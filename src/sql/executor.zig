@@ -3635,6 +3635,11 @@ pub const IndexScanOp = struct {
                 var idx_hash = HashIndex.init(self.pool, self.index_root_page_id);
                 break :blk idx_hash.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
             },
+            .gist => {
+                // GiST index lookup not yet supported in executor
+                // Return error to prevent silent failures
+                return ExecError.ExecutionError;
+            },
         };
         if (row_key == null) return null; // No matching index entry
         defer self.allocator.free(row_key.?);
