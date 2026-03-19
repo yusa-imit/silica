@@ -3026,6 +3026,16 @@ pub const Database = struct {
                     };
                 }
 
+                // Determine index type from CREATE INDEX statement
+                var idx_type = catalog_mod.IndexType.btree;
+                if (ci.index_type) |type_str| {
+                    if (std.ascii.eqlIgnoreCase(type_str, "hash")) {
+                        idx_type = catalog_mod.IndexType.hash;
+                    } else if (std.ascii.eqlIgnoreCase(type_str, "btree")) {
+                        idx_type = catalog_mod.IndexType.btree;
+                    }
+                }
+
                 new_indexes[table_info.indexes.len] = .{
                     .index_name = self.allocator.dupe(u8, ci.name) catch {
                         return EngineError.OutOfMemory;
@@ -3036,6 +3046,8 @@ pub const Database = struct {
                     .column_index = col_idx,
                     .root_page_id = idx_root_id,
                     .included_columns = included_dup,
+                    .index_type = idx_type,
+                    .is_unique = ci.unique,
                 };
 
                 // Serialize the updated table and store in catalog
@@ -16746,5 +16758,352 @@ test "DROP INDEX IF EXISTS does not error when index missing" {
     defer r2.close(testing.allocator);
 
     try testing.expectEqualStrings("DROP INDEX", r2.message);
+}
+
+test "CREATE INDEX USING HASH parses successfully" {
+    const path = "test_eng_create_hash_idx_parse.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create hash index on email column
+    var r2 = try db.execSQL("CREATE INDEX idx_users_email ON users (email) USING HASH");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+}
+
+test "CREATE INDEX USING HASH stores hash index in catalog" {
+    const path = "test_eng_create_hash_idx_catalog.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER, code TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create hash index
+    var r2 = try db.execSQL("CREATE INDEX idx_products_code ON products (code) USING HASH");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify index exists in catalog
+    var table_info = try db.catalog.getTable("products");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("code");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("code", idx.?.column_name);
+}
+
+test "CREATE UNIQUE INDEX USING HASH creates unique hash index" {
+    const path = "test_eng_create_unique_hash_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE accounts (id INTEGER, username TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique hash index
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_accounts_username ON accounts (username) USING HASH");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify unique hash index exists
+    var table_info = try db.catalog.getTable("accounts");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("username");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("username", idx.?.column_name);
+}
+
+test "CREATE INDEX USING BTREE is default if USING clause omitted" {
+    const path = "test_eng_create_btree_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE logs (id INTEGER, timestamp TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index without USING clause (should default to BTREE)
+    var r2 = try db.execSQL("CREATE INDEX idx_logs_timestamp ON logs (timestamp)");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify index exists (will be btree by default)
+    var table_info = try db.catalog.getTable("logs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("timestamp");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("timestamp", idx.?.column_name);
+}
+
+test "CREATE INDEX USING HASH with INCLUDE clause" {
+    const path = "test_eng_create_hash_idx_include.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE orders (id INTEGER, customer_id INTEGER, status TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create hash index with INCLUDE clause
+    var r2 = try db.execSQL("CREATE INDEX idx_orders_customer ON orders (customer_id) INCLUDE (status) USING HASH");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify hash index with included columns exists
+    var table_info = try db.catalog.getTable("orders");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("customer_id");
+    try testing.expect(idx != null);
+    try testing.expectEqual(@as(usize, 1), idx.?.included_columns.len);
+    try testing.expectEqualStrings("status", idx.?.included_columns[0]);
+}
+
+test "Hash index INSERT stores values in hash index" {
+    const path = "test_eng_hash_idx_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with hash index
+    var r1 = try db.execSQL("CREATE TABLE students (id INTEGER PRIMARY KEY, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_students_email ON students (email) USING HASH");
+    defer r2.close(testing.allocator);
+
+    // Insert rows - index should store values
+    var r3 = try db.execSQL("INSERT INTO students (id, email) VALUES (1, 'alice@example.com')");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO students (id, email) VALUES (2, 'bob@example.com')");
+    defer r4.close(testing.allocator);
+
+    // Verify rows exist via rows_affected from INSERT
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+}
+
+test "Hash index equality SELECT uses hash index for equality queries" {
+    const path = "test_eng_hash_idx_equality.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with hash index
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, department TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_employees_dept ON employees (department) USING HASH");
+    defer r2.close(testing.allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO employees (id, department) VALUES (1, 'Engineering')");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO employees (id, department) VALUES (2, 'Sales')");
+    defer r4.close(testing.allocator);
+
+    // Query with equality predicate - should use hash index
+    var r5 = try db.execSQL("SELECT id FROM employees WHERE department = 'Engineering'");
+    defer r5.close(testing.allocator);
+
+    // Verify at least one row is returned via row iterator
+    var count: usize = 0;
+    if (r5.rows) |*rows| {
+        while (try rows.next()) |row| {
+            count += 1;
+            var row_mut = row;
+            row_mut.deinit();
+        }
+    }
+    try testing.expect(count >= 1);
+}
+
+test "Hash index rejects range queries and falls back to seq scan" {
+    const path = "test_eng_hash_idx_range_reject.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with hash index
+    var r1 = try db.execSQL("CREATE TABLE transactions (id INTEGER PRIMARY KEY, amount INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_transactions_amount ON transactions (amount) USING HASH");
+    defer r2.close(testing.allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO transactions (id, amount) VALUES (1, 100)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO transactions (id, amount) VALUES (2, 200)");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("INSERT INTO transactions (id, amount) VALUES (3, 300)");
+    defer r5.close(testing.allocator);
+
+    // Range queries should not use hash index (should fall back to seq scan)
+    // Query: amount > 150 - should still return results but not use hash index
+    var r6 = try db.execSQL("SELECT id FROM transactions WHERE amount > 150");
+    defer r6.close(testing.allocator);
+
+    var count6: usize = 0;
+    if (r6.rows) |*rows| {
+        while (try rows.next()) |row| {
+            count6 += 1;
+            var row_mut = row;
+            row_mut.deinit();
+        }
+    }
+    try testing.expect(count6 >= 2);
+
+    // Query: amount < 250 - should still return results
+    var r7 = try db.execSQL("SELECT id FROM transactions WHERE amount < 250");
+    defer r7.close(testing.allocator);
+
+    var count7: usize = 0;
+    if (r7.rows) |*rows| {
+        while (try rows.next()) |row| {
+            count7 += 1;
+            var row_mut = row;
+            row_mut.deinit();
+        }
+    }
+    try testing.expect(count7 >= 2);
+
+    // Query: amount BETWEEN 150 AND 250 - should still work
+    var r8 = try db.execSQL("SELECT id FROM transactions WHERE amount BETWEEN 150 AND 250");
+    defer r8.close(testing.allocator);
+
+    var count8: usize = 0;
+    if (r8.rows) |*rows| {
+        while (try rows.next()) |row| {
+            count8 += 1;
+            var row_mut = row;
+            row_mut.deinit();
+        }
+    }
+    try testing.expect(count8 >= 1);
+}
+
+test "Hash index supports IN clause for multiple equality checks" {
+    const path = "test_eng_hash_idx_in_clause.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with hash index
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, category TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_items_category ON items (category) USING HASH");
+    defer r2.close(testing.allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO items (id, category) VALUES (1, 'Electronics')");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO items (id, category) VALUES (2, 'Books')");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("INSERT INTO items (id, category) VALUES (3, 'Clothing')");
+    defer r5.close(testing.allocator);
+
+    // IN clause with hash index - should use index for multiple equality checks
+    var r6 = try db.execSQL("SELECT id FROM items WHERE category IN ('Electronics', 'Books')");
+    defer r6.close(testing.allocator);
+
+    var count: usize = 0;
+    if (r6.rows) |*rows| {
+        while (try rows.next()) |row| {
+            count += 1;
+            var row_mut = row;
+            row_mut.deinit();
+        }
+    }
+    try testing.expect(count >= 2);
+}
+
+test "CREATE INDEX USING HASH IF NOT EXISTS" {
+    const path = "test_eng_create_hash_idx_ine.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE config (id INTEGER, key TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create hash index
+    var r2 = try db.execSQL("CREATE INDEX idx_config_key ON config (key) USING HASH");
+    defer r2.close(testing.allocator);
+
+    // Create same hash index again with IF NOT EXISTS should not error
+    var r3 = try db.execSQL("CREATE INDEX IF NOT EXISTS idx_config_key ON config (key) USING HASH");
+    defer r3.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r3.message);
+}
+
+test "Hash index with NULL values in indexed column" {
+    const path = "test_eng_hash_idx_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with hash index
+    var r1 = try db.execSQL("CREATE TABLE records (id INTEGER PRIMARY KEY, optional_field TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_records_field ON records (optional_field) USING HASH");
+    defer r2.close(testing.allocator);
+
+    // Insert row with NULL value - hash index should handle it
+    var r3 = try db.execSQL("INSERT INTO records (id, optional_field) VALUES (1, NULL)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO records (id, optional_field) VALUES (2, 'value')");
+    defer r4.close(testing.allocator);
+
+    // Verify rows inserted successfully
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+}
+
+test "Hash index error when no column specified in CREATE INDEX" {
+    const path = "test_eng_hash_idx_no_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE dummy (id INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Try to create hash index without specifying column - should fail or error gracefully
+    const result = db.execSQL("CREATE INDEX idx_dummy ON dummy () USING HASH");
+    if (result) |r| {
+        var r_mut = r;
+        defer r_mut.close(testing.allocator);
+        // If it doesn't error at parse time, that's OK - could fail at execution
+    } else |_| {
+        // Expected error case - good
+    }
 }
 

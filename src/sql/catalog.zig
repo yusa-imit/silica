@@ -39,6 +39,14 @@ const SCHEMA_ROOT_PAGE_ID = page_mod.SCHEMA_ROOT_PAGE_ID;
 pub const TableStats = stats_mod.TableStats;
 pub const ColumnStats = stats_mod.ColumnStats;
 
+// ── Index Types ──────────────────────────────────────────────────────────
+
+/// Index data structure type (1-byte tag).
+pub const IndexType = enum(u8) {
+    btree = 0,
+    hash = 1,
+};
+
 // ── Data Types ──────────────────────────────────────────────────────────
 
 /// Column data type stored in the catalog (1-byte tag).
@@ -146,6 +154,10 @@ pub const IndexInfo = struct {
     root_page_id: u32,
     /// Non-indexed columns included in the index for covering (index-only) scans
     included_columns: []const []const u8 = &.{},
+    /// Index type: btree or hash
+    index_type: IndexType = .btree,
+    /// Whether this is a unique index
+    is_unique: bool = false,
 };
 
 /// Complete table metadata.
@@ -228,6 +240,7 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
     for (indexes) |idx| {
         size += 2 + idx.index_name.len; // index_name_len + index_name
         size += 2 + idx.column_name.len + 2 + 4; // name_len + name + col_index + root_page_id
+        size += 2; // is_unique + index_type
         size += 2; // included_count: u16
         for (idx.included_columns) |included_col| {
             size += 2 + included_col.len; // name_len + name
@@ -308,6 +321,11 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         pos += 2;
         std.mem.writeInt(u32, buf[pos..][0..4], idx.root_page_id, .little);
         pos += 4;
+        // is_unique and index_type
+        buf[pos] = if (idx.is_unique) @as(u8, 1) else @as(u8, 0);
+        pos += 1;
+        buf[pos] = @intFromEnum(idx.index_type);
+        pos += 1;
         // Included columns
         std.mem.writeInt(u16, buf[pos..][0..2], @intCast(idx.included_columns.len), .little);
         pos += 2;
@@ -450,6 +468,17 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                 pos += 2;
                 idx.root_page_id = std.mem.readInt(u32, data[pos..][0..4], .little);
                 pos += 4;
+
+                // is_unique and index_type (optional — backward compatible)
+                if (pos + 2 <= data.len) {
+                    idx.is_unique = data[pos] != 0;
+                    pos += 1;
+                    idx.index_type = @enumFromInt(data[pos]);
+                    pos += 1;
+                } else {
+                    idx.is_unique = false;
+                    idx.index_type = .btree;
+                }
 
                 // Included columns (optional — backward compatible)
                 if (pos + 2 <= data.len) {

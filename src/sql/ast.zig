@@ -458,6 +458,8 @@ pub const CreateIndexStmt = struct {
     columns: []const OrderByItem = &.{},
     /// Non-indexed columns included in the index for covering (index-only) scans
     included_columns: []const []const u8 = &.{},
+    /// Index type: "btree" or "hash" (null means default to btree)
+    index_type: ?[]const u8 = null,
 };
 
 /// DROP INDEX statement.

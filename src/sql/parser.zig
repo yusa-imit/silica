@@ -1149,6 +1149,13 @@ pub const Parser = struct {
                 }
             }
 
+            // Parse optional USING clause
+            var index_type: ?[]const u8 = null;
+            if (self.match(.kw_using)) {
+                const type_token = try self.expectIdentifier();
+                index_type = type_token;
+            }
+
             return .{
                 .if_not_exists = if_not_exists,
                 .unique = unique,
@@ -1156,7 +1163,15 @@ pub const Parser = struct {
                 .table = table,
                 .columns = indexed_cols,
                 .included_columns = included_cols.toOwnedSlice(a) catch return error.OutOfMemory,
+                .index_type = index_type,
             };
+        }
+
+        // Parse optional USING clause
+        var index_type: ?[]const u8 = null;
+        if (self.match(.kw_using)) {
+            const type_token = try self.expectIdentifier();
+            index_type = type_token;
         }
 
         return .{
@@ -1165,6 +1180,7 @@ pub const Parser = struct {
             .name = name,
             .table = table,
             .columns = cols.toOwnedSlice(a) catch return error.OutOfMemory,
+            .index_type = index_type,
         };
     }
 
