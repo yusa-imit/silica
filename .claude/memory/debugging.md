@@ -18,6 +18,17 @@
 
 ## Recently Fixed Bugs
 
+### GiST Enum Value Missing from Catalog (dd1600d, March 20, 2026)
+- **Symptom**: CI build failure: `enum 'sql.catalog.IndexType' has no member named 'gist'`
+- **Root Cause**: Commit 5ca06fc added GiST index implementation with references to `IndexType.gist` in engine.zig, but the enum value `gist = 2` was added to catalog.zig locally and never committed
+- **Impact**: Build passed locally due to uncommitted catalog.zig change, but failed on CI with clean checkout
+- **Fix (2 commits)**:
+  1. 360e003: Added .gist cases to switch statements in engine.zig and executor.zig (but CI still failed because enum didn't exist)
+  2. dd1600d: Committed the missing `gist = 2` enum value to catalog.zig
+- **Detection**: Build succeeded locally, failed on CI — `zig build test` doesn't catch uncommitted dependencies
+- **Prevention**: Always run `git status` before committing to verify no uncommitted changes that the commit depends on
+- **Lesson**: When adding a new enum value + its usages, commit them TOGETHER in same commit to prevent broken CI
+
 ### Wire Protocol Integer Overflow Security Vulnerabilities (8b5f54d, March 11, 2026)
 - **Symptom**: Fuzz tests caused panics/crashes (signal 6) in Parse.parse and Bind.parse
 - **Root Cause**: Unchecked `@intCast()` operations on i16/i32 counts read from untrusted wire protocol data
