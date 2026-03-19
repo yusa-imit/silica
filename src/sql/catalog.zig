@@ -136,6 +136,8 @@ pub const TableConstraintInfo = union(enum) {
 
 /// Metadata for a secondary index on a table column.
 pub const IndexInfo = struct {
+    /// Name of the index.
+    index_name: []const u8 = "",
     /// Name of the indexed column.
     column_name: []const u8,
     /// Column index in the table's column list.
@@ -159,6 +161,7 @@ pub const TableInfo = struct {
     /// Free all heap-allocated memory owned by this TableInfo.
     pub fn deinit(self: *const TableInfo, allocator: Allocator) void {
         for (self.indexes) |idx| {
+            if (idx.index_name.len > 0) allocator.free(idx.index_name);
             allocator.free(idx.column_name);
             for (idx.included_columns) |incl| allocator.free(incl);
             allocator.free(idx.included_columns);
@@ -223,6 +226,7 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
     // Index info
     size += 2; // index_count: u16
     for (indexes) |idx| {
+        size += 2 + idx.index_name.len; // index_name_len + index_name
         size += 2 + idx.column_name.len + 2 + 4; // name_len + name + col_index + root_page_id
         size += 2; // included_count: u16
         for (idx.included_columns) |included_col| {
@@ -292,6 +296,10 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
     std.mem.writeInt(u16, buf[pos..][0..2], @intCast(indexes.len), .little);
     pos += 2;
     for (indexes) |idx| {
+        std.mem.writeInt(u16, buf[pos..][0..2], @intCast(idx.index_name.len), .little);
+        pos += 2;
+        @memcpy(buf[pos..][0..idx.index_name.len], idx.index_name);
+        pos += idx.index_name.len;
         std.mem.writeInt(u16, buf[pos..][0..2], @intCast(idx.column_name.len), .little);
         pos += 2;
         @memcpy(buf[pos..][0..idx.column_name.len], idx.column_name);
@@ -418,6 +426,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
             var idxs_initialized: usize = 0;
             errdefer {
                 for (idx_list[0..idxs_initialized]) |idx| {
+                    if (idx.index_name.len > 0) allocator.free(idx.index_name);
                     allocator.free(idx.column_name);
                     for (idx.included_columns) |incl| allocator.free(incl);
                     allocator.free(idx.included_columns);
@@ -427,6 +436,11 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
 
             for (idx_list) |*idx| {
                 if (pos + 2 > data.len) return error.InvalidSchemaData;
+                const iname_len = std.mem.readInt(u16, data[pos..][0..2], .little);
+                pos += 2;
+                if (pos + iname_len + 2 + 6 > data.len) return error.InvalidSchemaData;
+                idx.index_name = try allocator.dupe(u8, data[pos..][0..iname_len]);
+                pos += iname_len;
                 const cn_len = std.mem.readInt(u16, data[pos..][0..2], .little);
                 pos += 2;
                 if (pos + cn_len + 6 > data.len) return error.InvalidSchemaData;

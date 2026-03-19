@@ -2942,6 +2942,272 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "ALTER TABLE" };
             },
+            .create_index => |ci| {
+                // Check if write operations are allowed (standby mode check)
+                self.standby_coordinator.checkWriteAllowed() catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    arena = null; // Prevent errdefer from double-freeing
+                    return switch (err) {
+                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        else => EngineError.ExecutionError,
+                    };
+                };
+
+                // Get the table
+                var table_info = self.catalog.getTable(ci.table) catch |err| {
+                    return switch (err) {
+                        error.TableNotFound => EngineError.TableNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
+                defer table_info.deinit(self.allocator);
+
+                // Extract column name from the first OrderByItem
+                if (ci.columns.len == 0) return EngineError.ExecutionError;
+                const col_name = if (ci.columns[0].expr.* == .column_ref)
+                    ci.columns[0].expr.column_ref.name
+                else
+                    return EngineError.ExecutionError;
+
+                // Check if index already exists
+                if (table_info.findIndex(col_name) != null) {
+                    if (ci.if_not_exists) {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return .{ .message = "CREATE INDEX" };
+                    }
+                    return EngineError.TableAlreadyExists;
+                }
+
+                // Find the column index in the table
+                var col_idx: u16 = 0;
+                var found = false;
+                for (table_info.columns, 0..) |col, i| {
+                    if (std.ascii.eqlIgnoreCase(col.name, col_name)) {
+                        col_idx = @intCast(i);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return EngineError.ExecutionError;
+
+                // Allocate a new B+Tree page for the index
+                const idx_root_id = self.catalog.pool.pager.allocPage() catch {
+                    return EngineError.StorageError;
+                };
+                {
+                    const raw = self.catalog.pool.pager.allocPageBuf() catch {
+                        return EngineError.StorageError;
+                    };
+                    defer self.catalog.pool.pager.freePageBuf(raw);
+                    btree_mod.initLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
+                    self.catalog.pool.pager.writePage(idx_root_id, raw) catch {
+                        return EngineError.StorageError;
+                    };
+                }
+
+                // Build a new indexes array with the new index added
+                const new_indexes = self.allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len + 1) catch {
+                    return EngineError.OutOfMemory;
+                };
+                defer self.allocator.free(new_indexes);
+
+                @memcpy(new_indexes[0..table_info.indexes.len], table_info.indexes);
+
+                // Allocate and duplicate included_columns
+                const included_dup = self.allocator.alloc([]const u8, ci.included_columns.len) catch {
+                    return EngineError.OutOfMemory;
+                };
+                for (ci.included_columns, 0..) |inc_col, i| {
+                    included_dup[i] = self.allocator.dupe(u8, inc_col) catch {
+                        return EngineError.OutOfMemory;
+                    };
+                }
+
+                new_indexes[table_info.indexes.len] = .{
+                    .index_name = self.allocator.dupe(u8, ci.name) catch {
+                        return EngineError.OutOfMemory;
+                    },
+                    .column_name = self.allocator.dupe(u8, col_name) catch {
+                        return EngineError.OutOfMemory;
+                    },
+                    .column_index = col_idx,
+                    .root_page_id = idx_root_id,
+                    .included_columns = included_dup,
+                };
+
+                // Serialize the updated table and store in catalog
+                const value = catalog_mod.serializeTableFull(
+                    self.allocator,
+                    table_info.columns,
+                    table_info.table_constraints,
+                    new_indexes,
+                    table_info.data_root_page_id,
+                ) catch {
+                    // Free the allocated strings for the new index since we're bailing out
+                    self.allocator.free(new_indexes[table_info.indexes.len].index_name);
+                    self.allocator.free(new_indexes[table_info.indexes.len].column_name);
+                    for (included_dup) |incl| self.allocator.free(incl);
+                    self.allocator.free(included_dup);
+                    return EngineError.OutOfMemory;
+                };
+                defer self.allocator.free(value);
+
+                // Free the allocated strings for the new index since they're now in the serialized buffer
+                self.allocator.free(new_indexes[table_info.indexes.len].index_name);
+                self.allocator.free(new_indexes[table_info.indexes.len].column_name);
+                for (included_dup) |incl| self.allocator.free(incl);
+                self.allocator.free(included_dup);
+
+                self.catalog.tree.delete(ci.table) catch {
+                    return EngineError.StorageError;
+                };
+                self.catalog.tree.insert(ci.table, value) catch {
+                    return EngineError.StorageError;
+                };
+
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "CREATE INDEX" };
+            },
+            .drop_index => |di| {
+                // Check if write operations are allowed (standby mode check)
+                self.standby_coordinator.checkWriteAllowed() catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    arena = null; // Prevent errdefer from double-freeing
+                    return switch (err) {
+                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        else => EngineError.ExecutionError,
+                    };
+                };
+
+                // Find the table that contains the index by checking the column name
+                // For now, we search through all tables to find which one has an index on this column
+                // This is a limitation of DROP INDEX not specifying the table name
+                var found_table: ?[]const u8 = null;
+                var owned_table_name: ?[]const u8 = null;
+
+                // Get all tables (iterate through catalog tree)
+                var cursor = btree_mod.Cursor.init(self.allocator, &self.catalog.tree);
+                defer cursor.deinit();
+
+                cursor.seekFirst() catch {
+                    if (di.if_exists) {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return .{ .message = "DROP INDEX" };
+                    }
+                    return EngineError.StorageError;
+                };
+
+                var search_done = false;
+                while (!search_done) {
+                    const maybe_entry = cursor.next() catch null;
+                    if (maybe_entry == null) break;
+                    const entry = maybe_entry.?;
+                    defer {
+                        self.allocator.free(entry.key);
+                        self.allocator.free(entry.value);
+                    }
+
+                    const table_name = entry.key;
+                    const table_info = self.catalog.getTable(table_name) catch {
+                        continue;
+                    };
+                    defer table_info.deinit(self.allocator);
+
+                    for (table_info.indexes) |idx| {
+                        // Check if this index matches by index name (new format)
+                        // or by column name as fallback (old format / backward compat)
+                        const index_match = if (idx.index_name.len > 0)
+                            std.ascii.eqlIgnoreCase(idx.index_name, di.name)
+                        else
+                            std.ascii.eqlIgnoreCase(idx.column_name, di.name);
+
+                        if (index_match) {
+                            owned_table_name = try self.allocator.dupe(u8, table_name);
+                            found_table = owned_table_name;
+                            search_done = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (found_table == null) {
+                    if (owned_table_name) |otn| self.allocator.free(otn);
+                    if (di.if_exists) {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return .{ .message = "DROP INDEX" };
+                    }
+                    return EngineError.TableNotFound;
+                }
+
+                // Get the table and remove the index
+                const table_name = found_table.?;
+                defer if (owned_table_name) |otn| self.allocator.free(otn);
+
+                var table_info = self.catalog.getTable(table_name) catch {
+                    return EngineError.TableNotFound;
+                };
+                defer table_info.deinit(self.allocator);
+
+                // Count how many indexes we'll keep (all except the one matching the drop)
+                var keep_count: usize = 0;
+                for (table_info.indexes) |idx| {
+                    const index_match = if (idx.index_name.len > 0)
+                        std.ascii.eqlIgnoreCase(idx.index_name, di.name)
+                    else
+                        std.ascii.eqlIgnoreCase(idx.column_name, di.name);
+                    if (!index_match) keep_count += 1;
+                }
+
+                // Find and remove the index from the table's indexes slice
+                const new_indexes = self.allocator.alloc(catalog_mod.IndexInfo, keep_count) catch {
+                    return EngineError.OutOfMemory;
+                };
+                defer self.allocator.free(new_indexes);
+
+                var new_idx: usize = 0;
+                for (table_info.indexes) |idx| {
+                    const index_match = if (idx.index_name.len > 0)
+                        std.ascii.eqlIgnoreCase(idx.index_name, di.name)
+                    else
+                        std.ascii.eqlIgnoreCase(idx.column_name, di.name);
+                    if (!index_match) {
+                        new_indexes[new_idx] = idx;
+                        new_idx += 1;
+                    }
+                }
+
+                // Serialize the updated table and store in catalog
+                const value = catalog_mod.serializeTableFull(
+                    self.allocator,
+                    table_info.columns,
+                    table_info.table_constraints,
+                    new_indexes,
+                    table_info.data_root_page_id,
+                ) catch {
+                    return EngineError.OutOfMemory;
+                };
+                defer self.allocator.free(value);
+
+                self.catalog.tree.delete(table_name) catch {
+                    return EngineError.StorageError;
+                };
+                self.catalog.tree.insert(table_name, value) catch {
+                    return EngineError.StorageError;
+                };
+
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "DROP INDEX" };
+            },
             .explain => |ex| {
                 // EXPLAIN: analyze → plan → (optionally optimize) → format
                 const provider = self.schemaProvider();
@@ -16339,5 +16605,146 @@ test "SQL function COALESCE integration" {
     defer row3.deinit();
     const val3 = row3.getColumn("result").?;
     try std.testing.expectEqual(@as(i64, 1), val3.integer);
+}
+
+test "CREATE INDEX creates index on table" {
+    const path = "test_eng_create_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index on name column
+    var r2 = try db.execSQL("CREATE INDEX idx_users_name ON users (name)");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify index exists in catalog
+    var table_info = try db.catalog.getTable("users");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("name");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("name", idx.?.column_name);
+}
+
+test "CREATE INDEX IF NOT EXISTS" {
+    const path = "test_eng_create_idx_ine.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index
+    var r2 = try db.execSQL("CREATE INDEX idx_products_name ON products (name)");
+    defer r2.close(testing.allocator);
+
+    // Create same index again with IF NOT EXISTS should not error
+    var r3 = try db.execSQL("CREATE INDEX IF NOT EXISTS idx_products_name ON products (name)");
+    defer r3.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r3.message);
+}
+
+test "CREATE UNIQUE INDEX creates unique index" {
+    const path = "test_eng_create_unique_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE accounts (id INTEGER, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on email column
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_accounts_email ON accounts (email)");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify unique index exists in catalog
+    var table_info = try db.catalog.getTable("accounts");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("email");
+    try testing.expect(idx != null);
+}
+
+test "CREATE INDEX with INCLUDE clause stores included columns" {
+    const path = "test_eng_create_idx_include.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create index with INCLUDE clause
+    var r2 = try db.execSQL("CREATE INDEX idx_employees_name ON employees (name) INCLUDE (salary)");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify index with included columns exists in catalog
+    var table_info = try db.catalog.getTable("employees");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("name");
+    try testing.expect(idx != null);
+    try testing.expectEqual(@as(usize, 1), idx.?.included_columns.len);
+    try testing.expectEqualStrings("salary", idx.?.included_columns[0]);
+}
+
+test "DROP INDEX removes index from table" {
+    const path = "test_eng_drop_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, title TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index
+    var r2 = try db.execSQL("CREATE INDEX idx_items_title ON items (title)");
+    defer r2.close(testing.allocator);
+
+    // Verify index exists
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(testing.allocator);
+    try testing.expect(table_info.findIndex("title") != null);
+
+    // Drop index
+    var r3 = try db.execSQL("DROP INDEX idx_items_title");
+    defer r3.close(testing.allocator);
+
+    try testing.expectEqualStrings("DROP INDEX", r3.message);
+
+    // Verify index is removed from catalog
+    var table_info2 = try db.catalog.getTable("items");
+    defer table_info2.deinit(testing.allocator);
+    try testing.expect(table_info2.findIndex("title") == null);
+}
+
+test "DROP INDEX IF EXISTS does not error when index missing" {
+    const path = "test_eng_drop_idx_ife.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE data (id INTEGER, value TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Drop non-existent index with IF EXISTS should not error
+    var r2 = try db.execSQL("DROP INDEX IF EXISTS idx_nonexistent");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("DROP INDEX", r2.message);
 }
 
