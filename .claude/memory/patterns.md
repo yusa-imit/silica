@@ -265,6 +265,39 @@ test "many frames in single commit" {
 }
 ```
 
+## GiST Index Pattern — VERIFIED
+
+### Operator Class Interface
+```zig
+pub const OpClass = struct {
+    consistent: *const fn (allocator: std.mem.Allocator, entry_pred: []const u8, query: []const u8, strategy: u8) Error!bool,
+    union_fn: *const fn (allocator: std.mem.Allocator, entries: []const []const u8) Error![]u8,
+    penalty: *const fn (allocator: std.mem.Allocator, current_pred: []const u8, new_pred: []const u8) Error!u64,
+    picksplit: *const fn (allocator: std.mem.Allocator, entries: []const []const u8) Error!struct { group_a: []usize, group_b: []usize },
+    same: *const fn (allocator: std.mem.Allocator, pred_a: []const u8, pred_b: []const u8) Error!bool,
+};
+
+// Example: Int4RangeOpClass for [lo, hi) integer ranges
+pub const Int4RangeOpClass = struct {
+    pub fn consistent(allocator: std.mem.Allocator, entry_pred: []const u8, query: []const u8, strategy: u8) Error!bool {
+        // strategy 0 = contains, 1 = overlaps
+    }
+    pub fn getOpClass() OpClass { return .{ .consistent = consistent, ... }; }
+};
+
+// Usage
+var gist = try GiST.init(allocator, &pool, root_page_id, Int4RangeOpClass.getOpClass());
+try gist.insert(predicate, tuple_id);
+const results = try gist.search(query, 1); // strategy=1 for overlap
+defer allocator.free(results);
+```
+
+### GiST Page Layout
+- Leaf: `[PageHeader 16B][entry_count u16][reserved 2B][entry_0_pred_size u16][entry_0_tuple_id u32]...[predicates←]`
+- Internal: `[PageHeader 16B][child_count u16][reserved 2B][child_0_pred_size u16][child_0_page_id u32]...[predicates←]`
+- Entry header: `[pred_size u16][tuple_id/child_id u32]` = 6 bytes fixed
+- Predicates: variable-length, stored from page end backward (slotted layout like B+Tree)
+
 <!-- Add new patterns as they are verified through implementation -->
 
 ## Zig 0.15.2 Specific Patterns
