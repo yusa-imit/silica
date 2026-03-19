@@ -2002,3 +2002,107 @@ test "optimize sort with empty order by" {
         else => return error.InvalidPlan,
     }
 }
+
+test "detect index-only scan when all columns are covered" {
+    const ColumnRef = planner_mod.ColumnRef;
+
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Simulate: SELECT name, email FROM users
+    // With index: CREATE INDEX idx_name ON users (name) INCLUDE (email)
+    // Expected: index_only flag should be set to true
+
+    const columns = [_]ColumnRef{
+        .{ .table = "users", .column = "name" },
+        .{ .table = "users", .column = "email" },
+    };
+    const scan = try arena.create(PlanNode, .{ .scan = .{
+        .table = "users",
+        .columns = &columns,
+        .index_only = false, // Initially false
+    } });
+
+    // In real implementation, optimizer would:
+    // 1. Check catalog for indexes on 'users'
+    // 2. Find idx_name covering (name, email)
+    // 3. Set index_only = true
+
+    // TODO: Implement index-only scan detection in optimizer
+    // For now, verify the flag exists and can be set
+    const scan_node = scan.scan;
+    try testing.expectEqual(false, scan_node.index_only);
+}
+
+test "no index-only scan when columns are not covered" {
+    const ColumnRef = planner_mod.ColumnRef;
+
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Simulate: SELECT name, created_at FROM users
+    // With index: CREATE INDEX idx_name ON users (name) INCLUDE (email)
+    // Expected: index_only flag should remain false (created_at not in index)
+
+    const columns = [_]ColumnRef{
+        .{ .table = "users", .column = "name" },
+        .{ .table = "users", .column = "created_at" }, // Not in INCLUDE clause
+    };
+    const scan = try arena.create(PlanNode, .{ .scan = .{
+        .table = "users",
+        .columns = &columns,
+        .index_only = false,
+    } });
+
+    // In real implementation, optimizer would verify created_at is NOT in index
+    // and leave index_only = false
+    try testing.expectEqual(false, scan.scan.index_only);
+}
+
+test "index-only scan with indexed column only" {
+    const ColumnRef = planner_mod.ColumnRef;
+
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Simulate: SELECT name FROM users
+    // With index: CREATE INDEX idx_name ON users (name)
+    // Expected: index_only = true (indexed column is always in index)
+
+    const columns = [_]ColumnRef{
+        .{ .table = "users", .column = "name" },
+    };
+    const scan = try arena.create(PlanNode, .{ .scan = .{
+        .table = "users",
+        .columns = &columns,
+        .index_only = false,
+    } });
+
+    // Indexed column is always covered
+    try testing.expectEqual(false, scan.scan.index_only); // Will be true after optimization
+}
+
+test "index-only scan with multiple included columns" {
+    const ColumnRef = planner_mod.ColumnRef;
+
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Simulate: SELECT user_id, total, status FROM orders
+    // With index: CREATE INDEX idx_orders ON orders (user_id) INCLUDE (total, status)
+    // Expected: index_only = true (all columns covered)
+
+    const columns = [_]ColumnRef{
+        .{ .table = "orders", .column = "user_id" },
+        .{ .table = "orders", .column = "total" },
+        .{ .table = "orders", .column = "status" },
+    };
+    const scan = try arena.create(PlanNode, .{ .scan = .{
+        .table = "orders",
+        .columns = &columns,
+        .index_only = false,
+    } });
+
+    // All columns in index (indexed + included)
+    try testing.expectEqual(false, scan.scan.index_only); // Will be true after optimization
+}

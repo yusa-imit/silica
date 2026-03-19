@@ -11637,3 +11637,152 @@ test "extractJoinKeys handles multiple qualified columns in AND condition" {
     // No more rows (order 2 should NOT match due to customer_id mismatch)
     try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
 }
+
+// NOTE: The following integration tests are commented out because they depend on
+// the Engine API which is in engine.zig. These tests document the expected end-to-end
+// behavior of index-only scans and will be enabled once the implementation is complete.
+
+// test "index-only scan returns correct results" {
+//     const engine_mod = @import("engine.zig");
+//     const Engine = engine_mod.Engine;
+//
+//     const allocator = std.testing.allocator;
+//     const db_path = "test_index_only_scan.db";
+//     defer std.fs.cwd().deleteFile(db_path) catch {};
+//
+//     var engine = try Engine.init(allocator, db_path);
+//     defer engine.deinit();
+//
+//     // Create table: users (id, name, email, created_at)
+//     try engine.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, created_at TIMESTAMP)");
+//
+//     // Insert test data
+//     try engine.execute("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com', '2024-01-01')");
+//     try engine.execute("INSERT INTO users VALUES (2, 'Bob', 'bob@example.com', '2024-01-02')");
+//     try engine.execute("INSERT INTO users VALUES (3, 'Charlie', 'charlie@example.com', '2024-01-03')");
+//
+//     // Create covering index: idx_name on (name) INCLUDE (email)
+//     try engine.execute("CREATE INDEX idx_name ON users (name) INCLUDE (email)");
+//
+//     // Query that should use index-only scan: SELECT name, email FROM users
+//     // (both columns are in the index)
+//     const result = try engine.execute("SELECT name, email FROM users ORDER BY name");
+//     defer result.deinit();
+//
+//     // Verify results
+//     try std.testing.expectEqual(@as(usize, 3), result.rows.len);
+//     try std.testing.expectEqualStrings("Alice", result.rows[0][0].text);
+//     try std.testing.expectEqualStrings("alice@example.com", result.rows[0][1].text);
+//     try std.testing.expectEqualStrings("Bob", result.rows[1][0].text);
+//     try std.testing.expectEqualStrings("bob@example.com", result.rows[1][1].text);
+//     try std.testing.expectEqualStrings("Charlie", result.rows[2][0].text);
+//     try std.testing.expectEqualStrings("charlie@example.com", result.rows[2][1].text);
+// }
+
+// test "index-only scan vs heap scan correctness" {
+//     const engine_mod = @import("engine.zig");
+//     const Engine = engine_mod.Engine;
+//
+//     const allocator = std.testing.allocator;
+//     const db_path = "test_index_heap_comparison.db";
+//     defer std.fs.cwd().deleteFile(db_path) catch {};
+//
+//     var engine = try Engine.init(allocator, db_path);
+//     defer engine.deinit();
+//
+//     // Create table
+//     try engine.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL, category TEXT)");
+//
+//     // Insert test data
+//     try engine.execute("INSERT INTO products VALUES (1, 'Laptop', 999.99, 'Electronics')");
+//     try engine.execute("INSERT INTO products VALUES (2, 'Mouse', 29.99, 'Electronics')");
+//     try engine.execute("INSERT INTO products VALUES (3, 'Desk', 299.99, 'Furniture')");
+//
+//     // Create covering index: idx_name on (name) INCLUDE (price)
+//     try engine.execute("CREATE INDEX idx_name ON products (name) INCLUDE (price)");
+//
+//     // Query covered by index: SELECT name, price FROM products
+//     const index_result = try engine.execute("SELECT name, price FROM products ORDER BY name");
+//     defer index_result.deinit();
+//
+//     // Query NOT covered by index (includes category): SELECT name, price, category FROM products
+//     const heap_result = try engine.execute("SELECT name, price, category FROM products ORDER BY name");
+//     defer heap_result.deinit();
+//
+//     // Verify index-only scan result
+//     try std.testing.expectEqual(@as(usize, 3), index_result.rows.len);
+//     try std.testing.expectEqualStrings("Desk", index_result.rows[0][0].text);
+//     try std.testing.expectEqual(@as(f64, 299.99), index_result.rows[0][1].real);
+//
+//     // Verify heap scan result (should include category)
+//     try std.testing.expectEqual(@as(usize, 3), heap_result.rows.len);
+//     try std.testing.expectEqualStrings("Desk", heap_result.rows[0][0].text);
+//     try std.testing.expectEqual(@as(f64, 299.99), heap_result.rows[0][1].real);
+//     try std.testing.expectEqualStrings("Furniture", heap_result.rows[0][2].text);
+// }
+
+// test "index-only scan with WHERE clause" {
+//     const engine_mod = @import("engine.zig");
+//     const Engine = engine_mod.Engine;
+//
+//     const allocator = std.testing.allocator;
+//     const db_path = "test_index_only_where.db";
+//     defer std.fs.cwd().deleteFile(db_path) catch {};
+//
+//     var engine = try Engine.init(allocator, db_path);
+//     defer engine.deinit();
+//
+//     // Create table
+//     try engine.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total REAL, status TEXT)");
+//
+//     // Insert test data
+//     try engine.execute("INSERT INTO orders VALUES (1, 100, 50.0, 'pending')");
+//     try engine.execute("INSERT INTO orders VALUES (2, 100, 75.0, 'shipped')");
+//     try engine.execute("INSERT INTO orders VALUES (3, 101, 100.0, 'pending')");
+//
+//     // Create covering index: idx_user on (user_id) INCLUDE (total, status)
+//     try engine.execute("CREATE INDEX idx_user ON orders (user_id) INCLUDE (total, status)");
+//
+//     // Query with WHERE on indexed column: SELECT user_id, total FROM orders WHERE user_id = 100
+//     const result = try engine.execute("SELECT user_id, total FROM orders WHERE user_id = 100");
+//     defer result.deinit();
+//
+//     // Should return 2 rows (both orders for user_id 100)
+//     try std.testing.expectEqual(@as(usize, 2), result.rows.len);
+//     try std.testing.expectEqual(@as(i64, 100), result.rows[0][0].integer);
+//     try std.testing.expectEqual(@as(f64, 50.0), result.rows[0][1].real);
+//     try std.testing.expectEqual(@as(i64, 100), result.rows[1][0].integer);
+//     try std.testing.expectEqual(@as(f64, 75.0), result.rows[1][1].real);
+// }
+
+// test "no index-only scan when SELECT * is used" {
+//     const engine_mod = @import("engine.zig");
+//     const Engine = engine_mod.Engine;
+//
+//     const allocator = std.testing.allocator;
+//     const db_path = "test_no_index_only_star.db";
+//     defer std.fs.cwd().deleteFile(db_path) catch {};
+//
+//     var engine = try Engine.init(allocator, db_path);
+//     defer engine.deinit();
+//
+//     // Create table with 4 columns
+//     try engine.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL, description TEXT)");
+//
+//     // Insert test data
+//     try engine.execute("INSERT INTO items VALUES (1, 'Item1', 10.0, 'Description1')");
+//
+//     // Create covering index for only some columns
+//     try engine.execute("CREATE INDEX idx_name ON items (name) INCLUDE (price)");
+//
+//     // Query with SELECT *: must use heap scan (description not in index)
+//     const result = try engine.execute("SELECT * FROM items");
+//     defer result.deinit();
+//
+//     // Verify all columns are returned
+//     try std.testing.expectEqual(@as(usize, 1), result.rows.len);
+//     try std.testing.expectEqual(@as(i64, 1), result.rows[0][0].integer);
+//     try std.testing.expectEqualStrings("Item1", result.rows[0][1].text);
+//     try std.testing.expectEqual(@as(f64, 10.0), result.rows[0][2].real);
+//     try std.testing.expectEqualStrings("Description1", result.rows[0][3].text);
+// }

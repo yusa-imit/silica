@@ -456,6 +456,8 @@ pub const CreateIndexStmt = struct {
     name: []const u8,
     table: []const u8,
     columns: []const OrderByItem = &.{},
+    /// Non-indexed columns included in the index for covering (index-only) scans
+    included_columns: []const []const u8 = &.{},
 };
 
 /// DROP INDEX statement.

@@ -148,6 +148,7 @@ pub const TokenType = enum {
     kw_restrictive,
     kw_force,
     kw_using,
+    kw_include,
 
     // Keywords — DML
     kw_select,
@@ -827,6 +828,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "restrictive", .kw_restrictive },
         .{ "force", .kw_force },
         .{ "using", .kw_using },
+        .{ "include", .kw_include },
         // DML
         .{ "select", .kw_select },
         .{ "from", .kw_from },

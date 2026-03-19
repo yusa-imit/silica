@@ -1103,6 +1103,62 @@ pub const Parser = struct {
         }
         _ = try self.expect(.right_paren);
 
+        // Parse optional INCLUDE clause
+        var included_cols = std.ArrayListUnmanaged([]const u8){};
+        if (self.match(.kw_include)) {
+            _ = try self.expect(.left_paren);
+
+            // Parse comma-separated column identifiers
+            while (true) {
+                const col_name = try self.expectIdentifier();
+                included_cols.append(a, col_name) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+
+            // Validate INCLUDE list is not empty
+            if (included_cols.items.len == 0) {
+                try self.addError(self.peek(), "INCLUDE clause cannot be empty");
+                return error.ParseFailed;
+            }
+
+            // Validate no duplicates within INCLUDE list
+            for (included_cols.items, 0..) |col1, i| {
+                for (included_cols.items[i + 1 ..]) |col2| {
+                    if (std.mem.eql(u8, col1, col2)) {
+                        const msg = try std.fmt.allocPrint(a, "duplicate column in INCLUDE: {s}", .{col1});
+                        try self.addError(self.peek(), msg);
+                        return error.ParseFailed;
+                    }
+                }
+            }
+
+            // Validate no overlap between indexed columns and INCLUDE columns
+            // Extract column names from indexed expressions
+            const indexed_cols = cols.toOwnedSlice(a) catch return error.OutOfMemory;
+            for (indexed_cols) |idx_item| {
+                if (idx_item.expr.* == .column_ref) {
+                    const idx_col_name = idx_item.expr.column_ref.name;
+                    for (included_cols.items) |inc_col| {
+                        if (std.mem.eql(u8, idx_col_name, inc_col)) {
+                            const msg = try std.fmt.allocPrint(a, "column {s} appears in both index and INCLUDE", .{inc_col});
+                            try self.addError(self.peek(), msg);
+                            return error.ParseFailed;
+                        }
+                    }
+                }
+            }
+
+            return .{
+                .if_not_exists = if_not_exists,
+                .unique = unique,
+                .name = name,
+                .table = table,
+                .columns = indexed_cols,
+                .included_columns = included_cols.toOwnedSlice(a) catch return error.OutOfMemory,
+            };
+        }
+
         return .{
             .if_not_exists = if_not_exists,
             .unique = unique,
@@ -3081,6 +3137,54 @@ test "parse CREATE UNIQUE INDEX" {
     try std.testing.expect(ci.unique);
     try std.testing.expectEqual(@as(usize, 2), ci.columns.len);
     try std.testing.expectEqual(ast.OrderDirection.desc, ci.columns[1].direction);
+}
+
+test "parse CREATE INDEX with INCLUDE clause" {
+    var r = try testParseWithArena("CREATE INDEX idx_name ON users (name) INCLUDE (email, created_at)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expectEqualStrings("idx_name", ci.name);
+    try std.testing.expectEqualStrings("users", ci.table);
+    try std.testing.expectEqual(@as(usize, 1), ci.columns.len);
+    try std.testing.expectEqual(@as(usize, 2), ci.included_columns.len);
+    try std.testing.expectEqualStrings("email", ci.included_columns[0]);
+    try std.testing.expectEqualStrings("created_at", ci.included_columns[1]);
+}
+
+test "parse CREATE UNIQUE INDEX with INCLUDE clause" {
+    var r = try testParseWithArena("CREATE UNIQUE INDEX idx_user_email ON users (email) INCLUDE (name)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.unique);
+    try std.testing.expectEqual(@as(usize, 1), ci.columns.len);
+    try std.testing.expectEqual(@as(usize, 1), ci.included_columns.len);
+    try std.testing.expectEqualStrings("name", ci.included_columns[0]);
+}
+
+test "parse CREATE INDEX INCLUDE with multiple columns" {
+    var r = try testParseWithArena("CREATE INDEX idx_composite ON orders (user_id, created_at DESC) INCLUDE (total, status, notes)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expectEqual(@as(usize, 2), ci.columns.len);
+    try std.testing.expectEqual(@as(usize, 3), ci.included_columns.len);
+    try std.testing.expectEqualStrings("total", ci.included_columns[0]);
+    try std.testing.expectEqualStrings("status", ci.included_columns[1]);
+    try std.testing.expectEqualStrings("notes", ci.included_columns[2]);
+}
+
+test "parse CREATE INDEX with empty INCLUDE should fail" {
+    const r = testParseWithArena("CREATE INDEX idx_bad ON users (name) INCLUDE ()");
+    try std.testing.expectError(error.ParseFailed, r);
+}
+
+test "parse CREATE INDEX with duplicate column in INCLUDE should fail" {
+    const r = testParseWithArena("CREATE INDEX idx_dup ON users (name) INCLUDE (name, email)");
+    try std.testing.expectError(error.ParseFailed, r);
+}
+
+test "parse CREATE INDEX with duplicate across index and INCLUDE should fail" {
+    const r = testParseWithArena("CREATE INDEX idx_dup ON users (name, email) INCLUDE (email)");
+    try std.testing.expectError(error.ParseFailed, r);
 }
 
 // ── Transaction tests ─────────────────────────────────────────
