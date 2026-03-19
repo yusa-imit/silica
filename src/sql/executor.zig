@@ -5054,17 +5054,30 @@ fn extractEqualities(
 }
 
 /// Extract column_ref from expression if it's a simple column reference.
-fn getColumnRef(expr: *const ast.Expr) ?[]const u8 {
+/// Returns the Name struct which includes both the column name and optional table prefix.
+fn getColumnRef(expr: *const ast.Expr) ?ast.Name {
     return switch (expr.*) {
-        .column_ref => |name| name.name,
+        .column_ref => |name| name,
         else => null,
     };
 }
 
 /// Find column index in row by name (case-insensitive).
-fn findColumnIndex(row: *const Row, name: []const u8) ?usize {
+/// If name has a prefix (table.column), tries to match qualified name first,
+/// then falls back to matching just the column name if no qualified match found.
+fn findColumnIndex(row: *const Row, name: ast.Name) ?usize {
+    // If name has a prefix, try to match "prefix.name" first
+    if (name.prefix) |prefix| {
+        var buf: [256]u8 = undefined;
+        const qualified = std.fmt.bufPrint(&buf, "{s}.{s}", .{ prefix, name.name }) catch return null;
+        for (row.columns, 0..) |col, i| {
+            if (std.ascii.eqlIgnoreCase(col, qualified)) return i;
+        }
+    }
+
+    // Fall back to matching just the column name (unqualified)
     for (row.columns, 0..) |col, i| {
-        if (std.ascii.eqlIgnoreCase(col, name)) return i;
+        if (std.ascii.eqlIgnoreCase(col, name.name)) return i;
     }
     return null;
 }
@@ -5171,11 +5184,13 @@ pub const HashJoinOp = struct {
     }
 
     pub fn next(self: *HashJoinOp) ExecError!?Row {
-        // Build hash table on first call
+        // Extract join keys before building hash table (on first call)
+        // We need to build hash table first to have rows available, THEN extract keys and rebuild
         if (!self.hash_table_built) {
+            // First pass: build hash table with all right rows
             try self.buildHashTable();
 
-            // Extract join keys from first left row and first right row
+            // Extract join keys from first left row and first right row (if available)
             if (self.join_keys == null and self.all_right_rows.items.len > 0) {
                 const first_left = try self.left.next();
                 if (first_left) |left_row| {
@@ -5185,7 +5200,28 @@ pub const HashJoinOp = struct {
                         &left_row,
                         &self.all_right_rows.items[0],
                     );
-                    // Put first left row back
+
+                    // If we successfully extracted keys, rebuild hash table with correct hashing
+                    if (self.join_keys != null) {
+                        // Clear old hash table
+                        var it = self.hash_table.iterator();
+                        while (it.next()) |entry| {
+                            entry.value_ptr.deinit(self.allocator);
+                        }
+                        self.hash_table.clearRetainingCapacity();
+
+                        // Rebuild with correct join key hashing
+                        for (self.all_right_rows.items) |*row| {
+                            const hash = self.hashRowWithKeys(row, true);
+                            const gop = self.hash_table.getOrPut(hash) catch return ExecError.OutOfMemory;
+                            if (!gop.found_existing) {
+                                gop.value_ptr.* = .{};
+                            }
+                            gop.value_ptr.append(self.allocator, row.*) catch return ExecError.OutOfMemory;
+                        }
+                    }
+
+                    // Save first left row to process it
                     self.left_row = left_row;
                 }
             }
@@ -11468,3 +11504,136 @@ test "to_tsquery: empty string returns empty" {
 //     try std.testing.expect(result == .boolean);
 //     try std.testing.expect(result.boolean == false);
 // }
+
+test "extractJoinKeys handles qualified column names with ambiguous columns" {
+    const allocator = std.testing.allocator;
+
+    // Scenario: Both tables have a column named "id"
+    // Left table: t1 (id, value)
+    var t1 = InMemorySource.init(allocator, &.{ "id", "value" });
+    try t1.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "A" } });
+    try t1.addRow(&.{ Value{ .integer = 2 }, Value{ .text = "B" } });
+    defer t1.deinit();
+
+    // Right table: t2 (id, amount)
+    var t2 = InMemorySource.init(allocator, &.{ "id", "amount" });
+    try t2.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 } });
+    try t2.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 200 } });
+    defer t2.deinit();
+
+    // ON t1.id = t2.id (fully qualified column names)
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "t1" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "id", .prefix = "t2" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, t1.iterator(), t2.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Should successfully match rows: (1, A, 100) and (2, B, 200)
+    // This test FAILS if extractJoinKeys ignores table prefixes,
+    // because it would extract "id" = "id" without resolving which table's "id".
+    var r1 = (try hash_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.values[0].integer);
+    try std.testing.expectEqualStrings("A", r1.values[1].text);
+    try std.testing.expectEqual(@as(i64, 1), r1.values[2].integer);
+    try std.testing.expectEqual(@as(i64, 100), r1.values[3].integer);
+
+    var r2 = (try hash_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 2), r2.values[0].integer);
+    try std.testing.expectEqualStrings("B", r2.values[1].text);
+    try std.testing.expectEqual(@as(i64, 2), r2.values[2].integer);
+    try std.testing.expectEqual(@as(i64, 200), r2.values[3].integer);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "extractJoinKeys handles mixed qualified and unqualified column names" {
+    const allocator = std.testing.allocator;
+
+    // Left table: employees (id, dept_id, name)
+    var employees = InMemorySource.init(allocator, &.{ "id", "dept_id", "name" });
+    try employees.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "Alice" } });
+    try employees.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 20 }, Value{ .text = "Bob" } });
+    defer employees.deinit();
+
+    // Right table: departments (dept_id, dept_name)
+    var departments = InMemorySource.init(allocator, &.{ "dept_id", "dept_name" });
+    try departments.addRow(&.{ Value{ .integer = 10 }, Value{ .text = "Engineering" } });
+    try departments.addRow(&.{ Value{ .integer = 20 }, Value{ .text = "Sales" } });
+    defer departments.deinit();
+
+    // ON employees.dept_id = departments.dept_id
+    // Here "dept_id" exists in both tables, so qualification is necessary
+    const left_ref = ast.Expr{ .column_ref = .{ .name = "dept_id", .prefix = "employees" } };
+    const right_ref = ast.Expr{ .column_ref = .{ .name = "dept_id", .prefix = "departments" } };
+    const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
+
+    var hash_join = HashJoinOp.init(allocator, employees.iterator(), departments.iterator(), .inner, &cond);
+    defer hash_join.close();
+
+    // Should match: (1, 10, Alice, 10, Engineering) and (2, 20, Bob, 20, Sales)
+    var r1 = (try hash_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.values[0].integer);
+    try std.testing.expectEqual(@as(i64, 10), r1.values[1].integer);
+    try std.testing.expectEqualStrings("Alice", r1.values[2].text);
+    try std.testing.expectEqual(@as(i64, 10), r1.values[3].integer);
+    try std.testing.expectEqualStrings("Engineering", r1.values[4].text);
+
+    var r2 = (try hash_join.next()).?;
+    defer r2.deinit();
+    try std.testing.expectEqual(@as(i64, 2), r2.values[0].integer);
+    try std.testing.expectEqual(@as(i64, 20), r2.values[1].integer);
+    try std.testing.expectEqualStrings("Bob", r2.values[2].text);
+    try std.testing.expectEqual(@as(i64, 20), r2.values[3].integer);
+    try std.testing.expectEqualStrings("Sales", r2.values[4].text);
+
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
+
+test "extractJoinKeys handles multiple qualified columns in AND condition" {
+    const allocator = std.testing.allocator;
+
+    // Left table: orders (order_id, customer_id, product_id)
+    var orders = InMemorySource.init(allocator, &.{ "order_id", "customer_id", "product_id" });
+    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 }, Value{ .integer = 500 } });
+    try orders.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 101 }, Value{ .integer = 501 } });
+    defer orders.deinit();
+
+    // Right table: shipments (order_id, customer_id, status)
+    var shipments = InMemorySource.init(allocator, &.{ "order_id", "customer_id", "status" });
+    try shipments.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 }, Value{ .text = "shipped" } });
+    try shipments.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 999 }, Value{ .text = "pending" } });
+    defer shipments.deinit();
+
+    // ON orders.order_id = shipments.order_id AND orders.customer_id = shipments.customer_id
+    // Both column names are ambiguous (exist in both tables)
+    const order_id_left = ast.Expr{ .column_ref = .{ .name = "order_id", .prefix = "orders" } };
+    const order_id_right = ast.Expr{ .column_ref = .{ .name = "order_id", .prefix = "shipments" } };
+    const order_id_eq = ast.Expr{ .binary_op = .{ .op = .equal, .left = &order_id_left, .right = &order_id_right } };
+
+    const customer_id_left = ast.Expr{ .column_ref = .{ .name = "customer_id", .prefix = "orders" } };
+    const customer_id_right = ast.Expr{ .column_ref = .{ .name = "customer_id", .prefix = "shipments" } };
+    const customer_id_eq = ast.Expr{ .binary_op = .{ .op = .equal, .left = &customer_id_left, .right = &customer_id_right } };
+
+    const and_cond = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &order_id_eq, .right = &customer_id_eq } };
+
+    var hash_join = HashJoinOp.init(allocator, orders.iterator(), shipments.iterator(), .inner, &and_cond);
+    defer hash_join.close();
+
+    // Should match only order 1 (both order_id AND customer_id match)
+    // Order 2 has matching order_id but different customer_id, so it should NOT match
+    var r1 = (try hash_join.next()).?;
+    defer r1.deinit();
+    try std.testing.expectEqual(@as(i64, 1), r1.values[0].integer); // order_id
+    try std.testing.expectEqual(@as(i64, 100), r1.values[1].integer); // customer_id
+    try std.testing.expectEqual(@as(i64, 500), r1.values[2].integer); // product_id
+    try std.testing.expectEqual(@as(i64, 1), r1.values[3].integer); // shipments.order_id
+    try std.testing.expectEqual(@as(i64, 100), r1.values[4].integer); // shipments.customer_id
+    try std.testing.expectEqualStrings("shipped", r1.values[5].text); // status
+
+    // No more rows (order 2 should NOT match due to customer_id mismatch)
+    try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
+}
