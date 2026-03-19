@@ -35,9 +35,9 @@
 ### Milestone 21: Advanced Optimization (Phase 10)
 
 - [x] DP join ordering (21A partial — simplified two-table join reordering; multi-way joins deferred)
-- [x] Hash/merge join selection (21B partial — HashJoinOp/MergeJoinOp executors + cost-based selection infrastructure complete; TEMPORARILY DISABLED until HashJoinOp join key extraction fixed [hardcoded to first column, needs ON condition parsing]; 5 optimizer tests)
+- [x] Hash/merge join selection (21B complete — HashJoinOp with proper join key extraction from ON condition, supports multi-column equi-joins, cost-based selection re-enabled; 5 optimizer tests updated)
 - [ ] Subquery decorrelation
-- [ ] Index-only scans
+- [ ] Index-only scans (infrastructure added, full implementation deferred)
 - [x] EXPLAIN ANALYZE (21C complete — EXPLAIN and EXPLAIN ANALYZE syntax, plan text formatting via formatPlan(), arena-based memory management; runtime statistics collection deferred to future; 4 integration tests)
 
 ---

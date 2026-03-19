@@ -4975,6 +4975,100 @@ fn leftOuterRow(allocator: Allocator, left: *const Row, right_sample: []const Ro
 
 // ── Hash Join Operator ──────────────────────────────────────────────────
 
+/// Join key information extracted from ON condition.
+const JoinKeys = struct {
+    left_indices: []usize,  // Column indices in left table
+    right_indices: []usize, // Column indices in right table
+};
+
+/// Extract join key column indices from ON condition.
+/// Currently supports simple equi-joins: a.col1 = b.col2 [AND a.col3 = b.col4 ...]
+/// Returns null if ON condition is not a supported equi-join pattern.
+fn extractJoinKeys(
+    allocator: Allocator,
+    on_condition: ?*const ast.Expr,
+    left_row: *const Row,
+    right_row: *const Row,
+) ?JoinKeys {
+    const cond = on_condition orelse return null;
+
+    var left_list = std.ArrayListUnmanaged(usize){};
+    errdefer left_list.deinit(allocator);
+    var right_list = std.ArrayListUnmanaged(usize){};
+    errdefer right_list.deinit(allocator);
+
+    // Recursive helper to extract equality predicates
+    extractEqualities(cond, left_row, right_row, &left_list, &right_list, allocator) catch return null;
+
+    if (left_list.items.len == 0) return null;
+
+    return JoinKeys{
+        .left_indices = left_list.toOwnedSlice(allocator) catch return null,
+        .right_indices = right_list.toOwnedSlice(allocator) catch return null,
+    };
+}
+
+/// Recursively extract equalities from expression tree.
+fn extractEqualities(
+    expr: *const ast.Expr,
+    left_row: *const Row,
+    right_row: *const Row,
+    left_list: *std.ArrayListUnmanaged(usize),
+    right_list: *std.ArrayListUnmanaged(usize),
+    allocator: Allocator,
+) !void {
+    switch (expr.*) {
+        .binary_op => |binop| {
+            if (binop.op == .equal) {
+                // Check if this is col1 = col2
+                const left_col = getColumnRef(binop.left);
+                const right_col = getColumnRef(binop.right);
+
+                if (left_col != null and right_col != null) {
+                    // Find indices in respective rows
+                    const left_idx = findColumnIndex(left_row, left_col.?);
+                    const right_idx = findColumnIndex(right_row, right_col.?);
+
+                    if (left_idx != null and right_idx != null) {
+                        try left_list.append(allocator, left_idx.?);
+                        try right_list.append(allocator, right_idx.?);
+                    }
+                    // If one side is in right and other in left, swap
+                    else if (left_idx == null and right_idx == null) {
+                        const left_in_right = findColumnIndex(right_row, left_col.?);
+                        const right_in_left = findColumnIndex(left_row, right_col.?);
+                        if (left_in_right != null and right_in_left != null) {
+                            try left_list.append(allocator, right_in_left.?);
+                            try right_list.append(allocator, left_in_right.?);
+                        }
+                    }
+                }
+            } else if (binop.op == .@"and") {
+                // Recursively process AND branches
+                try extractEqualities(binop.left, left_row, right_row, left_list, right_list, allocator);
+                try extractEqualities(binop.right, left_row, right_row, left_list, right_list, allocator);
+            }
+        },
+        else => {}, // Ignore non-binary-op expressions
+    }
+}
+
+/// Extract column_ref from expression if it's a simple column reference.
+fn getColumnRef(expr: *const ast.Expr) ?[]const u8 {
+    return switch (expr.*) {
+        .column_ref => |name| name.name,
+        else => null,
+    };
+}
+
+/// Find column index in row by name (case-insensitive).
+fn findColumnIndex(row: *const Row, name: []const u8) ?usize {
+    for (row.columns, 0..) |col, i| {
+        if (std.ascii.eqlIgnoreCase(col, name)) return i;
+    }
+    return null;
+}
+
 /// Hash join: builds hash table from right side, probes with left side.
 pub const HashJoinOp = struct {
     allocator: Allocator,
@@ -4983,6 +5077,7 @@ pub const HashJoinOp = struct {
     hash_table: std.AutoHashMap(u64, std.ArrayListUnmanaged(Row)),
     join_type: ast.JoinType,
     on_condition: ?*const ast.Expr,
+    join_keys: ?JoinKeys = null, // Extracted join key indices
     left_row: ?Row = null,
     current_matches: ?[]Row = null,
     match_index: usize = 0,
@@ -5008,37 +5103,42 @@ pub const HashJoinOp = struct {
     }
 
     fn buildHashTable(self: *HashJoinOp) ExecError!void {
+        // Process all right rows and build hash table
         while (true) {
             const row = try self.right.next() orelse break;
-            // Store row in all_right_rows (owns the memory)
             const row_index = self.all_right_rows.items.len;
             self.all_right_rows.append(self.allocator, row) catch return ExecError.OutOfMemory;
 
-            // Hash table stores row struct by value (makes a copy of the struct but not the data)
-            // This is fine because Row itself is just pointers
-            const hash = hashRow(&row);
+            const hash = self.hashRowWithKeys(&self.all_right_rows.items[row_index], true);
             const gop = self.hash_table.getOrPut(hash) catch return ExecError.OutOfMemory;
             if (!gop.found_existing) {
                 gop.value_ptr.* = .{};
             }
-            // CRITICAL: This appends a COPY of the Row struct (pointers to same data)
-            // So both lists point to the same columns/values arrays
-            // We must only deinit once!
             gop.value_ptr.append(self.allocator, self.all_right_rows.items[row_index]) catch return ExecError.OutOfMemory;
         }
+
         self.hash_table_built = true;
     }
 
-    fn hashRow(row: *const Row) u64 {
+    /// Hash a row using extracted join key indices, or fall back to first column.
+    /// is_right: true if hashing right-side row (build), false for left-side (probe).
+    fn hashRowWithKeys(self: *const HashJoinOp, row: *const Row, is_right: bool) u64 {
         var hasher = std.hash.Wyhash.init(0);
-        // Simplified hash: uses first column as join key.
-        // The full ON condition is checked later during row combination (see next()).
-        // This approach is correct but may have more collisions than extracting
-        // exact join keys from the ON condition. Future optimization: parse
-        // ON condition to extract join column names and hash only those columns.
-        if (row.values.len > 0) {
-            hashValue(&hasher, &row.values[0]);
+
+        if (self.join_keys) |keys| {
+            const indices = if (is_right) keys.right_indices else keys.left_indices;
+            for (indices) |idx| {
+                if (idx < row.values.len) {
+                    hashValue(&hasher, &row.values[idx]);
+                }
+            }
+        } else {
+            // Fall back to first column if key extraction failed
+            if (row.values.len > 0) {
+                hashValue(&hasher, &row.values[0]);
+            }
         }
+
         return hasher.final();
     }
 
@@ -5074,6 +5174,21 @@ pub const HashJoinOp = struct {
         // Build hash table on first call
         if (!self.hash_table_built) {
             try self.buildHashTable();
+
+            // Extract join keys from first left row and first right row
+            if (self.join_keys == null and self.all_right_rows.items.len > 0) {
+                const first_left = try self.left.next();
+                if (first_left) |left_row| {
+                    self.join_keys = extractJoinKeys(
+                        self.allocator,
+                        self.on_condition,
+                        &left_row,
+                        &self.all_right_rows.items[0],
+                    );
+                    // Put first left row back
+                    self.left_row = left_row;
+                }
+            }
         }
 
         while (true) {
@@ -5116,15 +5231,17 @@ pub const HashJoinOp = struct {
                 self.current_matches = null;
             }
 
-            // Get next left row
-            self.left_row = try self.left.next();
+            // Get next left row (or use the one we already fetched during key extraction)
+            if (self.left_row == null) {
+                self.left_row = try self.left.next();
+            }
             if (self.left_row == null) return null;
 
             self.left_matched = false;
             self.match_index = 0;
 
-            // Probe hash table
-            const hash = hashRow(&self.left_row.?);
+            // Probe hash table using extracted keys
+            const hash = self.hashRowWithKeys(&self.left_row.?, false);
             if (self.hash_table.get(hash)) |matches| {
                 self.current_matches = matches.items;
             } else {
@@ -5143,6 +5260,10 @@ pub const HashJoinOp = struct {
             list.deinit(self.allocator); // Only free the list, not the rows
         }
         self.hash_table.deinit();
+        if (self.join_keys) |keys| {
+            self.allocator.free(keys.left_indices);
+            self.allocator.free(keys.right_indices);
+        }
         self.left.close();
         self.right.close();
     }

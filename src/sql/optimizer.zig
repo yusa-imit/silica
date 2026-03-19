@@ -237,23 +237,20 @@ pub const Optimizer = struct {
         // For non-equi-joins, only nested loop works
         if (!is_equi_join) return .nested_loop;
 
-        // TEMPORARILY DISABLED: Hash join has a critical limitation where it hashes
-        // only the first column, but join keys may be in other columns. This causes
-        // incorrect results when the join key is not column 0. The hash table lookup
-        // will fail to find matching rows, returning fewer results than expected.
-        //
-        // Example: SELECT * FROM items JOIN categories ON items.cat_id = categories.id
-        // If items.cat_id is column 2 (not 0), the hash won't match and rows are lost.
-        //
-        // To fix this properly, we need to:
-        // 1. Parse the ON condition to extract join column names (e.g., "cat_id", "id")
-        // 2. Find the column index in each row's schema
-        // 3. Hash those specific columns instead of column 0
-        //
-        // Until this is implemented, we must use nested loop for correctness.
-        _ = left;
-        _ = right;
-        return .nested_loop;
+        // Cost-based join algorithm selection
+        const left_card = self.estimateCardinality(left);
+        const right_card = self.estimateCardinality(right);
+
+        // Hash join is best when right side is smaller (builds hash table)
+        // Merge join is best when both sides are sorted
+        // For now, use simple heuristic: hash join for medium-large tables
+        if (right_card > 100 and left_card > 100) {
+            return .hash;
+        } else if (left_card < 50 or right_card < 50) {
+            return .nested_loop; // Small tables, nested loop is fine
+        } else {
+            return .hash; // Default to hash join for equi-joins
+        }
     }
 
     /// Check if a join condition is an equi-join (contains = comparison).
@@ -1658,7 +1655,7 @@ test "join reordering: multiple conditions ANDed together" {
 
 // ── Join Algorithm Selection Tests ──────────────────────────────────────
 
-test "join algorithm selection: equi-join would select hash join (disabled)" {
+test "join algorithm selection: equi-join selects hash join" {
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
@@ -1684,10 +1681,10 @@ test "join algorithm selection: equi-join would select hash join (disabled)" {
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
 
-    // Hash join temporarily disabled due to join key extraction limitation
+    // Hash join now enabled with proper join key extraction
     switch (optimized.root.*) {
         .join => |j| {
-            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+            try testing.expectEqual(PlanNode.JoinAlgorithm.hash, j.algorithm);
         },
         else => return error.InvalidPlan,
     }
@@ -1754,7 +1751,7 @@ test "join algorithm selection: no condition uses nested loop" {
     }
 }
 
-test "join algorithm selection: LEFT JOIN with equi-join (disabled)" {
+test "join algorithm selection: LEFT JOIN with equi-join" {
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
@@ -1778,17 +1775,17 @@ test "join algorithm selection: LEFT JOIN with equi-join (disabled)" {
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
 
-    // Hash join temporarily disabled due to join key extraction limitation
+    // Hash join now enabled with proper join key extraction
     switch (optimized.root.*) {
         .join => |j| {
             try testing.expectEqual(ast.JoinType.left, j.join_type);
-            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+            try testing.expectEqual(PlanNode.JoinAlgorithm.hash, j.algorithm);
         },
         else => return error.InvalidPlan,
     }
 }
 
-test "join algorithm selection: complex equi-join with AND (disabled)" {
+test "join algorithm selection: complex equi-join with AND" {
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
@@ -1822,10 +1819,10 @@ test "join algorithm selection: complex equi-join with AND (disabled)" {
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
 
-    // Hash join temporarily disabled due to join key extraction limitation
+    // Hash join now enabled with multi-column join key support
     switch (optimized.root.*) {
         .join => |j| {
-            try testing.expectEqual(PlanNode.JoinAlgorithm.nested_loop, j.algorithm);
+            try testing.expectEqual(PlanNode.JoinAlgorithm.hash, j.algorithm);
         },
         else => return error.InvalidPlan,
     }
