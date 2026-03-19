@@ -24,6 +24,7 @@ const planner_mod = @import("planner.zig");
 const optimizer_mod = @import("optimizer.zig");
 const executor_mod = @import("executor.zig");
 const btree_mod = @import("../storage/btree.zig");
+const hash_index_mod = @import("../storage/hash_index.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const page_mod = @import("../storage/page.zig");
 
@@ -41,6 +42,7 @@ const PlanNode = planner_mod.PlanNode;
 const LogicalPlan = planner_mod.LogicalPlan;
 const PlanType = planner_mod.PlanType;
 const BTree = btree_mod.BTree;
+const HashIndex = hash_index_mod.HashIndex;
 const Cursor = btree_mod.Cursor;
 const BufferPool = buffer_pool_mod.BufferPool;
 const Pager = page_mod.Pager;
@@ -1528,6 +1530,7 @@ pub const Database = struct {
             self.pool,
             table_info.data_root_page_id,
             idx_info.root_page_id,
+            idx_info.index_type,
             idx_key,
             col_names,
         );
@@ -1902,11 +1905,21 @@ pub const Database = struct {
             const idx_val = try self.allocator.dupe(u8, row_key);
             defer self.allocator.free(idx_val);
 
-            var idx_tree = BTree.init(self.pool, idx.root_page_id);
-            idx_tree.insert(idx_key, idx_val) catch {};
+            // Dispatch based on index type
+            switch (idx.index_type) {
+                .btree => {
+                    var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                    idx_tree.insert(idx_key, idx_val) catch {};
 
-            if (idx_tree.root_page_id != idx.root_page_id) {
-                self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                    if (idx_tree.root_page_id != idx.root_page_id) {
+                        self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                    }
+                },
+                .hash => {
+                    var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
+                    idx_hash.insert(idx_key, idx_val) catch {};
+                    // Hash index root page ID doesn't change (no rebalancing like B+Tree)
+                },
             }
         }
     }
@@ -1918,8 +1931,17 @@ pub const Database = struct {
             const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
             defer self.allocator.free(idx_key);
 
-            var idx_tree = BTree.init(self.pool, idx.root_page_id);
-            idx_tree.delete(idx_key) catch {};
+            // Dispatch based on index type
+            switch (idx.index_type) {
+                .btree => {
+                    var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                    idx_tree.delete(idx_key) catch {};
+                },
+                .hash => {
+                    var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
+                    idx_hash.delete(idx_key) catch {};
+                },
+            }
         }
     }
 
@@ -2993,7 +3015,17 @@ pub const Database = struct {
                 }
                 if (!found) return EngineError.ExecutionError;
 
-                // Allocate a new B+Tree page for the index
+                // Determine index type BEFORE allocating page
+                var idx_type = catalog_mod.IndexType.btree;
+                if (ci.index_type) |type_str| {
+                    if (std.ascii.eqlIgnoreCase(type_str, "hash")) {
+                        idx_type = catalog_mod.IndexType.hash;
+                    } else if (std.ascii.eqlIgnoreCase(type_str, "btree")) {
+                        idx_type = catalog_mod.IndexType.btree;
+                    }
+                }
+
+                // Allocate a new index page (B+Tree or Hash based on index type)
                 const idx_root_id = self.catalog.pool.pager.allocPage() catch {
                     return EngineError.StorageError;
                 };
@@ -3002,7 +3034,18 @@ pub const Database = struct {
                         return EngineError.StorageError;
                     };
                     defer self.catalog.pool.pager.freePageBuf(raw);
-                    btree_mod.initLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
+
+                    // Initialize page based on index type
+                    if (idx_type == .hash) {
+                        // Hash index initialization is handled by HashIndex.init
+                        // Just write an empty FSM page as placeholder (HashIndex will initialize on first use)
+                        @memset(raw, 0);
+                        raw[0] = 0x05; // FSM page type marker
+                    } else {
+                        // B+Tree index
+                        btree_mod.initLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
+                    }
+
                     self.catalog.pool.pager.writePage(idx_root_id, raw) catch {
                         return EngineError.StorageError;
                     };
@@ -3026,16 +3069,7 @@ pub const Database = struct {
                     };
                 }
 
-                // Determine index type from CREATE INDEX statement
-                var idx_type = catalog_mod.IndexType.btree;
-                if (ci.index_type) |type_str| {
-                    if (std.ascii.eqlIgnoreCase(type_str, "hash")) {
-                        idx_type = catalog_mod.IndexType.hash;
-                    } else if (std.ascii.eqlIgnoreCase(type_str, "btree")) {
-                        idx_type = catalog_mod.IndexType.btree;
-                    }
-                }
-
+                // idx_type already determined above before page allocation
                 new_indexes[table_info.indexes.len] = .{
                     .index_name = self.allocator.dupe(u8, ci.name) catch {
                         return EngineError.OutOfMemory;

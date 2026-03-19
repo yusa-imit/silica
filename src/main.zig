@@ -13,6 +13,7 @@ pub const varint = @import("util/varint.zig");
 pub const page = @import("storage/page.zig");
 pub const buffer_pool = @import("storage/buffer_pool.zig");
 pub const btree = @import("storage/btree.zig");
+pub const hash_index = @import("storage/hash_index.zig");
 pub const overflow = @import("storage/overflow.zig");
 pub const fsm = @import("storage/fsm.zig");
 pub const fuzz = @import("storage/fuzz.zig");
