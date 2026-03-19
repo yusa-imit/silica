@@ -158,7 +158,11 @@ pub const TableInfo = struct {
 
     /// Free all heap-allocated memory owned by this TableInfo.
     pub fn deinit(self: *const TableInfo, allocator: Allocator) void {
-        for (self.indexes) |idx| allocator.free(idx.column_name);
+        for (self.indexes) |idx| {
+            allocator.free(idx.column_name);
+            for (idx.included_columns) |incl| allocator.free(incl);
+            allocator.free(idx.included_columns);
+        }
         allocator.free(self.indexes);
         for (self.table_constraints) |tc| {
             switch (tc) {
@@ -220,6 +224,10 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
     size += 2; // index_count: u16
     for (indexes) |idx| {
         size += 2 + idx.column_name.len + 2 + 4; // name_len + name + col_index + root_page_id
+        size += 2; // included_count: u16
+        for (idx.included_columns) |included_col| {
+            size += 2 + included_col.len; // name_len + name
+        }
     }
 
     const buf = try allocator.alloc(u8, size);
@@ -292,6 +300,15 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         pos += 2;
         std.mem.writeInt(u32, buf[pos..][0..4], idx.root_page_id, .little);
         pos += 4;
+        // Included columns
+        std.mem.writeInt(u16, buf[pos..][0..2], @intCast(idx.included_columns.len), .little);
+        pos += 2;
+        for (idx.included_columns) |included_col| {
+            std.mem.writeInt(u16, buf[pos..][0..2], @intCast(included_col.len), .little);
+            pos += 2;
+            @memcpy(buf[pos..][0..included_col.len], included_col);
+            pos += included_col.len;
+        }
     }
 
     std.debug.assert(pos == size);
@@ -400,7 +417,11 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
             const idx_list = try allocator.alloc(IndexInfo, idx_count);
             var idxs_initialized: usize = 0;
             errdefer {
-                for (idx_list[0..idxs_initialized]) |idx| allocator.free(idx.column_name);
+                for (idx_list[0..idxs_initialized]) |idx| {
+                    allocator.free(idx.column_name);
+                    for (idx.included_columns) |incl| allocator.free(incl);
+                    allocator.free(idx.included_columns);
+                }
                 allocator.free(idx_list);
             }
 
@@ -415,6 +436,38 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                 pos += 2;
                 idx.root_page_id = std.mem.readInt(u32, data[pos..][0..4], .little);
                 pos += 4;
+
+                // Included columns (optional — backward compatible)
+                if (pos + 2 <= data.len) {
+                    const included_count = std.mem.readInt(u16, data[pos..][0..2], .little);
+                    pos += 2;
+
+                    if (included_count > 0) {
+                        const included_list = try allocator.alloc([]const u8, included_count);
+                        var included_init: usize = 0;
+                        errdefer {
+                            for (included_list[0..included_init]) |incl| allocator.free(incl);
+                            allocator.free(included_list);
+                        }
+
+                        for (included_list) |*incl| {
+                            if (pos + 2 > data.len) return error.InvalidSchemaData;
+                            const incl_len = std.mem.readInt(u16, data[pos..][0..2], .little);
+                            pos += 2;
+                            if (pos + incl_len > data.len) return error.InvalidSchemaData;
+                            incl.* = try allocator.dupe(u8, data[pos..][0..incl_len]);
+                            pos += incl_len;
+                            included_init += 1;
+                        }
+
+                        idx.included_columns = included_list;
+                    } else {
+                        idx.included_columns = &.{};
+                    }
+                } else {
+                    idx.included_columns = &.{};
+                }
+
                 idxs_initialized += 1;
             }
             indexes = idx_list;
@@ -3128,6 +3181,48 @@ test "serialize and deserialize JSON/JSONB columns" {
 
     try std.testing.expectEqualStrings("config", table.columns[3].name);
     try std.testing.expectEqual(ColumnType.json, table.columns[3].column_type);
+}
+
+test "serialize and deserialize index with INCLUDE columns" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
+        .{ .name = "email", .column_type = .text, .flags = .{} },
+        .{ .name = "phone", .column_type = .text, .flags = .{} },
+    };
+
+    const included_cols = [_][]const u8{ "email", "phone" };
+    const indexes = [_]IndexInfo{
+        .{
+            .column_name = "name",
+            .column_index = 1,
+            .root_page_id = 100,
+            .included_columns = &included_cols,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 42);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "users", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqualStrings("users", table.name);
+    try std.testing.expectEqual(@as(u32, 42), table.data_root_page_id);
+    try std.testing.expectEqual(@as(usize, 4), table.columns.len);
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("name", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 100), idx.root_page_id);
+
+    // Verify included columns are deserialized correctly
+    try std.testing.expectEqual(@as(usize, 2), idx.included_columns.len);
+    try std.testing.expectEqualStrings("email", idx.included_columns[0]);
+    try std.testing.expectEqualStrings("phone", idx.included_columns[1]);
 }
 
 // Helper: create a test Catalog backed by a temp file.
