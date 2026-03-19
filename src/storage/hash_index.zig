@@ -717,13 +717,8 @@ test "hash index reject duplicate key on insert" {
     var idx = HashIndex.init(&pool, root_id);
 
     try idx.insert("key", "value1");
-    // Second insert with same key should fail
-    if (idx.insert("key", "value2")) {
-        // This would mean duplicate was allowed, which is wrong
-        try std.testing.expect(false);
-    } else |_| {
-        // Expected to fail
-    }
+    // Second insert with same key should return DuplicateKey error
+    try std.testing.expectError(Error.DuplicateKey, idx.insert("key", "value2"));
 }
 
 test "hash index delete key" {
@@ -764,13 +759,8 @@ test "hash index delete non-existent key fails" {
 
     var idx = HashIndex.init(&pool, root_id);
 
-    // Deleting a non-existent key should return error
-    if (idx.delete("nonexistent")) {
-        // This would mean delete succeeded when it shouldn't
-        try std.testing.expect(false);
-    } else |_| {
-        // Expected to fail
-    }
+    // Deleting a non-existent key should return KeyNotFound error
+    try std.testing.expectError(Error.KeyNotFound, idx.delete("nonexistent"));
 }
 
 test "hash index collision handling with same hash bucket" {
