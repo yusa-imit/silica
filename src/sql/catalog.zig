@@ -3268,6 +3268,295 @@ test "serialize and deserialize index with INCLUDE columns" {
     try std.testing.expectEqualStrings("phone", idx.included_columns[1]);
 }
 
+test "serialize and deserialize hash index" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "email", .column_type = .text, .flags = .{ .not_null = true } },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_email_hash",
+            .column_name = "email",
+            .column_index = 1,
+            .root_page_id = 100,
+            .index_type = .hash,
+            .is_unique = false,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 42);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "users", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_email_hash", idx.index_name);
+    try std.testing.expectEqualStrings("email", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 100), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.hash, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+}
+
+test "serialize and deserialize unique hash index" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "username", .column_type = .text, .flags = .{ .not_null = true } },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_username_unique_hash",
+            .column_name = "username",
+            .column_index = 1,
+            .root_page_id = 200,
+            .index_type = .hash,
+            .is_unique = true,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 50);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "accounts", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_username_unique_hash", idx.index_name);
+    try std.testing.expectEqual(IndexType.hash, idx.index_type);
+    try std.testing.expectEqual(true, idx.is_unique);
+}
+
+test "serialize and deserialize unique btree index" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "ssn", .column_type = .text, .flags = .{ .not_null = true } },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_ssn_unique",
+            .column_name = "ssn",
+            .column_index = 1,
+            .root_page_id = 300,
+            .index_type = .btree,
+            .is_unique = true,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 60);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "people", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_ssn_unique", idx.index_name);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(true, idx.is_unique);
+}
+
+test "backward compatibility: deserialize old format without is_unique and index_type" {
+    const allocator = std.testing.allocator;
+
+    // Manually construct old format data (without is_unique and index_type bytes)
+    // Format: [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
+    // Old index format: [index_name_len:u16][index_name...][col_name_len:u16][col_name...][col_index:u16][root_page_id:u32]
+    // Missing: is_unique (1 byte) and index_type (1 byte) and included_columns
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    // data_root_page_id
+    try buf.writer(allocator).writeInt(u32, 70, .little);
+
+    // column_count = 2
+    try buf.writer(allocator).writeInt(u16, 2, .little);
+
+    // Column 1: "id", integer, primary_key + not_null
+    try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
+    try buf.appendSlice(allocator, "id");
+    try buf.append(allocator, @intFromEnum(ColumnType.integer));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+
+    // Column 2: "name", text, not_null
+    try buf.writer(allocator).writeInt(u16, 4, .little); // name_len
+    try buf.appendSlice(allocator, "name");
+    try buf.append(allocator, @intFromEnum(ColumnType.text));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .not_null = true })));
+
+    // table_constraint_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+
+    // index_count = 1
+    try buf.writer(allocator).writeInt(u16, 1, .little);
+
+    // Index: "idx_name"
+    try buf.writer(allocator).writeInt(u16, 8, .little); // index_name_len
+    try buf.appendSlice(allocator, "idx_name");
+    try buf.writer(allocator).writeInt(u16, 4, .little); // column_name_len
+    try buf.appendSlice(allocator, "name");
+    try buf.writer(allocator).writeInt(u16, 1, .little); // column_index
+    try buf.writer(allocator).writeInt(u32, 150, .little); // root_page_id
+    // NO is_unique, NO index_type, NO included_columns
+
+    const data = try buf.toOwnedSlice(allocator);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "legacy_table", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_name", idx.index_name);
+    try std.testing.expectEqualStrings("name", idx.column_name);
+    // Should default to btree, non-unique
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(@as(usize, 0), idx.included_columns.len);
+}
+
+test "round-trip: multiple indexes with mixed types" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "email", .column_type = .text, .flags = .{ .not_null = true } },
+        .{ .name = "age", .column_type = .integer, .flags = .{} },
+        .{ .name = "city", .column_type = .text, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_email_hash_unique",
+            .column_name = "email",
+            .column_index = 1,
+            .root_page_id = 100,
+            .index_type = .hash,
+            .is_unique = true,
+        },
+        .{
+            .index_name = "idx_age_btree",
+            .column_name = "age",
+            .column_index = 2,
+            .root_page_id = 200,
+            .index_type = .btree,
+            .is_unique = false,
+        },
+        .{
+            .index_name = "idx_city_hash",
+            .column_name = "city",
+            .column_index = 3,
+            .root_page_id = 300,
+            .index_type = .hash,
+            .is_unique = false,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 80);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "users", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), table.indexes.len);
+
+    // Verify first index
+    try std.testing.expectEqualStrings("idx_email_hash_unique", table.indexes[0].index_name);
+    try std.testing.expectEqual(IndexType.hash, table.indexes[0].index_type);
+    try std.testing.expectEqual(true, table.indexes[0].is_unique);
+
+    // Verify second index
+    try std.testing.expectEqualStrings("idx_age_btree", table.indexes[1].index_name);
+    try std.testing.expectEqual(IndexType.btree, table.indexes[1].index_type);
+    try std.testing.expectEqual(false, table.indexes[1].is_unique);
+
+    // Verify third index
+    try std.testing.expectEqualStrings("idx_city_hash", table.indexes[2].index_name);
+    try std.testing.expectEqual(IndexType.hash, table.indexes[2].index_type);
+    try std.testing.expectEqual(false, table.indexes[2].is_unique);
+}
+
+test "hash index with INCLUDE columns" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "username", .column_type = .text, .flags = .{ .not_null = true } },
+        .{ .name = "email", .column_type = .text, .flags = .{} },
+        .{ .name = "phone", .column_type = .text, .flags = .{} },
+    };
+
+    const included = [_][]const u8{ "email", "phone" };
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_username_hash_covering",
+            .column_name = "username",
+            .column_index = 1,
+            .root_page_id = 400,
+            .index_type = .hash,
+            .is_unique = true,
+            .included_columns = &included,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 90);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "users", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_username_hash_covering", idx.index_name);
+    try std.testing.expectEqual(IndexType.hash, idx.index_type);
+    try std.testing.expectEqual(true, idx.is_unique);
+    try std.testing.expectEqual(@as(usize, 2), idx.included_columns.len);
+    try std.testing.expectEqualStrings("email", idx.included_columns[0]);
+    try std.testing.expectEqualStrings("phone", idx.included_columns[1]);
+}
+
+test "edge case: empty index name" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "data", .column_type = .text, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "", // Empty index name (system-generated)
+            .column_name = "data",
+            .column_index = 1,
+            .root_page_id = 500,
+            .index_type = .hash,
+            .is_unique = false,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 100);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "test", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    try std.testing.expectEqualStrings("", table.indexes[0].index_name);
+    try std.testing.expectEqual(IndexType.hash, table.indexes[0].index_type);
+}
+
 // Helper: create a test Catalog backed by a temp file.
 const TestCatalog = struct {
     pager: *Pager,
