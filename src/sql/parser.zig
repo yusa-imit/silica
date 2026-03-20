@@ -1077,6 +1077,16 @@ pub const Parser = struct {
         const a = self.alloc();
         _ = try self.expect(.kw_index);
 
+        // Check for CONCURRENTLY keyword (parsed as identifier)
+        var concurrently = false;
+        if (self.check(.identifier)) {
+            const peek_lexeme = self.lexeme(self.peek());
+            if (std.ascii.eqlIgnoreCase(peek_lexeme, "concurrently")) {
+                _ = self.advance();
+                concurrently = true;
+            }
+        }
+
         var if_not_exists = false;
         if (self.match(.kw_if)) {
             _ = try self.expect(.kw_not);
@@ -1159,6 +1169,7 @@ pub const Parser = struct {
             return .{
                 .if_not_exists = if_not_exists,
                 .unique = unique,
+                .concurrently = concurrently,
                 .name = name,
                 .table = table,
                 .columns = indexed_cols,
@@ -1177,6 +1188,7 @@ pub const Parser = struct {
         return .{
             .if_not_exists = if_not_exists,
             .unique = unique,
+            .concurrently = concurrently,
             .name = name,
             .table = table,
             .columns = cols.toOwnedSlice(a) catch return error.OutOfMemory,
@@ -3201,6 +3213,84 @@ test "parse CREATE INDEX with duplicate column in INCLUDE should fail" {
 test "parse CREATE INDEX with duplicate across index and INCLUDE should fail" {
     const r = testParseWithArena("CREATE INDEX idx_dup ON users (name, email) INCLUDE (email)");
     try std.testing.expectError(error.ParseFailed, r);
+}
+
+// ── CREATE INDEX CONCURRENTLY tests ────────────────────────────
+
+test "parse CREATE INDEX CONCURRENTLY" {
+    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_email ON users (email)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expectEqualStrings("idx_email", ci.name);
+    try std.testing.expectEqualStrings("users", ci.table);
+    try std.testing.expect(!ci.unique);
+    try std.testing.expect(ci.concurrently);
+}
+
+test "parse CREATE UNIQUE INDEX CONCURRENTLY" {
+    var r = try testParseWithArena("CREATE UNIQUE INDEX CONCURRENTLY idx_u ON t (a)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.unique);
+    try std.testing.expect(ci.concurrently);
+}
+
+test "parse CREATE INDEX CONCURRENTLY with multiple columns" {
+    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_composite ON orders (user_id, created_at DESC)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.concurrently);
+    try std.testing.expectEqual(@as(usize, 2), ci.columns.len);
+}
+
+test "parse CREATE INDEX CONCURRENTLY IF NOT EXISTS" {
+    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx ON t (col)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.concurrently);
+    try std.testing.expect(ci.if_not_exists);
+}
+
+test "parse CREATE INDEX CONCURRENTLY with USING clause" {
+    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_hash ON users (email) USING hash");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.concurrently);
+    try std.testing.expectEqualStrings("hash", ci.index_type.?);
+}
+
+test "parse CREATE INDEX CONCURRENTLY with INCLUDE clause" {
+    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_name ON users (name) INCLUDE (email)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.concurrently);
+    try std.testing.expectEqual(@as(usize, 1), ci.columns.len);
+    try std.testing.expectEqual(@as(usize, 1), ci.included_columns.len);
+}
+
+test "parse CREATE UNIQUE INDEX CONCURRENTLY with INCLUDE and USING" {
+    var r = try testParseWithArena("CREATE UNIQUE INDEX CONCURRENTLY idx_u ON users (email) INCLUDE (name) USING btree");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.unique);
+    try std.testing.expect(ci.concurrently);
+    try std.testing.expectEqualStrings("btree", ci.index_type.?);
+    try std.testing.expectEqual(@as(usize, 1), ci.included_columns.len);
+}
+
+test "parse CREATE INDEX without CONCURRENTLY flag is false" {
+    var r = try testParseWithArena("CREATE INDEX idx_email ON users (email)");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(!ci.concurrently);
+}
+
+test "parse CREATE INDEX CONCURRENTLY with btree type" {
+    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_btree ON t (col) USING btree");
+    defer r.deinit();
+    const ci = r.stmt.create_index;
+    try std.testing.expect(ci.concurrently);
+    try std.testing.expectEqualStrings("btree", ci.index_type.?);
 }
 
 // ── Transaction tests ─────────────────────────────────────────

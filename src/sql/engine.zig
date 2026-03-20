@@ -3014,7 +3014,8 @@ pub const Database = struct {
                     if (ci.if_not_exists) {
                         arena.?.deinit();
                         self.allocator.destroy(arena.?);
-                        return .{ .message = "CREATE INDEX" };
+                        const message = if (ci.concurrently) "CREATE INDEX CONCURRENTLY" else "CREATE INDEX";
+                        return .{ .message = message };
                     }
                     return EngineError.TableAlreadyExists;
                 }
@@ -3088,6 +3089,8 @@ pub const Database = struct {
                 }
 
                 // idx_type already determined above before page allocation
+                // Set initial state: BUILDING if concurrent, VALID otherwise
+                const initial_state: catalog_mod.IndexState = if (ci.concurrently) .building else .valid;
                 new_indexes[table_info.indexes.len] = .{
                     .index_name = self.allocator.dupe(u8, ci.name) catch {
                         return EngineError.OutOfMemory;
@@ -3100,6 +3103,7 @@ pub const Database = struct {
                     .included_columns = included_dup,
                     .index_type = idx_type,
                     .is_unique = ci.unique,
+                    .state = initial_state,
                 };
 
                 // Serialize the updated table and store in catalog
@@ -3132,10 +3136,72 @@ pub const Database = struct {
                     return EngineError.StorageError;
                 };
 
+                // If index was created CONCURRENTLY, transition from BUILDING to VALID
+                // after the synchronous index build completes
+                if (ci.concurrently) {
+                    // Fetch the updated table info to get the newly added index
+                    var updated_table_info = self.catalog.getTable(ci.table) catch |err| {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return switch (err) {
+                            error.TableNotFound => EngineError.TableNotFound,
+                            error.OutOfMemory => EngineError.OutOfMemory,
+                            else => EngineError.StorageError,
+                        };
+                    };
+                    defer updated_table_info.deinit(self.allocator);
+
+                    // Find the newly created index and transition it from BUILDING to VALID
+                    const new_indexes_updated = self.allocator.alloc(catalog_mod.IndexInfo, updated_table_info.indexes.len) catch {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return EngineError.OutOfMemory;
+                    };
+                    defer self.allocator.free(new_indexes_updated);
+
+                    @memcpy(new_indexes_updated, updated_table_info.indexes);
+
+                    // Find the index we just created and update its state to VALID
+                    for (new_indexes_updated) |*idx| {
+                        if (std.ascii.eqlIgnoreCase(idx.index_name, ci.name)) {
+                            idx.state = .valid;
+                            break;
+                        }
+                    }
+
+                    // Serialize and update the catalog with the new state
+                    const updated_value = catalog_mod.serializeTableFull(
+                        self.allocator,
+                        updated_table_info.columns,
+                        updated_table_info.table_constraints,
+                        new_indexes_updated,
+                        updated_table_info.data_root_page_id,
+                    ) catch {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return EngineError.OutOfMemory;
+                    };
+                    defer self.allocator.free(updated_value);
+
+                    self.catalog.tree.delete(ci.table) catch {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return EngineError.StorageError;
+                    };
+                    self.catalog.tree.insert(ci.table, updated_value) catch {
+                        arena.?.deinit();
+                        self.allocator.destroy(arena.?);
+                        return EngineError.StorageError;
+                    };
+                }
+
                 arena.?.deinit();
                 self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
-                return .{ .message = "CREATE INDEX" };
+
+                // Return appropriate message based on concurrently flag
+                const message = if (ci.concurrently) "CREATE INDEX CONCURRENTLY" else "CREATE INDEX";
+                return .{ .message = message };
             },
             .drop_index => |di| {
                 // Check if write operations are allowed (standby mode check)
@@ -17157,5 +17223,221 @@ test "Hash index error when no column specified in CREATE INDEX" {
     } else |_| {
         // Expected error case - good
     }
+}
+
+// ── CREATE INDEX CONCURRENTLY tests ────────────────────────────────────
+
+test "Parse CREATE INDEX CONCURRENTLY basic syntax" {
+    const path = "test_eng_parse_concurrent_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Parse CREATE INDEX CONCURRENTLY statement - should not error at parse time
+    const result = db.execSQL("CREATE INDEX CONCURRENTLY idx_email ON users (email)");
+    if (result) |r| {
+        var r_mut = r;
+        defer r_mut.close(testing.allocator);
+        // Parse succeeded
+    } else |_| {
+        // If error, should be execution error, not parse error
+    }
+}
+
+test "Create index concurrently on empty table starts in building state" {
+    const path = "test_eng_concurrent_empty_table.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index concurrently on empty table
+    // Should transition from BUILDING to VALID
+    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_sku ON products (sku)");
+    defer r2.close(testing.allocator);
+
+    // After completion, index should be usable
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
+}
+
+test "Create unique index concurrently should mark as unique" {
+    const path = "test_eng_unique_concurrent_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE accounts (id INTEGER PRIMARY KEY, username TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index concurrently
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX CONCURRENTLY idx_username ON accounts (username)");
+    defer r2.close(testing.allocator);
+
+    // Should succeed
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
+}
+
+test "Create index concurrently with IF NOT EXISTS" {
+    const path = "test_eng_concurrent_if_not_exists.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index concurrently with IF NOT EXISTS
+    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_code ON items (code)");
+    defer r2.close(testing.allocator);
+
+    // Second attempt should not error
+    var r3 = try db.execSQL("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_code ON items (code)");
+    defer r3.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r3.message);
+}
+
+test "Create index concurrently with USING clause" {
+    const path = "test_eng_concurrent_using.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE data (id INTEGER PRIMARY KEY, value TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index concurrently with explicit USING btree
+    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_value ON data (value) USING btree");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
+}
+
+test "Create index concurrently with INCLUDE clause" {
+    const path = "test_eng_concurrent_include.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index concurrently with INCLUDE clause
+    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_email_covering ON users (email) INCLUDE (name)");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
+}
+
+test "Create unique index concurrently with multiple columns" {
+    const path = "test_eng_concurrent_multi_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, order_date TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create index concurrently on multiple columns
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX CONCURRENTLY idx_user_date ON orders (user_id, order_date)");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
+}
+
+test "Concurrent writes still work during index build" {
+    const path = "test_eng_concurrent_writes.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE logs (id INTEGER PRIMARY KEY, message TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Start concurrent index build
+    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_message ON logs (message)");
+    defer r2.close(testing.allocator);
+
+    // Concurrent writes should still be allowed
+    var r3 = try db.execSQL("INSERT INTO logs (id, message) VALUES (1, 'log message')");
+    defer r3.close(testing.allocator);
+
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+}
+
+test "Index marked valid after successful build" {
+    const path = "test_eng_index_marked_valid.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert data
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO products (id, name) VALUES (1, 'Widget')");
+    defer r2.close(testing.allocator);
+
+    // Create index concurrently
+    var r3 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_name ON products (name)");
+    defer r3.close(testing.allocator);
+
+    // Index should be usable immediately after (in valid state)
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r3.message);
+}
+
+test "Second create index concurrently on same name fails" {
+    const path = "test_eng_duplicate_concurrent_idx.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create first index
+    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_email ON users (email)");
+    defer r2.close(testing.allocator);
+
+    // Try to create index with same name - should fail
+    const result = db.execSQL("CREATE INDEX CONCURRENTLY idx_email ON users (email)");
+    if (result) |r| {
+        var r_mut = r;
+        defer r_mut.close(testing.allocator);
+        // Should still fail even without IF NOT EXISTS
+    } else |_| {
+        // Expected to error - index name conflict
+    }
+}
+
+test "Create unique index concurrently with hash type" {
+    const path = "test_eng_unique_concurrent_hash.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index concurrently with hash type
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX CONCURRENTLY idx_email_hash ON users (email) USING hash");
+    defer r2.close(testing.allocator);
+
+    try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
 }
 

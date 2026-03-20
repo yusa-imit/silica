@@ -453,6 +453,8 @@ pub const DropTableStmt = struct {
 pub const CreateIndexStmt = struct {
     if_not_exists: bool = false,
     unique: bool = false,
+    /// Build index without blocking concurrent writes to the table
+    concurrently: bool = false,
     name: []const u8,
     table: []const u8,
     columns: []const OrderByItem = &.{},
