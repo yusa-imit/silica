@@ -10,12 +10,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // zuda dependency
+    const zuda_dep = b.dependency("zuda", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Library module — Silica as an embeddable library
     const mod = b.addModule("silica", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    mod.addImport("zuda", zuda_dep.module("zuda"));
 
     // Static library artifact for consumers
     const lib = b.addLibrary(.{

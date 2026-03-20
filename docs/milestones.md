@@ -159,8 +159,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 | Custom Implementation | File | LOC | zuda Replacement | Status |
 |----------------------|------|-----|------------------|--------|
-| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | 1237 | `zuda.containers.hashing.LRUCache` | **READY** |
-| Deadlock Detection (DFS) | `src/tx/lock.zig` | 1463 | `zuda.algorithms.graph.cycle_detection` | **READY** |
+| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | 1237 | `zuda.containers.hashing.LRUCache` | **BLOCKED** — LRUCache lacks pin semantics |
+| Deadlock Detection (DFS) | `src/tx/lock.zig` | 1463 | `zuda.algorithms.graph.DFS` | **BLOCKED** — DFS.hasCycle() marked TODO |
 | B+Tree | `src/storage/btree.zig` | 4300 | `zuda.containers.trees.BTree` | **REVIEW NEEDED** |
 
 **Migration exclusions** (domain-specific, will NOT be migrated):
