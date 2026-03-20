@@ -536,15 +536,36 @@ gh issue list --state open --label bug --limit 5
 
 ## zuda Migration
 
-- **Current**: Not yet integrated. 3 migration targets (B+Tree, Buffer Pool, Deadlock Detection) — all PENDING.
+- **Current**: Not yet integrated — **partially READY** (zuda v1.15.0 available)
+- **Repository**: https://github.com/yusa-imit/zuda
 - **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for targets and status.
+- **Compatibility layers**: `zuda.compat.silica_btree` — drop-in BTree wrapper (API-compatible)
 
-**Protocol**:
-1. zuda에서 `from:zuda` 라벨 이슈가 도착하면 status를 `READY`로 변경
-2. B+Tree: Cursor/overflow 지원 충분히 검증 후에만 마이그레이션 수행
-3. 일반: `build.zig.zon`에 zuda 추가, 자체 구현을 zuda import로 교체
-4. `zig build test` 전체 통과 확인 후 커밋
+### Migration Targets & Readiness
 
-**이슈 발행**: `gh issue create --repo yusa-imit/zuda --label "bug,from:silica"` (또는 `feature-request,from:silica`)
+| Target | Status | Notes |
+|--------|--------|-------|
+| Buffer Pool (LRU Cache) | **READY** | `zuda.containers.hashing.LRUCache` — 독립 모듈, 즉시 교체 가능 |
+| Deadlock Detection (DFS) | **READY** | `zuda.algorithms.graph.cycle_detection` — lock.zig의 cycle detection 부분만 교체 |
+| B+Tree | **REVIEW NEEDED** | zuda BTree는 메모리 기반. silica는 디스크 I/O + WAL + MVCC 통합. `architect` 리뷰 후 결정 |
 
-**로컬 워크어라운드 금지 (CRITICAL)**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기.
+### Migration Protocol (ACTIVE)
+1. READY 상태 마이그레이션은 **자율 세션에서 적극적으로 수행**한다 — 이슈 도착을 기다리지 않는다
+2. Buffer Pool(LRU)과 Deadlock Detection은 **현재 phase 작업 사이에 수행** 가능
+3. B+Tree 마이그레이션은 `architect` 에이전트의 아키텍처 리뷰 후에만 진행
+4. `build.zig.zon`에 zuda 추가, 자체 구현을 zuda import로 교체
+5. `zig build test` 전체 통과 확인 후 커밋
+6. 완료된 마이그레이션의 자체 구현 파일 삭제, 관련 GitHub 이슈 닫기
+
+### zuda-first Policy (CRITICAL)
+- 새로운 기능 구현 시 데이터 구조/알고리즘이 필요하면, **zuda에 해당 모듈이 있는지 먼저 확인**한다
+- zuda에 있으면 → 자체 구현하지 않고 zuda를 import하여 사용
+- zuda에 없으면 → `gh issue create --repo yusa-imit/zuda --label "feature-request,from:silica"` 발행 후, 긴급도에 따라 자체 구현 또는 대기 결정
+- **자체 구현을 새로 작성하는 것은 최후의 수단**이다
+
+### Issue Filing
+- 버그: `gh issue create --repo yusa-imit/zuda --label "bug,from:silica"`
+- 기능 요청: `gh issue create --repo yusa-imit/zuda --label "feature-request,from:silica"`
+
+### No Local Workaround (CRITICAL)
+- zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기.

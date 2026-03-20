@@ -6,7 +6,7 @@
 - **Current development**: Phase 10 — Advanced Optimization (Milestone 20 complete, Milestone 21 in progress)
 - **Tests**: 2301/2304 passing, 3 skipped (EXPLAIN/EXPLAIN ANALYZE complete with 4 integration tests; cost-based join selection infrastructure complete)
 - **Branch**: `main`
-- **Blockers**: zuda migrations blocked until zuda releases target modules
+- **zuda migrations**: LRU Cache and Deadlock Detection **READY** (zuda v1.15.0 available); B+Tree needs architect review
 - **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
 
 > **Note**: Phases 4-8 were completed iteratively without tagged releases. All work is on `main` branch. Git tags for v0.4.0+ will be created when appropriate release points are determined.
@@ -95,8 +95,8 @@
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
 | #3 | Flaky test: AutoVacuumDaemon — inserts only never trigger vacuum | bug | Open |
-| #4 | feat: migrate to zuda v1.0 for B+Tree and LRU cache | enhancement, from:zuda | Blocked on zuda |
-| #5 | feat: migrate data structures to zuda v1.0 | enhancement, from:zuda | Blocked on zuda |
+| #4 | feat: migrate to zuda v1.0 for B+Tree and LRU cache | enhancement, from:zuda | LRU: **READY**, B+Tree: REVIEW NEEDED |
+| #5 | feat: migrate data structures to zuda v1.0 | enhancement, from:zuda | **READY** (cycle detection) |
 
 ---
 
@@ -152,15 +152,16 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### zuda Library
 
-- **Current**: Not yet integrated
+- **Current**: Not yet integrated — **partially READY** (zuda v1.15.0 available)
 - **Repo**: https://github.com/yusa-imit/zuda
-- **Status**: All targets PENDING (waiting for zuda releases)
+- **Compatibility layers**: `zuda.compat.silica_btree` — drop-in BTree wrapper
+- **Migration guides**: See zuda `docs/migrations/SILICA_BTREE.md` for detailed API mapping
 
-| Custom Implementation | File | zuda Replacement | Status |
-|----------------------|------|------------------|--------|
-| B+Tree | `src/storage/btree.zig` | `zuda.containers.trees.BTree` | PENDING |
-| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | `zuda.containers.hashing.LRUCache` | PENDING |
-| Deadlock Detection (DFS) | `src/tx/lock.zig` | `zuda.algorithms.graph.cycle_detection` | PENDING |
+| Custom Implementation | File | LOC | zuda Replacement | Status |
+|----------------------|------|-----|------------------|--------|
+| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | 1237 | `zuda.containers.hashing.LRUCache` | **READY** |
+| Deadlock Detection (DFS) | `src/tx/lock.zig` | 1463 | `zuda.algorithms.graph.cycle_detection` | **READY** |
+| B+Tree | `src/storage/btree.zig` | 4300 | `zuda.containers.trees.BTree` | **REVIEW NEEDED** |
 
 **Migration exclusions** (domain-specific, will NOT be migrated):
 - `src/storage/fsm.zig` — Free Space Map
@@ -172,4 +173,4 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 - `src/util/varint.zig` — LEB128 encoding
 - `src/util/checksum.zig` — CRC32C
 
-> silica's B+Tree is a 4300 LOC complex implementation. Migration to zuda BTree requires full verification of Cursor (seekFirst/seekLast/seek/next/prev) and overflow page support.
+> **B+Tree note**: silica's B+Tree (4300 LOC)는 디스크 I/O, WAL, MVCC와 긴밀히 결합. zuda BTree는 메모리 기반 제네릭 구현. `architect` 에이전트의 아키텍처 리뷰 후 마이그레이션 여부 결정. LRU Cache와 Deadlock Detection은 독립 모듈이므로 즉시 마이그레이션 가능.
