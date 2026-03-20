@@ -24,6 +24,32 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-20 22:00 UTC)
+- **Mode**: FEATURE (hour 22, hour % 4 == 2)
+- **Focus**: zuda migration protocol activation
+- **Work Done**:
+  1. Added zuda v1.15.0 as dependency (commit 4b07772)
+     - **MODIFIED**: build.zig.zon — added zuda dependency
+     - **MODIFIED**: build.zig — exposed zuda module to silica library
+     - Verified build succeeds with zuda integration
+  2. Investigated Buffer Pool LRU migration
+     - **DISCOVERY**: zuda.LRUCache lacks pin semantics required by BufferPool
+     - BufferPool needs pinned pages (pin_count > 0) to be un-evictable
+     - zuda LRUCache only supports LRU eviction without pin awareness
+     - **FILED**: yusa-imit/zuda#9 — feature request for pin/unpin API
+     - **STATUS**: Migration BLOCKED until zuda adds pinning support
+  3. Investigated Deadlock Detection migration
+     - **DISCOVERY**: zuda.algorithms.graph.DFS.hasCycle() marked TODO (line 123)
+     - Current lock.zig has working DFS cycle detection (lines 231-269)
+     - **FILED**: yusa-imit/zuda#10 — implement DFS.hasCycle()
+     - **STATUS**: Migration BLOCKED until zuda implements hasCycle
+  4. Updated migration tracking (docs/milestones.md)
+     - Changed LRU status: READY → BLOCKED (pin semantics)
+     - Changed Deadlock Detection status: READY → BLOCKED (hasCycle TODO)
+     - Established zuda-first policy: check zuda before self-implementing
+- **Commits**: 4b07772 (chore: zuda integration + migration status)
+- **Key Learning**: "READY" status in migration table was premature — both zuda modules missing critical features for silica use cases. Protocol now: file issues first, wait for implementation, then migrate.
+
 ### STABILIZATION Session (2026-03-20 16:00 UTC)
 - **Mode**: STABILIZATION (hour 16, hour % 4 == 0)
 - **Focus**: Index state persistence and test coverage audit
