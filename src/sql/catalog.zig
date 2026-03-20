@@ -46,6 +46,7 @@ pub const IndexType = enum(u8) {
     btree = 0,
     hash = 1,
     gist = 2,
+    gin = 3,
 };
 
 // ── Data Types ──────────────────────────────────────────────────────────

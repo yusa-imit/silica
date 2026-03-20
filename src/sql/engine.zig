@@ -1924,6 +1924,10 @@ pub const Database = struct {
                     // GiST index implementation is complete but insert operations are not yet integrated
                     // For now, skip GiST index maintenance during INSERT
                 },
+                .gin => {
+                    // GIN index implementation is not yet integrated
+                    // For now, skip GIN index maintenance during INSERT
+                },
             }
         }
     }
@@ -1948,6 +1952,10 @@ pub const Database = struct {
                 .gist => {
                     // GiST index implementation is complete but delete operations are not yet integrated
                     // For now, skip GiST index maintenance during DELETE
+                },
+                .gin => {
+                    // GIN index implementation is not yet integrated
+                    // For now, skip GIN index maintenance during DELETE
                 },
             }
         }

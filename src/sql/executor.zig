@@ -3640,6 +3640,11 @@ pub const IndexScanOp = struct {
                 // Return error to prevent silent failures
                 return ExecError.ExecutionError;
             },
+            .gin => {
+                // GIN index lookup not yet supported in executor
+                // Return error to prevent silent failures
+                return ExecError.ExecutionError;
+            },
         };
         if (row_key == null) return null; // No matching index entry
         defer self.allocator.free(row_key.?);
