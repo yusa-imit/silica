@@ -255,6 +255,7 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         size += 2 + idx.index_name.len; // index_name_len + index_name
         size += 2 + idx.column_name.len + 2 + 4; // name_len + name + col_index + root_page_id
         size += 2; // is_unique + index_type
+        size += 1; // state: u8
         size += 2; // included_count: u16
         for (idx.included_columns) |included_col| {
             size += 2 + included_col.len; // name_len + name
@@ -339,6 +340,9 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         buf[pos] = if (idx.is_unique) @as(u8, 1) else @as(u8, 0);
         pos += 1;
         buf[pos] = @intFromEnum(idx.index_type);
+        pos += 1;
+        // state: building, valid, or invalid
+        buf[pos] = @intFromEnum(idx.state);
         pos += 1;
         // Included columns
         std.mem.writeInt(u16, buf[pos..][0..2], @intCast(idx.included_columns.len), .little);
@@ -492,6 +496,14 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                 } else {
                     idx.is_unique = false;
                     idx.index_type = .btree;
+                }
+
+                // state: building, valid, or invalid (optional — backward compatible)
+                if (pos + 1 <= data.len) {
+                    idx.state = @enumFromInt(data[pos]);
+                    pos += 1;
+                } else {
+                    idx.state = .valid; // Backward compatibility: old DBs assume valid
                 }
 
                 // Included columns (optional — backward compatible)
@@ -7500,4 +7512,58 @@ test "Second CREATE INDEX CONCURRENTLY on same name fails" {
     // Second index with same name should fail
     // (This is a conceptual test; actual failure would happen in engine)
     try std.testing.expectEqualStrings("idx_email", idx1.index_name);
+}
+
+test "Index state persists through serialization/deserialization" {
+    const allocator = std.testing.allocator;
+
+    // Create columns
+    const columns = [_]ColumnInfo{
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true },
+        },
+        .{
+            .name = "status",
+            .column_type = .text,
+            .flags = .{},
+        },
+    };
+
+    // Create an index in BUILDING state (from CREATE INDEX CONCURRENTLY)
+    const idx_building = IndexInfo{
+        .index_name = "idx_status_building",
+        .column_name = "status",
+        .column_index = 1,
+        .root_page_id = 250,
+        .is_unique = false,
+        .index_type = .btree,
+        .state = .building, // Critical: must persist through serialization
+        .included_columns = &.{},
+    };
+
+    // Serialize table with building-state index
+    const indexes = [_]IndexInfo{idx_building};
+    const serialized = try serializeTableFull(allocator, &columns, &.{}, &indexes, 100);
+    defer allocator.free(serialized);
+
+    // Verify serialized data contains state byte (should not lose it)
+    try std.testing.expect(serialized.len > 0);
+
+    // Deserialize and verify state is preserved
+    const deserialized = try deserializeTable(allocator, "test_table", serialized);
+    defer deserialized.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), deserialized.indexes.len);
+    const idx_restored = deserialized.indexes[0];
+
+    // CRITICAL CHECK: State must be BUILDING, not lost to default VALID
+    try std.testing.expectEqual(IndexState.building, idx_restored.state);
+    try std.testing.expectEqualStrings("idx_status_building", idx_restored.index_name);
+    try std.testing.expectEqualStrings("status", idx_restored.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx_restored.column_index);
+    try std.testing.expectEqual(@as(u32, 250), idx_restored.root_page_id);
+    try std.testing.expect(!idx_restored.is_unique);
+    try std.testing.expectEqual(IndexType.btree, idx_restored.index_type);
 }
