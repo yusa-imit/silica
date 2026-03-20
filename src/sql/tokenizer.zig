@@ -56,6 +56,7 @@ pub const TokenType = enum {
     kw_table,
     kw_drop,
     kw_index,
+    kw_database,
     kw_alter,
     kw_add,
     kw_column,
@@ -241,6 +242,7 @@ pub const TokenType = enum {
     kw_analyze,
     kw_pragma,
     kw_vacuum,
+    kw_reindex,
 
     // Keywords — Types
     kw_integer,
@@ -736,6 +738,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "table", .kw_table },
         .{ "drop", .kw_drop },
         .{ "index", .kw_index },
+        .{ "database", .kw_database },
         .{ "alter", .kw_alter },
         .{ "add", .kw_add },
         .{ "column", .kw_column },
@@ -916,6 +919,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "analyze", .kw_analyze },
         .{ "pragma", .kw_pragma },
         .{ "vacuum", .kw_vacuum },
+        .{ "reindex", .kw_reindex },
         // Types
         .{ "integer", .kw_integer },
         .{ "int", .kw_int },

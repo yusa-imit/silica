@@ -140,6 +140,7 @@ pub const Parser = struct {
             .kw_rollback => "expected 'ROLLBACK'",
             .kw_explain => "expected 'EXPLAIN'",
             .kw_vacuum => "expected 'VACUUM'",
+            .kw_reindex => "expected 'REINDEX'",
             .kw_select => "expected 'SELECT'",
             .kw_insert => "expected 'INSERT'",
             .kw_over => "expected 'OVER'",
@@ -197,6 +198,7 @@ pub const Parser = struct {
             .kw_explain => .{ .explain = try self.parseExplain() },
             .kw_analyze => .{ .analyze = self.parseAnalyze() },
             .kw_vacuum => .{ .vacuum = self.parseVacuum() },
+            .kw_reindex => .{ .reindex = try self.parseReindex() },
             .kw_grant => try self.parseGrant(),
             .kw_revoke => try self.parseRevoke(),
             else => {
@@ -2245,6 +2247,29 @@ pub const Parser = struct {
         else
             null;
         return .{ .table_name = table_name };
+    }
+
+    fn parseReindex(self: *Parser) Error!ast.ReindexStmt {
+        _ = self.advance(); // consume REINDEX keyword
+
+        // REINDEX INDEX <name> | REINDEX TABLE <name> | REINDEX DATABASE
+        const next = self.peek();
+
+        if (self.match(.kw_index)) {
+            // REINDEX INDEX <index_name>
+            const name = try self.expect(.identifier);
+            return .{ .index = name.lexeme(self.source) };
+        } else if (self.match(.kw_table)) {
+            // REINDEX TABLE <table_name>
+            const name = try self.expect(.identifier);
+            return .{ .table = name.lexeme(self.source) };
+        } else if (self.match(.kw_database)) {
+            // REINDEX DATABASE
+            return .{ .database = {} };
+        } else {
+            try self.addError(next, "expected INDEX, TABLE, or DATABASE after REINDEX");
+            return error.ParseFailed;
+        }
     }
 
     // ── Expression parser (Pratt / precedence climbing) ──────────
@@ -5265,6 +5290,54 @@ test "parse ANALYZE case insensitive" {
     defer r.deinit();
     try std.testing.expect(r.stmt == .analyze);
     try std.testing.expectEqualStrings("products", r.stmt.analyze.table_name.?);
+}
+
+test "parse REINDEX INDEX" {
+    var r = try testParseWithArena("REINDEX INDEX idx_users_email");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .reindex);
+    const reindex = r.stmt.reindex;
+    try std.testing.expect(reindex == .index);
+    try std.testing.expectEqualStrings("idx_users_email", reindex.index);
+}
+
+test "parse REINDEX TABLE" {
+    var r = try testParseWithArena("REINDEX TABLE users");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .reindex);
+    const reindex = r.stmt.reindex;
+    try std.testing.expect(reindex == .table);
+    try std.testing.expectEqualStrings("users", reindex.table);
+}
+
+test "parse REINDEX DATABASE" {
+    var r = try testParseWithArena("REINDEX DATABASE");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .reindex);
+    const reindex = r.stmt.reindex;
+    try std.testing.expect(reindex == .database);
+}
+
+test "parse REINDEX case insensitive" {
+    var r = try testParseWithArena("reindex index idx_test");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .reindex);
+    try std.testing.expectEqualStrings("idx_test", r.stmt.reindex.index);
+}
+
+test "parse REINDEX missing target should fail" {
+    const result = testParseWithArena("REINDEX");
+    try std.testing.expectError(error.ParseFailed, result);
+}
+
+test "parse REINDEX INDEX without name should fail" {
+    const result = testParseWithArena("REINDEX INDEX");
+    try std.testing.expectError(error.ParseFailed, result);
+}
+
+test "parse REINDEX TABLE without name should fail" {
+    const result = testParseWithArena("REINDEX TABLE");
+    try std.testing.expectError(error.ParseFailed, result);
 }
 
 test "parse EXISTS subquery in WHERE" {

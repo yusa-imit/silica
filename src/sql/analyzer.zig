@@ -296,6 +296,7 @@ pub const Analyzer = struct {
             .create_policy => |s| self.analyzeCreatePolicy(&s),
             .drop_policy => |s| self.analyzeDropPolicy(&s),
             .alter_table_rls => |s| self.analyzeAlterTableRLS(&s),
+            .reindex => {},
             .explain => |s| self.analyze(s.stmt.*),
         }
     }

@@ -508,6 +508,16 @@ pub const AnalyzeStmt = struct {
     table_name: ?[]const u8 = null,
 };
 
+/// REINDEX statement: rebuild indexes to reclaim space and fix corruption.
+pub const ReindexStmt = union(enum) {
+    /// REINDEX INDEX <index_name>
+    index: []const u8,
+    /// REINDEX TABLE <table_name>
+    table: []const u8,
+    /// REINDEX DATABASE
+    database,
+};
+
 /// WITH CHECK OPTION type for updatable views.
 pub const CheckOption = enum {
     none,
@@ -786,6 +796,7 @@ pub const Stmt = union(enum) {
     explain: ExplainStmt,
     analyze: AnalyzeStmt,
     vacuum: VacuumStmt,
+    reindex: ReindexStmt,
     create_view: CreateViewStmt,
     drop_view: DropViewStmt,
     create_type: CreateTypeStmt,
@@ -1620,4 +1631,22 @@ test "NOT EXISTS expression" {
     };
 
     try std.testing.expect(not_exists_expr.exists.negated);
+}
+
+test "ReindexStmt index variant" {
+    const stmt = ReindexStmt{ .index = "idx_users_email" };
+
+    try std.testing.expectEqualStrings("idx_users_email", stmt.index);
+}
+
+test "ReindexStmt table variant" {
+    const stmt = ReindexStmt{ .table = "users" };
+
+    try std.testing.expectEqualStrings("users", stmt.table);
+}
+
+test "ReindexStmt database variant" {
+    const stmt = ReindexStmt{ .database = {} };
+
+    try std.testing.expect(stmt == .database);
 }

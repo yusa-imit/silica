@@ -333,6 +333,7 @@ pub const Planner = struct {
             .create_policy => self.planTransaction(),  // TODO: Milestone 17D
             .drop_policy => self.planTransaction(),    // TODO: Milestone 17D
             .alter_table_rls => self.planTransaction(), // TODO: Milestone 17D
+            .reindex => self.planTransaction(), // TODO: Milestone 23
             .explain => |s| self.planExplain(s),
         };
     }
