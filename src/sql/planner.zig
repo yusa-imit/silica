@@ -311,6 +311,7 @@ pub const Planner = struct {
             .drop_index => |s| self.planDropIndex(s),
             .transaction => self.planTransaction(),
             .vacuum => self.planTransaction(), // handled early in engine, should never reach planner
+            .set, .show, .reset => self.planTransaction(), // Placeholder: config commands return empty plan
             .analyze => self.planTransaction(), // Milestone 20A: ANALYZE command
             .create_view => self.planTransaction(), // handled early in engine
             .drop_view => self.planTransaction(), // handled early in engine

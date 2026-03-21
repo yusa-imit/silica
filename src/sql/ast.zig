@@ -782,6 +782,22 @@ pub const AlterTableRLSStmt = struct {
     force: bool = false, // FORCE ROW LEVEL SECURITY (applies even to table owner)
 };
 
+/// SET statement: SET parameter_name = value | SET parameter_name TO value
+pub const SetStmt = struct {
+    parameter: []const u8,
+    value: []const u8,
+};
+
+/// SHOW statement: SHOW parameter_name | SHOW ALL
+pub const ShowStmt = struct {
+    parameter: ?[]const u8, // null means SHOW ALL
+};
+
+/// RESET statement: RESET parameter_name | RESET ALL
+pub const ResetStmt = struct {
+    parameter: ?[]const u8, // null means RESET ALL
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -818,6 +834,9 @@ pub const Stmt = union(enum) {
     create_policy: CreatePolicyStmt,
     drop_policy: DropPolicyStmt,
     alter_table_rls: AlterTableRLSStmt,
+    set: SetStmt,
+    show: ShowStmt,
+    reset: ResetStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
@@ -1649,4 +1668,93 @@ test "ReindexStmt database variant" {
     const stmt = ReindexStmt{ .database = {} };
 
     try std.testing.expect(stmt == .database);
+}
+
+test "SetStmt basic structure" {
+    const stmt = SetStmt{
+        .parameter = "work_mem",
+        .value = "4MB",
+    };
+
+    try std.testing.expectEqualStrings("work_mem", stmt.parameter);
+    try std.testing.expectEqualStrings("4MB", stmt.value);
+}
+
+test "ShowStmt single parameter" {
+    const stmt = ShowStmt{
+        .parameter = "work_mem",
+    };
+
+    try std.testing.expectEqualStrings("work_mem", stmt.parameter.?);
+}
+
+test "ShowStmt SHOW ALL" {
+    const stmt = ShowStmt{
+        .parameter = null,
+    };
+
+    try std.testing.expect(stmt.parameter == null);
+}
+
+test "ResetStmt single parameter" {
+    const stmt = ResetStmt{
+        .parameter = "work_mem",
+    };
+
+    try std.testing.expectEqualStrings("work_mem", stmt.parameter.?);
+}
+
+test "ResetStmt RESET ALL" {
+    const stmt = ResetStmt{
+        .parameter = null,
+    };
+
+    try std.testing.expect(stmt.parameter == null);
+}
+
+test "Stmt union set" {
+    const stmt = Stmt{
+        .set = .{
+            .parameter = "search_path",
+            .value = "public",
+        },
+    };
+
+    switch (stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("search_path", s.parameter);
+            try std.testing.expectEqualStrings("public", s.value);
+        },
+        else => unreachable,
+    }
+}
+
+test "Stmt union show" {
+    const stmt = Stmt{
+        .show = .{
+            .parameter = "max_connections",
+        },
+    };
+
+    switch (stmt) {
+        .show => |s| {
+            try std.testing.expectEqualStrings("max_connections", s.parameter.?);
+        },
+        else => unreachable,
+    }
+}
+
+test "Stmt union reset" {
+    const stmt = Stmt{
+        .reset = .{
+            .parameter = "statement_timeout",
+        },
+    };
+
+    switch (stmt) {
+        .reset => |s| {
+            try std.testing.expectEqualStrings("statement_timeout", s.parameter.?);
+        },
+        else => unreachable,
+    }
 }

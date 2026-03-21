@@ -65,6 +65,8 @@ const LockMode = lock_mod.LockMode;
 const standby_mod = @import("../replication/standby.zig");
 const StandbyCoordinator = standby_mod.StandbyCoordinator;
 const StandbyMode = standby_mod.StandbyCoordinator.StandbyMode;
+const config_mod = @import("../config/manager.zig");
+const ConfigManager = config_mod.ConfigManager;
 
 const Value = executor_mod.Value;
 const Row = executor_mod.Row;
@@ -86,6 +88,9 @@ const DistinctOp = executor_mod.DistinctOp;
 const SetOpOp = executor_mod.SetOpOp;
 const WindowOp = executor_mod.WindowOp;
 const IndexScanOp = executor_mod.IndexScanOp;
+const SetOp = executor_mod.SetOp;
+const ShowOp = executor_mod.ShowOp;
+const ResetOp = executor_mod.ResetOp;
 const MvccContext = executor_mod.MvccContext;
 const serializeRow = executor_mod.serializeRow;
 const evalExpr = executor_mod.evalExpr;
@@ -559,6 +564,8 @@ pub const Database = struct {
     auto_vacuum: vacuum_mod.AutoVacuumDaemon,
     /// Standby coordinator for hot standby read-only access on replicas.
     standby_coordinator: StandbyCoordinator,
+    /// Runtime configuration manager for session parameters.
+    config: ConfigManager,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -589,6 +596,48 @@ pub const Database = struct {
         var cat = try Catalog.init(allocator, pool, is_new);
         _ = &cat;
 
+        // Initialize ConfigManager with default parameters
+        var config = ConfigManager.init(allocator);
+        errdefer config.deinit();
+
+        // Register default parameters (PostgreSQL-compatible)
+        try config.registerParameter(.{
+            .name = "work_mem",
+            .param_type = .size,
+            .default_value = "4194304", // 4MB in bytes
+            .min_value = 65536, // 64KB minimum
+            .max_value = 2147483647, // 2GB maximum
+            .description = "Sets the maximum memory to be used for query workspaces",
+        });
+        try config.registerParameter(.{
+            .name = "max_connections",
+            .param_type = .integer,
+            .default_value = "100",
+            .min_value = 1,
+            .max_value = 10000,
+            .description = "Sets the maximum number of concurrent connections",
+        });
+        try config.registerParameter(.{
+            .name = "statement_timeout",
+            .param_type = .integer,
+            .default_value = "0", // 0 = no timeout
+            .min_value = 0,
+            .max_value = 2147483647,
+            .description = "Sets the maximum allowed duration of any statement (in milliseconds)",
+        });
+        try config.registerParameter(.{
+            .name = "search_path",
+            .param_type = .text,
+            .default_value = "public",
+            .description = "Sets the schema search order for names that are not schema-qualified",
+        });
+        try config.registerParameter(.{
+            .name = "application_name",
+            .param_type = .text,
+            .default_value = "",
+            .description = "Sets the application name to be reported in statistics and logs",
+        });
+
         return .{
             .allocator = allocator,
             .pager = pager,
@@ -602,6 +651,7 @@ pub const Database = struct {
             .ssi_tracker = SsiTracker.init(allocator),
             .auto_vacuum = vacuum_mod.AutoVacuumDaemon.init(allocator, opts.auto_vacuum),
             .standby_coordinator = try StandbyCoordinator.init(allocator, opts.standby_mode),
+            .config = config,
         };
     }
 
@@ -622,6 +672,7 @@ pub const Database = struct {
         self.lock_manager.deinit();
         self.fsm.deinit();
         self.tm.deinit();
+        self.config.deinit();
         self.schema_arena.deinit();
 
         // Checkpoint WAL before closing — writes committed pages to main DB
@@ -3423,6 +3474,72 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                 } else |_| {}
                 return result;
+            },
+            .set => |s| {
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                var set_op = SetOp.init(s.parameter, s.value, &self.config);
+                while (set_op.next() catch return EngineError.ExecutionError) |_| {}
+                return .{ .message = "SET" };
+            },
+            .show => |s| {
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+
+                // Materialize all rows from ShowOp
+                var show_op = ShowOp.init(self.allocator, s.parameter, &self.config);
+                defer show_op.close();
+
+                var rows = std.ArrayListUnmanaged([]Value){};
+                errdefer {
+                    for (rows.items) |row_vals| {
+                        for (row_vals) |v| v.free(self.allocator);
+                        self.allocator.free(row_vals);
+                    }
+                    rows.deinit(self.allocator);
+                }
+
+                while (show_op.next() catch return EngineError.ExecutionError) |row_data| {
+                    var row = row_data;
+                    const vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                    errdefer self.allocator.free(vals);
+                    for (row.values, 0..) |v, i| {
+                        vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                    }
+                    row.deinit();
+                    rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+                }
+
+                // Create column names: [name, value]
+                const col_names = self.allocator.alloc([]const u8, 2) catch return EngineError.OutOfMemory;
+                errdefer self.allocator.free(col_names);
+                col_names[0] = self.allocator.dupe(u8, "name") catch return EngineError.OutOfMemory;
+                errdefer self.allocator.free(col_names[0]);
+                col_names[1] = self.allocator.dupe(u8, "value") catch return EngineError.OutOfMemory;
+
+                // Create MaterializedOp to hold the rows
+                const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+                mat_op.* = MaterializedOp.init(
+                    self.allocator,
+                    col_names,
+                    rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory,
+                );
+
+                const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+                ops.* = .{ .materialized = mat_op };
+
+                return .{
+                    .rows = mat_op.iterator(),
+                    ._ops = ops,
+                    .message = "SHOW",
+                };
+            },
+            .reset => |r| {
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                var reset_op = ResetOp.init(r.parameter, &self.config);
+                while (reset_op.next() catch return EngineError.ExecutionError) |_| {}
+                return .{ .message = "RESET" };
             },
             .explain => |ex| {
                 // EXPLAIN: analyze → plan → (optionally optimize) → format

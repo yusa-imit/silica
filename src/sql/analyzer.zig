@@ -269,6 +269,7 @@ pub const Analyzer = struct {
             .update => |s| self.analyzeUpdate(&s),
             .delete => |s| self.analyzeDelete(&s),
             .create_table => |s| self.analyzeCreateTable(&s),
+            .set, .show, .reset => {}, // Config commands need no semantic analysis
             .drop_table => |s| self.analyzeDropTable(&s),
             .create_index => |s| self.analyzeCreateIndex(&s),
             .drop_index => {},

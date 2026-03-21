@@ -243,6 +243,8 @@ pub const TokenType = enum {
     kw_pragma,
     kw_vacuum,
     kw_reindex,
+    kw_show,
+    kw_reset,
 
     // Keywords — Types
     kw_integer,
@@ -920,6 +922,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "pragma", .kw_pragma },
         .{ "vacuum", .kw_vacuum },
         .{ "reindex", .kw_reindex },
+        .{ "show", .kw_show },
+        .{ "reset", .kw_reset },
         // Types
         .{ "integer", .kw_integer },
         .{ "int", .kw_int },
@@ -1295,6 +1299,10 @@ test "EXPLAIN and PRAGMA" {
     try expectSingleToken("ANALYZE", .kw_analyze, "ANALYZE");
     try expectSingleToken("pragma", .kw_pragma, "pragma");
     try expectSingleToken("vacuum", .kw_vacuum, "vacuum");
+    try expectSingleToken("show", .kw_show, "show");
+    try expectSingleToken("SHOW", .kw_show, "SHOW");
+    try expectSingleToken("reset", .kw_reset, "reset");
+    try expectSingleToken("RESET", .kw_reset, "RESET");
 }
 
 test "VIEW and CTE keywords" {

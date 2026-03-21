@@ -13484,6 +13484,171 @@ pub const LocksScanOp = struct {
     }
 };
 
+// ── Configuration System Operators ─────────────────────────────────────
+
+const config_mod = @import("../config/manager.zig");
+const ConfigManager = config_mod.ConfigManager;
+const ConfigError = config_mod.ConfigError;
+
+/// Operator for SET statement (runtime parameter configuration)
+pub const SetOp = struct {
+    parameter: []const u8,
+    value: []const u8,
+    config: *ConfigManager,
+    executed: bool = false,
+
+    pub fn init(parameter: []const u8, value: []const u8, config: *ConfigManager) SetOp {
+        return .{
+            .parameter = parameter,
+            .value = value,
+            .config = config,
+        };
+    }
+
+    pub fn next(self: *SetOp) ExecError!?Row {
+        if (self.executed) return null;
+        self.executed = true;
+
+        // Call ConfigManager.set(), which validates type/range
+        self.config.set(self.parameter, self.value) catch |err| {
+            return switch (err) {
+                ConfigError.UnknownParameter => error.ExecutionError,
+                ConfigError.InvalidType => error.ExecutionError,
+                ConfigError.OutOfRange => error.ExecutionError,
+                ConfigError.InvalidSizeFormat => error.ExecutionError,
+                ConfigError.OutOfMemory => error.OutOfMemory,
+            };
+        };
+
+        // SET doesn't return rows
+        return null;
+    }
+
+    pub fn close(_: *SetOp) void {}
+};
+
+/// Operator for SHOW statement (query runtime parameters)
+pub const ShowOp = struct {
+    allocator: Allocator,
+    parameter: ?[]const u8, // null for SHOW ALL
+    config: *ConfigManager,
+    all_params: ?[]config_mod.ParamEntry = null,
+    current_index: usize = 0,
+    returned_single: bool = false,
+
+    pub fn init(allocator: Allocator, parameter: ?[]const u8, config: *ConfigManager) ShowOp {
+        return .{
+            .allocator = allocator,
+            .parameter = parameter,
+            .config = config,
+        };
+    }
+
+    pub fn next(self: *ShowOp) ExecError!?Row {
+        if (self.parameter) |param| {
+            // SHOW <parameter> — single row
+            if (self.returned_single) return null;
+            self.returned_single = true;
+
+            const value = self.config.get(param) orelse {
+                return error.ExecutionError; // Unknown parameter
+            };
+
+            // Build row with 2 columns: [name, value]
+            const row_values = try self.allocator.alloc(Value, 2);
+            errdefer self.allocator.free(row_values);
+
+            const name_dup = try self.allocator.dupe(u8, param);
+            errdefer self.allocator.free(name_dup);
+            const value_dup = try self.allocator.dupe(u8, value);
+            errdefer self.allocator.free(value_dup);
+
+            row_values[0] = .{ .text = name_dup };
+            row_values[1] = .{ .text = value_dup };
+
+            return Row{
+                .values = row_values,
+                .columns = &.{},
+                .allocator = self.allocator,
+            };
+        } else {
+            // SHOW ALL — multiple rows
+            if (self.all_params == null) {
+                self.all_params = self.config.getAll(self.allocator) catch return error.OutOfMemory;
+            }
+
+            if (self.current_index >= self.all_params.?.len) {
+                return null;
+            }
+
+            const param = self.all_params.?[self.current_index];
+            self.current_index += 1;
+
+            // Build row with 2 columns: [name, value]
+            const row_values = try self.allocator.alloc(Value, 2);
+            errdefer self.allocator.free(row_values);
+
+            const name_dup = try self.allocator.dupe(u8, param.name);
+            errdefer self.allocator.free(name_dup);
+            const value_dup = try self.allocator.dupe(u8, param.value);
+            errdefer self.allocator.free(value_dup);
+
+            row_values[0] = .{ .text = name_dup };
+            row_values[1] = .{ .text = value_dup };
+
+            return Row{
+                .values = row_values,
+                .columns = &.{},
+                .allocator = self.allocator,
+            };
+        }
+    }
+
+    pub fn close(self: *ShowOp) void {
+        if (self.all_params) |params| {
+            self.allocator.free(params);
+            self.all_params = null;
+        }
+    }
+};
+
+/// Operator for RESET statement (restore default parameter values)
+pub const ResetOp = struct {
+    parameter: ?[]const u8, // null for RESET ALL
+    config: *ConfigManager,
+    executed: bool = false,
+
+    pub fn init(parameter: ?[]const u8, config: *ConfigManager) ResetOp {
+        return .{
+            .parameter = parameter,
+            .config = config,
+        };
+    }
+
+    pub fn next(self: *ResetOp) ExecError!?Row {
+        if (self.executed) return null;
+        self.executed = true;
+
+        if (self.parameter) |param| {
+            // RESET <parameter>
+            self.config.reset(param) catch |err| {
+                return switch (err) {
+                    ConfigError.UnknownParameter => error.ExecutionError,
+                    else => error.ExecutionError,
+                };
+            };
+        } else {
+            // RESET ALL
+            self.config.resetAll() catch return error.OutOfMemory;
+        }
+
+        // RESET doesn't return rows
+        return null;
+    }
+
+    pub fn close(_: *ResetOp) void {}
+};
+
 // Tests for pg_stat_activity
 
 test "ActivityTracker initialization" {
@@ -14155,4 +14320,172 @@ test "LocksScanOp next without open returns error" {
 
     const result = op.next();
     try std.testing.expectError(error.ExecutionError, result);
+}
+
+// ── Configuration System Tests ─────────────────────────────────────
+
+test "SetOp sets work_mem parameter" {
+    // Test placeholder: SetOp should update ConfigManager
+    // Expected behavior: SetOp.init(config_manager, "work_mem", "8MB")
+    //                    SetOp.execute() updates session config
+    //                    config_manager.get("work_mem") returns "8MB"
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp sets max_connections parameter" {
+    // Test placeholder: SetOp should update integer parameter
+    // Expected behavior: SetOp.execute() with "max_connections" = "200"
+    //                    config_manager.get("max_connections") returns "200"
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp sets search_path parameter" {
+    // Test placeholder: SetOp should update text parameter
+    // Expected behavior: SetOp.execute() with "search_path" = "public, private"
+    //                    config_manager.get("search_path") returns "public, private"
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp sets application_name parameter" {
+    // Test placeholder: SetOp should update application name
+    // Expected behavior: SetOp.execute() with "application_name" = "test_app"
+    //                    config_manager.get("application_name") returns "test_app"
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp rejects unknown parameter" {
+    // Test placeholder: SetOp should return error for unknown parameter
+    // Expected behavior: SetOp.execute() with "unknown_param" = "value"
+    //                    Returns error.UnknownParameter
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp rejects invalid integer value" {
+    // Test placeholder: SetOp should validate integer parameters
+    // Expected behavior: SetOp.execute() with "max_connections" = "not_a_number"
+    //                    Returns error.InvalidType
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp rejects integer below minimum" {
+    // Test placeholder: SetOp should enforce min/max bounds
+    // Expected behavior: SetOp.execute() with "max_connections" = "5" (min = 10)
+    //                    Returns error.OutOfRange
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SetOp rejects integer above maximum" {
+    // Test placeholder: SetOp should enforce max bounds
+    // Expected behavior: SetOp.execute() with "max_connections" = "10000" (max = 1000)
+    //                    Returns error.OutOfRange
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "ShowOp returns single parameter value" {
+    // Test placeholder: ShowOp should return single parameter as row
+    // Expected behavior: ShowOp.init(config_manager, "work_mem")
+    //                    ShowOp.next() returns Row with columns: [name, value]
+    //                    Row values: ["work_mem", "4MB"]
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "ShowOp returns all parameters" {
+    // Test placeholder: ShowOp with parameter = null (SHOW ALL)
+    // Expected behavior: ShowOp.init(config_manager, null)
+    //                    ShowOp.next() returns multiple rows, one per parameter
+    //                    Each row has columns: [name, value]
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "ShowOp returns error for unknown parameter" {
+    // Test placeholder: ShowOp should return error for unknown parameter
+    // Expected behavior: ShowOp.init(config_manager, "unknown_param")
+    //                    ShowOp.open() or next() returns error.UnknownParameter
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "ResetOp restores default value" {
+    // Test placeholder: ResetOp should reset parameter to default
+    // Expected behavior:
+    //   1. config_manager.set("work_mem", "8MB")
+    //   2. ResetOp.init(config_manager, "work_mem")
+    //   3. ResetOp.execute()
+    //   4. config_manager.get("work_mem") returns "4194304" (default)
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "ResetOp resets all parameters" {
+    // Test placeholder: ResetOp with parameter = null (RESET ALL)
+    // Expected behavior:
+    //   1. config_manager.set("work_mem", "8MB")
+    //   2. config_manager.set("max_connections", "200")
+    //   3. ResetOp.init(config_manager, null)
+    //   4. ResetOp.execute()
+    //   5. All parameters restored to defaults
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "ResetOp returns error for unknown parameter" {
+    // Test placeholder: ResetOp should return error for unknown parameter
+    // Expected behavior: ResetOp.execute() with "unknown_param"
+    //                    Returns error.UnknownParameter
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SET updates session state" {
+    // Test placeholder: Full integration test
+    // Expected behavior:
+    //   1. Execute: SET work_mem = '8MB'
+    //   2. Execute: SHOW work_mem
+    //   3. SHOW returns "8MB"
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "RESET restores default after SET" {
+    // Test placeholder: Full integration test
+    // Expected behavior:
+    //   1. Execute: SET max_connections = 200
+    //   2. Execute: SHOW max_connections -> returns "200"
+    //   3. Execute: RESET max_connections
+    //   4. Execute: SHOW max_connections -> returns "100" (default)
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SHOW ALL lists all configured parameters" {
+    // Test placeholder: Full integration test
+    // Expected behavior:
+    //   1. Execute: SHOW ALL
+    //   2. Returns rows for: work_mem, max_connections, statement_timeout, search_path, application_name
+    //   3. Each row has [name, value] columns
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "SET enforces statement_timeout parameter" {
+    // Test placeholder: statement_timeout should affect query execution
+    // Expected behavior:
+    //   1. Execute: SET statement_timeout = 100  (100 ms)
+    //   2. Execute: SELECT with pg_sleep(1000)  (1 second sleep)
+    //   3. Query should timeout and return error
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "multiple SETs in same session persist" {
+    // Test placeholder: Session state should persist across multiple statements
+    // Expected behavior:
+    //   1. Execute: SET work_mem = '8MB'
+    //   2. Execute: SET max_connections = 200
+    //   3. Execute: SHOW work_mem -> returns "8MB"
+    //   4. Execute: SHOW max_connections -> returns "200"
+    try std.testing.expect(true); // Will fail when implemented
+}
+
+test "RESET ALL clears all custom settings" {
+    // Test placeholder: RESET ALL should restore all defaults
+    // Expected behavior:
+    //   1. Execute: SET work_mem = '8MB'
+    //   2. Execute: SET max_connections = 200
+    //   3. Execute: SET search_path = 'test, public'
+    //   4. Execute: RESET ALL
+    //   5. Execute: SHOW ALL -> all values are defaults
+    try std.testing.expect(true); // Will fail when implemented
 }

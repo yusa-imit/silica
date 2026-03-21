@@ -726,6 +726,23 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
                 .database => writer.writeAll("Parsed: REINDEX DATABASE\n") catch {},
             }
         },
+        .set => |s| {
+            writer.print("Parsed: SET {s} = {s}\n", .{ s.parameter, s.value }) catch {};
+        },
+        .show => |s| {
+            if (s.parameter) |p| {
+                writer.print("Parsed: SHOW {s}\n", .{p}) catch {};
+            } else {
+                writer.writeAll("Parsed: SHOW ALL\n") catch {};
+            }
+        },
+        .reset => |r| {
+            if (r.parameter) |p| {
+                writer.print("Parsed: RESET {s}\n", .{p}) catch {};
+            } else {
+                writer.writeAll("Parsed: RESET ALL\n") catch {};
+            }
+        },
     }
 }
 

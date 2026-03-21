@@ -201,6 +201,9 @@ pub const Parser = struct {
             .kw_reindex => .{ .reindex = try self.parseReindex() },
             .kw_grant => try self.parseGrant(),
             .kw_revoke => try self.parseRevoke(),
+            .kw_set => .{ .set = try self.parseSet() },
+            .kw_show => .{ .show = try self.parseShow() },
+            .kw_reset => .{ .reset = try self.parseReset() },
             else => {
                 try self.addError(t, "expected statement");
                 return error.ParseFailed;
@@ -2270,6 +2273,87 @@ pub const Parser = struct {
             try self.addError(next, "expected INDEX, TABLE, or DATABASE after REINDEX");
             return error.ParseFailed;
         }
+    }
+
+    // ── Configuration statements ──────────────────────────────────
+
+    fn parseSet(self: *Parser) Error!ast.SetStmt {
+        _ = self.advance(); // consume SET keyword
+
+        // Get parameter name
+        const parameter = try self.expectIdentifier();
+
+        // Expect = or TO
+        if (!self.match(.equals) and !self.match(.kw_to)) {
+            try self.addError(self.peek(), "expected '=' or 'TO' after parameter name");
+            return error.ParseFailed;
+        }
+
+        // Get value (can be identifier, string literal, or integer)
+        const value_token = self.peek();
+        const value = switch (value_token.type) {
+            .string_literal => blk: {
+                _ = self.advance();
+                const text = self.lexeme(value_token);
+                // Strip quotes from string literals
+                break :blk if (text.len >= 2) text[1 .. text.len - 1] else text;
+            },
+            .integer_literal => blk: {
+                _ = self.advance();
+                break :blk self.lexeme(value_token);
+            },
+            .identifier => blk: {
+                _ = self.advance();
+                break :blk self.lexeme(value_token);
+            },
+            else => {
+                try self.addError(value_token, "expected value after '=' or 'TO'");
+                return error.ParseFailed;
+            },
+        };
+
+        return .{
+            .parameter = parameter,
+            .value = value,
+        };
+    }
+
+    fn parseShow(self: *Parser) Error!ast.ShowStmt {
+        _ = self.advance(); // consume SHOW keyword
+
+        // Check for SHOW ALL
+        if (self.match(.kw_all)) {
+            return .{ .parameter = null };
+        }
+
+        // Otherwise expect a parameter name
+        const param_token = self.peek();
+        if (param_token.type != .identifier) {
+            try self.addError(param_token, "expected parameter name or 'ALL' after SHOW");
+            return error.ParseFailed;
+        }
+
+        const parameter = try self.expectIdentifier();
+        return .{ .parameter = parameter };
+    }
+
+    fn parseReset(self: *Parser) Error!ast.ResetStmt {
+        _ = self.advance(); // consume RESET keyword
+
+        // Check for RESET ALL
+        if (self.match(.kw_all)) {
+            return .{ .parameter = null };
+        }
+
+        // Otherwise expect a parameter name
+        const param_token = self.peek();
+        if (param_token.type != .identifier) {
+            try self.addError(param_token, "expected parameter name or 'ALL' after RESET");
+            return error.ParseFailed;
+        }
+
+        const parameter = try self.expectIdentifier();
+        return .{ .parameter = parameter };
     }
 
     // ── Expression parser (Pratt / precedence climbing) ──────────
@@ -5522,4 +5606,141 @@ test "parse SELECT FROM pg_locks with LIMIT" {
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
     try std.testing.expect(select_stmt.limit != null);
+}
+
+// ── Configuration System Parser Tests ────────────────────────────────
+
+test "parse SET with equals syntax" {
+    var r = try testParseWithArena("SET work_mem = '4MB'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("work_mem", s.parameter);
+            try std.testing.expectEqualStrings("4MB", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with TO syntax" {
+    var r = try testParseWithArena("SET search_path TO public");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("search_path", s.parameter);
+            try std.testing.expectEqualStrings("public", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET integer parameter" {
+    var r = try testParseWithArena("SET max_connections = 100");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("max_connections", s.parameter);
+            try std.testing.expectEqualStrings("100", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with quoted value" {
+    var r = try testParseWithArena("SET application_name = 'my_app'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("application_name", s.parameter);
+            try std.testing.expectEqualStrings("my_app", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW single parameter" {
+    var r = try testParseWithArena("SHOW work_mem");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("work_mem", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW ALL" {
+    var r = try testParseWithArena("SHOW ALL");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter == null);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET single parameter" {
+    var r = try testParseWithArena("RESET work_mem");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("work_mem", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET ALL" {
+    var r = try testParseWithArena("RESET ALL");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter == null);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET without value fails" {
+    const source = "SET work_mem";
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var parser = try Parser.init(std.testing.allocator, source, &ast_arena);
+    defer parser.deinit();
+
+    const result = parser.parseStatement();
+    try std.testing.expectError(error.ParseFailed, result);
+}
+
+test "parse SHOW without parameter fails" {
+    const source = "SHOW";
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var parser = try Parser.init(std.testing.allocator, source, &ast_arena);
+    defer parser.deinit();
+
+    const result = parser.parseStatement();
+    try std.testing.expectError(error.ParseFailed, result);
+}
+
+test "parse RESET without parameter fails" {
+    const source = "RESET";
+    var ast_arena = ast.AstArena.init(std.testing.allocator);
+    defer ast_arena.deinit();
+    var parser = try Parser.init(std.testing.allocator, source, &ast_arena);
+    defer parser.deinit();
+
+    const result = parser.parseStatement();
+    try std.testing.expectError(error.ParseFailed, result);
 }
