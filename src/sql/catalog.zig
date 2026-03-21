@@ -2381,6 +2381,13 @@ pub const Catalog = struct {
         const value = try stats_mod.serializeTableStats(self.allocator, stats);
         defer self.allocator.free(value);
 
+        // Upsert: delete existing stats first if present
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        }
+
         try self.tree.insert(key, value);
     }
 
@@ -2422,6 +2429,13 @@ pub const Catalog = struct {
 
         const value = try stats_mod.serializeColumnStats(self.allocator, stats);
         defer self.allocator.free(value);
+
+        // Upsert: delete existing stats first if present
+        const existing = try self.tree.get(self.allocator, key);
+        if (existing) |v| {
+            self.allocator.free(v);
+            try self.tree.delete(key);
+        }
 
         try self.tree.insert(key, value);
     }
@@ -6833,9 +6847,9 @@ test "Catalog column stats with MCVs and histogram" {
 
 // ── Comprehensive Edge Case Tests for Statistics ───────────────────────
 
-// DISABLED: triggers bug #1 (BTreeError.DuplicateKey with repeated catalog operations)
+// Re-enabled: bug #1 fixed on 2026-03-02
 test "Catalog update existing table stats" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     const path = "test_catalog_update_table_stats.db";
@@ -6857,9 +6871,9 @@ test "Catalog update existing table stats" {
     try std.testing.expectEqual(@as(u64, 2000), retrieved.?.row_count);
 }
 
-// DISABLED: triggers bug #1 (BTreeError.DuplicateKey with repeated catalog operations)
+// Re-enabled: bug #1 fixed on 2026-03-02
 test "Catalog update existing column stats" {
-    if (true) return error.SkipZigTest;
+    // if (true) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     const path = "test_catalog_update_column_stats.db";
