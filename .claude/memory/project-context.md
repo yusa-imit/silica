@@ -28,6 +28,34 @@
 
 ## Recent Sessions
 
+### STABILIZATION Session (2026-03-21 20:00 UTC)
+- **Mode**: STABILIZATION (hour 20, hour % 4 == 0)
+- **Focus**: Re-enable skipped tests and fix catalog stats upsert behavior
+- **Work Done**:
+  1. CI & Test Status Check
+     - **VERIFIED**: CI GREEN — latest run on main successful
+     - **Tests**: 2587/2600 passing, 13 skipped
+     - No compiler warnings, clean build
+  2. Skipped Test Analysis
+     - **FOUND**: 13 skipped tests total
+       * 7 BitmapHeapScan tests — legitimately skipped (TID-to-row mapping placeholder)
+       * 2 catalog stats tests — referenced bug #1 (closed 2026-03-02)
+       * 2 parser tests — placeholders for future features
+     - **ACTIONABLE**: 2 catalog stats update tests ready to re-enable
+  3. Bug Fix: Catalog Stats Upsert
+     - **ROOT CAUSE**: createTableStats/createColumnStats used tree.insert() which fails on duplicate keys
+     - **IMPACT**: ANALYZE command couldn't update stats on subsequent runs
+     - **FIX**: Implemented upsert behavior (delete existing key before insert if present)
+     - Modified methods: createTableStats, createColumnStats
+     - Both methods now support update semantics for repeated ANALYZE runs
+  4. Test Re-enablement
+     - Re-enabled: "Catalog update existing table stats"
+     - Re-enabled: "Catalog update existing column stats"
+     - Both tests now pass with upsert implementation
+- **Test Results**: 2589/2600 passing (was 2587), 11 skipped (was 13)
+- **Commits**: 9f23434 (fix: catalog stats upsert)
+- **Key Learning**: Stabilization mode successfully identified and fixed a lurking bug from early Milestone 20 (ANALYZE) implementation. The bug prevented stats updates on subsequent ANALYZE runs. Skipped tests that reference closed bugs should be re-enabled and verified.
+
 ### FEATURE Session (2026-03-21 18:00 UTC)
 - **Mode**: FEATURE (hour 18, hour % 4 == 2)
 - **Focus**: Implement pg_stat_activity monitoring view (Milestone 23)
