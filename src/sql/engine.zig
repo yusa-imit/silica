@@ -467,6 +467,8 @@ const OperatorChain = struct {
     activity_tracker: ?*const executor_mod.ActivityTracker = null,
     /// StatActivityScanOp for pg_stat_activity.
     stat_activity_scan: ?*executor_mod.StatActivityScanOp = null,
+    /// LocksScanOp for pg_locks.
+    locks_scan: ?*executor_mod.LocksScanOp = null,
 
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
@@ -507,6 +509,7 @@ const OperatorChain = struct {
         if (self.set_op) |s| allocator.destroy(s);
         if (self.window) |w| allocator.destroy(w);
         if (self.stat_activity_scan) |s| allocator.destroy(s);
+        if (self.locks_scan) |l| allocator.destroy(l);
         // Clean up set operation sub-query chains.
         for (self.set_op_chains.items) |chain| {
             chain.cte_materialized = null;
@@ -956,6 +959,9 @@ pub const Database = struct {
         if (std.mem.eql(u8, scan.table, "pg_stat_activity")) {
             return self.buildStatActivityScan(scan, ops);
         }
+        if (std.mem.eql(u8, scan.table, "pg_locks")) {
+            return self.buildLocksScan(scan, ops);
+        }
 
         // Check if the name refers to a table
         if (self.catalog.getTable(scan.table)) |_table_info| {
@@ -1127,6 +1133,23 @@ pub const Database = struct {
         ops.stat_activity_scan = stat_op;
 
         return stat_op.iterator();
+    }
+
+    /// Build a scan for pg_locks system table
+    fn buildLocksScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
+        _ = scan; // scan.alias not used for now — column names are always pg_locks.*
+
+        // Create LocksScanOp
+        const locks_op = self.allocator.create(executor_mod.LocksScanOp) catch return EngineError.OutOfMemory;
+        locks_op.* = executor_mod.LocksScanOp.init(self.allocator);
+
+        // Set the lock manager (always available in Database)
+        locks_op.setLockManager(&self.lock_manager);
+
+        // Store operator in chain for cleanup
+        ops.locks_scan = locks_op;
+
+        return locks_op.iterator();
     }
 
     /// Build column names for a view from the inner query's row columns.

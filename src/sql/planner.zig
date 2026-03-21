@@ -533,7 +533,7 @@ pub const Planner = struct {
                     } });
                 }
 
-                // Check for system tables (pg_stat_activity)
+                // Check for system tables (pg_stat_activity, pg_locks)
                 if (std.mem.eql(u8, tn.name, "pg_stat_activity")) {
                     // Define pg_stat_activity column schema
                     var cols = std.ArrayListUnmanaged(ColumnRef){};
@@ -545,6 +545,24 @@ pub const Planner = struct {
                     cols.append(alloc, .{ .table = "pg_stat_activity", .column = "state", .col_type = .text }) catch return error.OutOfMemory;
                     cols.append(alloc, .{ .table = "pg_stat_activity", .column = "query_start", .col_type = .timestamp }) catch return error.OutOfMemory;
                     cols.append(alloc, .{ .table = "pg_stat_activity", .column = "state_change", .col_type = .timestamp }) catch return error.OutOfMemory;
+                    columns = cols.toOwnedSlice(alloc) catch return error.OutOfMemory;
+
+                    return self.createNode(.{ .scan = .{
+                        .table = tn.name,
+                        .alias = tn.alias,
+                        .columns = columns,
+                    } });
+                }
+
+                if (std.mem.eql(u8, tn.name, "pg_locks")) {
+                    // Define pg_locks column schema
+                    var cols = std.ArrayListUnmanaged(ColumnRef){};
+                    cols.append(alloc, .{ .table = "pg_locks", .column = "locktype", .col_type = .text }) catch return error.OutOfMemory;
+                    cols.append(alloc, .{ .table = "pg_locks", .column = "mode", .col_type = .text }) catch return error.OutOfMemory;
+                    cols.append(alloc, .{ .table = "pg_locks", .column = "pid", .col_type = .integer }) catch return error.OutOfMemory;
+                    cols.append(alloc, .{ .table = "pg_locks", .column = "relation", .col_type = .integer }) catch return error.OutOfMemory;
+                    cols.append(alloc, .{ .table = "pg_locks", .column = "tuple", .col_type = .integer }) catch return error.OutOfMemory;
+                    cols.append(alloc, .{ .table = "pg_locks", .column = "granted", .col_type = .boolean }) catch return error.OutOfMemory;
                     columns = cols.toOwnedSlice(alloc) catch return error.OutOfMemory;
 
                     return self.createNode(.{ .scan = .{
