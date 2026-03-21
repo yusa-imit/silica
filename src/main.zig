@@ -40,6 +40,10 @@ pub const mvcc = @import("tx/mvcc.zig");
 pub const lock = @import("tx/lock.zig");
 pub const vacuum = @import("tx/vacuum.zig");
 
+// Configuration modules
+pub const config_manager = @import("config/manager.zig");
+pub const config_file = @import("config/file.zig");
+
 // Replication modules
 pub const replication_protocol = @import("replication/protocol.zig");
 pub const replication_slot = @import("replication/slot.zig");
