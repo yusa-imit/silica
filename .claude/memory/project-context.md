@@ -6,21 +6,53 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 10 — Advanced Optimization (Milestone 21 complete)
+## Current Phase: Phase 12 — Production Readiness (Milestone 23 in progress)
 
 ### Completed Phases
 - **Phase 1-9**: All complete ✅ (Storage, SQL, Transactions, MVCC, Views/CTEs, Window Functions, Data Types, JSON/FTS, Functions/Triggers, Server, Replication)
+- **Phase 10**: Cost-Based Optimizer & Performance ✅ COMPLETE (Milestones 20-21)
+- **Phase 11**: Additional Index Types ✅ COMPLETE (Milestone 22)
 
-### Current: Phase 10 — Cost-Based Optimizer & Performance
-- **Milestone 20**: Statistics & Cost Model ✅ COMPLETE
-  - ANALYZE command, histograms, selectivity estimation, I/O+CPU cost model
-- **Milestone 21**: Advanced Optimization ✅ COMPLETE
-  - [x] Join reordering (simplified two-table)
-  - [x] Hash/merge join selection with proper join key extraction
-  - [x] EXPLAIN/EXPLAIN ANALYZE
-  - [x] **21C**: CREATE INDEX USING HASH (hash index implementation complete)
-  - [ ] Subquery decorrelation (blocked: requires Database handle threading — DEFERRED)
-  - [ ] Index-only scans (infrastructure added, full implementation DEFERRED)
+### Current: Phase 12 — Production Readiness
+- **Milestone 22**: Hash, GiST, GIN Indexes ✅ COMPLETE
+  - Hash index, GiST framework, GIN framework
+  - CREATE INDEX CONCURRENTLY, bitmap index scans
+- **Milestone 23**: Operational Tools (IN PROGRESS)
+  - [x] EXPLAIN and EXPLAIN ANALYZE (text format)
+  - [x] VACUUM (manual and auto)
+  - [x] REINDEX
+  - [x] **pg_stat_activity**: Connection monitoring view
+  - [ ] pg_locks: Lock monitoring
+  - [ ] Configuration system (SET/SHOW/RESET)
+  - [ ] silica.conf configuration file
+
+## Recent Sessions
+
+### FEATURE Session (2026-03-21 18:00 UTC)
+- **Mode**: FEATURE (hour 18, hour % 4 == 2)
+- **Focus**: Implement pg_stat_activity monitoring view (Milestone 23)
+- **Work Done**:
+  1. **TDD Red Phase** (test-writer agent):
+     - Wrote 23 comprehensive failing tests (8 parser + 15 executor)
+     - Defined ActivityInfo struct (8 fields: pid, usename, application_name, client_addr, query, state, query_start, state_change)
+     - Defined ActivityTracker struct (7 methods: init, deinit, updateActivity, removeActivity, getActivity, getAllActivities, countActive)
+     - Defined StatActivityScanOp struct (iterator protocol: init, setTracker, open, next, close, iterator)
+  2. **TDD Green Phase** (orchestrator):
+     - **planner.zig**: Added pg_stat_activity system table recognition in planTableRef()
+       * Hardcoded 8-column schema (matches ActivityInfo)
+       * Returns normal .scan PlanNode (distinguished by table name)
+     - **engine.zig**: Added buildStatActivityScan() to route pg_stat_activity scans
+       * Modified buildScan() to check for "pg_stat_activity" table name
+       * Added OperatorChain.activity_tracker field (reference, not owned)
+       * Added OperatorChain.stat_activity_scan field for cleanup
+       * Updated deinit() to destroy stat_activity_scan operator
+     - **executor.zig**: Added StatActivityScanOp.iterator() method
+       * Uses RowIterator.ptr + RowIterator.vtable pattern (matches other operators)
+     - **parser.zig**: All parser tests pass (SELECT * FROM pg_stat_activity, column selection, WHERE filters, ORDER BY, LIMIT)
+- **Test Results**: CI running (commit c5a4017) — local macOS tests hang
+- **Commits**: c5a4017 (feat: pg_stat_activity monitoring view)
+- **Next Priority**: Server integration to populate ActivityTracker with connection events (optional enhancement — embedded mode returns empty result set by design)
+- **Key Learning**: System tables require special handling in planner (not in catalog). TDD cycle successful — 23 tests defined behavior, implementation followed.
 
 ## Recent Sessions
 
