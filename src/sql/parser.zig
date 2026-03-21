@@ -5473,3 +5473,53 @@ test "parse SELECT pid AS connection_id FROM pg_stat_activity" {
     try std.testing.expectEqualStrings("connection_id", select_stmt.columns[0].expr.alias.?);
     try std.testing.expectEqualStrings("status", select_stmt.columns[1].expr.alias.?);
 }
+
+// ── pg_locks (lock monitoring view) tests ──────────────────────
+
+test "parse SELECT * FROM pg_locks" {
+    var r = try testParseWithArena("SELECT * FROM pg_locks");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.from != null);
+    try std.testing.expectEqualStrings("pg_locks", select_stmt.from.?.table_name.name);
+    try std.testing.expectEqual(@as(usize, 1), select_stmt.columns.len);
+    try std.testing.expect(select_stmt.columns[0] == .all_columns);
+}
+
+test "parse SELECT specific columns FROM pg_locks" {
+    var r = try testParseWithArena("SELECT locktype, mode, pid FROM pg_locks");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 3), select_stmt.columns.len);
+    try std.testing.expectEqualStrings("locktype", select_stmt.columns[0].expr.value.column_ref.name);
+    try std.testing.expectEqualStrings("mode", select_stmt.columns[1].expr.value.column_ref.name);
+    try std.testing.expectEqualStrings("pid", select_stmt.columns[2].expr.value.column_ref.name);
+}
+
+test "parse SELECT FROM pg_locks with WHERE locktype = 'relation'" {
+    var r = try testParseWithArena("SELECT * FROM pg_locks WHERE locktype = 'relation'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expectEqualStrings("pg_locks", select_stmt.from.?.table_name.name);
+    try std.testing.expect(select_stmt.where.?.* == .binary_op);
+}
+
+test "parse SELECT FROM pg_locks ORDER BY pid" {
+    var r = try testParseWithArena("SELECT * FROM pg_locks ORDER BY pid");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), select_stmt.order_by.len);
+}
+
+test "parse SELECT FROM pg_locks with LIMIT" {
+    var r = try testParseWithArena("SELECT * FROM pg_locks LIMIT 5");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.limit != null);
+}

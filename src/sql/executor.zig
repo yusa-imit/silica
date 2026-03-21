@@ -13440,9 +13440,16 @@ pub const LocksScanOp = struct {
 
         // Build row with 6 columns: locktype, mode, pid, relation, tuple, granted
         var row_values = try self.allocator.alloc(Value, 6);
+        errdefer self.allocator.free(row_values);
 
-        row_values[0] = .{ .text = lock_info.locktype };
-        row_values[1] = .{ .text = lock_info.mode };
+        // Duplicate string literals so they can be freed by Row.deinit()
+        const locktype_dup = try self.allocator.dupe(u8, lock_info.locktype);
+        errdefer self.allocator.free(locktype_dup);
+        const mode_dup = try self.allocator.dupe(u8, lock_info.mode);
+        errdefer self.allocator.free(mode_dup);
+
+        row_values[0] = .{ .text = locktype_dup };
+        row_values[1] = .{ .text = mode_dup };
         row_values[2] = .{ .integer = @intCast(lock_info.pid) };
         row_values[3] = .{ .integer = @intCast(lock_info.relation) };
 
@@ -13462,7 +13469,8 @@ pub const LocksScanOp = struct {
     }
 
     pub fn close(self: *LocksScanOp) void {
-        self.locks.clearRetainingCapacity();
+        self.locks.deinit(self.allocator);
+        self.opened = false;
     }
 
     pub fn iterator(self: *LocksScanOp) RowIterator {
@@ -13840,7 +13848,8 @@ test "LocksScanOp shows multiple locks from same transaction" {
 
     // Expected: 3 rows (1 table lock + 2 row locks)
     var count: usize = 0;
-    while (try op.next()) |*row| : (count += 1) {
+    while (try op.next()) |r| : (count += 1) {
+        var row = r;
         defer row.deinit();
         try std.testing.expectEqual(@as(i64, 100), row.values[2].integer); // All have same pid
         try std.testing.expectEqual(@as(i64, 1), row.values[3].integer); // All have same relation
