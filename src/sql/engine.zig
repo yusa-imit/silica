@@ -463,6 +463,10 @@ const OperatorChain = struct {
     scan2: ?*ScanOp = null,
     /// Per-statement RC snapshot that needs cleanup (owned by this chain).
     rc_snapshot: ?Snapshot = null,
+    /// Activity tracker for pg_stat_activity (reference, not owned).
+    activity_tracker: ?*const executor_mod.ActivityTracker = null,
+    /// StatActivityScanOp for pg_stat_activity.
+    stat_activity_scan: ?*executor_mod.StatActivityScanOp = null,
 
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
@@ -502,6 +506,7 @@ const OperatorChain = struct {
         if (self.distinct) |d| allocator.destroy(d);
         if (self.set_op) |s| allocator.destroy(s);
         if (self.window) |w| allocator.destroy(w);
+        if (self.stat_activity_scan) |s| allocator.destroy(s);
         // Clean up set operation sub-query chains.
         for (self.set_op_chains.items) |chain| {
             chain.cte_materialized = null;
@@ -947,6 +952,11 @@ pub const Database = struct {
             }
         }
 
+        // Check for system tables
+        if (std.mem.eql(u8, scan.table, "pg_stat_activity")) {
+            return self.buildStatActivityScan(scan, ops);
+        }
+
         // Check if the name refers to a table
         if (self.catalog.getTable(scan.table)) |_table_info| {
             var table_info = _table_info;
@@ -1098,6 +1108,25 @@ pub const Database = struct {
 
         ops.materialized = mat_op;
         return mat_op.iterator();
+    }
+
+    /// Build a scan for pg_stat_activity system table
+    fn buildStatActivityScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
+        _ = scan; // scan.alias not used for now — column names are always pg_stat_activity.*
+
+        // Create StatActivityScanOp
+        const stat_op = self.allocator.create(executor_mod.StatActivityScanOp) catch return EngineError.OutOfMemory;
+        stat_op.* = executor_mod.StatActivityScanOp.init(self.allocator);
+
+        // Set the tracker from OperatorChain (will be null in embedded mode, populated in server mode)
+        if (ops.activity_tracker) |tracker| {
+            stat_op.setTracker(tracker);
+        }
+
+        // Store operator in chain for cleanup
+        ops.stat_activity_scan = stat_op;
+
+        return stat_op.iterator();
     }
 
     /// Build column names for a view from the inner query's row columns.

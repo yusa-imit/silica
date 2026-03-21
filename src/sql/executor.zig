@@ -13116,3 +13116,471 @@ test "Bitmap scan: four-way AND combination" {
 // NOTE: Integration tests for bitmap scans disabled until full SQL integration is complete
 // These tests require Database.execute() to be fully implemented with the optimizer
 // choosing bitmap scan plans for multi-index queries.
+
+// ── pg_stat_activity (monitoring view) tests ──────────────────────────────────
+
+/// ActivityInfo stores runtime state for a single active connection.
+pub const ActivityInfo = struct {
+    pid: u32,                     // Backend process ID (connection ID)
+    usename: []const u8,          // User name
+    application_name: []const u8, // Application name
+    client_addr: []const u8,      // Client IP address (or "local")
+    query: ?[]const u8,           // Current query text (NULL if idle)
+    state: []const u8,            // 'active' | 'idle' | 'idle in transaction'
+    query_start: ?i64,            // Microseconds since epoch (NULL if idle)
+    state_change: i64,            // Microseconds since epoch
+};
+
+/// ActivityTracker collects connection activity information.
+pub const ActivityTracker = struct {
+    activities: std.ArrayListUnmanaged(ActivityInfo),
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) ActivityTracker {
+        return .{
+            .activities = .{},
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ActivityTracker) void {
+        for (self.activities.items) |activity| {
+            self.allocator.free(activity.usename);
+            self.allocator.free(activity.application_name);
+            self.allocator.free(activity.client_addr);
+            if (activity.query) |q| self.allocator.free(q);
+            self.allocator.free(activity.state);
+        }
+        self.activities.deinit(self.allocator);
+    }
+
+    /// Add or update a connection activity record.
+    pub fn updateActivity(
+        self: *ActivityTracker,
+        pid: u32,
+        usename: []const u8,
+        application_name: []const u8,
+        client_addr: []const u8,
+        query: ?[]const u8,
+        state: []const u8,
+        query_start: ?i64,
+        state_change: i64,
+    ) !void {
+        // Check if PID already exists
+        for (self.activities.items, 0..) |*activity, i| {
+            if (activity.pid == pid) {
+                // Update existing
+                self.allocator.free(activity.usename);
+                self.allocator.free(activity.application_name);
+                self.allocator.free(activity.client_addr);
+                if (activity.query) |q| self.allocator.free(q);
+                self.allocator.free(activity.state);
+
+                self.activities.items[i] = .{
+                    .pid = pid,
+                    .usename = try self.allocator.dupe(u8, usename),
+                    .application_name = try self.allocator.dupe(u8, application_name),
+                    .client_addr = try self.allocator.dupe(u8, client_addr),
+                    .query = if (query) |q| try self.allocator.dupe(u8, q) else null,
+                    .state = try self.allocator.dupe(u8, state),
+                    .query_start = query_start,
+                    .state_change = state_change,
+                };
+                return;
+            }
+        }
+
+        // Add new
+        try self.activities.append(self.allocator, .{
+            .pid = pid,
+            .usename = try self.allocator.dupe(u8, usename),
+            .application_name = try self.allocator.dupe(u8, application_name),
+            .client_addr = try self.allocator.dupe(u8, client_addr),
+            .query = if (query) |q| try self.allocator.dupe(u8, q) else null,
+            .state = try self.allocator.dupe(u8, state),
+            .query_start = query_start,
+            .state_change = state_change,
+        });
+    }
+
+    /// Remove a connection activity record by PID.
+    pub fn removeActivity(self: *ActivityTracker, pid: u32) void {
+        for (self.activities.items, 0..) |activity, i| {
+            if (activity.pid == pid) {
+                const removed = self.activities.swapRemove(i);
+                self.allocator.free(removed.usename);
+                self.allocator.free(removed.application_name);
+                self.allocator.free(removed.client_addr);
+                if (removed.query) |q| self.allocator.free(q);
+                self.allocator.free(removed.state);
+                return;
+            }
+        }
+    }
+
+    /// Get activity info for a specific PID.
+    pub fn getActivity(self: *const ActivityTracker, pid: u32) ?ActivityInfo {
+        for (self.activities.items) |activity| {
+            if (activity.pid == pid) return activity;
+        }
+        return null;
+    }
+
+    /// Get all activities.
+    pub fn getAllActivities(self: *const ActivityTracker) []const ActivityInfo {
+        return self.activities.items;
+    }
+
+    /// Count active connections.
+    pub fn countActive(self: *const ActivityTracker) usize {
+        var count: usize = 0;
+        for (self.activities.items) |activity| {
+            if (std.mem.eql(u8, activity.state, "active")) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+};
+
+/// StatActivityScanOp is a source operator that returns rows from pg_stat_activity.
+/// It reads from a global ActivityTracker that's populated by the server.
+pub const StatActivityScanOp = struct {
+    allocator: Allocator,
+    /// Reference to the shared activity tracker
+    tracker: ?*const ActivityTracker = null,
+    /// Current position in activity list
+    current_index: usize = 0,
+    /// Whether the operator has been opened
+    opened: bool = false,
+
+    pub fn init(allocator: Allocator) StatActivityScanOp {
+        return .{
+            .allocator = allocator,
+        };
+    }
+
+    pub fn setTracker(self: *StatActivityScanOp, tracker: *const ActivityTracker) void {
+        self.tracker = tracker;
+    }
+
+    pub fn open(self: *StatActivityScanOp) ExecError!void {
+        self.current_index = 0;
+        self.opened = true;
+    }
+
+    pub fn next(self: *StatActivityScanOp) ExecError!?Row {
+        if (!self.opened) return error.ExecutionError;
+
+        const tracker = self.tracker orelse return null;
+        const activities = tracker.getAllActivities();
+
+        if (self.current_index >= activities.len) return null;
+
+        const activity = activities[self.current_index];
+        self.current_index += 1;
+
+        // Build row with 8 columns: pid, usename, application_name, client_addr, query, state, query_start, state_change
+        var row_values = try self.allocator.alloc(Value, 8);
+
+        row_values[0] = .{ .integer = @intCast(activity.pid) };
+
+        row_values[1] = .{ .text = activity.usename };
+
+        row_values[2] = .{ .text = activity.application_name };
+
+        row_values[3] = .{ .text = activity.client_addr };
+
+        if (activity.query) |q| {
+            row_values[4] = .{ .text = q };
+        } else {
+            row_values[4] = .null_value;
+        }
+
+        row_values[5] = .{ .text = activity.state };
+
+        if (activity.query_start) |qs| {
+            row_values[6] = .{ .timestamp = qs };
+        } else {
+            row_values[6] = .null_value;
+        }
+
+        row_values[7] = .{ .timestamp = activity.state_change };
+
+        return Row{
+            .values = row_values,
+            .columns = &.{},
+            .allocator = self.allocator,
+        };
+    }
+
+    pub fn close(_: *StatActivityScanOp) void {
+        // No resources to clean up
+    }
+
+    pub fn iterator(self: *StatActivityScanOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&StatActivityScanOp.next),
+                .close = @ptrCast(&StatActivityScanOp.close),
+            },
+        };
+    }
+};
+
+// Tests for pg_stat_activity
+
+test "ActivityTracker initialization" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tracker.getAllActivities().len);
+}
+
+test "ActivityTracker updates connection activity" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
+
+    const activities = tracker.getAllActivities();
+    try std.testing.expectEqual(@as(usize, 1), activities.len);
+    try std.testing.expectEqual(@as(u32, 1001), activities[0].pid);
+    try std.testing.expectEqualStrings("postgres", activities[0].usename);
+}
+
+test "ActivityTracker tracks multiple connections" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
+    try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", null, "idle", null, now);
+    try tracker.updateActivity(1003, "charlie", "app3", "192.168.1.3", "SELECT 1", "active", now, now);
+
+    try std.testing.expectEqual(@as(usize, 3), tracker.getAllActivities().len);
+}
+
+test "ActivityTracker updates existing activity by PID" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", "SELECT * FROM users", "active", now, now);
+
+    const activities = tracker.getAllActivities();
+    try std.testing.expectEqual(@as(usize, 1), activities.len);
+    try std.testing.expectEqualStrings("SELECT * FROM users", activities[0].query.?);
+    try std.testing.expectEqualStrings("active", activities[0].state);
+}
+
+test "ActivityTracker removes activity by PID" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
+    try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", null, "idle", null, now);
+
+    tracker.removeActivity(1001);
+    const activities = tracker.getAllActivities();
+    try std.testing.expectEqual(@as(usize, 1), activities.len);
+    try std.testing.expectEqual(@as(u32, 1002), activities[0].pid);
+}
+
+test "ActivityTracker countActive returns correct count" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
+    try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", "SELECT 1", "active", now, now);
+    try tracker.updateActivity(1003, "charlie", "app3", "192.168.1.3", "INSERT INTO t VALUES (1)", "active", now, now);
+
+    try std.testing.expectEqual(@as(usize, 2), tracker.countActive());
+}
+
+test "StatActivityScanOp returns correct column count" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    if (try op.next()) |row| {
+        try std.testing.expectEqual(@as(usize, 8), row.values.len);
+        allocator.free(row.values);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "StatActivityScanOp with no activities returns empty result" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    try std.testing.expect((try op.next()) == null);
+}
+
+test "StatActivityScanOp populates pid column correctly" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    if (try op.next()) |row| {
+        defer allocator.free(row.values);
+        try std.testing.expectEqual(@as(i64, 1001), row.values[0].integer);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "StatActivityScanOp populates usename column correctly" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "alice", "psql", "127.0.0.1", null, "idle", null, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    if (try op.next()) |row| {
+        defer allocator.free(row.values);
+        try std.testing.expectEqualStrings("alice", row.values[1].text);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "StatActivityScanOp populates state column correctly" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", "SELECT 1", "active", now, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    if (try op.next()) |row| {
+        defer allocator.free(row.values);
+        // state is column index 5
+        try std.testing.expectEqualStrings("active", row.values[5].text);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "StatActivityScanOp query column is NULL when idle" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    if (try op.next()) |row| {
+        defer allocator.free(row.values);
+        // query is column index 4
+        try std.testing.expect(row.values[4] == .null_value);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "StatActivityScanOp query_start column is NULL when idle" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    if (try op.next()) |row| {
+        defer allocator.free(row.values);
+        // query_start is column index 6
+        try std.testing.expect(row.values[6] == .null_value);
+    } else {
+        return error.TestExpectedRow;
+    }
+}
+
+test "StatActivityScanOp iterates through multiple activities" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    const now = std.time.microTimestamp();
+    try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
+    try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", null, "idle", null, now);
+    try tracker.updateActivity(1003, "charlie", "app3", "192.168.1.3", "SELECT 1", "active", now, now);
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+    try op.open();
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |row| {
+        defer allocator.free(row.values);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "StatActivityScanOp next without open returns error" {
+    const allocator = std.testing.allocator;
+    var tracker = ActivityTracker.init(allocator);
+    defer tracker.deinit();
+
+    var op = StatActivityScanOp.init(allocator);
+    op.setTracker(&tracker);
+
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
+}

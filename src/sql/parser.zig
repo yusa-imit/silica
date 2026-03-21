@@ -5391,3 +5391,85 @@ test "parse multiple EXISTS in WHERE with AND" {
     try std.testing.expect(select_stmt.where != null);
     try std.testing.expect(select_stmt.where.?.* == .binary_op);
 }
+
+// ── pg_stat_activity (monitoring views) tests ──────────────────────
+
+test "parse SELECT * FROM pg_stat_activity" {
+    var r = try testParseWithArena("SELECT * FROM pg_stat_activity");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.from != null);
+    try std.testing.expectEqualStrings("pg_stat_activity", select_stmt.from.?.table_name.name);
+    try std.testing.expectEqual(@as(usize, 1), select_stmt.columns.len);
+    try std.testing.expect(select_stmt.columns[0] == .all_columns);
+}
+
+test "parse SELECT specific columns FROM pg_stat_activity" {
+    var r = try testParseWithArena("SELECT pid, usename, query FROM pg_stat_activity");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 3), select_stmt.columns.len);
+    try std.testing.expectEqualStrings("pid", select_stmt.columns[0].expr.value.column_ref.name);
+    try std.testing.expectEqualStrings("usename", select_stmt.columns[1].expr.value.column_ref.name);
+    try std.testing.expectEqualStrings("query", select_stmt.columns[2].expr.value.column_ref.name);
+}
+
+test "parse SELECT FROM pg_stat_activity with WHERE state = 'active'" {
+    var r = try testParseWithArena("SELECT * FROM pg_stat_activity WHERE state = 'active'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expectEqualStrings("pg_stat_activity", select_stmt.from.?.table_name.name);
+    // WHERE clause is binary_op (state = 'active')
+    try std.testing.expect(select_stmt.where.?.* == .binary_op);
+}
+
+test "parse SELECT FROM pg_stat_activity with WHERE usename = 'postgres'" {
+    var r = try testParseWithArena("SELECT pid, query FROM pg_stat_activity WHERE usename = 'postgres'");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 2), select_stmt.columns.len);
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expect(select_stmt.where.?.* == .binary_op);
+}
+
+test "parse SELECT FROM pg_stat_activity with complex WHERE" {
+    var r = try testParseWithArena(
+        "SELECT * FROM pg_stat_activity WHERE state = 'active' AND query IS NOT NULL"
+    );
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.where != null);
+    try std.testing.expect(select_stmt.where.?.* == .binary_op);
+}
+
+test "parse SELECT FROM pg_stat_activity ORDER BY query_start" {
+    var r = try testParseWithArena("SELECT * FROM pg_stat_activity ORDER BY query_start DESC");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), select_stmt.order_by.len);
+}
+
+test "parse SELECT FROM pg_stat_activity with LIMIT" {
+    var r = try testParseWithArena("SELECT * FROM pg_stat_activity LIMIT 10");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expect(select_stmt.limit != null);
+}
+
+test "parse SELECT pid AS connection_id FROM pg_stat_activity" {
+    var r = try testParseWithArena("SELECT pid AS connection_id, state AS status FROM pg_stat_activity");
+    defer r.deinit();
+    try std.testing.expect(r.stmt == .select);
+    const select_stmt = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 2), select_stmt.columns.len);
+    try std.testing.expectEqualStrings("connection_id", select_stmt.columns[0].expr.alias.?);
+    try std.testing.expectEqualStrings("status", select_stmt.columns[1].expr.alias.?);
+}
