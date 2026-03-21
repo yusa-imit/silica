@@ -4,10 +4,10 @@
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
 - **Current development**: Phase 10 — Advanced Optimization (Milestone 20 complete, Milestone 21 in progress)
-- **Tests**: 2301/2304 passing, 3 skipped (EXPLAIN/EXPLAIN ANALYZE complete with 4 integration tests; cost-based join selection infrastructure complete)
+- **Tests**: 2638 tests (all passing, 3 skipped: wire_fuzz placeholders + 1 macOS-specific test)
 - **Branch**: `main`
-- **zuda migrations**: LRU Cache and Deadlock Detection **READY** (zuda v1.15.0 available); B+Tree needs architect review
-- **Known bugs**: #3 (Flaky AutoVacuumDaemon test, currently passing)
+- **zuda migrations**: LRU Cache and Deadlock Detection **BLOCKED** (awaiting zuda#9, zuda#10); B+Tree needs architect review
+- **Known bugs**: None open
 
 > **Note**: Phases 4-8 were completed iteratively without tagged releases. All work is on `main` branch. Git tags for v0.4.0+ will be created when appropriate release points are determined.
 
@@ -87,6 +87,7 @@
 
 | # | Title | Closed |
 |---|-------|--------|
+| #3 | Flaky test: AutoVacuumDaemon — inserts only never trigger vacuum | 2026-03-15 |
 | #2 | CI: net.Stream.Writer incompatibility on Linux | 2026-03-11 |
 | #1 | DuplicateKey error when inserting rows across multiple tables | 2026-03-02 |
 
@@ -94,9 +95,8 @@
 
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
-| #3 | Flaky test: AutoVacuumDaemon — inserts only never trigger vacuum | bug | Open |
-| #4 | feat: migrate to zuda v1.0 for B+Tree and LRU cache | enhancement, from:zuda | LRU: **READY**, B+Tree: REVIEW NEEDED |
-| #5 | feat: migrate data structures to zuda v1.0 | enhancement, from:zuda | **READY** (cycle detection) |
+| #4 | feat: migrate to zuda v1.0 for B+Tree and LRU cache | enhancement, from:zuda | **BLOCKED** — awaiting zuda#9 (pin semantics) |
+| #5 | feat: migrate data structures to zuda v1.0 | enhancement, from:zuda | **BLOCKED** — awaiting zuda#10 (hasCycle implementation) |
 
 ---
 
