@@ -26,12 +26,42 @@
   - [x] Configuration system (SET/SHOW/RESET)
   - [x] silica.conf configuration file
 - **Milestone 24**: Testing & Certification (in progress)
-  - [ ] TPC-C/TPC-H benchmarks
+  - [ ] TPC-C/TPC-H benchmarks (blocked by #11 — requires prepared statements)
   - [ ] Jepsen-style testing
-  - [ ] Fuzz campaign
+  - [~] Fuzz campaign (in progress)
+    - [x] Storage layer (B+Tree) — 12 tests
+    - [x] SQL tokenizer — tests in tokenizer_fuzz.zig
+    - [x] SQL parser — 20 tests in parser_fuzz.zig
+    - [x] Wire protocol — 13 tests in wire_fuzz.zig
+    - [x] WAL (crash recovery) — 22 tests in wal_fuzz.zig ✨ NEW
   - [ ] SQL conformance tests
 
 ## Recent Sessions
+
+### FEATURE Session (2026-03-23 02:00 UTC)
+- **Mode**: FEATURE (hour 02, hour % 4 == 2)
+- **Focus**: Milestone 24 — Fuzz campaign (WAL crash recovery testing)
+- **Work Done**:
+  1. **CI Status**: All green ✅ (verified before starting)
+  2. **GitHub Issues**: 3 open (2 zuda migrations, 1 prepared statements enhancement), no blocking bugs
+  3. **WAL Fuzz Test Suite** (22 comprehensive tests):
+     - Invoked `test-writer` agent to design and implement fuzz tests following TDD protocol
+     - Created `src/tx/wal_fuzz.zig` (961 lines) with 5 test categories:
+       * Header Corruption (5 tests): magic bytes, version, checksum, page size, salts
+       * Frame Corruption (5 tests): frame checksums, salt mismatch, partial frames, large sequences, interleaved commits
+       * Crash Recovery (5 tests): interrupted writes, uncommitted frames, multiple transactions, partial corruption, empty WAL
+       * Checkpoint (3 tests): large WAL files (1000+ frames), concurrent operations, pending transactions
+       * Edge Cases (4 tests): max page_id, out-of-order IDs, repeated IDs, zero-length data
+     - All tests use deterministic seeds for reproducibility
+     - Memory leak detection via std.testing.allocator
+     - Fixed unused variable compilation error
+     - Added missing imports to main.zig: `parser_fuzz`, `wal_fuzz`
+  4. **Test Integration**: WAL fuzz tests now included in `zig build test`
+- **Commits**:
+  - 71adc0d: test: add comprehensive WAL fuzz test suite (Milestone 24)
+- **Next Priority**: Continue Milestone 24 — Executor/MVCC fuzz tests, or SQL conformance tests
+
+## Recent Sessions (Previous)
 
 ### STABILIZATION Session (2026-03-23 00:00 UTC)
 - **Mode**: STABILIZATION (hour 00, hour % 4 == 0)
