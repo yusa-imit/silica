@@ -67,6 +67,9 @@ const StandbyCoordinator = standby_mod.StandbyCoordinator;
 const StandbyMode = standby_mod.StandbyCoordinator.StandbyMode;
 const config_mod = @import("../config/manager.zig");
 const ConfigManager = config_mod.ConfigManager;
+const config_file = @import("../config/file.zig");
+const ConfigLoader = config_file.ConfigLoader;
+const findConfigFile = config_file.findConfigFile;
 
 const Value = executor_mod.Value;
 const Row = executor_mod.Row;
@@ -637,6 +640,27 @@ pub const Database = struct {
             .default_value = "",
             .description = "Sets the application name to be reported in statistics and logs",
         });
+
+        // Load configuration from silica.conf if present
+        // Search standard locations: ./silica.conf, ~/.config/silica/silica.conf, /etc/silica/silica.conf
+        if (findConfigFile(allocator) catch null) |config_path| {
+            defer allocator.free(config_path);
+
+            var loader = ConfigLoader.init(allocator, config_path);
+            defer loader.deinit();
+
+            // Load and apply config file (ignore errors - use defaults if file is invalid)
+            loader.load() catch |err| {
+                // Log warning but continue with defaults
+                std.debug.print("Warning: Failed to load config from {s}: {}\n", .{ config_path, err });
+            };
+
+            // Apply config to manager (this overrides defaults with file values)
+            loader.applyTo(&config) catch |err| {
+                // Log warning but continue
+                std.debug.print("Warning: Failed to apply config from {s}: {}\n", .{ config_path, err });
+            };
+        }
 
         return .{
             .allocator = allocator,

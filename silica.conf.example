@@ -1,0 +1,105 @@
+# silica.conf — Silica Database Configuration File
+#
+# This file is read when the database starts. Changes to most parameters
+# take effect immediately without a restart (hot-reload). Parameters marked
+# with "restart required" need a database restart to take effect.
+#
+# File locations (searched in order):
+#   1. ./silica.conf (current directory)
+#   2. ~/.config/silica/silica.conf (user config)
+#   3. /etc/silica/silica.conf (system config)
+#
+# Syntax:
+#   - parameter = value  (or parameter: value)
+#   - Lines starting with # or ; are comments
+#   - Whitespace is trimmed
+#   - Quoted strings preserve internal whitespace
+#   - Multiline values: use backslash \ at end of line
+#
+# Example:
+#   work_mem = 8MB
+#   search_path = public, admin
+#   application_name = "My Application"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Memory Configuration
+# ────────────────────────────────────────────────────────────────────────────
+
+# work_mem — Sets the maximum memory to be used for query workspaces.
+# This includes sort operations, hash tables, and window functions.
+# Default: 4MB
+# Min: 64KB, Max: 2GB
+# Hot-reload: YES
+work_mem = 4MB
+
+# ────────────────────────────────────────────────────────────────────────────
+# Connection Settings
+# ────────────────────────────────────────────────────────────────────────────
+
+# max_connections — Sets the maximum number of concurrent connections.
+# Default: 100
+# Min: 1, Max: 10000
+# Hot-reload: NO (restart required)
+max_connections = 100
+
+# ────────────────────────────────────────────────────────────────────────────
+# Query Execution
+# ────────────────────────────────────────────────────────────────────────────
+
+# statement_timeout — Sets the maximum allowed duration of any statement.
+# Value is in milliseconds. 0 means no timeout.
+# Default: 0
+# Min: 0, Max: 2147483647
+# Hot-reload: YES
+statement_timeout = 0
+
+# ────────────────────────────────────────────────────────────────────────────
+# Schema & Naming
+# ────────────────────────────────────────────────────────────────────────────
+
+# search_path — Sets the schema search order for names that are not
+# schema-qualified. Multiple schemas can be specified separated by commas.
+# Default: public
+# Hot-reload: YES
+search_path = public
+
+# ────────────────────────────────────────────────────────────────────────────
+# Client Connection Defaults
+# ────────────────────────────────────────────────────────────────────────────
+
+# application_name — Sets the application name to be reported in statistics
+# and logs. Useful for identifying client applications in monitoring views.
+# Default: (empty)
+# Hot-reload: YES
+application_name = ""
+
+# ────────────────────────────────────────────────────────────────────────────
+# Examples of Advanced Usage
+# ────────────────────────────────────────────────────────────────────────────
+
+# Size values support KB, MB, GB suffixes:
+#   work_mem = 8192KB  # 8MB
+#   work_mem = 8MB     # 8MB
+#   work_mem = 8388608 # 8MB in bytes
+
+# Boolean values accept: true, false, on, off, 1, 0
+#   (Currently no boolean parameters exposed, reserved for future use)
+
+# Text values can be quoted to preserve whitespace:
+#   application_name = "My Application Name"
+#   search_path = "public, admin, test"
+
+# Multiline values use backslash continuation:
+#   search_path = public, \
+#                 admin, \
+#                 test
+
+# Runtime overrides:
+#   - Use SET command to override config values at runtime:
+#     SET work_mem = '16MB';
+#   - Use SHOW command to display current value:
+#     SHOW work_mem;
+#     SHOW ALL;
+#   - Use RESET command to restore config file value:
+#     RESET work_mem;
+#     RESET ALL;
