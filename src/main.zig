@@ -25,6 +25,7 @@ pub const tokenizer = @import("sql/tokenizer.zig");
 pub const tokenizer_fuzz = @import("sql/tokenizer_fuzz.zig");
 pub const ast = @import("sql/ast.zig");
 pub const parser = @import("sql/parser.zig");
+pub const parser_fuzz = @import("sql/parser_fuzz.zig");
 pub const catalog = @import("sql/catalog.zig");
 pub const analyzer = @import("sql/analyzer.zig");
 pub const planner = @import("sql/planner.zig");
@@ -37,6 +38,7 @@ pub const cost = @import("sql/cost.zig");
 
 // Transaction modules
 pub const wal = @import("tx/wal.zig");
+pub const wal_fuzz = @import("tx/wal_fuzz.zig");
 pub const mvcc = @import("tx/mvcc.zig");
 pub const lock = @import("tx/lock.zig");
 pub const vacuum = @import("tx/vacuum.zig");
