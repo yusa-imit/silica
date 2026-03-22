@@ -81,4 +81,24 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_cli_unit_tests.step);
+
+    // Simple benchmark executable
+    const bench_mod = b.addModule("bench", .{
+        .root_source_file = b.path("bench/simple.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_mod.addImport("silica", mod);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "silica-bench",
+        .root_module = bench_mod,
+    });
+    b.installArtifact(bench_exe);
+
+    const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.step.dependOn(b.getInstallStep());
+
+    const bench_step = b.step("bench", "Run performance benchmarks");
+    bench_step.dependOn(&run_bench.step);
 }
