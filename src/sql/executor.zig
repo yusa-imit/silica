@@ -14325,167 +14325,470 @@ test "LocksScanOp next without open returns error" {
 // ── Configuration System Tests ─────────────────────────────────────
 
 test "SetOp sets work_mem parameter" {
-    // Test placeholder: SetOp should update ConfigManager
-    // Expected behavior: SetOp.init(config_manager, "work_mem", "8MB")
-    //                    SetOp.execute() updates session config
-    //                    config_manager.get("work_mem") returns "8MB"
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304", // 4MB
+        .description = "Working memory",
+    });
+
+    var op = SetOp.init("work_mem", "8388608", &config);
+    _ = try op.next();
+
+    const value = config.get("work_mem");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("8388608", value.?);
 }
 
 test "SetOp sets max_connections parameter" {
-    // Test placeholder: SetOp should update integer parameter
-    // Expected behavior: SetOp.execute() with "max_connections" = "200"
-    //                    config_manager.get("max_connections") returns "200"
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    var op = SetOp.init("max_connections", "200", &config);
+    _ = try op.next();
+
+    const value = config.get("max_connections");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("200", value.?);
 }
 
 test "SetOp sets search_path parameter" {
-    // Test placeholder: SetOp should update text parameter
-    // Expected behavior: SetOp.execute() with "search_path" = "public, private"
-    //                    config_manager.get("search_path") returns "public, private"
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "search_path",
+        .param_type = .text,
+        .default_value = "public",
+        .description = "Schema search path",
+    });
+
+    var op = SetOp.init("search_path", "public, private", &config);
+    _ = try op.next();
+
+    const value = config.get("search_path");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("public, private", value.?);
 }
 
 test "SetOp sets application_name parameter" {
-    // Test placeholder: SetOp should update application name
-    // Expected behavior: SetOp.execute() with "application_name" = "test_app"
-    //                    config_manager.get("application_name") returns "test_app"
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "application_name",
+        .param_type = .text,
+        .default_value = "",
+        .description = "Application name",
+    });
+
+    var op = SetOp.init("application_name", "test_app", &config);
+    _ = try op.next();
+
+    const value = config.get("application_name");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("test_app", value.?);
 }
 
 test "SetOp rejects unknown parameter" {
-    // Test placeholder: SetOp should return error for unknown parameter
-    // Expected behavior: SetOp.execute() with "unknown_param" = "value"
-    //                    Returns error.UnknownParameter
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    var op = SetOp.init("unknown_param", "value", &config);
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
 }
 
 test "SetOp rejects invalid integer value" {
-    // Test placeholder: SetOp should validate integer parameters
-    // Expected behavior: SetOp.execute() with "max_connections" = "not_a_number"
-    //                    Returns error.InvalidType
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    var op = SetOp.init("max_connections", "not_a_number", &config);
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
 }
 
 test "SetOp rejects integer below minimum" {
-    // Test placeholder: SetOp should enforce min/max bounds
-    // Expected behavior: SetOp.execute() with "max_connections" = "5" (min = 10)
-    //                    Returns error.OutOfRange
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    var op = SetOp.init("max_connections", "5", &config);
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
 }
 
 test "SetOp rejects integer above maximum" {
-    // Test placeholder: SetOp should enforce max bounds
-    // Expected behavior: SetOp.execute() with "max_connections" = "10000" (max = 1000)
-    //                    Returns error.OutOfRange
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    var op = SetOp.init("max_connections", "10000", &config);
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
 }
 
 test "ShowOp returns single parameter value" {
-    // Test placeholder: ShowOp should return single parameter as row
-    // Expected behavior: ShowOp.init(config_manager, "work_mem")
-    //                    ShowOp.next() returns Row with columns: [name, value]
-    //                    Row values: ["work_mem", "4MB"]
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+
+    var op = ShowOp.init(allocator, "work_mem", &config);
+    defer op.close();
+
+    var row = try op.next();
+    try std.testing.expect(row != null);
+    defer if (row) |*r| r.deinit();
+
+    try std.testing.expectEqualStrings("work_mem", row.?.values[0].text);
+    try std.testing.expectEqualStrings("4194304", row.?.values[1].text);
+
+    const row2 = try op.next();
+    try std.testing.expect(row2 == null);
 }
 
 test "ShowOp returns all parameters" {
-    // Test placeholder: ShowOp with parameter = null (SHOW ALL)
-    // Expected behavior: ShowOp.init(config_manager, null)
-    //                    ShowOp.next() returns multiple rows, one per parameter
-    //                    Each row has columns: [name, value]
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    var op = ShowOp.init(allocator, null, &config);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        try std.testing.expect(row.values.len == 2);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
 }
 
 test "ShowOp returns error for unknown parameter" {
-    // Test placeholder: ShowOp should return error for unknown parameter
-    // Expected behavior: ShowOp.init(config_manager, "unknown_param")
-    //                    ShowOp.open() or next() returns error.UnknownParameter
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    var op = ShowOp.init(allocator, "unknown_param", &config);
+    defer op.close();
+
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
 }
 
 test "ResetOp restores default value" {
-    // Test placeholder: ResetOp should reset parameter to default
-    // Expected behavior:
-    //   1. config_manager.set("work_mem", "8MB")
-    //   2. ResetOp.init(config_manager, "work_mem")
-    //   3. ResetOp.execute()
-    //   4. config_manager.get("work_mem") returns "4194304" (default)
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+
+    // Set to non-default value
+    try config.set("work_mem", "8388608");
+    try std.testing.expectEqualStrings("8388608", config.get("work_mem").?);
+
+    // Reset to default
+    var op = ResetOp.init("work_mem", &config);
+    _ = try op.next();
+
+    try std.testing.expectEqualStrings("4194304", config.get("work_mem").?);
 }
 
 test "ResetOp resets all parameters" {
-    // Test placeholder: ResetOp with parameter = null (RESET ALL)
-    // Expected behavior:
-    //   1. config_manager.set("work_mem", "8MB")
-    //   2. config_manager.set("max_connections", "200")
-    //   3. ResetOp.init(config_manager, null)
-    //   4. ResetOp.execute()
-    //   5. All parameters restored to defaults
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    // Set to non-default values
+    try config.set("work_mem", "8388608");
+    try config.set("max_connections", "200");
+
+    // Reset all
+    var op = ResetOp.init(null, &config);
+    _ = try op.next();
+
+    try std.testing.expectEqualStrings("4194304", config.get("work_mem").?);
+    try std.testing.expectEqualStrings("100", config.get("max_connections").?);
 }
 
 test "ResetOp returns error for unknown parameter" {
-    // Test placeholder: ResetOp should return error for unknown parameter
-    // Expected behavior: ResetOp.execute() with "unknown_param"
-    //                    Returns error.UnknownParameter
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    var op = ResetOp.init("unknown_param", &config);
+    const result = op.next();
+    try std.testing.expectError(error.ExecutionError, result);
 }
 
 test "SET updates session state" {
-    // Test placeholder: Full integration test
-    // Expected behavior:
-    //   1. Execute: SET work_mem = '8MB'
-    //   2. Execute: SHOW work_mem
-    //   3. SHOW returns "8MB"
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+
+    // Execute SET
+    var set_op = SetOp.init("work_mem", "8388608", &config);
+    _ = try set_op.next();
+
+    // Execute SHOW
+    var show_op = ShowOp.init(allocator, "work_mem", &config);
+    defer show_op.close();
+
+    var row = try show_op.next();
+    try std.testing.expect(row != null);
+    defer if (row) |*r| r.deinit();
+
+    try std.testing.expectEqualStrings("8388608", row.?.values[1].text);
 }
 
 test "RESET restores default after SET" {
-    // Test placeholder: Full integration test
-    // Expected behavior:
-    //   1. Execute: SET max_connections = 200
-    //   2. Execute: SHOW max_connections -> returns "200"
-    //   3. Execute: RESET max_connections
-    //   4. Execute: SHOW max_connections -> returns "100" (default)
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    // Execute SET
+    var set_op = SetOp.init("max_connections", "200", &config);
+    _ = try set_op.next();
+
+    // Verify SET worked
+    try std.testing.expectEqualStrings("200", config.get("max_connections").?);
+
+    // Execute RESET
+    var reset_op = ResetOp.init("max_connections", &config);
+    _ = try reset_op.next();
+
+    // Verify RESET worked
+    try std.testing.expectEqualStrings("100", config.get("max_connections").?);
 }
 
 test "SHOW ALL lists all configured parameters" {
-    // Test placeholder: Full integration test
-    // Expected behavior:
-    //   1. Execute: SHOW ALL
-    //   2. Returns rows for: work_mem, max_connections, statement_timeout, search_path, application_name
-    //   3. Each row has [name, value] columns
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+    try config.registerParameter(.{
+        .name = "search_path",
+        .param_type = .text,
+        .default_value = "public",
+        .description = "Schema search path",
+    });
+
+    var op = ShowOp.init(allocator, null, &config);
+    defer op.close();
+
+    var count: usize = 0;
+    while (try op.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        try std.testing.expect(row.values.len == 2);
+        // Verify columns have text values
+        try std.testing.expect(row.values[0] == .text);
+        try std.testing.expect(row.values[1] == .text);
+    }
+
+    // Verify we got all 3 parameters
+    try std.testing.expectEqual(@as(usize, 3), count);
 }
 
 test "SET enforces statement_timeout parameter" {
-    // Test placeholder: statement_timeout should affect query execution
-    // Expected behavior:
-    //   1. Execute: SET statement_timeout = 100  (100 ms)
-    //   2. Execute: SELECT with pg_sleep(1000)  (1 second sleep)
-    //   3. Query should timeout and return error
-    try std.testing.expect(true); // Will fail when implemented
+    // TODO: Requires pg_sleep() function and timeout enforcement in executor
+    // This is a complex integration test that requires:
+    //   - Function registry with pg_sleep()
+    //   - Executor timeout mechanism
+    //   - Integration with ConfigManager.get("statement_timeout")
+    // Skipping for now - will implement when pg_sleep() is added
+    return error.SkipZigTest;
 }
 
 test "multiple SETs in same session persist" {
-    // Test placeholder: Session state should persist across multiple statements
-    // Expected behavior:
-    //   1. Execute: SET work_mem = '8MB'
-    //   2. Execute: SET max_connections = 200
-    //   3. Execute: SHOW work_mem -> returns "8MB"
-    //   4. Execute: SHOW max_connections -> returns "200"
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+
+    // Execute multiple SETs
+    var set_op1 = SetOp.init("work_mem", "8388608", &config);
+    _ = try set_op1.next();
+
+    var set_op2 = SetOp.init("max_connections", "200", &config);
+    _ = try set_op2.next();
+
+    // Verify both persisted
+    try std.testing.expectEqualStrings("8388608", config.get("work_mem").?);
+    try std.testing.expectEqualStrings("200", config.get("max_connections").?);
 }
 
 test "RESET ALL clears all custom settings" {
-    // Test placeholder: RESET ALL should restore all defaults
-    // Expected behavior:
-    //   1. Execute: SET work_mem = '8MB'
-    //   2. Execute: SET max_connections = 200
-    //   3. Execute: SET search_path = 'test, public'
-    //   4. Execute: RESET ALL
-    //   5. Execute: SHOW ALL -> all values are defaults
-    try std.testing.expect(true); // Will fail when implemented
+    const allocator = std.testing.allocator;
+    var config = ConfigManager.init(allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .size,
+        .default_value = "4194304",
+        .description = "Working memory",
+    });
+    try config.registerParameter(.{
+        .name = "max_connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .min_value = 10,
+        .max_value = 1000,
+        .description = "Maximum connections",
+    });
+    try config.registerParameter(.{
+        .name = "search_path",
+        .param_type = .text,
+        .default_value = "public",
+        .description = "Schema search path",
+    });
+
+    // Set multiple parameters
+    try config.set("work_mem", "8388608");
+    try config.set("max_connections", "200");
+    try config.set("search_path", "test, public");
+
+    // Execute RESET ALL
+    var reset_op = ResetOp.init(null, &config);
+    _ = try reset_op.next();
+
+    // Verify all defaults restored
+    try std.testing.expectEqualStrings("4194304", config.get("work_mem").?);
+    try std.testing.expectEqualStrings("100", config.get("max_connections").?);
+    try std.testing.expectEqualStrings("public", config.get("search_path").?);
 }
