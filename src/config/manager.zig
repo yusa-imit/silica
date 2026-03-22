@@ -562,3 +562,613 @@ test "parseSize rejects invalid unit" {
     try std.testing.expectError(error.InvalidSizeFormat, parseSize("4TB"));
     try std.testing.expectError(error.InvalidSizeFormat, parseSize("4XB"));
 }
+
+// ── Additional comprehensive tests ─────────────────────────────────────
+
+test "registerParameter with integer bounds" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_workers",
+        .param_type = .integer,
+        .default_value = "10",
+        .min_value = 1,
+        .max_value = 100,
+        .description = "Maximum worker threads",
+    });
+
+    // Default should be within bounds
+    const value = config.get("max_workers").?;
+    try std.testing.expectEqualStrings("10", value);
+}
+
+test "set integer at boundary values" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "port",
+        .param_type = .integer,
+        .default_value = "5432",
+        .min_value = 1024,
+        .max_value = 65535,
+        .description = "Port number",
+    });
+
+    // Set to minimum boundary
+    try config.set("port", "1024");
+    try std.testing.expectEqualStrings("1024", config.get("port").?);
+
+    // Set to maximum boundary
+    try config.set("port", "65535");
+    try std.testing.expectEqualStrings("65535", config.get("port").?);
+}
+
+test "set integer just below min boundary fails" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "port",
+        .param_type = .integer,
+        .default_value = "5432",
+        .min_value = 1024,
+        .max_value = 65535,
+        .description = "Port number",
+    });
+
+    try std.testing.expectError(error.OutOfRange, config.set("port", "1023"));
+}
+
+test "set integer just above max boundary fails" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "port",
+        .param_type = .integer,
+        .default_value = "5432",
+        .min_value = 1024,
+        .max_value = 65535,
+        .description = "Port number",
+    });
+
+    try std.testing.expectError(error.OutOfRange, config.set("port", "65536"));
+}
+
+test "set negative integer value" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "temp_buffers",
+        .param_type = .integer,
+        .default_value = "1024",
+        .description = "Temporary buffer size",
+    });
+
+    // Should accept negative if no min bound
+    try config.set("temp_buffers", "-100");
+    try std.testing.expectEqualStrings("-100", config.get("temp_buffers").?);
+}
+
+test "set negative integer below min boundary fails" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "offset",
+        .param_type = .integer,
+        .default_value = "0",
+        .min_value = -10,
+        .max_value = 10,
+        .description = "Offset value",
+    });
+
+    try std.testing.expectError(error.OutOfRange, config.set("offset", "-11"));
+}
+
+test "set integer with leading zeros" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "connections",
+        .param_type = .integer,
+        .default_value = "100",
+        .description = "Connection count",
+    });
+
+    try config.set("connections", "0050");
+    try std.testing.expectEqualStrings("0050", config.get("connections").?);
+}
+
+test "set boolean uppercase values" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "feature_flag",
+        .param_type = .boolean,
+        .default_value = "false",
+        .description = "Feature toggle",
+    });
+
+    try config.set("feature_flag", "TRUE");
+    try std.testing.expectEqualStrings("TRUE", config.get("feature_flag").?);
+
+    try config.set("feature_flag", "FALSE");
+    try std.testing.expectEqualStrings("FALSE", config.get("feature_flag").?);
+
+    try config.set("feature_flag", "ON");
+    try std.testing.expectEqualStrings("ON", config.get("feature_flag").?);
+
+    try config.set("feature_flag", "OFF");
+    try std.testing.expectEqualStrings("OFF", config.get("feature_flag").?);
+}
+
+test "set boolean rejects arbitrary mixed case" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "feature_flag",
+        .param_type = .boolean,
+        .default_value = "false",
+        .description = "Feature toggle",
+    });
+
+    // These should fail - only lowercase, uppercase, and exact "1"/"0" are allowed
+    try std.testing.expectError(error.InvalidType, config.set("feature_flag", "oN"));
+    try std.testing.expectError(error.InvalidType, config.set("feature_flag", "oFf"));
+    try std.testing.expectError(error.InvalidType, config.set("feature_flag", "TrUe"));
+}
+
+test "set boolean rejects numeric 2" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "feature_flag",
+        .param_type = .boolean,
+        .default_value = "false",
+        .description = "Feature toggle",
+    });
+
+    try std.testing.expectError(error.InvalidType, config.set("feature_flag", "2"));
+}
+
+test "set size with lowercase units" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "256MB",
+        .description = "Cache size",
+    });
+
+    try config.set("cache_size", "512mb");
+    try std.testing.expectEqualStrings("512mb", config.get("cache_size").?);
+
+    try config.set("cache_size", "1gb");
+    try std.testing.expectEqualStrings("1gb", config.get("cache_size").?);
+}
+
+test "set size with mixed case units fails" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "256MB",
+        .description = "Cache size",
+    });
+
+    try std.testing.expectError(error.InvalidSizeFormat, config.set("cache_size", "256Mb"));
+    try std.testing.expectError(error.InvalidSizeFormat, config.set("cache_size", "256mB"));
+}
+
+test "set size with zero value" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "256MB",
+        .description = "Cache size",
+    });
+
+    try config.set("cache_size", "0");
+    try std.testing.expectEqualStrings("0", config.get("cache_size").?);
+}
+
+test "set size with zero and unit" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "256MB",
+        .description = "Cache size",
+    });
+
+    try config.set("cache_size", "0MB");
+    try std.testing.expectEqualStrings("0MB", config.get("cache_size").?);
+}
+
+test "set size with large value" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "1MB",
+        .description = "Cache size",
+    });
+
+    try config.set("cache_size", "100GB");
+    try std.testing.expectEqualStrings("100GB", config.get("cache_size").?);
+}
+
+test "set size rejects unit-only string" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "1MB",
+        .description = "Cache size",
+    });
+
+    try std.testing.expectError(error.InvalidSizeFormat, config.set("cache_size", "MB"));
+}
+
+test "set size rejects space in value" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "cache_size",
+        .param_type = .size,
+        .default_value = "1MB",
+        .description = "Cache size",
+    });
+
+    try std.testing.expectError(error.InvalidSizeFormat, config.set("cache_size", "512 MB"));
+}
+
+test "text parameter accepts empty string" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "schema_search_path",
+        .param_type = .text,
+        .default_value = "public",
+        .description = "Schema search path",
+    });
+
+    try config.set("schema_search_path", "");
+    try std.testing.expectEqualStrings("", config.get("schema_search_path").?);
+}
+
+test "text parameter accepts special characters" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "connection_string",
+        .param_type = .text,
+        .default_value = "localhost",
+        .description = "Connection string",
+    });
+
+    try config.set("connection_string", "host=db.example.com:5432;user=admin;pass=p@ss!word");
+    try std.testing.expectEqualStrings("host=db.example.com:5432;user=admin;pass=p@ss!word", config.get("connection_string").?);
+}
+
+test "text parameter accepts numeric strings" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "version_string",
+        .param_type = .text,
+        .default_value = "1.0",
+        .description = "Version string",
+    });
+
+    try config.set("version_string", "1.2.3-alpha");
+    try std.testing.expectEqualStrings("1.2.3-alpha", config.get("version_string").?);
+}
+
+test "multiple parameters independent values" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "work_mem",
+        .param_type = .integer,
+        .default_value = "4194304",
+        .description = "Work memory",
+    });
+
+    try config.registerParameter(.{
+        .name = "enable_debug",
+        .param_type = .boolean,
+        .default_value = "false",
+        .description = "Debug mode",
+    });
+
+    try config.registerParameter(.{
+        .name = "log_level",
+        .param_type = .text,
+        .default_value = "info",
+        .description = "Log level",
+    });
+
+    try config.set("work_mem", "8388608");
+    try config.set("enable_debug", "true");
+    try config.set("log_level", "debug");
+
+    try std.testing.expectEqualStrings("8388608", config.get("work_mem").?);
+    try std.testing.expectEqualStrings("true", config.get("enable_debug").?);
+    try std.testing.expectEqualStrings("debug", config.get("log_level").?);
+}
+
+test "reset one parameter leaves others unchanged" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "param_a",
+        .param_type = .integer,
+        .default_value = "10",
+        .description = "Parameter A",
+    });
+
+    try config.registerParameter(.{
+        .name = "param_b",
+        .param_type = .integer,
+        .default_value = "20",
+        .description = "Parameter B",
+    });
+
+    try config.set("param_a", "100");
+    try config.set("param_b", "200");
+
+    try config.reset("param_a");
+
+    try std.testing.expectEqualStrings("10", config.get("param_a").?);
+    try std.testing.expectEqualStrings("200", config.get("param_b").?);
+}
+
+test "resetAll with mixed parameter types" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "int_param",
+        .param_type = .integer,
+        .default_value = "42",
+        .description = "Integer parameter",
+    });
+
+    try config.registerParameter(.{
+        .name = "bool_param",
+        .param_type = .boolean,
+        .default_value = "true",
+        .description = "Boolean parameter",
+    });
+
+    try config.registerParameter(.{
+        .name = "text_param",
+        .param_type = .text,
+        .default_value = "default_value",
+        .description = "Text parameter",
+    });
+
+    try config.registerParameter(.{
+        .name = "size_param",
+        .param_type = .size,
+        .default_value = "256MB",
+        .description = "Size parameter",
+    });
+
+    try config.set("int_param", "999");
+    try config.set("bool_param", "false");
+    try config.set("text_param", "custom_value");
+    try config.set("size_param", "512MB");
+
+    try config.resetAll();
+
+    try std.testing.expectEqualStrings("42", config.get("int_param").?);
+    try std.testing.expectEqualStrings("true", config.get("bool_param").?);
+    try std.testing.expectEqualStrings("default_value", config.get("text_param").?);
+    try std.testing.expectEqualStrings("256MB", config.get("size_param").?);
+}
+
+test "getAll returns entries for each parameter" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "alpha",
+        .param_type = .integer,
+        .default_value = "1",
+        .description = "Alpha",
+    });
+
+    try config.registerParameter(.{
+        .name = "beta",
+        .param_type = .text,
+        .default_value = "test",
+        .description = "Beta",
+    });
+
+    try config.registerParameter(.{
+        .name = "gamma",
+        .param_type = .boolean,
+        .default_value = "false",
+        .description = "Gamma",
+    });
+
+    const all_params = try config.getAll(std.testing.allocator);
+    defer std.testing.allocator.free(all_params);
+
+    try std.testing.expectEqual(@as(usize, 3), all_params.len);
+
+    // Verify all entries are present
+    var found_alpha = false;
+    var found_beta = false;
+    var found_gamma = false;
+
+    for (all_params) |entry| {
+        if (std.mem.eql(u8, entry.name, "alpha")) {
+            found_alpha = true;
+            try std.testing.expectEqualStrings("1", entry.value);
+        } else if (std.mem.eql(u8, entry.name, "beta")) {
+            found_beta = true;
+            try std.testing.expectEqualStrings("test", entry.value);
+        } else if (std.mem.eql(u8, entry.name, "gamma")) {
+            found_gamma = true;
+            try std.testing.expectEqualStrings("false", entry.value);
+        }
+    }
+
+    try std.testing.expect(found_alpha);
+    try std.testing.expect(found_beta);
+    try std.testing.expect(found_gamma);
+}
+
+test "getAll reflects current values after set" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "param1",
+        .param_type = .integer,
+        .default_value = "100",
+        .description = "Param 1",
+    });
+
+    try config.set("param1", "999");
+
+    const all_params = try config.getAll(std.testing.allocator);
+    defer std.testing.allocator.free(all_params);
+
+    try std.testing.expectEqual(@as(usize, 1), all_params.len);
+    try std.testing.expectEqualStrings("param1", all_params[0].name);
+    try std.testing.expectEqualStrings("999", all_params[0].value);
+}
+
+test "get returns null for parameter not registered" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "exists",
+        .param_type = .integer,
+        .default_value = "1",
+        .description = "Exists",
+    });
+
+    try std.testing.expect(config.get("does_not_exist") == null);
+    try std.testing.expect(config.get("exists") != null);
+}
+
+test "overwrite parameter value multiple times" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "counter",
+        .param_type = .integer,
+        .default_value = "0",
+        .description = "Counter",
+    });
+
+    try config.set("counter", "1");
+    try std.testing.expectEqualStrings("1", config.get("counter").?);
+
+    try config.set("counter", "2");
+    try std.testing.expectEqualStrings("2", config.get("counter").?);
+
+    try config.set("counter", "3");
+    try std.testing.expectEqualStrings("3", config.get("counter").?);
+
+    try config.reset("counter");
+    try std.testing.expectEqualStrings("0", config.get("counter").?);
+}
+
+test "integer parameter without min/max bounds accepts any valid integer" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "unbounded",
+        .param_type = .integer,
+        .default_value = "0",
+        .description = "Unbounded",
+    });
+
+    try config.set("unbounded", "999999999");
+    try std.testing.expectEqualStrings("999999999", config.get("unbounded").?);
+
+    try config.set("unbounded", "-999999999");
+    try std.testing.expectEqualStrings("-999999999", config.get("unbounded").?);
+}
+
+test "integer parameter with only min bound" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "min_only",
+        .param_type = .integer,
+        .default_value = "10",
+        .min_value = 5,
+        .description = "Min only",
+    });
+
+    try config.set("min_only", "1000000");
+    try std.testing.expectEqualStrings("1000000", config.get("min_only").?);
+
+    try std.testing.expectError(error.OutOfRange, config.set("min_only", "4"));
+}
+
+test "integer parameter with only max bound" {
+    var config = ConfigManager.init(std.testing.allocator);
+    defer config.deinit();
+
+    try config.registerParameter(.{
+        .name = "max_only",
+        .param_type = .integer,
+        .default_value = "100",
+        .max_value = 200,
+        .description = "Max only",
+    });
+
+    try config.set("max_only", "-1000000");
+    try std.testing.expectEqualStrings("-1000000", config.get("max_only").?);
+
+    try std.testing.expectError(error.OutOfRange, config.set("max_only", "201"));
+}
+
+test "parseSize corner case: single digit plus unit" {
+    const result = try parseSize("1KB");
+    try std.testing.expectEqual(@as(i64, 1024), result);
+}
+
+test "parseSize large multiplier" {
+    const result = try parseSize("1000GB");
+    try std.testing.expectEqual(@as(i64, 1000 * 1024 * 1024 * 1024), result);
+}
