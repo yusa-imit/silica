@@ -5744,3 +5744,387 @@ test "parse RESET without parameter fails" {
     const result = parser.parseStatement();
     try std.testing.expectError(error.ParseFailed, result);
 }
+
+// ── Extended SET/SHOW/RESET Parser Tests ──────────────────────────────
+
+test "parse SET with size value (4MB)" {
+    var r = try testParseWithArena("SET work_mem = '4MB'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("work_mem", s.parameter);
+            try std.testing.expectEqualStrings("4MB", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with size value (1GB)" {
+    var r = try testParseWithArena("SET shared_buffers = '1GB'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("shared_buffers", s.parameter);
+            try std.testing.expectEqualStrings("1GB", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET max_connections to integer" {
+    var r = try testParseWithArena("SET max_connections = 200");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("max_connections", s.parameter);
+            try std.testing.expectEqualStrings("200", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET application_name to string" {
+    var r = try testParseWithArena("SET application_name = 'test'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("application_name", s.parameter);
+            try std.testing.expectEqualStrings("test", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET search_path to identifier" {
+    var r = try testParseWithArena("SET search_path = public");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("search_path", s.parameter);
+            try std.testing.expectEqualStrings("public", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET search_path with quoted value" {
+    var r = try testParseWithArena("SET search_path = 'public, private'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("search_path", s.parameter);
+            try std.testing.expectEqualStrings("public, private", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with unquoted comma-separated value" {
+    var r = try testParseWithArena("SET search_path TO public");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("search_path", s.parameter);
+            try std.testing.expectEqualStrings("public", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET parameter with zero integer value" {
+    var r = try testParseWithArena("SET statement_timeout = 0");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("statement_timeout", s.parameter);
+            try std.testing.expectEqualStrings("0", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET parameter with large integer value" {
+    var r = try testParseWithArena("SET effective_cache_size = 2147483647");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("effective_cache_size", s.parameter);
+            try std.testing.expectEqualStrings("2147483647", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with empty string value" {
+    var r = try testParseWithArena("SET datestyle = ''");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("datestyle", s.parameter);
+            try std.testing.expectEqualStrings("", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW work_mem" {
+    var r = try testParseWithArena("SHOW work_mem");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("work_mem", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW max_connections" {
+    var r = try testParseWithArena("SHOW max_connections");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("max_connections", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW search_path" {
+    var r = try testParseWithArena("SHOW search_path");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("search_path", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW application_name" {
+    var r = try testParseWithArena("SHOW application_name");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("application_name", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SHOW ALL returns null parameter" {
+    var r = try testParseWithArena("SHOW ALL");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter == null);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET work_mem" {
+    var r = try testParseWithArena("RESET work_mem");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("work_mem", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET max_connections" {
+    var r = try testParseWithArena("RESET max_connections");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("max_connections", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET search_path" {
+    var r = try testParseWithArena("RESET search_path");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("search_path", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET application_name" {
+    var r = try testParseWithArena("RESET application_name");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("application_name", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse RESET ALL returns null parameter" {
+    var r = try testParseWithArena("RESET ALL");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter == null);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET statement with TO keyword" {
+    var r = try testParseWithArena("SET max_connections TO 500");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("max_connections", s.parameter);
+            try std.testing.expectEqualStrings("500", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET statement with TO and string value" {
+    var r = try testParseWithArena("SET application_name TO 'myapp'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("application_name", s.parameter);
+            try std.testing.expectEqualStrings("myapp", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with numeric string parameter (numeric identifier)" {
+    var r = try testParseWithArena("SET lc_time = 'C'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("lc_time", s.parameter);
+            try std.testing.expectEqualStrings("C", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "SET parameter name is correctly stored" {
+    var r = try testParseWithArena("SET enable_seqscan = off");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("enable_seqscan", s.parameter);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "SHOW parameter name is correctly stored" {
+    var r = try testParseWithArena("SHOW idle_in_transaction_session_timeout");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .show => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("idle_in_transaction_session_timeout", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "RESET parameter name is correctly stored" {
+    var r = try testParseWithArena("RESET idle_in_transaction_session_timeout");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .reset => |s| {
+            try std.testing.expect(s.parameter != null);
+            try std.testing.expectEqualStrings("idle_in_transaction_session_timeout", s.parameter.?);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with single-quoted numeric string" {
+    var r = try testParseWithArena("SET random_page_cost = '4.0'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("random_page_cost", s.parameter);
+            try std.testing.expectEqualStrings("4.0", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "parse SET with identifier value containing underscore" {
+    var r = try testParseWithArena("SET log_statement = 'all'");
+    defer r.deinit();
+
+    switch (r.stmt) {
+        .set => |s| {
+            try std.testing.expectEqualStrings("log_statement", s.parameter);
+            try std.testing.expectEqualStrings("all", s.value);
+        },
+        else => return error.TestUnexpectedStmtType,
+    }
+}
+
+test "SHOW returns correct statement type" {
+    var r = try testParseWithArena("SHOW timezone");
+    defer r.deinit();
+
+    try std.testing.expect(r.stmt == .show);
+}
+
+test "SET returns correct statement type" {
+    var r = try testParseWithArena("SET timezone = 'UTC'");
+    defer r.deinit();
+
+    try std.testing.expect(r.stmt == .set);
+}
+
+test "RESET returns correct statement type" {
+    var r = try testParseWithArena("RESET timezone");
+    defer r.deinit();
+
+    try std.testing.expect(r.stmt == .reset);
+}
