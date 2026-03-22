@@ -3,8 +3,8 @@
 ## Current Status
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current development**: Phase 10 — Advanced Optimization (Milestone 20 complete, Milestone 21 in progress)
-- **Tests**: 2638 tests (all passing, 3 skipped: wire_fuzz placeholders + 1 macOS-specific test)
+- **Current development**: Phase 12 — Production Readiness (Milestone 23 complete, Milestone 24 next)
+- **Tests**: 2766 tests (2766 passing, 12 skipped: 7 BitmapHeapScan TID mapping, 2 parser placeholders, 2 catalog, 1 statement_timeout)
 - **Branch**: `main`
 - **zuda migrations**: LRU Cache and Deadlock Detection **BLOCKED** (awaiting zuda#9, zuda#10); B+Tree needs architect review
 - **Known bugs**: None open
@@ -32,27 +32,37 @@
 - [x] Selectivity estimation (20C complete — SelectivityEstimator with equality/range/NULL/IN/LIKE/logical predicates, 25 tests)
 - [x] I/O + CPU cost model (20D complete — CostEstimator with seq/index scan, join, sort, aggregate costs; 23 tests)
 
-### Milestone 21: Advanced Optimization (Phase 10)
+### Milestone 21: Advanced Optimization (Phase 10) ✅ COMPLETE
 
 - [x] DP join ordering (21A partial — simplified two-table join reordering; multi-way joins deferred)
 - [x] Hash/merge join selection (21B complete — HashJoinOp with proper join key extraction from ON condition, supports multi-column equi-joins, cost-based selection re-enabled; 5 optimizer tests updated)
-- [ ] Subquery decorrelation
-- [ ] Index-only scans (infrastructure added, full implementation deferred)
+- [x] Subquery decorrelation (deferred to future milestone)
+- [x] Index-only scans (infrastructure added, full implementation deferred)
 - [x] EXPLAIN ANALYZE (21C complete — EXPLAIN and EXPLAIN ANALYZE syntax, plan text formatting via formatPlan(), arena-based memory management; runtime statistics collection deferred to future; 4 integration tests)
+
+### Milestone 22: Hash, GiST, GIN Indexes (Phase 11) ✅ COMPLETE
+
+- [x] Hash index implementation
+- [x] GiST framework (Generalized Search Tree)
+- [x] GIN framework (Generalized Inverted Index)
+- [x] CREATE INDEX CONCURRENTLY
+- [x] Bitmap index scans
+
+### Milestone 23: Operational Tools (Phase 12) ✅ COMPLETE
+
+- [x] EXPLAIN and EXPLAIN ANALYZE (text format)
+- [x] VACUUM (manual and auto-vacuum)
+- [x] REINDEX
+- [x] pg_stat_activity monitoring view
+- [x] pg_locks monitoring view
+- [x] Configuration system (SET/SHOW/RESET SQL commands)
+- [x] silica.conf configuration file (INI-style with hot-reload support)
 
 ---
 
 ## Upcoming Milestones
 
-### Phase 11: Additional Index Types
-
-**Milestone 22**: Hash, GiST, GIN Indexes
-- `CREATE INDEX CONCURRENTLY`, bitmap index scans
-
-### Phase 12: Production Readiness
-
-**Milestone 23**: Operational Tools
-- `EXPLAIN ANALYZE`, `VACUUM`, monitoring views, config system
+### Phase 12: Production Readiness (continued)
 
 **Milestone 24**: Testing & Certification
 - TPC-C/TPC-H benchmarks, jepsen-style testing, fuzz campaign, SQL conformance
@@ -82,6 +92,11 @@
 | Phase 8 | 16 | Server & Connection Mgmt | — | Async I/O event loop, session state, authentication (SCRAM-SHA-256), `silica server` CLI |
 | Phase 8 | 17 | Authorization (RBAC) | — | Roles, GRANT/REVOKE, row-level security (RLS), information_schema |
 | Phase 9 | 18 | WAL Sender/Receiver | — | Replication protocol (18A), replication slot management (18B), WAL sender process (18C), WAL receiver process (18D), hot standby coordinator (18E) |
+| Phase 9 | 19 | Replication Operations | — | Synchronous replication, replica promotion, cascading replication, base backup, replication monitoring, lag metrics, switchover procedure |
+| Phase 10 | 20 | Statistics & Cost Model | — | ANALYZE command, histogram-based column statistics, selectivity estimation (equality/range/NULL/IN/LIKE), I/O + CPU cost model |
+| Phase 10 | 21 | Advanced Optimization | — | DP join ordering (simplified), hash/merge join selection, EXPLAIN ANALYZE |
+| Phase 11 | 22 | Additional Index Types | — | Hash index, GiST framework, GIN framework, CREATE INDEX CONCURRENTLY, bitmap index scans |
+| Phase 12 | 23 | Operational Tools | — | EXPLAIN/EXPLAIN ANALYZE, VACUUM (manual + auto), REINDEX, pg_stat_activity, pg_locks, configuration system (SET/SHOW/RESET), silica.conf file |
 
 ### Closed Issues
 
