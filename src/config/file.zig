@@ -339,8 +339,10 @@ pub fn loadConfigFile(allocator: Allocator, path: []const u8) !ConfigLoader {
 pub fn findConfigFile(allocator: Allocator) !?[]const u8 {
     // Search order:
     // 1. ./silica.conf (current directory)
-    // 2. ~/.config/silica/silica.conf (user config)
-    // 3. /etc/silica/silica.conf (system config)
+    // 2. User config directory (platform-dependent)
+    //    - POSIX: ~/.config/silica/silica.conf
+    //    - Windows: %USERPROFILE%\AppData\Roaming\silica\silica.conf
+    // 3. System config (POSIX only: /etc/silica/silica.conf)
 
     const locations = [_][]const u8{
         "silica.conf",
@@ -353,23 +355,32 @@ pub fn findConfigFile(allocator: Allocator) !?[]const u8 {
         return try allocator.dupe(u8, locations[0]);
     } else |_| {}
 
-    // Try user config directory
-    if (std.posix.getenv("HOME")) |home| {
-        const user_config = try std.fmt.allocPrint(allocator, "{s}/.config/silica/silica.conf", .{home});
+    // Try user config directory (cross-platform)
+    const builtin = @import("builtin");
+    const home_env_var = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
+    if (std.process.getEnvVarOwned(allocator, home_env_var)) |home| {
+        defer allocator.free(home);
+
+        const user_config = if (builtin.os.tag == .windows)
+            try std.fmt.allocPrint(allocator, "{s}\\AppData\\Roaming\\silica\\silica.conf", .{home})
+        else
+            try std.fmt.allocPrint(allocator, "{s}/.config/silica/silica.conf", .{home});
         defer allocator.free(user_config);
 
         if (std.fs.cwd().openFile(user_config, .{})) |file| {
             file.close();
             return try allocator.dupe(u8, user_config);
         } else |_| {}
-    }
-
-    // Try system config
-    const system_config = "/etc/silica/silica.conf";
-    if (std.fs.cwd().openFile(system_config, .{})) |file| {
-        file.close();
-        return try allocator.dupe(u8, system_config);
     } else |_| {}
+
+    // Try system config (POSIX only)
+    if (builtin.os.tag != .windows) {
+        const system_config = "/etc/silica/silica.conf";
+        if (std.fs.cwd().openFile(system_config, .{})) |file| {
+            file.close();
+            return try allocator.dupe(u8, system_config);
+        } else |_| {}
+    }
 
     // Not found in any standard location
     return null;
