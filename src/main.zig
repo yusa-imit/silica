@@ -35,6 +35,7 @@ pub const engine = @import("sql/engine.zig");
 pub const stats = @import("sql/stats.zig");
 pub const selectivity = @import("sql/selectivity.zig");
 pub const cost = @import("sql/cost.zig");
+pub const conformance_test = @import("sql/conformance_test.zig");
 
 // Transaction modules
 pub const wal = @import("tx/wal.zig");
