@@ -38,6 +38,30 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-24 04:30 UTC)
+- **Mode**: FEATURE (session #3, counter % 5 == 3)
+- **Focus**: Milestone 24 — Crash recovery test implementation
+- **Work Done**:
+  1. **CI Status Check**: Previous CI was RED (crash_test.zig compilation errors)
+     - Issue already fixed in commit 7af1378 (QueryResult handling)
+     - New CI run in progress on fixed code (bb7af8d)
+  2. **System Cleanup**: Killed multiple stuck `zig build test` processes (from previous sessions)
+     - Found 5+ hung processes blocking system resources
+  3. **Crash Recovery Test Implementation** (Test #3):
+     - Implemented full crash test: "after WAL write, before main DB update"
+     - Pattern: Create table → Insert data → Close WITHOUT checkpoint → Reopen → Verify recovery
+     - Uses temp file (not :memory:) for cross-reopen persistence
+     - Added materializeRows() helper for row iteration
+     - Verifies 2 rows recovered with correct values (id=1,val=100; id=2,val=200)
+  4. **Code Fixes**:
+     - Fixed RowIterator API: .next() returns Row by value, not pointer
+     - Fixed Row cleanup: .deinit() not .close()
+     - Added proper temp file cleanup (db file + WAL file)
+- **Commits**:
+  - 87f2d33: feat: implement crash recovery test (WAL replay after crash)
+- **Build Status**: Local tests hang (macOS hanging issue persists), CI verification pending
+- **Next Priority**: Implement remaining crash tests (6 more scenarios), or prepared statements (#11)
+
 ### FEATURE Session (2026-03-24 02:30 UTC)
 - **Mode**: FEATURE (session #2, counter % 5 == 2)
 - **Focus**: Dependency migration + Milestone 24 crash injection test skeleton
