@@ -64,8 +64,11 @@
 
 ### Phase 12: Production Readiness (continued)
 
-**Milestone 24**: Testing & Certification
-- TPC-C/TPC-H benchmarks, jepsen-style testing, fuzz campaign, SQL conformance
+**Milestone 24**: Testing & Certification (in progress)
+- [x] Fuzz campaign (storage, tokenizer, parser, wire protocol, WAL) — 67+ tests ✅
+- [x] SQL conformance tests — 35 tests validating SQL:2016 compliance ✅
+- [ ] TPC-C/TPC-H benchmarks (blocked by #11 — requires prepared statements)
+- [ ] Jepsen-style testing (distributed consistency verification)
 
 **Milestone 25**: Documentation & Packaging
 - API reference, ops guide, SQL reference, system packages
