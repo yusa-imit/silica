@@ -23,6 +23,8 @@
 const std = @import("std");
 const engine_mod = @import("engine.zig");
 const Database = engine_mod.Database;
+const executor_mod = @import("executor.zig");
+const Row = executor_mod.Row;
 
 // ══════════════════════════════════════════════════════════════════════════
 // Helper Functions
@@ -30,6 +32,24 @@ const Database = engine_mod.Database;
 
 fn createTestDb(allocator: std.mem.Allocator, path: []const u8) !Database {
     return Database.open(allocator, path, .{ .page_size = 4096 });
+}
+
+/// Materialize all rows from an iterator into an ArrayList.
+/// Caller owns the returned rows and must call deinit() on each row, then deinit the list.
+fn materializeRows(allocator: std.mem.Allocator, iter: *executor_mod.RowIterator) !std.ArrayList(Row) {
+    var rows: std.ArrayList(Row) = .{};
+    errdefer {
+        for (rows.items) |*row| {
+            row.deinit();
+        }
+        rows.deinit(allocator);
+    }
+
+    while (try iter.next()) |row| {
+        try rows.append(allocator, row);
+    }
+
+    return rows;
 }
 
 fn execSql(db: *Database, sql: []const u8) !void {
@@ -40,7 +60,18 @@ fn execSql(db: *Database, sql: []const u8) !void {
 fn expectRowCount(db: *Database, sql: []const u8, expected: usize) !void {
     var result = try db.exec(sql);
     defer result.close(db.allocator);
-    try std.testing.expectEqual(expected, result.rows.len);
+
+    // Count rows by iterating
+    if (result.rows) |*iter| {
+        var count: usize = 0;
+        while (try iter.next()) |_| {
+            count += 1;
+        }
+        try std.testing.expectEqual(expected, count);
+    } else {
+        // No rows returned (DDL/DML statement)
+        try std.testing.expectEqual(@as(usize, 0), expected);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -185,10 +216,22 @@ test "conformance: F850-01 ORDER BY ASC" {
     var result = try db.exec("SELECT id FROM t1 ORDER BY id ASC");
     defer result.close(db.allocator);
 
-    try std.testing.expectEqual(@as(usize, 3), result.rows.len);
-    try std.testing.expectEqual(@as(i64, 1), result.rows[0].values[0].int);
-    try std.testing.expectEqual(@as(i64, 2), result.rows[1].values[0].int);
-    try std.testing.expectEqual(@as(i64, 3), result.rows[2].values[0].int);
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+
+        try std.testing.expectEqual(@as(usize, 3), rows.items.len);
+        try std.testing.expectEqual(@as(i64, 1), rows.items[0].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 2), rows.items[1].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 3), rows.items[2].values[0].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 test "conformance: F850-02 ORDER BY DESC" {
@@ -202,10 +245,22 @@ test "conformance: F850-02 ORDER BY DESC" {
     var result = try db.exec("SELECT id FROM t1 ORDER BY id DESC");
     defer result.close(db.allocator);
 
-    try std.testing.expectEqual(@as(usize, 3), result.rows.len);
-    try std.testing.expectEqual(@as(i64, 3), result.rows[0].values[0].int);
-    try std.testing.expectEqual(@as(i64, 2), result.rows[1].values[0].int);
-    try std.testing.expectEqual(@as(i64, 1), result.rows[2].values[0].int);
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+
+        try std.testing.expectEqual(@as(usize, 3), rows.items.len);
+        try std.testing.expectEqual(@as(i64, 3), rows.items[0].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 2), rows.items[1].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 1), rows.items[2].values[0].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 test "conformance: F850-03 ORDER BY multiple columns" {
@@ -219,15 +274,27 @@ test "conformance: F850-03 ORDER BY multiple columns" {
     var result = try db.exec("SELECT a, b FROM t1 ORDER BY a ASC, b DESC");
     defer result.close(db.allocator);
 
-    try std.testing.expectEqual(@as(usize, 3), result.rows.len);
-    // First group (a=1): b DESC → (1,20), (1,10)
-    try std.testing.expectEqual(@as(i64, 1), result.rows[0].values[0].int);
-    try std.testing.expectEqual(@as(i64, 20), result.rows[0].values[1].int);
-    try std.testing.expectEqual(@as(i64, 1), result.rows[1].values[0].int);
-    try std.testing.expectEqual(@as(i64, 10), result.rows[1].values[1].int);
-    // Second group (a=2): (2,10)
-    try std.testing.expectEqual(@as(i64, 2), result.rows[2].values[0].int);
-    try std.testing.expectEqual(@as(i64, 10), result.rows[2].values[1].int);
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+
+        try std.testing.expectEqual(@as(usize, 3), rows.items.len);
+        // First group (a=1): b DESC → (1,20), (1,10)
+        try std.testing.expectEqual(@as(i64, 1), rows.items[0].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 20), rows.items[0].values[1].integer);
+        try std.testing.expectEqual(@as(i64, 1), rows.items[1].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 10), rows.items[1].values[1].integer);
+        // Second group (a=2): (2,10)
+        try std.testing.expectEqual(@as(i64, 2), rows.items[2].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 10), rows.items[2].values[1].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -258,9 +325,21 @@ test "conformance: F851-02 LIMIT with OFFSET" {
     var result = try db.exec("SELECT id FROM t1 ORDER BY id LIMIT 2 OFFSET 1");
     defer result.close(db.allocator);
 
-    try std.testing.expectEqual(@as(usize, 2), result.rows.len);
-    try std.testing.expectEqual(@as(i64, 2), result.rows[0].values[0].int);
-    try std.testing.expectEqual(@as(i64, 3), result.rows[1].values[0].int);
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+
+        try std.testing.expectEqual(@as(usize, 2), rows.items.len);
+        try std.testing.expectEqual(@as(i64, 2), rows.items[0].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 3), rows.items[1].values[0].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -305,13 +384,41 @@ test "conformance: T611-01 COUNT aggregate" {
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
     try execSql(&db, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, NULL)");
 
-    var result = try db.exec("SELECT COUNT(*) FROM t1");
-    defer result.close(db.allocator);
-    try std.testing.expectEqual(@as(i64, 3), result.rows[0].values[0].int);
+    {
+        var result = try db.exec("SELECT COUNT(*) FROM t1");
+        defer result.close(db.allocator);
 
-    var result2 = try db.exec("SELECT COUNT(val) FROM t1");
-    defer result2.close(db.allocator);
-    try std.testing.expectEqual(@as(i64, 2), result2.rows[0].values[0].int);
+        if (result.rows) |*iter| {
+            var rows = try materializeRows(allocator, iter);
+            defer {
+                for (rows.items) |*row| {
+                    row.deinit();
+                }
+                rows.deinit(allocator);
+            }
+            try std.testing.expectEqual(@as(i64, 3), rows.items[0].values[0].integer);
+        } else {
+            return error.NoRowsReturned;
+        }
+    }
+
+    {
+        var result2 = try db.exec("SELECT COUNT(val) FROM t1");
+        defer result2.close(db.allocator);
+
+        if (result2.rows) |*iter| {
+            var rows = try materializeRows(allocator, iter);
+            defer {
+                for (rows.items) |*row| {
+                    row.deinit();
+                }
+                rows.deinit(allocator);
+            }
+            try std.testing.expectEqual(@as(i64, 2), rows.items[0].values[0].integer);
+        } else {
+            return error.NoRowsReturned;
+        }
+    }
 }
 
 test "conformance: T611-02 SUM aggregate" {
@@ -324,7 +431,19 @@ test "conformance: T611-02 SUM aggregate" {
 
     var result = try db.exec("SELECT SUM(val) FROM t1");
     defer result.close(db.allocator);
-    try std.testing.expectEqual(@as(i64, 60), result.rows[0].values[0].int);
+
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+        try std.testing.expectEqual(@as(i64, 60), rows.items[0].values[0].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 test "conformance: T611-03 AVG aggregate" {
@@ -337,7 +456,19 @@ test "conformance: T611-03 AVG aggregate" {
 
     var result = try db.exec("SELECT AVG(val) FROM t1");
     defer result.close(db.allocator);
-    try std.testing.expectEqual(@as(i64, 20), result.rows[0].values[0].int);
+
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+        try std.testing.expectEqual(@as(i64, 20), rows.items[0].values[0].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 test "conformance: T611-04 MIN/MAX aggregates" {
@@ -348,13 +479,41 @@ test "conformance: T611-04 MIN/MAX aggregates" {
     try execSql(&db, "CREATE TABLE t1 (val INTEGER)");
     try execSql(&db, "INSERT INTO t1 VALUES (30), (10), (20)");
 
-    var result_min = try db.exec("SELECT MIN(val) FROM t1");
-    defer result_min.close(db.allocator);
-    try std.testing.expectEqual(@as(i64, 10), result_min.rows[0].values[0].int);
+    {
+        var result_min = try db.exec("SELECT MIN(val) FROM t1");
+        defer result_min.close(db.allocator);
 
-    var result_max = try db.exec("SELECT MAX(val) FROM t1");
-    defer result_max.close(db.allocator);
-    try std.testing.expectEqual(@as(i64, 30), result_max.rows[0].values[0].int);
+        if (result_min.rows) |*iter| {
+            var rows = try materializeRows(allocator, iter);
+            defer {
+                for (rows.items) |*row| {
+                    row.deinit();
+                }
+                rows.deinit(allocator);
+            }
+            try std.testing.expectEqual(@as(i64, 10), rows.items[0].values[0].integer);
+        } else {
+            return error.NoRowsReturned;
+        }
+    }
+
+    {
+        var result_max = try db.exec("SELECT MAX(val) FROM t1");
+        defer result_max.close(db.allocator);
+
+        if (result_max.rows) |*iter| {
+            var rows = try materializeRows(allocator, iter);
+            defer {
+                for (rows.items) |*row| {
+                    row.deinit();
+                }
+                rows.deinit(allocator);
+            }
+            try std.testing.expectEqual(@as(i64, 30), rows.items[0].values[0].integer);
+        } else {
+            return error.NoRowsReturned;
+        }
+    }
 }
 
 test "conformance: T611-05 GROUP BY clause" {
@@ -367,7 +526,19 @@ test "conformance: T611-05 GROUP BY clause" {
 
     var result = try db.exec("SELECT category, SUM(val) FROM t1 GROUP BY category");
     defer result.close(db.allocator);
-    try std.testing.expectEqual(@as(usize, 2), result.rows.len);
+
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+        try std.testing.expectEqual(@as(usize, 2), rows.items.len);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 test "conformance: T611-06 HAVING clause" {
@@ -467,7 +638,19 @@ test "conformance: T611-07 ROW_NUMBER window function" {
 
     var result = try db.exec("SELECT category, ROW_NUMBER() OVER (PARTITION BY category ORDER BY val) AS rn FROM t1");
     defer result.close(db.allocator);
-    try std.testing.expectEqual(@as(usize, 3), result.rows.len);
+
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+        try std.testing.expectEqual(@as(usize, 3), rows.items.len);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 test "conformance: T611-08 RANK window function" {
@@ -480,10 +663,22 @@ test "conformance: T611-08 RANK window function" {
 
     var result = try db.exec("SELECT RANK() OVER (ORDER BY val) AS rank FROM t1");
     defer result.close(db.allocator);
-    try std.testing.expectEqual(@as(usize, 3), result.rows.len);
-    try std.testing.expectEqual(@as(i64, 1), result.rows[0].values[0].int);
-    try std.testing.expectEqual(@as(i64, 1), result.rows[1].values[0].int);
-    try std.testing.expectEqual(@as(i64, 3), result.rows[2].values[0].int);
+
+    if (result.rows) |*iter| {
+        var rows = try materializeRows(allocator, iter);
+        defer {
+            for (rows.items) |*row| {
+                row.deinit();
+            }
+            rows.deinit(allocator);
+        }
+        try std.testing.expectEqual(@as(usize, 3), rows.items.len);
+        try std.testing.expectEqual(@as(i64, 1), rows.items[0].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 1), rows.items[1].values[0].integer);
+        try std.testing.expectEqual(@as(i64, 3), rows.items[2].values[0].integer);
+    } else {
+        return error.NoRowsReturned;
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
