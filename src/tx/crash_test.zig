@@ -19,6 +19,8 @@
 const std = @import("std");
 const engine_mod = @import("../sql/engine.zig");
 const Database = engine_mod.Database;
+const executor_mod = @import("../sql/executor.zig");
+const Row = executor_mod.Row;
 const testing = std.testing;
 
 // Test helper to create a temporary database
@@ -30,6 +32,23 @@ fn createTestDb(allocator: std.mem.Allocator, path: []const u8) !Database {
 fn execSql(db: *Database, sql: []const u8) !void {
     var result = try db.exec(sql);
     result.close(db.allocator);
+}
+
+// Helper to materialize rows
+fn materializeRows(allocator: std.mem.Allocator, iter: *executor_mod.RowIterator) !std.ArrayList(Row) {
+    var rows: std.ArrayList(Row) = .{};
+    errdefer {
+        for (rows.items) |*row| {
+            row.deinit();
+        }
+        rows.deinit(allocator);
+    }
+
+    while (try iter.next()) |row| {
+        try rows.append(allocator, row);
+    }
+
+    return rows;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -92,32 +111,66 @@ test "crash: during checkpoint" {
 
 test "crash: after WAL write, before main DB update" {
     const allocator = testing.allocator;
-    const db_path = ":memory:";
 
-    // This tests that recovery can replay WAL even if main DB wasn't updated
+    // Use temp file instead of :memory: so data persists across reopens
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "test_crash_wal_{d}.db", .{std.time.milliTimestamp()});
+    const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(db_full_path);
+
+    var full_path_buf: [512]u8 = undefined;
+    const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{db_full_path, db_path});
+
+    // Phase 1: Write data and commit (WAL written, no checkpoint)
     {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
+        var db = try createTestDb(allocator, full_path);
 
         try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try execSql(&db, "BEGIN");
         try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
-        try execSql(&db, "COMMIT");
+        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
 
-        // At this point, data is in WAL but may not be in main DB file
-        // TODO: Simulate crash before checkpoint
+        // Close WITHOUT checkpoint — simulates crash after WAL write
+        // (db.close() should NOT call checkpoint, data remains in WAL)
+        db.close();
     }
 
-    // Reopen database - WAL recovery should apply changes
+    // Phase 2: Reopen database — WAL recovery should apply changes
     {
-        var db = try createTestDb(allocator, db_path);
+        var db = try createTestDb(allocator, full_path);
         defer db.close();
 
         // Verify data exists after recovery
-        // TODO: Verify row count
+        var result = try db.exec("SELECT id, val FROM t1 ORDER BY id");
+        defer result.close(allocator);
+
+        if (result.rows) |*iter| {
+            var rows = try materializeRows(allocator, iter);
+            defer {
+                for (rows.items) |*row| row.deinit();
+                rows.deinit(allocator);
+            }
+
+            // Should have 2 rows
+            try testing.expectEqual(@as(usize, 2), rows.items.len);
+
+            // Row 1: id=1, val=100
+            try testing.expectEqual(@as(i64, 1), rows.items[0].values[0].integer);
+            try testing.expectEqual(@as(i64, 100), rows.items[0].values[1].integer);
+
+            // Row 2: id=2, val=200
+            try testing.expectEqual(@as(i64, 2), rows.items[1].values[0].integer);
+            try testing.expectEqual(@as(i64, 200), rows.items[1].values[1].integer);
+        }
     }
 
-    try testing.expect(true);
+    // Cleanup
+    tmp.dir.deleteFile(db_path) catch {};
+    var wal_path_buf: [272]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{db_path});
+    tmp.dir.deleteFile(wal_path) catch {};
 }
 
 // ══════════════════════════════════════════════════════════════════════════
