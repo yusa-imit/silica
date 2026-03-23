@@ -26,6 +26,12 @@ fn createTestDb(allocator: std.mem.Allocator, path: []const u8) !Database {
     return Database.open(allocator, path, .{ .page_size = 4096 });
 }
 
+// Helper to execute SQL and discard result
+fn execSql(db: *Database, sql: []const u8) !void {
+    var result = try db.exec(sql);
+    result.close(db.allocator);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // Crash Point 1: During Transaction Commit (before WAL flush)
 // ══════════════════════════════════════════════════════════════════════════
@@ -39,9 +45,9 @@ test "crash: commit before WAL flush" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try db.exec("INSERT INTO t1 VALUES (1, 100)");
-        try db.exec("INSERT INTO t1 VALUES (2, 200)");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
     }
 
     // TODO: Implement crash simulation before WAL flush
@@ -62,14 +68,14 @@ test "crash: during checkpoint" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
 
         // Insert many rows to fill WAL
         var i: usize = 0;
         while (i < 1000) : (i += 1) {
             var buf: [100]u8 = undefined;
             const sql = try std.fmt.bufPrint(&buf, "INSERT INTO t1 VALUES ({d}, {d})", .{i, i * 10});
-            try db.exec(sql);
+            try execSql(&db, sql);
         }
 
         // Force checkpoint (this should be a public API)
@@ -93,10 +99,10 @@ test "crash: after WAL write, before main DB update" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try db.exec("BEGIN");
-        try db.exec("INSERT INTO t1 VALUES (1, 100)");
-        try db.exec("COMMIT");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+        try execSql(&db, "BEGIN");
+        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+        try execSql(&db, "COMMIT");
 
         // At this point, data is in WAL but may not be in main DB file
         // TODO: Simulate crash before checkpoint
@@ -128,13 +134,13 @@ test "crash: torn page during write" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, data TEXT)");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, data TEXT)");
 
         // Insert large row that spans multiple pages
         const large_text = "X" ** 8000;
         var buf: [8200]u8 = undefined;
         const sql = try std.fmt.bufPrint(&buf, "INSERT INTO t1 VALUES (1, '{s}')", .{large_text});
-        try db.exec(sql);
+        try execSql(&db, sql);
 
         // TODO: Simulate torn page (partial write)
     }
@@ -160,16 +166,16 @@ test "crash: multiple transactions, partial commits" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
 
         // TX1: Committed
-        try db.exec("BEGIN");
-        try db.exec("INSERT INTO t1 VALUES (1, 100)");
-        try db.exec("COMMIT");
+        try execSql(&db, "BEGIN");
+        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+        try execSql(&db, "COMMIT");
 
         // TX2: Started but not committed
-        try db.exec("BEGIN");
-        try db.exec("INSERT INTO t1 VALUES (2, 200)");
+        try execSql(&db, "BEGIN");
+        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
         // No COMMIT - simulating crash here
 
         // TODO: Simulate crash
@@ -199,13 +205,13 @@ test "crash: during index update" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try db.exec("CREATE INDEX idx_val ON t1(val)");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+        try execSql(&db, "CREATE INDEX idx_val ON t1(val)");
 
-        try db.exec("BEGIN");
-        try db.exec("INSERT INTO t1 VALUES (1, 100)");
-        try db.exec("INSERT INTO t1 VALUES (2, 200)");
-        try db.exec("COMMIT");
+        try execSql(&db, "BEGIN");
+        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
+        try execSql(&db, "COMMIT");
 
         // TODO: Simulate crash during index update
     }
@@ -236,8 +242,8 @@ test "crash: during recovery (double crash)" {
         var db = try createTestDb(allocator, db_path);
         defer db.close();
 
-        try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try db.exec("INSERT INTO t1 VALUES (1, 100)");
+        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
 
         // TODO: Simulate crash
     }
