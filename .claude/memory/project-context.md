@@ -40,25 +40,37 @@
 
 ### FEATURE Session (2026-03-24 02:30 UTC)
 - **Mode**: FEATURE (session #2, counter % 5 == 2)
-- **Focus**: CI verification + dependency migration (sailor v1.19.0)
+- **Focus**: Dependency migration + Milestone 24 crash injection test skeleton
 - **Work Done**:
-  1. **CI Status Check**: In-progress run from previous stabilization session was stalled (15:45 UTC 2026-03-23, running >10 hours)
-     - Cancelled stalled run and triggered fresh CI with empty commit
-     - Previous fix (0ba452f) for conformance test compilation should resolve errors
+  1. **CI Status Check**: Previous stabilization session's CI run was stalled (>10 hours)
+     - Cancelled stalled run, triggered fresh CI
   2. **Sailor v1.19.0 Migration** (issue #12):
      - Upgraded from v1.18.0 to v1.19.0 via `zig fetch --save`
-     - **New features**: Progress bar templates, environment variable config, color themes, enhanced table formatting, arg groups
-     - **Breaking changes**: None (fully backward compatible)
-     - Build verification: `zig build` succeeds ✅
-     - Tests: Queued (local tests slow, waiting for CI)
-  3. **Issue Management**:
-     - Closed #12 (sailor migration) with commit 34d7f78
+     - **New features**: Progress bar templates, env config, color themes, table formatting, arg groups
+     - Build verification: ✅ passes
+     - Closed issue #12
+  3. **Crash Injection Test Skeleton** (Milestone 24):
+     - Created `src/tx/crash_test.zig` with 7 test scenarios:
+       * Crash during commit (before WAL flush)
+       * Crash during checkpoint
+       * Crash after WAL write, before main DB update
+       * Torn page during write
+       * Multiple transactions with partial commits
+       * Crash during index update
+       * Crash during recovery (double crash)
+     - All tests are placeholder skeletons (marked TODO)
+     - Fixed compilation errors: db.exec() return values must be handled
+     - Added execSql() helper for clean SQL execution
+  4. **Issue Management**:
+     - Closed #12 (sailor migration)
 - **Commits**:
-  - b0abf7b: chore: trigger CI (empty commit to restart stalled run)
+  - b0abf7b: chore: trigger CI
   - 34d7f78: chore: upgrade sailor to v1.19.0
+  - 3c877a7: test: add crash injection test skeleton (Milestone 24)
+  - 7af1378: fix: handle QueryResult return values in crash_test.zig
 - **Build Status**: `zig build` passes ✅
-- **Test Status**: Awaiting CI (local tests running >5 min, CI is authoritative source)
-- **Next Priority**: Verify CI green, then continue Milestone 24 (Jepsen testing or prepared statements for TPC benchmarks)
+- **Test Status**: Awaiting CI verification
+- **Next Priority**: Verify CI green (conformance test fix), then implement crash tests or prepared statements
 
 ### STABILIZATION Session (2026-03-24 00:00 UTC)
 - **Mode**: STABILIZATION (hour 00, hour % 4 == 0)
