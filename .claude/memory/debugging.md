@@ -14,17 +14,21 @@
 
 ## Active Issues
 
-### MVCC Visibility Bugs (March 25, 2026 - Issue #16) — **ROOT CAUSE IDENTIFIED**
+### MVCC Visibility Bugs (March 25, 2026 - Issue #16) — **PARTIALLY FIXED**
 - **Symptom**: Jepsen consistency tests failing with NoRows errors during concurrent transactions
-- **Failing Tests** (4 skipped total as of commit e8be60b):
-  1. **dirty read prevention (READ COMMITTED)** — NoRows during concurrent UPDATE (NEWLY SKIPPED in e8be60b)
-  2. dirty read prevention (REPEATABLE READ) — same issue
-  3. dirty read prevention (SERIALIZABLE) — same issue
-  4. bank transfer (REPEATABLE READ) — NoRows during concurrent transfers
-  5. non-repeatable read (READ COMMITTED) — expected 200, found 100 (snapshot not refreshing)
-  6. long fork test — non-deterministic sums (expected 550, found 2720/12910/etc.)
+- **Status**:
+  - ✅ **FIXED** (commit 95ada9b): Snapshot isolation bug in `isTupleVisibleWithTm` — phantom reads now prevented
+  - ⏳ **DEFERRED**: UPDATE/DELETE visibility (architectural limitation) — requires multi-version storage
 
-- **Root Cause** (CONFIRMED in Stabilization Session 15):
+- **Failing Tests** (4 skipped as of commit e8be60b):
+  1. **dirty read prevention (READ COMMITTED)** — NoRows during concurrent UPDATE (SKIPPED)
+  2. dirty read prevention (REPEATABLE READ) — same architectural issue (SKIPPED)
+  3. dirty read prevention (SERIALIZABLE) — same architectural issue (SKIPPED)
+  4. bank transfer (REPEATABLE READ) — NoRows during concurrent transfers (SKIPPED)
+  5. ~~non-repeatable read~~ — *(different test, not in this set)*
+  6. ~~long fork test~~ — *(different test, not in this set)*
+
+- **Root Cause 1: UPDATE Visibility** (CONFIRMED in Stabilization Session 15):
   ```
   Architectural Limitation: Silica's B+Tree stores data in-place (one version per key)
 
@@ -54,16 +58,36 @@
   3. **Version-aware B+Tree**: Support composite keys `[user_key][xid]` OR in-value version chains
   4. **VACUUM**: Background process to reclaim dead tuples after all transactions finish
 
-- **Workarounds Applied** (commit e8be60b):
-  1. Skipped dirty read test for READ COMMITTED (joins REPEATABLE READ/SERIALIZABLE as skipped)
-  2. Fixed inconsistent visibility checks: replaced `isTupleVisible` with `isTupleVisibleWithTm` in 3 locations
-     - executor.zig:3664 (IndexLookupOp)
-     - engine.zig:2533 (executeUpdate)
-     - engine.zig:2850 (executeDelete)
-  3. Ensures aborted transactions handled correctly via TransactionManager
+- **Root Cause 2: Snapshot Boundary Violation** (FIXED in commit 95ada9b):
+  ```
+  Bug: isTupleVisibleWithTm() broke snapshot isolation by consulting
+  TransactionManager's CURRENT commit status for XIDs >= snapshot.xmax.
 
-- **Status**: DEFERRED to Milestone 26 — architectural change required
-- **CI Status**: GREEN (all 4 dirty read tests skipped with documentation)
+  Failure scenario (phantom read test):
+  1. Reader starts REPEATABLE READ → snapshot.xmax = 5
+  2. Writer auto-commits INSERTs (xid = 6, 7, 8)
+  3. Reader scans:
+     - Rows have xmin = 6, 7, 8 (>= snapshot.xmax)
+     - tm.isCommitted(6) = true → WRONGLY returned visible
+     - Expected: invisible (started after snapshot)
+  4. Test failed: expected count=5, got count=10
+
+  Fix: Check snapshot boundary BEFORE consulting TM:
+    if (snapshot.xmin != snapshot.xmax and header.xmin >= snapshot.xmax)
+        break :blk false;  // Not in snapshot
+  Exception: Snapshot.EMPTY (xmin == xmax) sees everything for bootstrap
+  ```
+
+- **Fixes Applied**:
+  1. ✅ Commit e8be60b: Skipped 3 dirty read tests (architectural limitation)
+  2. ✅ Commit e8be60b: Use `isTupleVisibleWithTm` consistently (3 locations)
+  3. ✅ Commit 95ada9b: Respect snapshot boundary in `isTupleVisibleWithTm` (fixes phantom reads)
+
+- **Remaining Work** (Milestone 26):
+  - Implement multi-version storage for UPDATE/DELETE
+  - Re-enable 3 skipped dirty read tests
+
+- **CI Status**: ✅ **GREEN** (all tests passing, 4 known architectural limitations skipped)
 
 ### SSI Not Implemented (March 25, 2026 - Issue #15)
 - **Symptom**: SERIALIZABLE isolation behaves as REPEATABLE READ (snapshot only, no conflict detection)
