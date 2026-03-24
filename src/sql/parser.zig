@@ -22,6 +22,8 @@ pub const Parser = struct {
     /// Allocator for parser infrastructure (token list, error list).
     infra_alloc: Allocator,
     errors: std.ArrayListUnmanaged(ParseError),
+    /// Counter for bind parameters (? placeholders) in current statement.
+    bind_param_index: u32,
 
     pub const Error = error{
         ParseFailed,
@@ -46,6 +48,7 @@ pub const Parser = struct {
             .arena = arena,
             .infra_alloc = infra_alloc,
             .errors = .{},
+            .bind_param_index = 0,
         };
     }
 
@@ -179,6 +182,9 @@ pub const Parser = struct {
         while (self.match(.semicolon)) {}
 
         if (self.check(.eof)) return null;
+
+        // Reset bind parameter counter for each statement
+        self.bind_param_index = 0;
 
         const t = self.peek();
         const stmt: ast.Stmt = switch (t.type) {
@@ -2472,6 +2478,13 @@ pub const Parser = struct {
             .kw_null => {
                 _ = self.advance();
                 return self.arena.create(ast.Expr, .null_literal) catch return error.OutOfMemory;
+            },
+            .json_key_exists => {
+                // In value position, ? is a bind parameter placeholder (not JSON operator)
+                _ = self.advance();
+                const idx = self.bind_param_index;
+                self.bind_param_index += 1;
+                return self.arena.create(ast.Expr, .{ .bind_parameter = idx }) catch return error.OutOfMemory;
             },
             .minus => {
                 _ = self.advance();
@@ -6127,4 +6140,65 @@ test "RESET returns correct statement type" {
     defer r.deinit();
 
     try std.testing.expect(r.stmt == .reset);
+}
+
+test "bind parameter in WHERE clause" {
+    var r = try testParseWithArena("SELECT * FROM test WHERE id = ?");
+    defer r.deinit();
+
+    // Verify it's a SELECT statement
+    try std.testing.expect(r.stmt == .select);
+
+    // Verify WHERE clause exists
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.where_clause != null);
+
+    // Verify WHERE clause is a binary op (id = ?)
+    const where = sel.where_clause.?;
+    try std.testing.expect(where.* == .binary_op);
+
+    // Right side should be bind_parameter with index 0
+    const right = where.binary_op.right;
+    try std.testing.expect(right.* == .bind_parameter);
+    try std.testing.expectEqual(@as(u32, 0), right.bind_parameter);
+}
+
+test "multiple bind parameters in INSERT" {
+    var r = try testParseWithArena("INSERT INTO test (a, b, c) VALUES (?, ?, ?)");
+    defer r.deinit();
+
+    // Verify it's an INSERT statement
+    try std.testing.expect(r.stmt == .insert);
+
+    // Verify values are bind parameters with indices 0, 1, 2
+    const ins = r.stmt.insert;
+    try std.testing.expectEqual(@as(usize, 1), ins.values.len); // One row
+    try std.testing.expectEqual(@as(usize, 3), ins.values[0].len); // Three columns
+
+    for (ins.values[0], 0..) |expr, i| {
+        try std.testing.expect(expr.* == .bind_parameter);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), expr.bind_parameter);
+    }
+}
+
+test "bind parameters reset between statements" {
+    // Parse first statement with 2 params
+    var r1 = try testParseWithArena("SELECT * FROM t WHERE a = ? AND b = ?");
+    defer r1.deinit();
+
+    const sel1 = r1.stmt.select;
+    const where1 = sel1.where_clause.?;
+    // Left side of AND: a = ? (param index 0)
+    const left1 = where1.binary_op.left.binary_op.right;
+    try std.testing.expectEqual(@as(u32, 0), left1.bind_parameter);
+    // Right side of AND: b = ? (param index 1)
+    const right1 = where1.binary_op.right.binary_op.right;
+    try std.testing.expectEqual(@as(u32, 1), right1.bind_parameter);
+
+    // Parse second statement - indices should reset to 0
+    var r2 = try testParseWithArena("INSERT INTO t (x) VALUES (?)");
+    defer r2.deinit();
+
+    const ins = r2.stmt.insert;
+    try std.testing.expectEqual(@as(u32, 0), ins.values[0][0].bind_parameter);
 }
