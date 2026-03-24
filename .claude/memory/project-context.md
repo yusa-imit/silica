@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 12 — Production Readiness (Milestone 24 complete, Milestone 25 next)
+## Current Phase: Phase 12 — Production Readiness (Milestone 24 complete, Milestone 25 in progress)
 
 ### Completed Phases
 - **Phase 1-9**: All complete ✅ (Storage, SQL, Transactions, MVCC, Views/CTEs, Window Functions, Data Types, JSON/FTS, Functions/Triggers, Server, Replication)
@@ -37,8 +37,60 @@
   - [x] TPC-C benchmark — OLTP workload (new-order, payment transactions) ✅
   - [x] TPC-H benchmark — OLAP workload (Q1, Q3, Q6 queries) ✅
   - [x] Jepsen-style testing (distributed consistency verification) — 19 tests ✅
+- **Milestone 25**: Documentation & Packaging 🚧 IN PROGRESS
+  - [x] README.md — Project overview, quick start, features
+  - [x] API reference (docs/API_REFERENCE.md) — Zig embedded API, C FFI
+  - [x] Getting started guide (docs/GETTING_STARTED.md) — Complete tutorial
+  - [x] SQL reference (docs/SQL_REFERENCE.md) — Complete SQL syntax guide
+  - [ ] Operations guide — Backup, restore, monitoring, tuning
+  - [ ] Architecture guide — Internal design
+  - [ ] CI/CD pipeline polish
+  - [ ] System packages (deb, rpm, brew)
 
 ## Recent Sessions
+
+### FEATURE Session (2026-03-25 — Session 14) — Milestone 25 Documentation (IN PROGRESS)
+- **Mode**: FEATURE (session #14, counter % 5 == 4)
+- **Focus**: Milestone 25 Documentation & Packaging
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #14 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Review**: Bug #16 (MVCC visibility) and enhancement #15 (SSI) open but not blocking
+  4. **Documentation Creation** (Milestone 25):
+     - README.md (1169 lines): Comprehensive project overview
+       * Features, quick start (embedded & server modes)
+       * Installation, documentation links
+       * Architecture diagram, file format spec
+       * Testing & certification summary, project status
+       * Contributing guidelines, license
+     - docs/API_REFERENCE.md (800+ lines): Complete Zig embedded API reference
+       * Database class methods (open, close, exec, prepare, transactions)
+       * PreparedStatement, QueryResult, RowIterator, Row, Value
+       * Isolation levels with guarantees table
+       * Error types, configuration, C FFI API
+       * Performance tips, examples
+     - docs/GETTING_STARTED.md (1050 lines): Comprehensive tutorial
+       * Part 1: Embedded Mode (hello world, CRUD, transactions, prepared statements)
+       * Part 2: Advanced Features (indexes, JSON, FTS, views, CTEs, window functions, triggers)
+       * Part 3: Server Mode (starting server, psql, client libraries, replication)
+       * Part 4: Operations (backup/restore, performance tuning, monitoring)
+       * Troubleshooting section
+     - docs/SQL_REFERENCE.md (1031 lines): Complete SQL syntax reference
+       * DDL (CREATE TABLE, ALTER TABLE, DROP TABLE, indexes)
+       * DML (INSERT, UPDATE, DELETE with RETURNING)
+       * DQL (SELECT, joins, subqueries, CTEs, window functions, set operations)
+       * Transaction control (BEGIN, COMMIT, ROLLBACK, savepoints)
+       * Data types (numeric, string, date/time, JSON, UUID, arrays, enums)
+       * Operators (comparison, logical, arithmetic, JSON, array)
+       * Built-in functions (string, math, date/time, aggregate, system)
+       * Indexes (B+Tree, hash, GIN, GiST), views, triggers
+       * System catalog, SQL:2016 conformance, performance tips
+- **Commits**:
+  - b2909ef: docs: add README and API reference (Milestone 25)
+  - c454a73: docs: add comprehensive Getting Started guide (Milestone 25)
+  - 86af142: docs: add comprehensive SQL reference (Milestone 25)
+- **Milestone 25 Progress**: 4/7 documentation tasks complete (README, API, Getting Started, SQL Reference)
+- **Next Priority**: Operations guide, architecture guide (continue Milestone 25)
 
 ### FEATURE Session (2026-03-25 — Session 13) — MVCC Bug Investigation & Test Skip
 - **Mode**: FEATURE (session #13, counter % 5 == 3)
