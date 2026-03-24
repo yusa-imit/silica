@@ -14,6 +14,22 @@
 
 ## Active Issues
 
+### Performance Benchmarks Failing (March 24, 2026 - Stabilization Session 10)
+- **Symptom**: Simple benchmarks show 20-30x performance regression vs targets
+- **Measurements**:
+  - Point lookup: 163.76 µs (target: < 5.0 µs) — **32x slower**
+  - Sequential insert: 4082 rows/sec (target: > 100K rows/sec) — **24x slower**
+  - Range scan: 5.8M rows/sec (target: > 500K rows/sec) — **PASSING**
+- **Context**: Performance optimization is NOT a stabilization task. Noted for future FEATURE session
+- **Impact**: Functionality works but performance is below production targets
+- **Next Steps** (for future FEATURE session):
+  1. Profile point lookup path with perf/Instruments
+  2. Profile insert path to identify bottleneck
+  3. Check buffer pool hit rate
+  4. Verify B+Tree traversal efficiency
+  5. Consider adding bloom filters or other optimizations
+- **Note**: Do NOT attempt performance optimization during STABILIZATION sessions
+
 ### CI Test Timeout - engine.zig Hang (March 24, 2026 - Issue #13)
 - **Symptom**: `zig build test` hangs indefinitely after 30+ seconds, causing CI timeout (exit code 143 SIGTERM)
 - **Root Cause**: One or more tests in `src/sql/engine.zig` (515 tests) enter infinite loop
