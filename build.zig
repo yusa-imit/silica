@@ -130,4 +130,29 @@ pub fn build(b: *std.Build) void {
 
     const tpcc_step = b.step("tpcc", "Run TPC-C benchmark");
     tpcc_step.dependOn(&run_tpcc.step);
+
+    // TPC-H benchmark executable
+    const tpch_mod = b.addModule("tpch", .{
+        .root_source_file = b.path("bench/tpch.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tpch_mod.addImport("silica", mod);
+    tpch_mod.addImport("harness", b.addModule("harness-tpch", .{
+        .root_source_file = b.path("bench/harness.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+
+    const tpch_exe = b.addExecutable(.{
+        .name = "tpch-bench",
+        .root_module = tpch_mod,
+    });
+    b.installArtifact(tpch_exe);
+
+    const run_tpch = b.addRunArtifact(tpch_exe);
+    run_tpch.step.dependOn(b.getInstallStep());
+
+    const tpch_step = b.step("tpch", "Run TPC-H benchmark");
+    tpch_step.dependOn(&run_tpch.step);
 }
