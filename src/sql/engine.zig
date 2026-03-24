@@ -2530,7 +2530,7 @@ pub const Database = struct {
                 // MVCC row: check visibility first
                 if (mvcc_ctx) |ctx| {
                     const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisible(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                    if (!mvcc_mod.isTupleVisibleWithTm(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
                         self.allocator.free(entry.value);
                         continue;
                     }
@@ -2847,7 +2847,7 @@ pub const Database = struct {
                 // MVCC row: check visibility first
                 if (mvcc_ctx_del) |ctx| {
                     const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisible(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                    if (!mvcc_mod.isTupleVisibleWithTm(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
                         self.allocator.free(entry.value);
                         self.allocator.free(entry.key);
                         continue;

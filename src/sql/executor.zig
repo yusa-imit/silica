@@ -3661,7 +3661,7 @@ pub const IndexScanOp = struct {
         if (self.mvcc_ctx) |ctx| {
             if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
                 const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                if (!mvcc_mod.isTupleVisible(header, ctx.snapshot, ctx.current_xid, ctx.current_cid)) {
+                if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
                     return null; // Tuple not visible
                 }
                 // Visible: deserialize column data (skip MVCC header)
