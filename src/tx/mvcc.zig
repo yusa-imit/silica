@@ -231,10 +231,16 @@ pub fn isTupleVisibleWithTm(
             if (header.cid >= current_cid) break :blk false;
             break :blk true;
         }
+        // CRITICAL: Respect snapshot boundary — XIDs >= snapshot.xmax are never visible
+        // (they started after our snapshot was taken, even if they've committed since)
+        // Exception: Snapshot.EMPTY (xmin == xmax) sees everything for bootstrap/DDL
+        if (snapshot.xmin != snapshot.xmax and header.xmin >= snapshot.xmax) break :blk false;
+
         // Check hint flags first
         if (header.flags.xmin_aborted) break :blk false;
         if (header.flags.xmin_committed) break :blk true;
         // Consult TransactionManager if available (correct aborted detection)
+        // Only check TM for XIDs in range [snapshot.xmin, snapshot.xmax)
         if (tm) |t| {
             if (t.isAborted(header.xmin)) break :blk false;
             if (t.isCommitted(header.xmin)) break :blk true;
@@ -254,10 +260,16 @@ pub fn isTupleVisibleWithTm(
             if (header.cid < current_cid) break :blk true;
             break :blk false;
         }
+        // CRITICAL: Respect snapshot boundary — XIDs >= snapshot.xmax are never visible
+        // (they started after our snapshot, so their deletions aren't visible to us)
+        // Exception: Snapshot.EMPTY (xmin == xmax) sees everything for bootstrap/DDL
+        if (snapshot.xmin != snapshot.xmax and header.xmax >= snapshot.xmax) break :blk false;
+
         // Check hint flags first
         if (header.flags.xmax_aborted) break :blk false;
         if (header.flags.xmax_committed) break :blk true;
         // Consult TransactionManager if available
+        // Only check TM for XIDs in range [snapshot.xmin, snapshot.xmax)
         if (tm) |t| {
             if (t.isAborted(header.xmax)) break :blk false;
             if (t.isCommitted(header.xmax)) break :blk true;
