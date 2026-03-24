@@ -2928,7 +2928,8 @@ pub const Parser = struct {
             // JSON operators have high precedence (11) - similar to member access
             .json_extract, .json_extract_text => 11,
             .json_contains, .json_contained_by => 11,
-            .json_key_exists, .json_any_key_exists, .json_all_keys_exist => 11,
+            // NOTE: .json_key_exists (?) is now used as bind parameter, not binary op
+            .json_any_key_exists, .json_all_keys_exist => 11,
             .json_path_extract, .json_path_extract_text, .json_delete_path => 11,
             // Full-text search operator @@ has comparison precedence (7)
             .ts_match => 7,
@@ -2961,7 +2962,7 @@ pub const Parser = struct {
             .json_extract_text => .json_extract_text,
             .json_contains => .json_contains,
             .json_contained_by => .json_contained_by,
-            .json_key_exists => .json_key_exists,
+            // NOTE: .json_key_exists (?) is now used as bind parameter, not binary op
             .json_any_key_exists => .json_any_key_exists,
             .json_all_keys_exist => .json_all_keys_exist,
             .json_path_extract => .json_path_extract,
@@ -4445,13 +4446,16 @@ test "parse JSON contained by operator (<@)" {
     try std.testing.expectEqual(ast.BinaryOp.json_contained_by, where_expr.binary_op.op);
 }
 
-test "parse JSON key exists operator (?)" {
-    var r = try testParseWithArena("SELECT * FROM users WHERE data ? 'name'");
-    defer r.deinit();
-    const where_expr = r.stmt.select.where.?;
-    try std.testing.expect(where_expr.* == .binary_op);
-    try std.testing.expectEqual(ast.BinaryOp.json_key_exists, where_expr.binary_op.op);
-}
+// NOTE: Disabled because ? is now used for bind parameters, not JSON key exists operator.
+// If we need JSON key exists, we should use ?| or ?& operators with explicit syntax,
+// or use a different bind parameter syntax (e.g., $1, $2 like PostgreSQL).
+//test "parse JSON key exists operator (?)" {
+//    var r = try testParseWithArena("SELECT * FROM users WHERE data ? 'name'");
+//    defer r.deinit();
+//    const where_expr = r.stmt.select.where.?;
+//    try std.testing.expect(where_expr.* == .binary_op);
+//    try std.testing.expectEqual(ast.BinaryOp.json_key_exists, where_expr.binary_op.op);
+//}
 
 test "parse JSON any key exists operator (?|)" {
     var r = try testParseWithArena("SELECT * FROM users WHERE data ?| ARRAY['a','b']");
