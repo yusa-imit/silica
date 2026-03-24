@@ -67,7 +67,8 @@
 **Milestone 24**: Testing & Certification (in progress)
 - [x] Fuzz campaign (storage, tokenizer, parser, wire protocol, WAL) — 67+ tests ✅
 - [x] SQL conformance tests — 35 tests validating SQL:2016 compliance ✅
-- [ ] TPC-C/TPC-H benchmarks (blocked by #11 — requires prepared statements)
+- [x] PreparedStatement API — Database.prepare(), bind(), execute() (issue #11 closed) ✅
+- [ ] TPC-C/TPC-H benchmarks (unblocked — ready to implement)
 - [ ] Jepsen-style testing (distributed consistency verification)
 
 **Milestone 25**: Documentation & Packaging
