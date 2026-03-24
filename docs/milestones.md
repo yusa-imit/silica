@@ -68,7 +68,8 @@
 - [x] Fuzz campaign (storage, tokenizer, parser, wire protocol, WAL) — 67+ tests ✅
 - [x] SQL conformance tests — 35 tests validating SQL:2016 compliance ✅
 - [x] PreparedStatement API — Database.prepare(), bind(), execute() (issue #11 closed) ✅
-- [ ] TPC-C/TPC-H benchmarks (unblocked — ready to implement)
+- [x] TPC-C benchmark (OLTP workload) — new-order & payment transactions, tpmC metrics ✅
+- [x] TPC-H benchmark (OLAP workload) — 3 representative queries (Q1, Q3, Q6) ✅
 - [ ] Jepsen-style testing (distributed consistency verification)
 
 **Milestone 25**: Documentation & Packaging

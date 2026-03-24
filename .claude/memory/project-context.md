@@ -25,18 +25,53 @@
   - [x] **pg_locks**: Lock monitoring view
   - [x] Configuration system (SET/SHOW/RESET)
   - [x] silica.conf configuration file
-- **Milestone 24**: Testing & Certification (in progress)
-  - [ ] TPC-C/TPC-H benchmarks (blocked by #11 — requires prepared statements)
-  - [ ] Jepsen-style testing
+- **Milestone 24**: Testing & Certification (nearly complete)
   - [x] Fuzz campaign ✅ COMPLETE
     - [x] Storage layer (B+Tree) — 12 tests
     - [x] SQL tokenizer — tests in tokenizer_fuzz.zig
     - [x] SQL parser — 20 tests in parser_fuzz.zig
     - [x] Wire protocol — 13 tests in wire_fuzz.zig
     - [x] WAL (crash recovery) — 22 tests in wal_fuzz.zig
-  - [x] SQL conformance tests — 35 tests in conformance_test.zig ✨ NEW
+  - [x] SQL conformance tests — 35 tests in conformance_test.zig ✅
+  - [x] PreparedStatement API — Database.prepare(), bind(), execute() ✅
+  - [x] TPC-C benchmark — OLTP workload (new-order, payment transactions) ✅
+  - [x] TPC-H benchmark — OLAP workload (Q1, Q3, Q6 queries) ✅
+  - [ ] Jepsen-style testing (distributed consistency verification) — **NEXT**
 
 ## Recent Sessions
+
+### FEATURE Session (2026-03-24 20:30 UTC) — TPC-C & TPC-H Benchmarks (Milestone 24)
+- **Mode**: FEATURE (session #9, counter % 5 == 4)
+- **Focus**: Implement TPC-C (OLTP) and TPC-H (OLAP) benchmarks to complete Milestone 24
+- **Work Done**:
+  1. **CI Status Check**: ✅ GREEN — PreparedStatement implementation from previous session working
+  2. **TPC-C Benchmark** (`bench/tpcc.zig`, 540 lines):
+     - 9-table schema: warehouse, district, customer, new_order, orders, order_line, item, stock, history
+     - Pseudo-random data generator (reproducible seed) with TPC-C compliant distributions
+     - New-Order transaction (~45% of mix): inserts order + 5 order lines, updates district next_o_id
+     - Payment transaction (~43% of mix): updates warehouse/district/customer YTD, inserts history
+     - Configurable scale factor (warehouses); lightweight defaults for local testing (1 warehouse, 2 districts, 100 customers, 1K items)
+     - Benchmark harness: runs transaction mix for specified duration, reports tpmC (transactions per minute) and avg latency
+     - Usage: `zig build tpcc`
+  3. **TPC-H Benchmark** (`bench/tpch.zig`, 587 lines):
+     - 8-table schema: part, supplier, partsupp, customer, orders, lineitem, nation, region
+     - Data generator with TPC-H schema (25 nations, 5 regions, configurable customers/orders/lineitems)
+     - 3 representative queries implemented:
+       * Q1: Pricing Summary Report (aggregates with GROUP BY on lineitem)
+       * Q3: Shipping Priority (3-way JOIN: customer-orders-lineitem with aggregates)
+       * Q6: Forecasting Revenue Change (selective scan with arithmetic filters)
+     - Indices on l_shipdate, o_orderdate, c_mktsegment for query performance
+     - Configurable scale factor (SF=1 = 1GB); lightweight defaults (1K parts, 100 suppliers, 1.5K customers/orders)
+     - Benchmark harness: measures query execution time (ms) and throughput (ops/sec)
+     - Usage: `zig build tpch`
+  4. **Build Integration**: Updated `build.zig` with `tpcc` and `tpch` steps
+  5. **Milestone Progress**: 5/6 tasks complete — only Jepsen-style testing remains
+- **Commits**:
+  - af4f8bb: feat: add TPC-C benchmark implementation (Milestone 24)
+  - c977199: feat: add TPC-H benchmark implementation (Milestone 24)
+  - [pending]: chore: update session memory
+- **Build Status**: `zig build` passes ✅
+- **Next Priority**: Jepsen-style testing (distributed consistency verification) to complete Milestone 24
 
 ### FEATURE Session (2026-03-24 14:30 UTC) — PreparedStatement API (Issue #11)
 - **Mode**: FEATURE (session #6, counter % 5 == 1)
