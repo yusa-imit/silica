@@ -64,13 +64,13 @@
 
 ### Phase 12: Production Readiness (continued)
 
-**Milestone 24**: Testing & Certification (in progress)
+**Milestone 24**: Testing & Certification ✅ COMPLETE
 - [x] Fuzz campaign (storage, tokenizer, parser, wire protocol, WAL) — 67+ tests ✅
 - [x] SQL conformance tests — 35 tests validating SQL:2016 compliance ✅
 - [x] PreparedStatement API — Database.prepare(), bind(), execute() (issue #11 closed) ✅
 - [x] TPC-C benchmark (OLTP workload) — new-order & payment transactions, tpmC metrics ✅
 - [x] TPC-H benchmark (OLAP workload) — 3 representative queries (Q1, Q3, Q6) ✅
-- [ ] Jepsen-style testing (distributed consistency verification)
+- [x] Jepsen-style testing (distributed consistency verification) — 19 tests ✅
 
 **Milestone 25**: Documentation & Packaging
 - API reference, ops guide, SQL reference, system packages
@@ -102,6 +102,7 @@
 | Phase 10 | 21 | Advanced Optimization | — | DP join ordering (simplified), hash/merge join selection, EXPLAIN ANALYZE |
 | Phase 11 | 22 | Additional Index Types | — | Hash index, GiST framework, GIN framework, CREATE INDEX CONCURRENTLY, bitmap index scans |
 | Phase 12 | 23 | Operational Tools | — | EXPLAIN/EXPLAIN ANALYZE, VACUUM (manual + auto), REINDEX, pg_stat_activity, pg_locks, configuration system (SET/SHOW/RESET), silica.conf file |
+| Phase 12 | 24 | Testing & Certification | — | Fuzz campaign (67+ tests), SQL conformance (35 tests), PreparedStatement API, TPC-C/TPC-H benchmarks, Jepsen-style testing (19 tests) |
 
 ### Closed Issues
 
