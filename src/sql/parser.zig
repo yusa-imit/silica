@@ -6151,10 +6151,10 @@ test "bind parameter in WHERE clause" {
 
     // Verify WHERE clause exists
     const sel = r.stmt.select;
-    try std.testing.expect(sel.where_clause != null);
+    try std.testing.expect(sel.where != null);
 
     // Verify WHERE clause is a binary op (id = ?)
-    const where = sel.where_clause.?;
+    const where = sel.where.?;
     try std.testing.expect(where.* == .binary_op);
 
     // Right side should be bind_parameter with index 0
@@ -6187,7 +6187,7 @@ test "bind parameters reset between statements" {
     defer r1.deinit();
 
     const sel1 = r1.stmt.select;
-    const where1 = sel1.where_clause.?;
+    const where1 = sel1.where.?;
     // Left side of AND: a = ? (param index 0)
     const left1 = where1.binary_op.left.binary_op.right;
     try std.testing.expectEqual(@as(u32, 0), left1.bind_parameter);
