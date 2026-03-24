@@ -50,6 +50,7 @@ pub const wal = @import("tx/wal.zig");
 pub const mvcc = @import("tx/mvcc.zig");
 pub const lock = @import("tx/lock.zig");
 pub const vacuum = @import("tx/vacuum.zig");
+pub const jepsen_test = @import("tx/jepsen_test.zig");
 
 // Configuration modules
 pub const config_manager = @import("config/manager.zig");
