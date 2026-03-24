@@ -34,8 +34,7 @@ pub const analyzer = @import("sql/analyzer.zig");
 pub const planner = @import("sql/planner.zig");
 pub const optimizer = @import("sql/optimizer.zig");
 pub const executor = @import("sql/executor.zig");
-// TEMPORARILY DISABLED: 515 tests - one may be hanging
-// pub const engine = @import("sql/engine.zig");
+pub const engine = @import("sql/engine.zig");
 pub const stats = @import("sql/stats.zig");
 pub const selectivity = @import("sql/selectivity.zig");
 pub const cost = @import("sql/cost.zig");
