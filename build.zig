@@ -82,6 +82,10 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_cli_unit_tests.step);
 
+    // Add lib-only test step for debugging
+    const lib_test_step = b.step("test-lib", "Run library tests only");
+    lib_test_step.dependOn(&run_lib_unit_tests.step);
+
     // Simple benchmark executable
     const bench_mod = b.addModule("bench", .{
         .root_source_file = b.path("bench/simple.zig"),
