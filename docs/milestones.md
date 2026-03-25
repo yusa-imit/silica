@@ -123,8 +123,7 @@
 
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
-| #4 | feat: migrate to zuda v1.0 for B+Tree and LRU cache | enhancement, from:zuda | **BLOCKED** — awaiting zuda#9 (pin semantics) |
-| #5 | feat: migrate data structures to zuda v1.0 | enhancement, from:zuda | **BLOCKED** — awaiting zuda#10 (hasCycle implementation) |
+| #15 | feat: implement SSI (Serializable Snapshot Isolation) for SERIALIZABLE isolation level | enhancement | Open — future enhancement (post-v1.0) |
 
 ---
 
@@ -186,18 +185,19 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### zuda Library
 
-- **Current**: Not yet integrated — **partially READY** (zuda v1.15.0 available)
+- **Current**: v1.23.0 (integrated)
 - **Repo**: https://github.com/yusa-imit/zuda
-- **Compatibility layers**: `zuda.compat.silica_btree` — drop-in BTree wrapper
-- **Migration guides**: See zuda `docs/migrations/SILICA_BTREE.md` for detailed API mapping
+- **Migration Status**: 1/3 completed — Deadlock Detection ✅ DONE
 
 | Custom Implementation | File | LOC | zuda Replacement | Status |
 |----------------------|------|-----|------------------|--------|
-| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | 1237 | `zuda.containers.hashing.LRUCache` | **BLOCKED** — LRUCache lacks pin semantics |
-| Deadlock Detection (DFS) | `src/tx/lock.zig` | 1463 | `zuda.algorithms.graph.DFS` | **BLOCKED** — DFS.hasCycle() marked TODO |
-| B+Tree | `src/storage/btree.zig` | 4300 | `zuda.containers.trees.BTree` | **REVIEW NEEDED** |
+| Buffer Pool (LRU) | `src/storage/buffer_pool.zig` | 1237 | `zuda.containers.cache.LRUCache` | **NOT MIGRATING** — Architect decision (Session 27): non-failable eviction callback, per-entry heap allocation, deep integration (12+ files) |
+| Deadlock Detection (DFS) | `src/tx/lock.zig` | 1463 → 1453 | `zuda.algorithms.graph.DFS` | ✅ **DONE** (Session 27) — zuda#10 resolved, hasCycle() implemented |
+| B+Tree | `src/storage/btree.zig` | 4300 | `zuda.containers.trees.BTree` | **NOT MIGRATING** — Similar reasons to buffer pool (disk I/O, WAL, MVCC integration) |
 
 **Migration exclusions** (domain-specific, will NOT be migrated):
+- `src/storage/buffer_pool.zig` — Buffer Pool (decision: keep custom per architect review)
+- `src/storage/btree.zig` — B+Tree (disk I/O, WAL, MVCC integration too deep)
 - `src/storage/fsm.zig` — Free Space Map
 - `src/storage/page.zig` — Pager
 - `src/storage/overflow.zig` — Overflow page handling
@@ -207,4 +207,4 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 - `src/util/varint.zig` — LEB128 encoding
 - `src/util/checksum.zig` — CRC32C
 
-> **B+Tree note**: silica's B+Tree (4300 LOC)는 디스크 I/O, WAL, MVCC와 긴밀히 결합. zuda BTree는 메모리 기반 제네릭 구현. `architect` 에이전트의 아키텍처 리뷰 후 마이그레이션 여부 결정. LRU Cache와 Deadlock Detection은 독립 모듈이므로 즉시 마이그레이션 가능.
+> **Migration Summary**: Deadlock detection successfully migrated to zuda v1.23.0. Buffer pool and B+Tree will remain custom implementations due to deep integration with silica-specific concerns (disk I/O, WAL, MVCC, non-failable eviction). See `.claude/memory/decisions.md` for architect review details.
