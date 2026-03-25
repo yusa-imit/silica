@@ -6,7 +6,7 @@
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
 
-## Current Phase: Phase 12 — Production Readiness (Milestone 24 complete, Milestone 25 in progress)
+## Current Phase: Phase 12 — Production Readiness (Milestones 24-25 complete)
 
 ### Completed Phases
 - **Phase 1-9**: All complete ✅ (Storage, SQL, Transactions, MVCC, Views/CTEs, Window Functions, Data Types, JSON/FTS, Functions/Triggers, Server, Replication)
@@ -37,17 +37,59 @@
   - [x] TPC-C benchmark — OLTP workload (new-order, payment transactions) ✅
   - [x] TPC-H benchmark — OLAP workload (Q1, Q3, Q6 queries) ✅
   - [x] Jepsen-style testing (distributed consistency verification) — 19 tests ✅
-- **Milestone 25**: Documentation & Packaging 🚧 IN PROGRESS (7/8 tasks complete)
+- **Milestone 25**: Documentation & Packaging ✅ COMPLETE (8/8 tasks complete)
   - [x] README.md — Project overview, quick start, features
   - [x] API reference (docs/API_REFERENCE.md) — Zig embedded API, C FFI
   - [x] Getting started guide (docs/GETTING_STARTED.md) — Complete tutorial
   - [x] SQL reference (docs/SQL_REFERENCE.md) — Complete SQL syntax guide
-  - [x] **Operations guide (docs/OPERATIONS_GUIDE.md)** — Backup, restore, monitoring, tuning ✅
-  - [x] **Architecture guide (docs/ARCHITECTURE_GUIDE.md)** — Internal design ✅
-  - [x] **CI/CD pipeline polish** — Caching, benchmarks, versioned artifacts ✅
-  - [ ] System packages (deb, rpm, brew)
+  - [x] Operations guide (docs/OPERATIONS_GUIDE.md) — Backup, restore, monitoring, tuning
+  - [x] Architecture guide (docs/ARCHITECTURE_GUIDE.md) — Internal design
+  - [x] CI/CD pipeline polish — Caching, benchmarks, versioned artifacts
+  - [x] System packages (deb, rpm, brew) — debian/, packaging/, docs/PACKAGING.md ✅
 
 ## Recent Sessions
+
+### FEATURE Session (2026-03-25 — Session 19) — Milestone 25 COMPLETE: System Packaging
+- **Mode**: FEATURE (session #19, counter % 5 == 4)
+- **Focus**: Complete Milestone 25 with system packages (deb, rpm, brew)
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #19 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest CI run successful
+  3. **Issue Review**: Issue #16 (MVCC visibility bugs) is architectural limitation — requires Milestone 26+ (multi-version storage)
+  4. **Packaging Infrastructure** (already in place from previous session):
+     - debian/: Debian package metadata
+       * control: Package description, build dependencies (debhelper, zig >= 0.15.0)
+       * rules: Build rules (zig build -Doptimize=ReleaseSafe, install paths)
+       * changelog: Version 0.3.0-1, Phase 3 complete
+       * copyright: MIT license, Debian copyright format
+       * compat: debhelper version 13
+     - packaging/rpm/silica.spec: RPM spec file
+       * Build section: zig build -Doptimize=ReleaseSafe
+       * Install section: binary, config, systemd service, docs
+       * Pre/post scripts: user/group creation, systemd integration
+       * Changelog: v0.3.0-1
+     - packaging/homebrew/silica.rb: Homebrew formula
+       * Build: zig build -Doptimize=ReleaseSafe
+       * Install: binary, config, docs, data directory
+       * Service definition: launchd service for server mode
+       * Test block: smoke test (create db, insert, query)
+     - packaging/systemd/silica.service: Systemd service unit
+       * User/Group: silica
+       * WorkingDirectory: /var/lib/silica
+       * ExecStart: /usr/bin/silica server --data-dir /var/lib/silica --port 5433
+       * Security hardening: NoNewPrivileges, PrivateTmp, ProtectSystem=strict
+  5. **Documentation Created**: docs/PACKAGING.md (600+ lines)
+     - Build instructions for all 3 package types (deb, rpm, brew)
+     - Distribution setup: APT repository, YUM repository, Homebrew tap
+     - CI/CD integration: GitHub Actions workflow examples for automated package builds
+     - Package signing: GPG signing for deb and rpm
+     - Troubleshooting: Build failures, installation failures, service failures
+     - Complete package contents table
+  6. **Milestone 25 Status**: ✅ **COMPLETE** — All 8 tasks done
+- **Commits**:
+  - c78fe29: docs: add system packaging (deb, rpm, brew) and guide (Milestone 25)
+  - [pending]: chore: update session memory
+- **Next Priority**: Phase 12 complete — next is future phase planning or zuda migration
 
 ### FEATURE Session (2026-03-25 — Session 17) — Milestone 25 CI/CD Polish
 - **Mode**: FEATURE (session #17, counter % 5 == 2)

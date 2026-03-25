@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current development**: Phase 12 — Production Readiness (Milestone 23 complete, Milestone 24 next)
+- **Current development**: Phase 12 — Production Readiness (Milestones 23-25 complete)
 - **Tests**: 2766 tests (2766 passing, 12 skipped: 7 BitmapHeapScan TID mapping, 2 parser placeholders, 2 catalog, 1 statement_timeout)
 - **Branch**: `main`
 - **zuda migrations**: LRU Cache and Deadlock Detection **BLOCKED** (awaiting zuda#9, zuda#10); B+Tree needs architect review
@@ -72,8 +72,15 @@
 - [x] TPC-H benchmark (OLAP workload) — 3 representative queries (Q1, Q3, Q6) ✅
 - [x] Jepsen-style testing (distributed consistency verification) — 19 tests ✅
 
-**Milestone 25**: Documentation & Packaging
-- API reference, ops guide, SQL reference, system packages
+**Milestone 25**: Documentation & Packaging ✅ COMPLETE
+- [x] README.md — Project overview, quick start, features
+- [x] API reference (docs/API_REFERENCE.md) — Zig embedded API, C FFI
+- [x] Getting started guide (docs/GETTING_STARTED.md) — Complete tutorial
+- [x] SQL reference (docs/SQL_REFERENCE.md) — Complete SQL syntax guide
+- [x] Operations guide (docs/OPERATIONS_GUIDE.md) — Backup, restore, monitoring, tuning
+- [x] Architecture guide (docs/ARCHITECTURE_GUIDE.md) — Internal design
+- [x] CI/CD pipeline polish — Caching, benchmarks, versioned artifacts
+- [x] System packages (deb, rpm, brew) — debian/, packaging/, docs/PACKAGING.md
 
 ---
 
