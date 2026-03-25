@@ -14,20 +14,21 @@
 
 ## Active Issues
 
-### MVCC Visibility Bugs (March 25, 2026 - Issue #16) — **PARTIALLY FIXED**
+### MVCC Visibility Bugs (March 25-26, 2026 - Issue #16) — **PARTIALLY FIXED, ROOT CAUSE IDENTIFIED**
 - **Symptom**: Jepsen consistency tests failing with NoRows errors and lost updates
 - **Status**:
   - ✅ **FIXED** (commit 2a239e7): Shared TransactionManager across connections — phantom reads prevented
   - ✅ **FIXED** (commit f1789ed): Lost update in READ COMMITTED — re-read row after lock acquisition
+  - ⏳ **ROOT CAUSE IDENTIFIED** (commit 078ab50): READ COMMITTED snapshot refresh bug — auto-commit bypasses TransactionManager
   - ⏳ **DEFERRED**: Dirty read NoRows (architectural limitation) — requires multi-version storage
 
-- **Failing Tests** (3 skipped as of commit f1789ed):
+- **Failing Tests** (4 skipped as of commit 078ab50):
   1. **dirty read prevention (READ COMMITTED)** — NoRows during concurrent UPDATE (SKIPPED — architectural)
   2. dirty read prevention (REPEATABLE READ) — same architectural issue (SKIPPED)
   3. dirty read prevention (SERIALIZABLE) — same architectural issue (SKIPPED)
   4. ~~bank transfer (READ COMMITTED)~~ — ✅ **FIXED** in f1789ed (lost update fix)
   5. bank transfer (REPEATABLE READ) — NoRows during concurrent transfers (SKIPPED — architectural)
-  6. ~~non-repeatable read~~ — *(different test, not in this set)*
+  6. **non-repeatable read (READ COMMITTED allows)** — auto-commit visibility bug (ROOT CAUSE IDENTIFIED — see below)
   7. ~~long fork test~~ — *(different test, not in this set)*
 
 - **Root Cause 1: Lost Update in READ COMMITTED** (FIXED in commit f1789ed):
@@ -102,16 +103,67 @@
   Exception: Snapshot.EMPTY (xmin == xmax) sees everything for bootstrap
   ```
 
+- **Root Cause 4: READ COMMITTED Snapshot Refresh Bug** (IDENTIFIED in commit 078ab50, Session 24):
+  ```
+  Problem: READ COMMITTED transaction cannot see auto-commit changes through snapshot refresh.
+
+  Timeline:
+  1. Reader BEGIN (READ COMMITTED) → snapshot#1
+  2. Reader SELECT → sees value=100 ✅
+  3. Writer UPDATE (auto-commit, separate connection) → writes value=200
+  4. Reader SELECT (new statement → should take snapshot#2) → sees 100 ❌ (expected 200)
+
+  Root Cause: AUTO-COMMIT BYPASSES TransactionManager ENTIRELY
+
+  Investigation (2 hours, Session 24):
+  - Created isolated reproduction test case → confirmed bug
+  - Traced code paths:
+    * engine.zig:2295-2299: Auto-commit creates rows WITHOUT MVCC headers
+      const row_data = if (self.current_txn) |txn| blk: {
+          // MVCC versioned row
+      } else serializeRow(allocator, vals); // ← Auto-commit: plain row, no MVCC
+
+    * mvcc.zig:412: TransactionManager.getSnapshot() IS correct (takes fresh snapshot)
+
+    * engine.zig:2859-2860: UPDATE does physical DELETE+INSERT
+      tree.delete(item.key);  // Remove old row
+      tree.insert(item.key, item.value);  // Insert new row (no MVCC header if auto-commit)
+
+    * Separate Database instances have separate buffer pools
+      → Writer flushes to disk, but reader's buffer pool has old page cached
+      → No cache invalidation mechanism between instances
+
+  Why getSnapshot() doesn't help:
+  - Snapshot correctly captures committed XIDs
+  - But auto-commit rows have NO xmin/xmax (no MVCC header)
+  - executor.zig:3524-3559: ScanOp skips visibility check for non-MVCC rows
+  - Buffer pool returns cached old page (before writer's UPDATE)
+
+  Fix Options (documented in issue #16):
+
+  Option 1 (RECOMMENDED): Auto-commit uses implicit transactions
+  - execSQL() detects no active transaction → calls beginTransaction(.read_committed)
+  - Executes statement (creates MVCC versioned rows with xmin)
+  - Calls commitTransaction() → registers commit in TransactionManager
+  - Result: All writes uniformly create MVCC headers, snapshots see commits
+  - Aligns with PostgreSQL behavior (BEGIN is implicit)
+
+  Option 2: Shared buffer pool (major refactoring, concurrency bottleneck)
+  Option 3: Buffer pool invalidation protocol (complex, requires IPC)
+  ```
+
 - **Fixes Applied**:
   1. ✅ Commit e8be60b: Skipped 3 dirty read tests (architectural limitation)
   2. ✅ Commit e8be60b: Use `isTupleVisibleWithTm` consistently (3 locations)
   3. ✅ Commit 95ada9b: Respect snapshot boundary in `isTupleVisibleWithTm` (fixes phantom reads)
+  4. ✅ Commit 078ab50: Documented root cause of READ COMMITTED snapshot refresh bug
 
-- **Remaining Work** (Milestone 26):
-  - Implement multi-version storage for UPDATE/DELETE
-  - Re-enable 3 skipped dirty read tests
+- **Remaining Work** (Milestone 25-26):
+  - Implement implicit transactions for auto-commit (Option 1) — fixes non-repeatable read test
+  - Implement multi-version storage for UPDATE/DELETE — fixes dirty read NoRows tests
+  - Re-enable 4 skipped tests after fixes
 
-- **CI Status**: ✅ **GREEN** (all tests passing, 4 known architectural limitations skipped)
+- **CI Status**: ✅ **GREEN** (all tests passing, 4 known bugs skipped with documented root causes)
 
 ### SSI Not Implemented (March 25, 2026 - Issue #15)
 - **Symptom**: SERIALIZABLE isolation behaves as REPEATABLE READ (snapshot only, no conflict detection)

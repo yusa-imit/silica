@@ -49,6 +49,44 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-26 — Session 24) — MVCC Bug Investigation (Issue #16)
+- **Mode**: FEATURE (session #24, counter % 5 == 4)
+- **Focus**: Investigate READ COMMITTED snapshot bug (non-repeatable read test failure)
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #24 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Prioritization**: Issue #16 (MVCC visibility bugs) selected — correctness bug (Rule #13)
+  4. **Root Cause Investigation** (2 hours):
+     - **Problem**: READ COMMITTED transaction cannot see auto-commit changes through snapshot refresh
+     - **Timeline**: Reader BEGIN → SELECT (sees 100) → Writer UPDATE to 200 (auto-commit) → Reader SELECT (sees 100 ❌, expected 200)
+     - **Root Cause**: **Auto-commit bypasses TransactionManager entirely**
+       * Auto-commit writes rows WITHOUT MVCC headers (`engine.zig:2299`)
+       * `TransactionManager.getSnapshot()` is correct (takes fresh snapshot per statement)
+       * BUT: Separate Database instances have separate buffer pools → reader's buffer pool caches old pages
+       * No cache invalidation mechanism between instances
+     - **Code Locations**:
+       * `engine.zig:2295-2299`: Auto-commit creates plain rows (no MVCC header)
+       * `engine.zig:2859-2860`: UPDATE does physical DELETE+INSERT
+       * `mvcc.zig:412`: getSnapshot() correctly calls takeSnapshotLocked()
+       * `executor.zig:3524-3559`: ScanOp visibility filtering
+     - **Reproduction**: Created isolated test case `test_mvcc_bug.zig` — confirmed bug
+  5. **Fix Options Identified**:
+     - **Option 1 (RECOMMENDED)**: Auto-commit uses implicit transactions (BEGIN/COMMIT internally)
+       * Ensures all writes create MVCC versioned rows
+       * TransactionManager tracks commits → snapshots see them
+       * Aligns with PostgreSQL behavior
+     - Option 2: Shared buffer pool (major refactoring)
+     - Option 3: Buffer pool invalidation protocol (complex, IPC required)
+  6. **GitHub Activity**:
+     - Posted comprehensive root cause analysis to issue #16
+     - Documented fix options, impact, next steps
+     - Updated test with TODO explaining root cause
+  7. **Decision**: Fix deferred to future session (requires implementing implicit transactions for auto-commit)
+- **Commits**:
+  - 078ab50: docs: document root cause of READ COMMITTED snapshot bug (issue #16)
+- **Test Status**: Issue #16 root cause identified, fix not yet implemented (architectural change)
+- **Next Priority**: Implement implicit transactions for auto-commit (Option 1), or continue other Milestone 24-25 work
+
 ### FEATURE Session (2026-03-25 — Session 22) — Sailor v1.20.0 & v1.21.0 Migration
 - **Mode**: FEATURE (session #22, counter % 5 == 2)
 - **Focus**: Dependency migrations to latest sailor versions
