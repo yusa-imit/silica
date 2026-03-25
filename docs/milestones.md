@@ -2,8 +2,8 @@
 
 ## Current Status
 
-- **Latest tagged release**: v0.3.0 (Phase 3: WAL & Basic Transactions)
-- **Current development**: Phase 12 — Production Readiness (Milestones 23-25 complete)
+- **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
+- **Current development**: All milestones complete, maintenance mode
 - **Tests**: 2766 tests (2766 passing, 12 skipped: 7 BitmapHeapScan TID mapping, 2 parser placeholders, 2 catalog, 1 statement_timeout)
 - **Branch**: `main`
 - **zuda migrations**: LRU Cache and Deadlock Detection **BLOCKED** (awaiting zuda#9, zuda#10); B+Tree needs architect review
@@ -140,8 +140,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.21.0
-- **Latest available**: v1.21.0
+- **Current in silica**: v1.22.0
+- **Latest available**: v1.22.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -176,6 +176,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.19.0 | enhancement & polish | DONE | Progress bar templates, env config, color themes, table formatting, arg groups |
 | v1.20.0 | quality & completeness | DONE | Windows console Unicode tests, pattern documentation, directory scanning, error context |
 | v1.21.0 | streaming & large data | DONE | DataSource abstraction, large data benchmarks, memory efficiency |
+| v1.22.0 | rich text & formatting | DONE | SpanBuilder/LineBuilder APIs, rich text parser, line breaking, Unicode-aware text measurements |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: CompletionPopup for SQL keyword/table/column completion
