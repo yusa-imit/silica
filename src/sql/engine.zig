@@ -102,6 +102,93 @@ const MvccContext = executor_mod.MvccContext;
 const serializeRow = executor_mod.serializeRow;
 const evalExpr = executor_mod.evalExpr;
 
+// ── Shared Transaction Manager Registry ────────────────────────────────
+
+/// Global registry mapping database file paths to shared TransactionManager instances.
+/// This ensures multiple Database connections to the same file share a single TM,
+/// which is required for proper MVCC isolation across connections.
+const SharedTmRegistry = struct {
+    mutex: std.Thread.Mutex = .{},
+    map: std.StringHashMapUnmanaged(SharedTmEntry) = .{},
+    gpa: Allocator,
+
+    const SharedTmEntry = struct {
+        tm: *TransactionManager,
+        refcount: usize,
+    };
+
+    fn init(allocator: Allocator) SharedTmRegistry {
+        return .{ .gpa = allocator };
+    }
+
+    fn deinit(self: *SharedTmRegistry) void {
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            entry.value_ptr.tm.deinit();
+            self.gpa.destroy(entry.value_ptr.tm);
+        }
+        self.map.deinit(self.gpa);
+    }
+
+    fn acquire(self: *SharedTmRegistry, path: []const u8) !*TransactionManager {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const gop = try self.map.getOrPut(self.gpa, path);
+        if (!gop.found_existing) {
+            // First connection to this database — create new TM
+            const path_copy = try self.gpa.dupe(u8, path);
+            errdefer self.gpa.free(path_copy);
+            gop.key_ptr.* = path_copy;
+
+            const tm = try self.gpa.create(TransactionManager);
+            errdefer self.gpa.destroy(tm);
+            tm.* = TransactionManager.init(self.gpa);
+
+            gop.value_ptr.* = .{
+                .tm = tm,
+                .refcount = 1,
+            };
+            return tm;
+        } else {
+            // Existing TM — increment refcount
+            gop.value_ptr.refcount += 1;
+            return gop.value_ptr.tm;
+        }
+    }
+
+    fn release(self: *SharedTmRegistry, path: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.map.getPtr(path) orelse return;
+        entry.refcount -= 1;
+        if (entry.refcount == 0) {
+            // Last connection closed — cleanup TM and remove from map
+            entry.tm.deinit();
+            self.gpa.destroy(entry.tm);
+            // fetchRemove gets us the owned key so we can free it
+            const kv = self.map.fetchRemove(path).?;
+            self.gpa.free(kv.key);
+        }
+    }
+};
+
+var global_tm_registry: SharedTmRegistry = undefined;
+var registry_initialized: bool = false;
+var registry_mutex: std.Thread.Mutex = .{};
+
+/// Cleanup the global TM registry (for tests).
+pub fn cleanupGlobalTmRegistry() void {
+    registry_mutex.lock();
+    defer registry_mutex.unlock();
+    if (registry_initialized) {
+        global_tm_registry.deinit();
+        registry_initialized = false;
+    }
+}
+
 // ── View Column Extraction ──────────────────────────────────────────
 
 const ColumnRef = planner_mod.ColumnRef;
@@ -622,8 +709,10 @@ pub const Database = struct {
     schema_arena: std.heap.ArenaAllocator,
     /// Optional WAL for transaction durability.
     wal: ?*Wal = null,
-    /// Transaction manager for MVCC.
-    tm: TransactionManager,
+    /// Transaction manager for MVCC (shared across connections to same file).
+    tm: *TransactionManager,
+    /// Database file path (owned, for TM registry release on close).
+    db_path: []const u8,
     /// Lock manager for row-level and table-level locking.
     lock_manager: LockManager,
     /// Free space map for tracking available space per page.
@@ -641,6 +730,14 @@ pub const Database = struct {
 
     /// Open or create a database file.
     pub fn open(allocator: Allocator, path: []const u8, opts: OpenOptions) !Database {
+        // Initialize shared TM registry if not already done
+        registry_mutex.lock();
+        if (!registry_initialized) {
+            global_tm_registry = SharedTmRegistry.init(allocator);
+            registry_initialized = true;
+        }
+        registry_mutex.unlock();
+
         const pager = try allocator.create(Pager);
         errdefer allocator.destroy(pager);
         pager.* = try Pager.init(allocator, path, .{ .page_size = opts.page_size });
@@ -665,6 +762,14 @@ pub const Database = struct {
 
         var cat = try Catalog.init(allocator, pool, is_new);
         _ = &cat;
+
+        // Acquire shared TM for this database file path
+        const tm = try global_tm_registry.acquire(path);
+        errdefer global_tm_registry.release(path);
+
+        // Own a copy of the path for later release
+        const path_copy = try allocator.dupe(u8, path);
+        errdefer allocator.free(path_copy);
 
         // Initialize ConfigManager with default parameters
         var config = ConfigManager.init(allocator);
@@ -736,7 +841,8 @@ pub const Database = struct {
             .catalog = cat,
             .schema_arena = std.heap.ArenaAllocator.init(allocator),
             .wal = wal_ptr,
-            .tm = TransactionManager.init(allocator),
+            .tm = tm,
+            .db_path = path_copy,
             .lock_manager = LockManager.init(allocator),
             .fsm = FreeSpaceMap.init(allocator, pager.page_size),
             .ssi_tracker = SsiTracker.init(allocator),
@@ -762,7 +868,11 @@ pub const Database = struct {
         self.ssi_tracker.deinit();
         self.lock_manager.deinit();
         self.fsm.deinit();
-        self.tm.deinit();
+        // Release shared TM (decrements refcount, frees path if last connection)
+        global_tm_registry.release(self.db_path);
+        // Note: db_path is freed by registry when refcount reaches 0
+        // For connections with refcount > 0, the registry still owns the path
+        self.allocator.free(self.db_path);
         self.config.deinit();
         self.schema_arena.deinit();
 
@@ -1163,7 +1273,7 @@ pub const Database = struct {
                     .snapshot = snap,
                     .current_xid = txn.xid,
                     .current_cid = cid,
-                    .tm = &self.tm,
+                    .tm = self.tm,
                 };
             }
             // REPEATABLE READ / SERIALIZABLE: use stored snapshot (not owned by us)
@@ -1172,7 +1282,7 @@ pub const Database = struct {
                     .snapshot = snap,
                     .current_xid = txn.xid,
                     .current_cid = cid,
-                    .tm = &self.tm,
+                    .tm = self.tm,
                 };
             }
         }
@@ -1184,7 +1294,7 @@ pub const Database = struct {
     fn ssiRegisterRead(self: *Database, table_page_id: u32) EngineError!void {
         if (self.current_txn) |txn| {
             if (txn.isolation == .serializable) {
-                self.ssi_tracker.registerRead(txn.xid, table_page_id, &self.tm) catch return EngineError.OutOfMemory;
+                self.ssi_tracker.registerRead(txn.xid, table_page_id, self.tm) catch return EngineError.OutOfMemory;
             }
         }
     }
@@ -1193,7 +1303,7 @@ pub const Database = struct {
     fn ssiRegisterWrite(self: *Database, table_page_id: u32) EngineError!void {
         if (self.current_txn) |txn| {
             if (txn.isolation == .serializable) {
-                self.ssi_tracker.registerWrite(txn.xid, table_page_id, &self.tm) catch return EngineError.OutOfMemory;
+                self.ssi_tracker.registerWrite(txn.xid, table_page_id, self.tm) catch return EngineError.OutOfMemory;
             }
         }
     }
@@ -3914,7 +4024,7 @@ pub const Database = struct {
                 self.allocator,
                 self.pool,
                 table_info.data_root_page_id,
-                &self.tm,
+                self.tm,
                 &table_info,
                 &self.fsm,
             ) catch return EngineError.StorageError;
@@ -3943,7 +4053,7 @@ pub const Database = struct {
                     self.allocator,
                     self.pool,
                     table_info.data_root_page_id,
-                    &self.tm,
+                    self.tm,
                     &table_info,
                     &self.fsm,
                 ) catch continue;
@@ -4467,7 +4577,7 @@ pub const Database = struct {
                 self.allocator,
                 self.pool,
                 table_info.data_root_page_id,
-                &self.tm,
+                self.tm,
                 &table_info,
                 &self.fsm,
             ) catch continue;

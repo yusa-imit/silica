@@ -285,6 +285,7 @@ pub fn isTupleVisibleWithTm(
 // ── Transaction Manager ────────────────────────────────────────────────
 
 /// Manages transaction IDs, snapshots, and transaction state.
+/// Thread-safe when shared across multiple connections.
 pub const TransactionManager = struct {
     allocator: Allocator,
     /// Next transaction ID to assign.
@@ -293,6 +294,8 @@ pub const TransactionManager = struct {
     active_txns: std.AutoHashMapUnmanaged(u32, TransactionInfo),
     /// Oldest active XID (for VACUUM horizon).
     oldest_active_xid: u32,
+    /// Mutex for thread-safe access (required when TM is shared across connections).
+    mutex: std.Thread.Mutex = .{},
 
     pub const TransactionInfo = struct {
         state: TransactionState,
@@ -325,6 +328,9 @@ pub const TransactionManager = struct {
 
     /// Begin a new transaction. Returns the assigned XID.
     pub fn begin(self: *TransactionManager, isolation: IsolationLevel) !u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (self.next_xid > MAX_XID) return error.TransactionIdWraparound;
 
         const xid = self.next_xid;
@@ -344,7 +350,7 @@ pub const TransactionManager = struct {
 
         // For REPEATABLE READ and SERIALIZABLE, take snapshot at transaction start
         if (isolation != .read_committed) {
-            const snapshot = try self.takeSnapshot();
+            const snapshot = try self.takeSnapshotLocked();
             const entry = self.active_txns.getPtr(xid).?;
             entry.snapshot = snapshot;
         }
@@ -354,8 +360,15 @@ pub const TransactionManager = struct {
         return xid;
     }
 
-    /// Take a snapshot of currently active transactions.
+    /// Take a snapshot of currently active transactions (thread-safe).
     pub fn takeSnapshot(self: *TransactionManager) !Snapshot {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.takeSnapshotLocked();
+    }
+
+    /// Internal: take snapshot assuming mutex is held.
+    fn takeSnapshotLocked(self: *TransactionManager) !Snapshot {
         // Count active transactions
         var count: usize = 0;
         var it = self.active_txns.iterator();
@@ -389,17 +402,23 @@ pub const TransactionManager = struct {
     /// READ COMMITTED: fresh snapshot every time.
     /// REPEATABLE READ / SERIALIZABLE: reuse transaction snapshot.
     pub fn getSnapshot(self: *TransactionManager, xid: u32) !Snapshot {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
 
         return switch (info.isolation) {
-            .read_committed => try self.takeSnapshot(),
+            .read_committed => try self.takeSnapshotLocked(),
             .repeatable_read, .serializable => info.snapshot orelse return error.SnapshotMissing,
         };
     }
 
     /// Advance the command ID for a transaction (called per statement).
     pub fn advanceCid(self: *TransactionManager, xid: u32) !u16 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
         const cid = info.current_cid;
@@ -410,12 +429,18 @@ pub const TransactionManager = struct {
 
     /// Get the current command ID for a transaction.
     pub fn getCurrentCid(self: *TransactionManager, xid: u32) !u16 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         return info.current_cid;
     }
 
     /// Reset the command ID for a transaction (used by ROLLBACK TO SAVEPOINT).
     pub fn resetCid(self: *TransactionManager, xid: u32, cid: u16) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
         info.current_cid = cid;
@@ -423,6 +448,9 @@ pub const TransactionManager = struct {
 
     /// Commit a transaction.
     pub fn commit(self: *TransactionManager, xid: u32) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
 
@@ -439,6 +467,9 @@ pub const TransactionManager = struct {
 
     /// Abort (rollback) a transaction.
     pub fn abort(self: *TransactionManager, xid: u32) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
 
@@ -454,6 +485,9 @@ pub const TransactionManager = struct {
 
     /// Get the state of a transaction.
     pub fn getState(self: *TransactionManager, xid: u32) ?TransactionState {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.get(xid) orelse return null;
         return info.state;
     }
@@ -461,18 +495,28 @@ pub const TransactionManager = struct {
     /// Check if a transaction is committed.
     pub fn isCommitted(self: *TransactionManager, xid: u32) bool {
         if (xid == FROZEN_XID or xid == BOOTSTRAP_XID) return true;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.get(xid) orelse return true; // Unknown = committed (pruned)
         return info.state == .committed;
     }
 
     /// Check if a transaction is aborted.
     pub fn isAborted(self: *TransactionManager, xid: u32) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.active_txns.get(xid) orelse return false;
         return info.state == .aborted;
     }
 
     /// Get the oldest active XID — VACUUM horizon.
     pub fn getVacuumHorizon(self: *TransactionManager) u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         return self.oldest_active_xid;
     }
 

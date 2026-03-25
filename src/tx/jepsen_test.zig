@@ -91,6 +91,8 @@ fn cleanupDbFiles(allocator: std.mem.Allocator, db_path: []const u8) void {
     const wal_path = std.fmt.allocPrint(allocator, "{s}-wal", .{db_path}) catch return;
     defer allocator.free(wal_path);
     std.fs.cwd().deleteFile(wal_path) catch {};
+    // Cleanup shared TM registry to prevent memory leaks in tests
+    engine_mod.cleanupGlobalTmRegistry();
 }
 
 /// Begin transaction with explicit isolation level.
