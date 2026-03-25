@@ -49,6 +49,35 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-25 — Session 22) — Sailor v1.20.0 & v1.21.0 Migration
+- **Mode**: FEATURE (session #22, counter % 5 == 2)
+- **Focus**: Dependency migrations to latest sailor versions
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #22 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Review**: Issues #14 (sailor v1.20.0) and #17 (sailor v1.21.0) identified as migration tasks
+  4. **Sailor v1.20.0 Migration** (Commit 150a1d3):
+     - Upgraded from v1.19.0 to v1.20.0 via `zig fetch --save`
+     - **New features**: Windows console Unicode tests (23 tests), pattern documentation (docs/patterns.md), directory scanning for docgen, error context module
+     - **Breaking changes**: None
+     - Build verified: ✅ passes
+     - Closed issue #14
+  5. **Sailor v1.21.0 Migration** (Commit a5f00b8):
+     - Upgraded from v1.20.0 to v1.21.0 via `zig fetch --save`
+     - **New features**: DataSource abstraction (ItemDataSource, TableDataSource, LineDataSource), large data benchmarks (1M+ items), memory efficiency improvements
+     - **Breaking changes**: None
+     - Build verified: ✅ passes
+     - Closed issue #17
+  6. **Documentation Update** (Commit d941631):
+     - Updated `docs/milestones.md` sailor version tracking to reflect v1.19.0, v1.20.0, v1.21.0 as DONE
+     - Current sailor version in silica: v1.21.0
+- **Commits**:
+  - 150a1d3: chore: upgrade sailor to v1.20.0
+  - a5f00b8: chore: upgrade sailor to v1.21.0
+  - d941631: docs: update sailor version tracking to v1.21.0
+  - [pending]: chore: update session memory
+- **Next Priority**: MVCC bug fixes (issue #16) or future phase planning
+
 ### FEATURE Session (2026-03-25 — Session 21) — Lost Update Fix (Issue #16 Partial)
 - **Mode**: FEATURE (session #21, counter % 5 == 1)
 - **Focus**: Fix lost update race condition in READ COMMITTED isolation level
