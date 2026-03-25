@@ -164,14 +164,12 @@ const SharedTmRegistry = struct {
 
         const entry = self.map.getPtr(path) orelse return;
         entry.refcount -= 1;
-        if (entry.refcount == 0) {
-            // Last connection closed — cleanup TM and remove from map
-            entry.tm.deinit();
-            self.gpa.destroy(entry.tm);
-            // fetchRemove gets us the owned key so we can free it
-            const kv = self.map.fetchRemove(path).?;
-            self.gpa.free(kv.key);
-        }
+        // IMPORTANT: Do NOT destroy TM when refcount==0
+        // The TM must persist across connection open/close cycles to maintain
+        // transaction ID monotonicity. If we destroy it here, a new connection
+        // would create a fresh TM starting at xid=1, breaking MVCC visibility
+        // for rows written by previous connections (xid reuse).
+        // TMs are only cleaned up at process exit (deinit) or explicit cleanup.
     }
 };
 
@@ -1324,6 +1322,25 @@ pub const Database = struct {
     }
 
     fn executePlan(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
+        // Determine if this is a DML statement that needs implicit transaction in auto-commit mode
+        const is_dml = switch (plan.plan_type) {
+            .insert, .update, .delete => true,
+            else => false,
+        };
+
+        // Auto-commit DML: Create implicit transaction with READ COMMITTED isolation
+        // This ensures all writes go through TransactionManager with proper MVCC headers
+        const implicit_txn = self.current_txn == null and is_dml;
+        if (implicit_txn) {
+            try self.beginTransaction(.read_committed);
+        }
+        errdefer {
+            // If execution fails and we created implicit txn, roll it back
+            if (implicit_txn) {
+                self.rollbackTransaction() catch {};
+            }
+        }
+
         // Advance CID in explicit transactions (one CID per statement)
         if (self.current_txn != null) {
             _ = self.advanceStatementCid() catch {};
@@ -1343,17 +1360,19 @@ pub const Database = struct {
             },
         };
 
-        // Commit WAL after successful DML/DDL in auto-commit mode only.
-        // In explicit transactions, WAL is committed at COMMIT time.
-        if (self.current_txn == null) {
+        // Auto-commit implicit transaction: commit it now
+        if (implicit_txn) {
+            if (result) |_| {
+                try self.commitTransaction();
+            } else |err| {
+                self.rollbackTransaction() catch {};
+                return err;
+            }
+        } else if (self.current_txn == null) {
+            // Non-DML auto-commit (DDL): commit WAL immediately
             if (result) |r| {
                 if (r.rows == null) {
                     self.commitWal() catch {};
-                    // Auto-commit DML: record commit and check auto-vacuum
-                    if (r.rows_affected > 0) {
-                        self.auto_vacuum.recordCommit();
-                        self.runAutoVacuumIfNeeded();
-                    }
                 }
             } else |_| {}
         }

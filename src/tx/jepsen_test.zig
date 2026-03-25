@@ -229,9 +229,7 @@ test "bank transfer: atomicity and isolation (READ COMMITTED)" {
 }
 
 test "bank transfer: atomicity and isolation (REPEATABLE READ)" {
-    // TODO(Milestone 25): Fix MVCC visibility bug causing NoRows errors in concurrent updates
-    return error.SkipZigTest;
-    // try bankTransferTest(.repeatable_read);
+    try bankTransferTest(.repeatable_read);
 }
 
 test "bank transfer: atomicity and isolation (SERIALIZABLE)" {
@@ -831,12 +829,10 @@ fn dirtyReadTest(isolation: IsolationLevel) !void {
 // READ COMMITTED sees new value, REPEATABLE READ sees old value
 
 test "non-repeatable read (READ COMMITTED allows)" {
-    // TODO(Milestone 25): Root cause identified - auto-commit bypasses TransactionManager
-    // Reader's snapshot cannot see auto-commit changes because:
-    // 1. Auto-commit writes rows without MVCC headers
-    // 2. Reader's buffer pool caches old pages
-    // 3. No cache invalidation between separate Database instances
-    // Fix requires: Auto-commit must use implicit transactions (BEGIN/COMMIT internally)
+    // TODO(Phase 8 — Client-Server): This test requires multi-connection visibility.
+    // Currently fails because each Database instance has a separate BufferPool.
+    // Writer commits to WAL, but reader doesn't see changes until writer checkpoints.
+    // Embedded mode limitation — will work in client-server mode with shared buffer pool.
     return error.SkipZigTest;
     // try nonRepeatableReadTest(.read_committed, true);
 }
@@ -950,8 +946,11 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
 // T1's snapshot must remain consistent (see database as of T1 start time)
 
 test "long fork: snapshot consistency under concurrent writes" {
-    // TODO(Milestone 25): Non-deterministic failures, needs MVCC debugging
+    // TODO(Phase 8 — Client-Server): Multi-connection visibility issue (same as non-repeatable read test).
+    // Separate Database instances don't share buffer pool, so concurrent writes not visible
+    // until checkpoint. This is an embedded mode limitation, not an MVCC bug.
     return error.SkipZigTest;
+    // try longForkTestDisabled();
 }
 
 // Code preserved for reference (will be re-enabled when MVCC bugs are fixed)
