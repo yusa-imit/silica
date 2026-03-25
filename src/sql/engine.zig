@@ -2705,6 +2705,56 @@ pub const Database = struct {
                 };
             }
 
+            // Re-read the row after acquiring the lock to get fresh values
+            // This prevents lost updates in READ COMMITTED where a concurrent transaction
+            // could have committed changes between our initial read and lock acquisition.
+            const fresh_value_bytes = tree.get(self.allocator, entry.key) catch |err| {
+                for (row.values) |v| v.free(self.allocator);
+                self.allocator.free(row.values);
+                if (err == btree_mod.BTreeError.KeyNotFound) {
+                    // Row was deleted by another transaction after we read it
+                    continue;
+                }
+                return EngineError.StorageError;
+            } orelse {
+                // Row no longer exists (deleted concurrently)
+                for (row.values) |v| v.free(self.allocator);
+                self.allocator.free(row.values);
+                continue;
+            };
+            defer self.allocator.free(fresh_value_bytes);
+
+            // Deserialize the fresh row values
+            var fresh_values: []Value = undefined;
+            if (isVersionedRowData(fresh_value_bytes)) {
+                // MVCC row: check visibility of the fresh version
+                if (mvcc_ctx) |ctx| {
+                    const fresh_hdr = TupleHeader.deserialize(fresh_value_bytes[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisibleWithTm(fresh_hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                        // Row became invisible (e.g., updated by another transaction)
+                        for (row.values) |v| v.free(self.allocator);
+                        self.allocator.free(row.values);
+                        continue;
+                    }
+                }
+                fresh_values = executor_mod.deserializeRow(self.allocator, fresh_value_bytes[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                    for (row.values) |v| v.free(self.allocator);
+                    self.allocator.free(row.values);
+                    continue;
+                };
+            } else {
+                fresh_values = executor_mod.deserializeRow(self.allocator, fresh_value_bytes) catch {
+                    for (row.values) |v| v.free(self.allocator);
+                    self.allocator.free(row.values);
+                    continue;
+                };
+            }
+
+            // Free the old stale values and replace with fresh ones
+            for (row.values) |v| v.free(self.allocator);
+            self.allocator.free(row.values);
+            row.values = fresh_values;
+
             // Save old values for index maintenance
             const old_values = self.allocator.alloc(Value, row.values.len) catch {
                 for (row.values) |v| v.free(self.allocator);

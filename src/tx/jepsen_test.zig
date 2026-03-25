@@ -225,12 +225,7 @@ const TransferTask = struct {
 };
 
 test "bank transfer: atomicity and isolation (READ COMMITTED)" {
-    // TODO(Milestone 25): Fix lost update in READ COMMITTED with read-modify-write UPDATE
-    // Root cause: UPDATE reads balance, then writes new value. Concurrent transactions can
-    // read the same old value and both write, creating money (expected 1000, found 1059).
-    // Fix requires SELECT FOR UPDATE row locking or optimistic concurrency control.
-    return error.SkipZigTest;
-    // try bankTransferTest(.read_committed);
+    try bankTransferTest(.read_committed);
 }
 
 test "bank transfer: atomicity and isolation (REPEATABLE READ)" {
