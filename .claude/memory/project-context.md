@@ -49,6 +49,48 @@
 
 ## Recent Sessions
 
+### STABILIZATION Session (2026-03-25 — Session 20) — MVCC Phantom Read Bug FIX
+- **Mode**: STABILIZATION (session #20, counter % 5 == 0)
+- **Focus**: CI RED — fix phantom read test failure (REPEATABLE READ isolation violation)
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #20 → STABILIZATION mode
+  2. **CI Status Check**: ❌ RED — Last 2 runs failing with phantom read test failure
+  3. **Failure Analysis**:
+     - Test: `tx.jepsen_test.test.phantom read prevention (REPEATABLE READ should prevent)`
+     - Expected: count=5 (initial state), Actual: count=10 (saw writer's inserts)
+     - **Root Cause**: Each Database.open() created **separate TransactionManager** instances
+     - Reader (DB#1/TM#1) and Writer (DB#2/TM#2) had isolated transaction managers
+     - Reader's REPEATABLE READ snapshot in TM#1 couldn't see writer's commits in TM#2
+  4. **Solution: Shared TransactionManager Registry**:
+     - **SharedTmRegistry**: Global registry mapping DB file paths → shared TM instances
+       * Reference counting: Increment on acquire, decrement on release
+       * Cleanup: Free TM when last connection closes
+       * Thread-safe: Protected by mutex
+     - **Database.tm**: Changed from value (`TransactionManager`) to pointer (`*TransactionManager`)
+       * `Database.open()`: Acquires shared TM from registry
+       * `Database.close()`: Releases shared TM (decrements refcount)
+       * `Database.db_path`: Stores owned copy of path for release lookup
+     - **Test cleanup**: Added `cleanupGlobalTmRegistry()` in `cleanupDbFiles()` to prevent memory leaks
+  5. **Thread-Safety Implementation**:
+     - **Problem**: Multiple DB connections (threads) accessing shared TM concurrently
+     - **Fix**: Added `std.Thread.Mutex` to `TransactionManager` struct
+     - **Protected Methods**: `begin()`, `commit()`, `abort()`, `takeSnapshot()`, `getSnapshot()`, `advanceCid()`, `getCurrentCid()`, `resetCid()`, `getState()`, `isCommitted()`, `isAborted()`, `getVacuumHorizon()`
+     - **Internal Helper**: `takeSnapshotLocked()` assumes mutex already held (called from `begin()`)
+  6. **Type Corrections**:
+     - Fixed all `&self.tm` → `self.tm` (already a pointer, no address-of needed)
+     - Fixed `MvccContext.tm` field type (`?*TransactionManager`)
+     - Fixed SSI tracker calls, vacuum calls
+  7. **Memory Leak Fix**:
+     - **Issue**: Global registry not deinitialized, leaked hashmap allocations in tests
+     - **Fix**: `cleanupGlobalTmRegistry()` public function for test cleanup
+     - **Integration**: Called in `cleanupDbFiles()` after each Jepsen test
+- **Commits**:
+  - 2a239e7: fix(tx): shared TransactionManager across connections for MVCC isolation
+- **Test Status**: Phantom read test now PASSING (2146/2701, was 2145 before)
+- **CI Status**: Triggered, awaiting final result (in progress at end of session)
+- **Impact**: **Critical ACID fix** — proper MVCC isolation now works across multiple connections
+- **Next Priority**: Verify CI green, then continue stabilization (test coverage audit, other Jepsen tests)
+
 ### FEATURE Session (2026-03-25 — Session 19) — Milestone 25 COMPLETE: System Packaging
 - **Mode**: FEATURE (session #19, counter % 5 == 4)
 - **Focus**: Complete Milestone 25 with system packages (deb, rpm, brew)
