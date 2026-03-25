@@ -831,7 +831,12 @@ fn dirtyReadTest(isolation: IsolationLevel) !void {
 // READ COMMITTED sees new value, REPEATABLE READ sees old value
 
 test "non-repeatable read (READ COMMITTED allows)" {
-    // TODO(Milestone 25): Fix MVCC snapshot refresh bug in READ COMMITTED
+    // TODO(Milestone 25): Root cause identified - auto-commit bypasses TransactionManager
+    // Reader's snapshot cannot see auto-commit changes because:
+    // 1. Auto-commit writes rows without MVCC headers
+    // 2. Reader's buffer pool caches old pages
+    // 3. No cache invalidation between separate Database instances
+    // Fix requires: Auto-commit must use implicit transactions (BEGIN/COMMIT internally)
     return error.SkipZigTest;
     // try nonRepeatableReadTest(.read_committed, true);
 }
