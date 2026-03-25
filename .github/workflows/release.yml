@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  ZIG_VERSION: "0.15.2"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,13 +26,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v1
+      - name: Cache Zig
+        uses: actions/cache@v4
         with:
-          version: 0.14.0
+          path: |
+            zig-x86_64-linux-${{ env.ZIG_VERSION }}
+          key: zig-${{ env.ZIG_VERSION }}-${{ runner.os }}
+
+      - name: Install Zig
+        run: |
+          if [ ! -d "zig-x86_64-linux-${ZIG_VERSION}" ]; then
+            wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
+            tar xf zig.tar.xz
+          fi
+          echo "${PWD}/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Extract version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
       - name: Package
         run: |
@@ -40,13 +57,13 @@ jobs:
           if [ -d zig-out/bin ]; then
             cp -r zig-out/bin/* dist/ 2>/dev/null || true
           fi
-          cd dist && tar czf ../silica-${{ matrix.target }}.tar.gz .
+          cd dist && tar czf ../silica-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.tar.gz .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: silica-${{ matrix.target }}
-          path: silica-${{ matrix.target }}.tar.gz
+          name: silica-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}
+          path: silica-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.tar.gz
 
   release:
     needs: build
@@ -70,3 +87,21 @@ jobs:
         with:
           generate_release_notes: true
           files: release/*
+          body: |
+            ## Downloads
+
+            Download the appropriate archive for your platform and extract it.
+
+            **Verify checksums** after download:
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+
+            ## Supported Platforms
+
+            - `x86_64-linux-gnu`: Linux (x86-64)
+            - `aarch64-linux-gnu`: Linux (ARM64)
+            - `x86_64-macos-none`: macOS (Intel)
+            - `aarch64-macos-none`: macOS (Apple Silicon)
+            - `x86_64-windows-msvc`: Windows (x86-64)
+            - `aarch64-windows-msvc`: Windows (ARM64)

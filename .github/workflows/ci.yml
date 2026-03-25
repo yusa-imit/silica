@@ -19,17 +19,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            zig-x86_64-linux-${{ env.ZIG_VERSION }}
+          key: zig-${{ env.ZIG_VERSION }}-${{ runner.os }}
+
       - name: Install Zig
         run: |
-          wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
-          tar xf zig.tar.xz
+          if [ ! -d "zig-x86_64-linux-${ZIG_VERSION}" ]; then
+            wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
+            tar xf zig.tar.xz
+          fi
           echo "${PWD}/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
+
+      - name: Cache Zig Build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          key: zig-build-${{ hashFiles('build.zig', 'build.zig.zon') }}-${{ github.sha }}
+          restore-keys: |
+            zig-build-${{ hashFiles('build.zig', 'build.zig.zon') }}-
+            zig-build-
 
       - name: Build
         run: zig build
 
       - name: Run Tests
         run: zig build test
+
+      - name: Run Benchmarks
+        run: zig build bench
+        continue-on-error: true  # Don't fail CI on benchmark failures
 
   cross-compile:
     needs: build-and-test
@@ -46,10 +70,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            zig-x86_64-linux-${{ env.ZIG_VERSION }}
+          key: zig-${{ env.ZIG_VERSION }}-${{ runner.os }}
+
       - name: Install Zig
         run: |
-          wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
-          tar xf zig.tar.xz
+          if [ ! -d "zig-x86_64-linux-${ZIG_VERSION}" ]; then
+            wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
+            tar xf zig.tar.xz
+          fi
           echo "${PWD}/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Build for ${{ matrix.target }}
