@@ -49,6 +49,44 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-25 — Session 21) — Lost Update Fix (Issue #16 Partial)
+- **Mode**: FEATURE (session #21, counter % 5 == 1)
+- **Focus**: Fix lost update race condition in READ COMMITTED isolation level
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #21 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Triage**: Issue #16 (MVCC visibility bugs) selected as highest priority
+  4. **Root Cause Analysis** (Lost Update):
+     - UPDATE reads row values **before** acquiring exclusive row lock
+     - Timeline: T1 reads balance=100 → T2 reads balance=100 → T1 locks+evaluates (100-10=90) → T1 commits → T2 locks+evaluates (100-20=80 using stale!) → T2 commits
+     - Result: 80 instead of 70 (lost T1's update)
+     - Code location: `src/sql/engine.zig:2634-2689` (read/WHERE eval) → 2691-2706 (lock) → 2724-2739 (assignment eval with stale values)
+  5. **Fix Implementation** (Commit f1789ed):
+     - After acquiring row lock (line 2706), **re-read row** from B+Tree using `tree.get()`
+     - Handle concurrent deletion (KeyNotFound → continue)
+     - Deserialize fresh values, check MVCC visibility
+     - Replace stale `row.values` with fresh values before evaluating assignments
+     - Added 60 lines of re-read logic in UPDATE execution path
+  6. **Test Re-enabled**: `bank transfer: atomicity and isolation (READ COMMITTED)` ✅ PASSING
+  7. **Dirty Read Issue Analysis** (Architectural Limitation):
+     - UPDATE uses `tree.delete(old) + tree.insert(new)` — physically removes old tuple
+     - Old tuple: deleted from B+Tree (gone)
+     - New tuple: xmin=uncommitted → invisible to concurrent readers
+     - Result: **NoRows** (both versions invisible)
+     - **Root Cause**: B+Tree primary storage can't hold duplicate keys (multiple row versions)
+     - **Fix Options**:
+       * Option 1: Version-suffixed keys `{row_id, xid}` — complex, requires scan logic changes
+       * Option 2: In-place update — lose old version, no rollback support
+       * Option 3: Separate version store (PostgreSQL heap) — major refactoring
+     - **Recommendation**: Option 2 (in-place update) for MVP — accept UPDATE rollback limitation
+     - **Decision**: Deferred to post-Phase 12 (architectural change required)
+  8. **Issue #16 Updated**: Posted comprehensive analysis with fix options, test status
+- **Commits**:
+  - f1789ed: fix(mvcc): prevent lost updates by re-reading row after lock acquisition
+  - [pending]: chore: update session memory
+- **Test Status**: 1 Jepsen test fixed (lost update READ COMMITTED), 3 remain skipped (dirty read — architectural)
+- **Next Priority**: Continue Phase 12 bug fixes, or dependency migrations (sailor v1.20.0, zuda)
+
 ### STABILIZATION Session (2026-03-25 — Session 20) — MVCC Phantom Read Bug FIX
 - **Mode**: STABILIZATION (session #20, counter % 5 == 0)
 - **Focus**: CI RED — fix phantom read test failure (REPEATABLE READ isolation violation)

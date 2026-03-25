@@ -15,20 +15,44 @@
 ## Active Issues
 
 ### MVCC Visibility Bugs (March 25, 2026 - Issue #16) — **PARTIALLY FIXED**
-- **Symptom**: Jepsen consistency tests failing with NoRows errors during concurrent transactions
+- **Symptom**: Jepsen consistency tests failing with NoRows errors and lost updates
 - **Status**:
-  - ✅ **FIXED** (commit 95ada9b): Snapshot isolation bug in `isTupleVisibleWithTm` — phantom reads now prevented
-  - ⏳ **DEFERRED**: UPDATE/DELETE visibility (architectural limitation) — requires multi-version storage
+  - ✅ **FIXED** (commit 2a239e7): Shared TransactionManager across connections — phantom reads prevented
+  - ✅ **FIXED** (commit f1789ed): Lost update in READ COMMITTED — re-read row after lock acquisition
+  - ⏳ **DEFERRED**: Dirty read NoRows (architectural limitation) — requires multi-version storage
 
-- **Failing Tests** (4 skipped as of commit e8be60b):
-  1. **dirty read prevention (READ COMMITTED)** — NoRows during concurrent UPDATE (SKIPPED)
+- **Failing Tests** (3 skipped as of commit f1789ed):
+  1. **dirty read prevention (READ COMMITTED)** — NoRows during concurrent UPDATE (SKIPPED — architectural)
   2. dirty read prevention (REPEATABLE READ) — same architectural issue (SKIPPED)
   3. dirty read prevention (SERIALIZABLE) — same architectural issue (SKIPPED)
-  4. bank transfer (REPEATABLE READ) — NoRows during concurrent transfers (SKIPPED)
-  5. ~~non-repeatable read~~ — *(different test, not in this set)*
-  6. ~~long fork test~~ — *(different test, not in this set)*
+  4. ~~bank transfer (READ COMMITTED)~~ — ✅ **FIXED** in f1789ed (lost update fix)
+  5. bank transfer (REPEATABLE READ) — NoRows during concurrent transfers (SKIPPED — architectural)
+  6. ~~non-repeatable read~~ — *(different test, not in this set)*
+  7. ~~long fork test~~ — *(different test, not in this set)*
 
-- **Root Cause 1: UPDATE Visibility** (CONFIRMED in Stabilization Session 15):
+- **Root Cause 1: Lost Update in READ COMMITTED** (FIXED in commit f1789ed):
+  ```
+  Problem: UPDATE evaluated assignment expressions using stale row values read before lock acquisition
+
+  Timeline:
+  1. T1 reads balance=100 (line 2634-2689: cursor iteration, deserialize, WHERE eval)
+  2. T2 reads balance=100 (same path, before T1 acquires lock)
+  3. T1 acquires exclusive row lock (line 2691-2706)
+  4. T1 evaluates assignment: balance - 10 = 90 (using stale value from step 1)
+  5. T1 writes 90, commits
+  6. T2 acquires lock (after T1 releases)
+  7. T2 evaluates assignment: balance - 20 = 80 (using stale value from step 2!)
+  8. T2 writes 80, commits
+  9. Result: 80 instead of 70 (lost T1's -10 update)
+
+  Fix: After acquiring row lock, re-read row from B+Tree (tree.get()), deserialize fresh values,
+       replace row.values before evaluating assignments. This ensures assignment expressions see
+       latest committed data. Added 60 lines of re-read logic in engine.zig:2707-2753.
+
+  Test: bank transfer (READ COMMITTED) now PASSING
+  ```
+
+- **Root Cause 2: UPDATE Visibility (Dirty Read NoRows)** (CONFIRMED in Stabilization Session 15):
   ```
   Architectural Limitation: Silica's B+Tree stores data in-place (one version per key)
 
@@ -58,7 +82,7 @@
   3. **Version-aware B+Tree**: Support composite keys `[user_key][xid]` OR in-value version chains
   4. **VACUUM**: Background process to reclaim dead tuples after all transactions finish
 
-- **Root Cause 2: Snapshot Boundary Violation** (FIXED in commit 95ada9b):
+- **Root Cause 3: Snapshot Boundary Violation** (FIXED in commit 95ada9b):
   ```
   Bug: isTupleVisibleWithTm() broke snapshot isolation by consulting
   TransactionManager's CURRENT commit status for XIDs >= snapshot.xmax.
