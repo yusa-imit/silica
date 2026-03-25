@@ -23,4 +23,12 @@
 - **Rationale**: Standard for OLTP databases; leaf links enable fast range scans
 - **Consequences**: Must handle splits, merges, overflow pages correctly
 
+## Decision: Buffer Pool LRU — Keep Custom, Do Not Migrate to zuda
+- **Date**: 2026-03-26
+- **Context**: zuda v1.23.0 provides LRUCache with pin/unpin (zuda#9 resolved). Evaluated feasibility of replacing silica's buffer pool LRU eviction with zuda's generic implementation.
+- **Decision**: DO NOT MIGRATE. Keep the custom buffer pool implementation.
+- **Rationale**: Four blocking incompatibilities: (1) zuda's eviction callback is non-failable (void), but dirty page flush can fail — silent data loss risk; (2) per-entry heap allocation vs. silica's pre-allocated frame array — unacceptable allocation churn in hot path; (3) BufferFrame.data is directly accessed as raw []u8 by 12+ files — adapter layer would add overhead to every B+Tree operation; (4) the replaceable LRU logic is only ~30 lines, not worth the coupling.
+- **Consequences**: Buffer pool remains self-contained with custom LRU implementation. Future zuda improvements (failable callbacks, pre-allocated pools) could reopen this decision. Deadlock detection in lock.zig identified as better zuda migration target.
+- **Review**: Architect agent review (Session 27, agent ID a3298b8)
+
 <!-- Add new decisions above this line -->
