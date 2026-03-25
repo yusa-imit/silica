@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const zuda = @import("zuda");
 
 // ── Lock Modes ─────────────────────────────────────────────────────────
 
@@ -228,45 +229,54 @@ pub const WaitForGraph = struct {
 
     /// Check if there is a cycle starting from `start_xid` using DFS.
     /// Returns true if a cycle is detected (deadlock).
+    /// Delegates to zuda.algorithms.graph.DFS for cycle detection.
     pub fn hasCycle(self: *WaitForGraph, allocator: Allocator, start_xid: u32) bool {
-        // DFS with visited and in-stack tracking
-        var visited = std.AutoHashMapUnmanaged(u32, void){};
-        defer visited.deinit(allocator);
-        var in_stack = std.AutoHashMapUnmanaged(u32, void){};
-        defer in_stack.deinit(allocator);
-
-        return self.dfsHasCycle(allocator, start_xid, &visited, &in_stack);
-    }
-
-    fn dfsHasCycle(
-        self: *WaitForGraph,
-        allocator: Allocator,
-        node: u32,
-        visited: *std.AutoHashMapUnmanaged(u32, void),
-        in_stack: *std.AutoHashMapUnmanaged(u32, void),
-    ) bool {
-        // If already in the current DFS stack, we found a cycle
-        if (in_stack.get(node) != null) return true;
-
-        // If already fully processed, no cycle through this node
-        if (visited.get(node) != null) return false;
-
-        // Mark as visited and in stack
-        visited.put(allocator, node, {}) catch return false;
-        in_stack.put(allocator, node, {}) catch return false;
-
-        // Visit all neighbors (blockers)
-        if (self.edges.get(node)) |neighbors| {
-            for (neighbors.items) |neighbor| {
-                if (self.dfsHasCycle(allocator, neighbor, visited, in_stack)) {
-                    return true;
-                }
+        // Context for u32 vertex hashing and equality
+        const XidContext = struct {
+            pub fn hash(_: @This(), key: u32) u64 {
+                return std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
             }
-        }
+            pub fn eql(_: @This(), a: u32, b: u32) bool {
+                return a == b;
+            }
+        };
 
-        // Remove from stack (backtrack)
-        _ = in_stack.remove(node);
-        return false;
+        // Create DFS type with u32 vertices
+        const XidDFS = zuda.algorithms.graph.DFS(u32, XidContext);
+
+        // Adapter: makes WaitForGraph compatible with zuda's DFS graph interface
+        const GraphAdapter = struct {
+            graph: *const WaitForGraph,
+            allocator_: Allocator,
+            neighbors_buf: std.ArrayListUnmanaged(Edge) = .{},
+
+            const Edge = struct { target: u32 };
+
+            pub fn getNeighbors(adapter: *@This(), vertex: u32) ?[]const Edge {
+                // Clear previous neighbors
+                adapter.neighbors_buf.clearRetainingCapacity();
+
+                // Get neighbors from the wait-for graph
+                const neighbors = adapter.graph.edges.get(vertex) orelse return null;
+
+                // Convert to zuda Edge format
+                adapter.neighbors_buf.ensureTotalCapacity(adapter.allocator_, neighbors.items.len) catch return null;
+                for (neighbors.items) |neighbor_xid| {
+                    adapter.neighbors_buf.appendAssumeCapacity(.{ .target = neighbor_xid });
+                }
+
+                return if (adapter.neighbors_buf.items.len > 0) adapter.neighbors_buf.items else null;
+            }
+        };
+
+        var adapter = GraphAdapter{ .graph = self, .allocator_ = allocator };
+        defer adapter.neighbors_buf.deinit(allocator);
+
+        // Run DFS and check for cycle
+        const result = XidDFS.run(allocator, &adapter, start_xid, XidContext{}) catch return false;
+        defer result.deinit();
+
+        return result.hasCycle();
     }
 
     /// Count total number of edges in the graph.
