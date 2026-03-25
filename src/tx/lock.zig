@@ -273,7 +273,7 @@ pub const WaitForGraph = struct {
         defer adapter.neighbors_buf.deinit(allocator);
 
         // Run DFS and check for cycle
-        const result = XidDFS.run(allocator, &adapter, start_xid, XidContext{}) catch return false;
+        var result = XidDFS.run(allocator, &adapter, start_xid, XidContext{}) catch return false;
         defer result.deinit();
 
         return result.hasCycle();
