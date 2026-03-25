@@ -1,0 +1,11 @@
+silica (0.3.0-1) unstable; urgency=medium
+
+  * Initial Debian package release
+  * Phase 3: WAL & Basic Transactions complete
+  * Full ACID compliance with WAL-based durability
+  * Crash recovery and checkpoint support
+  * B+Tree storage engine with buffer pool
+  * SQL frontend with tokenizer, parser, planner, optimizer, executor
+  * Transaction support (BEGIN, COMMIT, ROLLBACK)
+
+ -- Yusa <yusa@example.com>  Mon, 25 Mar 2026 00:00:00 +0000

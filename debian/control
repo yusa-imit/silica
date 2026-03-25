@@ -1,0 +1,26 @@
+Source: silica
+Section: database
+Priority: optional
+Maintainer: Yusa <yusa@example.com>
+Build-Depends: debhelper-compat (= 13), zig (>= 0.15.0)
+Standards-Version: 4.6.0
+Homepage: https://github.com/yusa-imit/silica
+
+Package: silica
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Production-grade embedded relational database
+ Silica is a full-featured RDBMS written in Zig, inspired by SQLite and
+ PostgreSQL. It supports dual-mode operation (embedded + client-server),
+ MVCC transactions, full SQL:2016 compliance, streaming replication, and
+ PostgreSQL wire protocol compatibility.
+ .
+ Features:
+  - ACID transactions with MVCC (READ COMMITTED, REPEATABLE READ, SERIALIZABLE)
+  - Full SQL support (DDL, DML, DQL, CTEs, window functions, JSON, full-text search)
+  - Multiple index types (B+Tree, Hash, GIN, GiST)
+  - Write-Ahead Logging (WAL) with crash recovery
+  - Streaming replication with hot standby
+  - PostgreSQL wire protocol v3 for client compatibility
+  - Embedded mode (single library, no server process)
+  - Server mode (multi-client, TCP-based)

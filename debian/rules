@@ -1,0 +1,34 @@
+#!/usr/bin/make -f
+
+# Debian packaging rules for Silica
+# Build with: dpkg-buildpackage -us -uc
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Build release binary with Zig
+	zig build -Doptimize=ReleaseSafe
+
+override_dh_auto_install:
+	# Install binary to /usr/bin
+	install -D -m 0755 zig-out/bin/silica debian/silica/usr/bin/silica
+	# Install configuration file to /etc
+	install -D -m 0644 silica.conf.example debian/silica/etc/silica/silica.conf
+	# Install systemd service file
+	install -D -m 0644 packaging/systemd/silica.service debian/silica/lib/systemd/system/silica.service
+	# Install documentation
+	install -D -m 0644 README.md debian/silica/usr/share/doc/silica/README.md
+	install -D -m 0644 docs/API_REFERENCE.md debian/silica/usr/share/doc/silica/API_REFERENCE.md
+	install -D -m 0644 docs/GETTING_STARTED.md debian/silica/usr/share/doc/silica/GETTING_STARTED.md
+	install -D -m 0644 docs/SQL_REFERENCE.md debian/silica/usr/share/doc/silica/SQL_REFERENCE.md
+	install -D -m 0644 docs/OPERATIONS_GUIDE.md debian/silica/usr/share/doc/silica/OPERATIONS_GUIDE.md
+	install -D -m 0644 docs/ARCHITECTURE_GUIDE.md debian/silica/usr/share/doc/silica/ARCHITECTURE_GUIDE.md
+
+override_dh_auto_clean:
+	# Clean Zig build artifacts
+	rm -rf zig-out .zig-cache
+
+override_dh_auto_test:
+	# Run test suite (skip benchmarks and cross-compilation)
+	zig build test
