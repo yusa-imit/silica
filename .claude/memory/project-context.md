@@ -37,17 +37,41 @@
   - [x] TPC-C benchmark — OLTP workload (new-order, payment transactions) ✅
   - [x] TPC-H benchmark — OLAP workload (Q1, Q3, Q6 queries) ✅
   - [x] Jepsen-style testing (distributed consistency verification) — 19 tests ✅
-- **Milestone 25**: Documentation & Packaging 🚧 IN PROGRESS
+- **Milestone 25**: Documentation & Packaging 🚧 IN PROGRESS (7/8 tasks complete)
   - [x] README.md — Project overview, quick start, features
   - [x] API reference (docs/API_REFERENCE.md) — Zig embedded API, C FFI
   - [x] Getting started guide (docs/GETTING_STARTED.md) — Complete tutorial
   - [x] SQL reference (docs/SQL_REFERENCE.md) — Complete SQL syntax guide
   - [x] **Operations guide (docs/OPERATIONS_GUIDE.md)** — Backup, restore, monitoring, tuning ✅
   - [x] **Architecture guide (docs/ARCHITECTURE_GUIDE.md)** — Internal design ✅
-  - [ ] CI/CD pipeline polish
+  - [x] **CI/CD pipeline polish** — Caching, benchmarks, versioned artifacts ✅
   - [ ] System packages (deb, rpm, brew)
 
 ## Recent Sessions
+
+### FEATURE Session (2026-03-25 — Session 17) — Milestone 25 CI/CD Polish
+- **Mode**: FEATURE (session #17, counter % 5 == 2)
+- **Focus**: Milestone 25 Documentation & Packaging — CI/CD pipeline polish
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #17 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest CI run successful
+  3. **Issue Review**: Bug #16 (MVCC visibility) open but tests already skipped, not blocking
+  4. **CI/CD Pipeline Polish** (Milestone 25):
+     - **ci.yml improvements**:
+       * Added Zig download caching (actions/cache@v4) — faster workflow runs
+       * Added build artifact caching (.zig-cache, zig-out) with restore fallbacks
+       * Added benchmark step (zig build bench) with continue-on-error — track performance regressions
+       * Skip download if Zig already cached
+     - **release.yml improvements**:
+       * Upgraded Zig version from 0.14.0 to 0.15.2 (match ci.yml)
+       * Added Zig download caching for release builds
+       * Improved artifact naming: silica-v0.X.Y-target.tar.gz (includes version)
+       * Added platform documentation to release body (6 targets explained)
+       * Added checksum verification instructions (sha256sum -c checksums.txt)
+  5. **Milestone 25 Progress**: 7/8 tasks complete (only system packages remain)
+- **Commits**:
+  - 6a264b9: ci: polish CI/CD pipelines (Milestone 25)
+- **Next Priority**: System packages (deb, rpm, brew) to complete Milestone 25
 
 ### FEATURE Session (2026-03-25 — Session 16) — Milestone 25 Documentation (NEAR COMPLETE)
 - **Mode**: FEATURE (session #16, counter % 5 == 1)
