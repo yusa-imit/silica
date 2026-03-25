@@ -50,6 +50,44 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-26 — Session 27) — zuda Migration
+- **Mode**: FEATURE (session #27, counter % 5 == 2)
+- **Focus**: Dependency migration (zuda data structures)
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #27 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Review**: Issues #4 and #5 (zuda migrations) identified as UNBLOCKED (zuda#9 and zuda#10 resolved)
+  4. **zuda v1.23.0 Upgrade**:
+     - Upgraded from v1.15.0 to v1.23.0 via `zig fetch --save`
+     - Includes pin/unpin semantics for LRUCache (zuda#9)
+     - Includes hasCycle() implementation for DFS (zuda#10)
+     - Build verified: ✅ passes
+  5. **Buffer Pool Migration Review** (Architect Agent):
+     - **Decision**: DO NOT MIGRATE to zuda.LRUCache
+     - **Blocking Issues**:
+       * Non-failable eviction callback (void) — data loss risk on flush failure
+       * Per-entry heap allocation vs. pre-allocated frame array — allocation churn
+       * Deep integration (12+ files accessing raw BufferFrame.data)
+       * Small replaceable code (~30 lines LRU logic, not worth coupling)
+     - **Documented**: `.claude/memory/decisions.md`
+  6. **Deadlock Detection Migration** ✅ COMPLETE:
+     - Replaced custom DFS cycle detection (42 lines) with `zuda.algorithms.graph.DFS.hasCycle()`
+     - Created GraphAdapter to make WaitForGraph compatible with zuda's graph interface
+     - Implemented XidContext for u32 vertex hashing and equality
+     - Removed ~40 lines of custom graph traversal code
+  7. **Documentation Updates**:
+     - Updated `docs/milestones.md` with zuda migration status (1/3 completed)
+     - Buffer pool and B+Tree marked as NOT MIGRATING
+  8. **Issue Management**:
+     - Closed issue #4 with architect review summary
+     - Closed issue #5 with migration completion notes
+- **Commits**:
+  - 28c20ea: chore: upgrade zuda to v1.23.0
+  - be7cd9f: docs: document decision to NOT migrate buffer pool to zuda
+  - d7b9f37: feat: migrate deadlock detection to zuda.algorithms.graph.DFS
+  - 3934595: docs: update zuda migration status after Session 27 work
+- **Next Priority**: Monitor CI for deadlock detection test results, future enhancements (SSI #15)
+
 ### FEATURE Session (2026-03-26 — Session 26) — v1.0.0 RELEASE
 - **Mode**: FEATURE (session #26, counter % 5 == 1)
 - **Focus**: Dependency migration + First production release
