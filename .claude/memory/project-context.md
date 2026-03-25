@@ -42,12 +42,45 @@
   - [x] API reference (docs/API_REFERENCE.md) — Zig embedded API, C FFI
   - [x] Getting started guide (docs/GETTING_STARTED.md) — Complete tutorial
   - [x] SQL reference (docs/SQL_REFERENCE.md) — Complete SQL syntax guide
-  - [ ] Operations guide — Backup, restore, monitoring, tuning
-  - [ ] Architecture guide — Internal design
+  - [x] **Operations guide (docs/OPERATIONS_GUIDE.md)** — Backup, restore, monitoring, tuning ✅
+  - [x] **Architecture guide (docs/ARCHITECTURE_GUIDE.md)** — Internal design ✅
   - [ ] CI/CD pipeline polish
   - [ ] System packages (deb, rpm, brew)
 
 ## Recent Sessions
+
+### FEATURE Session (2026-03-25 — Session 16) — Milestone 25 Documentation (NEAR COMPLETE)
+- **Mode**: FEATURE (session #16, counter % 5 == 1)
+- **Focus**: Milestone 25 Documentation & Packaging — Operations & Architecture guides
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #16 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest CI run successful
+  3. **Issue Review**: Bug #16 (MVCC visibility) and enhancement #15 (SSI) open but not blocking
+  4. **Operations Guide** (docs/OPERATIONS_GUIDE.md, 1424 lines):
+     - Installation & Deployment (embedded + server modes, systemd service)
+     - Backup & Restore (logical/physical/PITR, automated backup scripts)
+     - Monitoring (pg_stat_activity, pg_locks, pg_stat_replication, system catalog queries)
+     - Performance Tuning (memory config, query optimization, indexing strategy, I/O tuning)
+     - Maintenance Operations (VACUUM, ANALYZE, REINDEX with monitoring queries)
+     - Replication Setup (primary/replica config, failover/switchover procedures)
+     - Troubleshooting (common issues: startup failures, high CPU, OOM, replication lag, deadlocks)
+     - Security Best Practices (authentication, TLS, encryption, audit logging, least privilege)
+  5. **Architecture Guide** (docs/ARCHITECTURE_GUIDE.md, 1543 lines):
+     - System Architecture (file format, page types, ACID guarantees)
+     - Storage Layer (Page Manager, Buffer Pool, B+Tree internals with layouts)
+     - SQL Frontend (Tokenizer, Parser, Semantic Analyzer)
+     - Query Engine (Planner, Optimizer, Executor with Volcano model)
+     - Transaction Manager (WAL format, Lock Manager, compatibility matrix)
+     - Concurrency Control (MVCC visibility rules, snapshot types, SSI algorithm)
+     - Replication (WAL Sender/Receiver, hot standby)
+     - Module Dependency Graph (build order, dependencies)
+     - Key Algorithms (B+Tree bulk loading, histogram-based selectivity, deadlock detection DFS)
+     - Performance characteristics (time/space complexity tables)
+- **Commits**:
+  - 07643b3: docs: add comprehensive operations guide (Milestone 25)
+  - 10343be: docs: add comprehensive architecture guide (Milestone 25)
+- **Milestone 25 Progress**: 6/7 documentation tasks complete (only CI/CD polish + packages remain)
+- **Next Priority**: CI/CD pipeline polish, then system packages (deb, rpm, brew) to complete Milestone 25
 
 ### FEATURE Session (2026-03-25 — Session 14) — Milestone 25 Documentation (IN PROGRESS)
 - **Mode**: FEATURE (session #14, counter % 5 == 4)
