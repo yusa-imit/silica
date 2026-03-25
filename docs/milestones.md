@@ -140,8 +140,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.16.0
-- **Latest available**: v1.16.0
+- **Current in silica**: v1.21.0
+- **Latest available**: v1.21.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -171,6 +171,11 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.14.0 | performance & memory | DONE | Memory pooling, render profiling, virtual rendering, layout caching, buffer compression |
 | v1.15.0 | stability & thread safety | DONE | Thread safety fixes, memory leak fixes, platform testing, XTGETTCAP capability detection |
 | v1.16.0 | advanced terminal features | DONE | Capability database, bracketed paste, synchronized output, hyperlink support, focus tracking |
+| v1.17.0 | logging & diagnostics | READY | Structured logging, log rotation, diagnostic commands, system monitoring |
+| v1.18.0 | hot reload & dev tools | READY | Hot reload, widget inspector, benchmark suite, example gallery, documentation generator |
+| v1.19.0 | enhancement & polish | DONE | Progress bar templates, env config, color themes, table formatting, arg groups |
+| v1.20.0 | quality & completeness | DONE | Windows console Unicode tests, pattern documentation, directory scanning, error context |
+| v1.21.0 | streaming & large data | DONE | DataSource abstraction, large data benchmarks, memory efficiency |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: CompletionPopup for SQL keyword/table/column completion
