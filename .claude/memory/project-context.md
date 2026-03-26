@@ -50,6 +50,33 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-27 — Session 38) — Dependency Upgrades
+- **Mode**: FEATURE (session #38, counter % 5 == 3)
+- **Focus**: Upgrade sailor and zuda dependencies
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #38 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Review**: Issue #20 (MVCC UPDATE bug) requires Milestone 26+; Issue #15 (SSI) already complete
+  4. **Dependency Upgrades**:
+     - **sailor v1.22.0 → v1.23.0**: Plugin Architecture & Extensibility
+       * Widget trait system for custom widgets (render/measure protocol)
+       * Custom renderer hooks (pre/post callbacks)
+       * Theme plugin system (JSON loading, runtime switching)
+       * Composition helpers: Padding, Centered, Aligned, Stack, Constrained
+       * 10 new integration tests
+       * All backward compatible
+     - **zuda v1.23.0 → v2.0.0**: Scientific Computing & Documentation
+       * Expanded benchmark suite for scientific computing
+       * Comprehensive scientific computing tutorials
+       * Major version bump but API remains compatible
+  5. **Verification**: `zig build` passes ✅
+- **Commits**:
+  - 5f748e7: chore: upgrade sailor to v1.23.0 and zuda to v2.0.0
+  - aa9be36: docs: update dependency versions in milestones.md
+- **Build Status**: ✅ `zig build` passes
+- **Next Priority**: Monitor CI, address any new issues/features
+- **Key Finding**: Both upgrades are backward compatible with no breaking changes.
+
 ### FEATURE Session (2026-03-27 — Session 37) — Issue Triage & Cleanup
 - **Mode**: FEATURE (session #37, counter % 5 == 2)
 - **Focus**: Issue triage, verify project health
