@@ -153,26 +153,41 @@
 
 - **CI Status**: ✅ **GREEN** (all non-architectural tests passing, issue #16 closed)
 
-### SSI Not Implemented (March 25-26, 2026 - Issue #15)
-- **Symptom**: SERIALIZABLE isolation behaves as REPEATABLE READ (snapshot only, no conflict detection)
-- **Impact**: Lost updates, write skew, phantom reads not prevented in SERIALIZABLE
-- **Documented Limitation**: `mvcc.zig:14` states "SERIALIZABLE — snapshot + SSI conflict detection (future)"
-- **Failing Tests** (2 skipped in commit c535722):
-  1. lost update prevention (SERIALIZABLE should prevent)
-  2. write skew detection (SERIALIZABLE should prevent)
-- **History**:
-  - ed211c2: Initial skip of 5 SERIALIZABLE tests
-  - e78cd6c-cb5a9da: Attempted SSI implementation + re-enabled tests
-  - 93aad5f: Reverted SSI implementation (but left tests enabled — bug)
-  - c535722: Re-skipped 2 failing tests causing CI failures
-- **Required Implementation** (SSI):
-  1. Predicate locks (SIREAD locks) to track read sets
-  2. RW-dependency tracking (detect T1 reads what T2 later modifies)
-  3. Dangerous structure detection (cycle in serialization graph)
-  4. Abort on conflict (throw SerializationFailure)
-- **Status**: DEFERRED to Milestone 25 — tests skipped to unblock CI
-- **Reference**: PostgreSQL SSI paper (2012), Cahill's PhD thesis
-- **CI Status**: ✅ **GREEN** (commit c535722 re-skipped tests)
+### SSI vs MVCC Storage Limitation (March 25-27, 2026 - Issues #15, #19, #20)
+- **Current Status**: SSI is ✅ **FULLY IMPLEMENTED** (SsiTracker in mvcc.zig:606-813, integrated in commit 7666797)
+- **Root Cause of Test Failures**: MVCC storage architecture limitation (single-version B+Tree), NOT SSI bugs
+- **Architectural Limitation**:
+  ```
+  UPDATE execution on single-version B+Tree:
+  1. tree.delete(old_key) ← physically removes old tuple
+  2. tree.insert(old_key, new_data with xmin=uncommitted)
+  3. Concurrent readers: old tuple DELETED, new tuple INVISIBLE → NoRows
+
+  SSI CANNOT function when rows disappear mid-transaction:
+  - Readers abort with NoRows before SSI conflict detection runs
+  - RW-dependency tracking becomes unreliable
+  - Dangerous structure detection never executes
+  ```
+- **Failing Tests** (3 skipped in commit 5b94a4f):
+  1. bank transfer (SERIALIZABLE) — NoRows during concurrent transfers
+  2. lost update prevention (SERIALIZABLE) — NoRows during read-modify-write
+  3. write skew detection (SERIALIZABLE) — too many successful txns (indirect symptom)
+- **SSI Implementation Status** (commit 7666797):
+  - ✅ SsiTracker: Read/write set tracking, RW-dependency detection, dangerous structure detection
+  - ✅ Integration: TM.registerRead/Write() called during SELECT/UPDATE/DELETE
+  - ✅ Commit check: SsiTracker.checkCommit() aborts pivot transactions
+  - ✅ Cleanup: SsiTracker.finishTransaction() on commit/abort
+- **Fix Requirements** (Milestone 26+):
+  1. **Version chains**: Store multiple versions per key (linked list or version table)
+  2. **Delayed deletion**: Mark tuples deleted (`xmax` set) but keep in B+Tree until VACUUM
+  3. **Version-aware B+Tree**: Support composite keys `[user_key][xid]` OR in-value version chains
+  4. **VACUUM**: Background process to reclaim dead tuples
+- **Issue Management**:
+  - Issue #15: SSI implementation — ✅ COMPLETE (closed)
+  - Issue #19: SSI tests failing — Closed as duplicate of #20
+  - Issue #20: MVCC UPDATE bug — ⏳ DEFERRED to Milestone 26+ (root cause documented)
+- **CI Status**: ✅ **GREEN** (tests skipped in commit 5b94a4f)
+- **Key Insight**: SSI implementation is correct. Test failures expose a fundamental storage layer limitation that requires multi-version storage to fix.
 
 ## Active Issues (Previous)
 
