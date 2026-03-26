@@ -50,6 +50,43 @@
 
 ## Recent Sessions
 
+### STABILIZATION Session (2026-03-26 — Session 33) — SSI Integration Fix
+- **Mode**: STABILIZATION (session #33, counter % 5 == 3) → **CI was RED, switched from FEATURE**
+- **Focus**: Fix SERIALIZABLE isolation tests by integrating SSI tracker into TransactionManager
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #33 → initially FEATURE mode
+  2. **CI Status Check**: ❌ RED — Latest 2 runs failing with SERIALIZABLE test failures
+  3. **Failure Analysis**:
+     - Tests: "lost update prevention" (expected 100, found 50), "write skew detection" (success_count > 1)
+     - **ROOT CAUSE**: SSI tracker was implemented (mvcc.zig) but NEVER INTEGRATED into TransactionManager
+     - SsiTracker existed as standalone struct, tests passed, but production code didn't use it!
+  4. **SSI Integration** (Commit 7666797):
+     - **Added `ssi_tracker: SsiTracker` field to TransactionManager**
+     - Initialize/deinitialize in TM.init()/deinit()
+     - **Added `commit()` integration**: Call `ssi_tracker.checkCommit(xid)` BEFORE committing
+     - **Added `abort()` integration**: Call `ssi_tracker.finishTransaction(xid)` on abort
+     - **Added `registerRead/registerWrite()` public methods** to TransactionManager
+     - **Fixed deadlock issue**: Created `registerReadLocked/registerWriteLocked` internal methods
+       * Original design: TM.registerRead() locks mutex → calls ssi_tracker.registerRead() → calls tm.active_txns.get() → DEADLOCK (recursive lock)
+       * Fix: TM.registerRead() locks mutex → calls ssi_tracker.registerReadLocked(&active_txns) directly (no re-locking)
+     - **Removed duplicate `ssi_tracker` from Database struct** (engine.zig)
+     - **Updated engine.zig**: `ssiRegisterRead/Write()` now call `tm.registerRead/registerWrite()`
+  5. **Test Results** (Partial Success):
+     - Write skew test: ✅ NOW PASSING (was failing before)
+     - Lost update test: ❌ STILL FAILING (expected 100, found 50)
+     - Bank transfer test: ❌ FAILING (NoRows errors, non-deterministic)
+     - **Issue**: NoRows errors during SELECT suggest MVCC visibility bug or excessive abort rate
+  6. **GitHub Activity**:
+     - Created issue #19: "SSI tests failing with NoRows errors"
+     - Documented root cause analysis, investigation notes, next steps
+- **Commits**:
+  - 7666797: fix: integrate SSI tracker into TransactionManager
+- **Test Status**: 2152/2701 passing (1 Jepsen test now passing, 2 still failing)
+- **CI Status**: Still RED but different failures (progress made)
+- **Impact**: **Critical ACID fix** — SSI conflict detection now active in production code
+- **Next Priority**: Debug NoRows errors (likely MVCC visibility or snapshot issues), fix remaining SERIALIZABLE tests
+- **Key Finding**: SSI implementation was complete but dormant. Integration required careful mutex discipline to avoid deadlock.
+
 ### FEATURE Session (2026-03-26 — Session 31) — Re-enable SSI Tests
 - **Mode**: FEATURE (session #31, counter % 5 == 1)
 - **Focus**: Investigate and fix incorrectly skipped SERIALIZABLE tests
