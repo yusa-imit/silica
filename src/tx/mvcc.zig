@@ -296,6 +296,8 @@ pub const TransactionManager = struct {
     oldest_active_xid: u32,
     /// Mutex for thread-safe access (required when TM is shared across connections).
     mutex: std.Thread.Mutex = .{},
+    /// SSI tracker for SERIALIZABLE isolation level.
+    ssi_tracker: SsiTracker,
 
     pub const TransactionInfo = struct {
         state: TransactionState,
@@ -312,6 +314,7 @@ pub const TransactionManager = struct {
             .next_xid = FIRST_NORMAL_XID,
             .active_txns = .{},
             .oldest_active_xid = FIRST_NORMAL_XID,
+            .ssi_tracker = SsiTracker.init(allocator),
         };
     }
 
@@ -324,6 +327,7 @@ pub const TransactionManager = struct {
             }
         }
         self.active_txns.deinit(self.allocator);
+        self.ssi_tracker.deinit();
     }
 
     /// Begin a new transaction. Returns the assigned XID.
@@ -454,6 +458,11 @@ pub const TransactionManager = struct {
         const info = self.active_txns.getPtr(xid) orelse return error.TransactionNotFound;
         if (info.state != .active) return error.TransactionNotActive;
 
+        // SERIALIZABLE: Check for SSI conflicts before committing
+        if (info.isolation == .serializable) {
+            try self.ssi_tracker.checkCommit(xid);
+        }
+
         info.state = .committed;
         // Free snapshot if it was transaction-scoped
         if (info.isolation != .read_committed) {
@@ -462,6 +471,12 @@ pub const TransactionManager = struct {
                 info.snapshot = null;
             }
         }
+
+        // Clean up SSI state for this transaction
+        if (info.isolation == .serializable) {
+            self.ssi_tracker.finishTransaction(xid);
+        }
+
         self.updateOldestActive();
     }
 
@@ -480,6 +495,12 @@ pub const TransactionManager = struct {
                 info.snapshot = null;
             }
         }
+
+        // Clean up SSI state for this transaction
+        if (info.isolation == .serializable) {
+            self.ssi_tracker.finishTransaction(xid);
+        }
+
         self.updateOldestActive();
     }
 
@@ -550,6 +571,34 @@ pub const TransactionManager = struct {
         }
         self.oldest_active_xid = oldest;
     }
+
+    /// Register a read by a SERIALIZABLE transaction on a table.
+    /// This tracks rw-antidependencies for SSI conflict detection.
+    /// IMPORTANT: Caller must NOT hold the mutex - this function acquires it.
+    pub fn registerRead(self: *TransactionManager, xid: u32, table_page_id: u32) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const info = self.active_txns.get(xid) orelse return error.TransactionNotFound;
+        if (info.isolation != .serializable) return; // Only track SERIALIZABLE
+
+        // Call SSI tracker while holding the lock (SSI tracker methods assume lock is held)
+        try self.ssi_tracker.registerReadLocked(xid, table_page_id, &self.active_txns);
+    }
+
+    /// Register a write by a SERIALIZABLE transaction on a table.
+    /// This tracks rw-antidependencies for SSI conflict detection.
+    /// IMPORTANT: Caller must NOT hold the mutex - this function acquires it.
+    pub fn registerWrite(self: *TransactionManager, xid: u32, table_page_id: u32) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const info = self.active_txns.get(xid) orelse return error.TransactionNotFound;
+        if (info.isolation != .serializable) return; // Only track SERIALIZABLE
+
+        // Call SSI tracker while holding the lock (SSI tracker methods assume lock is held)
+        try self.ssi_tracker.registerWriteLocked(xid, table_page_id, &self.active_txns);
+    }
 };
 
 // ── SSI Tracker ──────────────────────────────────────────────────────
@@ -607,7 +656,8 @@ pub const SsiTracker = struct {
     /// Register a read by a SERIALIZABLE transaction on a table.
     /// Also checks if any concurrent SERIALIZABLE transaction has already
     /// written to this table — if so, records the rw-antidependency.
-    pub fn registerRead(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+    /// IMPORTANT: Caller must hold TransactionManager mutex.
+    pub fn registerReadLocked(self: *SsiTracker, xid: u32, table_page_id: u32, active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo)) !void {
         // Add to read set
         try self.addToSet(&self.read_sets, xid, table_page_id);
 
@@ -620,7 +670,7 @@ pub const SsiTracker = struct {
                 // writer_xid wrote to a table that xid is now reading.
                 // Check if writer_xid's writes are NOT visible in xid's snapshot.
                 // If so, rw-antidependency: xid →rw→ writer_xid
-                if (self.isNotVisibleIn(writer_xid, xid, tm)) {
+                if (self.isNotVisibleInLocked(writer_xid, xid, active_txns)) {
                     try self.addRwEdge(xid, writer_xid);
                 }
             }
@@ -630,7 +680,8 @@ pub const SsiTracker = struct {
     /// Register a write by a SERIALIZABLE transaction on a table.
     /// Also checks if any concurrent SERIALIZABLE transaction has already
     /// read from this table — if so, records the rw-antidependency.
-    pub fn registerWrite(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+    /// IMPORTANT: Caller must hold TransactionManager mutex.
+    pub fn registerWriteLocked(self: *SsiTracker, xid: u32, table_page_id: u32, active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo)) !void {
         // Add to write set
         try self.addToSet(&self.write_sets, xid, table_page_id);
 
@@ -643,7 +694,7 @@ pub const SsiTracker = struct {
                 // reader_xid read a table that xid is now writing.
                 // Check if xid's writes are NOT visible in reader_xid's snapshot.
                 // If so, rw-antidependency: reader_xid →rw→ xid
-                if (self.isNotVisibleIn(xid, reader_xid, tm)) {
+                if (self.isNotVisibleInLocked(xid, reader_xid, active_txns)) {
                     try self.addRwEdge(reader_xid, xid);
                 }
             }
@@ -677,13 +728,28 @@ pub const SsiTracker = struct {
 
     /// Check whether writer_xid's writes are NOT visible in reader_xid's snapshot.
     /// This is true when writer_xid was active in reader_xid's snapshot (concurrent).
-    fn isNotVisibleIn(self: *SsiTracker, writer_xid: u32, reader_xid: u32, tm: *TransactionManager) bool {
+    /// IMPORTANT: Caller must hold TransactionManager mutex.
+    fn isNotVisibleInLocked(self: *SsiTracker, writer_xid: u32, reader_xid: u32, active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo)) bool {
         _ = self;
         // Get reader's snapshot
-        const reader_info = tm.active_txns.get(reader_xid) orelse return false;
+        const reader_info = active_txns.get(reader_xid) orelse return false;
         const snap = reader_info.snapshot orelse return false;
         // Writer is not visible if it was active when reader took its snapshot
         return snap.isActive(writer_xid);
+    }
+
+    /// Register a read (for standalone tests - wraps around TM mutex).
+    pub fn registerRead(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+        tm.mutex.lock();
+        defer tm.mutex.unlock();
+        try self.registerReadLocked(xid, table_page_id, &tm.active_txns);
+    }
+
+    /// Register a write (for standalone tests - wraps around TM mutex).
+    pub fn registerWrite(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+        tm.mutex.lock();
+        defer tm.mutex.unlock();
+        try self.registerWriteLocked(xid, table_page_id, &tm.active_txns);
     }
 
     fn addToSet(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32, value: u32) !void {

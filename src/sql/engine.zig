@@ -57,7 +57,6 @@ const TransactionManager = mvcc_mod.TransactionManager;
 const TupleHeader = mvcc_mod.TupleHeader;
 const Snapshot = mvcc_mod.Snapshot;
 const IsolationLevel = mvcc_mod.IsolationLevel;
-const SsiTracker = mvcc_mod.SsiTracker;
 const lock_mod = @import("../tx/lock.zig");
 const vacuum_mod = @import("../tx/vacuum.zig");
 const stats_mod = @import("stats.zig");
@@ -715,8 +714,6 @@ pub const Database = struct {
     lock_manager: LockManager,
     /// Free space map for tracking available space per page.
     fsm: FreeSpaceMap,
-    /// SSI tracker for SERIALIZABLE isolation conflict detection.
-    ssi_tracker: SsiTracker,
     /// Auto-vacuum daemon for background dead tuple reclamation.
     auto_vacuum: vacuum_mod.AutoVacuumDaemon,
     /// Standby coordinator for hot standby read-only access on replicas.
@@ -843,7 +840,6 @@ pub const Database = struct {
             .db_path = path_copy,
             .lock_manager = LockManager.init(allocator),
             .fsm = FreeSpaceMap.init(allocator, pager.page_size),
-            .ssi_tracker = SsiTracker.init(allocator),
             .auto_vacuum = vacuum_mod.AutoVacuumDaemon.init(allocator, opts.auto_vacuum),
             .standby_coordinator = try StandbyCoordinator.init(allocator, opts.standby_mode),
             .config = config,
@@ -855,7 +851,6 @@ pub const Database = struct {
         // Abort any active transaction and release its locks
         if (self.current_txn) |*txn| {
             self.lock_manager.releaseAllLocks(txn.xid);
-            self.ssi_tracker.finishTransaction(txn.xid);
             self.tm.abort(txn.xid) catch {};
             txn.deinit();
             self.current_txn = null;
@@ -863,7 +858,6 @@ pub const Database = struct {
 
         self.auto_vacuum.deinit();
         self.standby_coordinator.deinit();
-        self.ssi_tracker.deinit();
         self.lock_manager.deinit();
         self.fsm.deinit();
         // Release shared TM (decrements refcount, frees path if last connection)
@@ -1122,31 +1116,26 @@ pub const Database = struct {
     pub fn commitTransaction(self: *Database) EngineError!void {
         const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
 
-        // SSI check: detect serialization anomalies before committing
-        if (txn.isolation == .serializable) {
-            self.ssi_tracker.checkCommit(txn.xid) catch {
+        // Release all locks held by this transaction
+        self.lock_manager.releaseAllLocks(txn.xid);
+        // For RR/SERIALIZABLE: tm.commit() frees the snapshot in TransactionManager,
+        // so clear our copy first to prevent double-free in ctx.deinit().
+        if (txn.isolation != .read_committed) {
+            self.current_txn.?.snapshot = null;
+        }
+        // TransactionManager.commit() handles SSI check and finishTransaction internally
+        self.tm.commit(txn.xid) catch |err| {
+            if (err == error.SerializationFailure) {
                 // Serialization failure — abort instead of commit
-                self.lock_manager.releaseAllLocks(txn.xid);
-                self.ssi_tracker.finishTransaction(txn.xid);
                 self.current_txn.?.snapshot = null;
                 // abort() should not fail here since txn is known active
                 self.tm.abort(txn.xid) catch return EngineError.TransactionError;
                 self.current_txn.?.deinit();
                 self.current_txn = null;
                 return EngineError.SerializationFailure;
-            };
-        }
-
-        // Release all locks held by this transaction
-        self.lock_manager.releaseAllLocks(txn.xid);
-        // Clean up SSI state for this transaction
-        self.ssi_tracker.finishTransaction(txn.xid);
-        // For RR/SERIALIZABLE: tm.commit() frees the snapshot in TransactionManager,
-        // so clear our copy first to prevent double-free in ctx.deinit().
-        if (txn.isolation != .read_committed) {
-            self.current_txn.?.snapshot = null;
-        }
-        self.tm.commit(txn.xid) catch return EngineError.TransactionError;
+            }
+            return EngineError.TransactionError;
+        };
         self.commitWal() catch {};
         // Clean up savepoints and other transaction resources
         self.current_txn.?.deinit();
@@ -1162,8 +1151,6 @@ pub const Database = struct {
         const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
         // Release all locks held by this transaction
         self.lock_manager.releaseAllLocks(txn.xid);
-        // Clean up SSI state for this transaction
-        self.ssi_tracker.finishTransaction(txn.xid);
         // For RR/SERIALIZABLE: tm.abort() frees the snapshot in TransactionManager,
         // so clear our copy first to prevent double-free in ctx.deinit().
         if (txn.isolation != .read_committed) {
@@ -1292,7 +1279,7 @@ pub const Database = struct {
     fn ssiRegisterRead(self: *Database, table_page_id: u32) EngineError!void {
         if (self.current_txn) |txn| {
             if (txn.isolation == .serializable) {
-                self.ssi_tracker.registerRead(txn.xid, table_page_id, self.tm) catch return EngineError.OutOfMemory;
+                self.tm.registerRead(txn.xid, table_page_id) catch return EngineError.OutOfMemory;
             }
         }
     }
@@ -1301,7 +1288,7 @@ pub const Database = struct {
     fn ssiRegisterWrite(self: *Database, table_page_id: u32) EngineError!void {
         if (self.current_txn) |txn| {
             if (txn.isolation == .serializable) {
-                self.ssi_tracker.registerWrite(txn.xid, table_page_id, self.tm) catch return EngineError.OutOfMemory;
+                self.tm.registerWrite(txn.xid, table_page_id) catch return EngineError.OutOfMemory;
             }
         }
     }
