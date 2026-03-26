@@ -11,7 +11,7 @@ pub fn main() !void {
     var suite = harness.BenchmarkSuite.init(allocator, "Microbenchmarks");
     defer suite.deinit();
 
-    const stdout = std.io.out;
+    const stdout = std.fs.File.stdout().writer();
 
     // Benchmark 1: Point lookup by primary key
     {
