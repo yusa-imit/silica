@@ -50,6 +50,28 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-27 — Session 37) — Issue Triage & Cleanup
+- **Mode**: FEATURE (session #37, counter % 5 == 2)
+- **Focus**: Issue triage, verify project health
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #37 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Review**:
+     - Issue #20 (MVCC UPDATE bug) — CRITICAL but requires Milestone 26+ (multi-version storage) — **NOT ACTIONABLE**
+     - Issue #21 (zuda migration) — **OUTDATED** (deadlock detection already migrated in Session 27)
+  4. **Issue Management**:
+     - Closed issue #21 with comprehensive status update
+     - Verified deadlock detection migration complete (commit d7b9f37)
+     - Verified buffer pool migration rejected by architect (documented in decisions.md)
+  5. **Build Verification**: `zig build` passes ✅
+- **Commits**: None (issue triage only)
+- **Build Status**: ✅ `zig build` passes
+- **Open Issues**: 2 remaining (both require future milestones)
+  - Issue #20: MVCC UPDATE bug (requires Milestone 26+ multi-version storage)
+  - Issue #15: SSI implementation (already complete, tests skipped due to #20)
+- **Next Priority**: Monitor for new issues, dependency upgrades (sailor, zuda)
+- **Key Finding**: All actionable issues resolved. Project in healthy maintenance mode.
+
 ### FEATURE Session (2026-03-27 — Session 36) — Microbench Bug Fix
 - **Mode**: FEATURE (session #36, counter % 5 == 1)
 - **Focus**: Bug fix — microbench.zig using wrong Zig 0.15 API
