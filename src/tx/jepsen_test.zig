@@ -363,8 +363,7 @@ const IncrementTask = struct {
 };
 
 test "lost update prevention (SERIALIZABLE should prevent)" {
-    return error.SkipZigTest; // SSI not implemented (Milestone 25) — SERIALIZABLE behaves as REPEATABLE READ
-    // try lostUpdateTest(.serializable, true);
+    try lostUpdateTest(.serializable, true);
 }
 
 test "lost update behavior (READ COMMITTED may allow)" {
@@ -506,8 +505,7 @@ const DoctorTask = struct {
 };
 
 test "write skew detection (SERIALIZABLE should prevent)" {
-    return error.SkipZigTest; // SSI not implemented (Milestone 25) — SERIALIZABLE behaves as REPEATABLE READ
-    // try writeSkewTest(.serializable, true);
+    try writeSkewTest(.serializable, true);
 }
 
 test "write skew detection (READ COMMITTED may allow)" {
