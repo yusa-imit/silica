@@ -366,9 +366,7 @@ const IncrementTask = struct {
 };
 
 test "lost update prevention (SERIALIZABLE should prevent)" {
-    // TODO(Milestone 25): Requires SSI implementation (predicate locks, rw-dependency tracking)
-    return error.SkipZigTest;
-    // try lostUpdateTest(.serializable, true);
+    try lostUpdateTest(.serializable, true);
 }
 
 test "lost update behavior (READ COMMITTED may allow)" {
