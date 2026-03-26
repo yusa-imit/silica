@@ -233,10 +233,7 @@ test "bank transfer: atomicity and isolation (REPEATABLE READ)" {
 }
 
 test "bank transfer: atomicity and isolation (SERIALIZABLE)" {
-    // TODO(Milestone 25): Requires SSI (Serializable Snapshot Isolation) implementation
-    // Current SERIALIZABLE behaves as REPEATABLE READ (snapshot only, no conflict detection)
-    return error.SkipZigTest;
-    // try bankTransferTest(.serializable);
+    try bankTransferTest(.serializable);
 }
 
 fn bankTransferTest(isolation: IsolationLevel) !void {
@@ -508,9 +505,7 @@ const DoctorTask = struct {
 };
 
 test "write skew detection (SERIALIZABLE should prevent)" {
-    // TODO(Milestone 25): Requires SSI implementation
-    return error.SkipZigTest;
-    // try writeSkewTest(.serializable, true);
+    try writeSkewTest(.serializable, true);
 }
 
 test "write skew detection (READ COMMITTED may allow)" {
@@ -603,9 +598,7 @@ test "phantom read prevention (READ COMMITTED may allow)" {
 }
 
 test "phantom read prevention (SERIALIZABLE should prevent)" {
-    // TODO(Milestone 25): Requires SSI implementation
-    return error.SkipZigTest;
-    // try phantomReadTest(.serializable, true);
+    try phantomReadTest(.serializable, true);
 }
 
 fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
@@ -840,9 +833,7 @@ test "non-repeatable read (REPEATABLE READ prevents)" {
 }
 
 test "non-repeatable read (SERIALIZABLE prevents)" {
-    // TODO(Milestone 25): Requires SSI implementation
-    return error.SkipZigTest;
-    // try nonRepeatableReadTest(.serializable, false);
+    try nonRepeatableReadTest(.serializable, false);
 }
 
 fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void {
