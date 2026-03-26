@@ -139,8 +139,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.22.0
-- **Latest available**: v1.22.0
+- **Current in silica**: v1.23.0
+- **Latest available**: v1.23.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -176,6 +176,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.20.0 | quality & completeness | DONE | Windows console Unicode tests, pattern documentation, directory scanning, error context |
 | v1.21.0 | streaming & large data | DONE | DataSource abstraction, large data benchmarks, memory efficiency |
 | v1.22.0 | rich text & formatting | DONE | SpanBuilder/LineBuilder APIs, rich text parser, line breaking, Unicode-aware text measurements |
+| v1.23.0 | plugin architecture | DONE | Widget trait system, custom renderer hooks, theme plugins, composition helpers (Padding/Centered/Aligned/Stack/Constrained) |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: CompletionPopup for SQL keyword/table/column completion
@@ -185,7 +186,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### zuda Library
 
-- **Current**: v1.23.0 (integrated)
+- **Current**: v2.0.0 (integrated)
 - **Repo**: https://github.com/yusa-imit/zuda
 - **Migration Status**: 1/3 completed — Deadlock Detection ✅ DONE
 
