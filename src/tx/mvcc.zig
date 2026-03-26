@@ -282,6 +282,85 @@ pub fn isTupleVisibleWithTm(
     return !xmax_visible;
 }
 
+// ── SSI (Serializable Snapshot Isolation) Data Structures ─────────────
+
+/// A predicate lock (SIREAD lock) representing a read range.
+/// For now, we use exact keys (not ranges) — range support is future work.
+pub const SIReadLock = struct {
+    /// Transaction that holds this lock.
+    xid: u32,
+    /// Table (B+Tree root page ID).
+    table_page_id: u32,
+    /// Start key (inclusive). Empty slice = table-level lock.
+    key_start: []const u8,
+    /// End key (exclusive). Empty slice = single-key lock.
+    key_end: []const u8,
+
+    /// Hash function for use in HashMap.
+    pub fn hash(self: SIReadLock) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&self.xid));
+        hasher.update(std.mem.asBytes(&self.table_page_id));
+        hasher.update(self.key_start);
+        hasher.update(self.key_end);
+        return hasher.final();
+    }
+
+    /// Equality function for use in HashMap.
+    pub fn eql(a: SIReadLock, b: SIReadLock) bool {
+        return a.xid == b.xid and
+            a.table_page_id == b.table_page_id and
+            std.mem.eql(u8, a.key_start, b.key_start) and
+            std.mem.eql(u8, a.key_end, b.key_end);
+    }
+};
+
+/// Key for RW-conflict hash map.
+pub const RWConflictKey = struct {
+    reader_xid: u32,
+    writer_xid: u32,
+
+    pub fn hash(self: RWConflictKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&self.reader_xid));
+        hasher.update(std.mem.asBytes(&self.writer_xid));
+        return hasher.final();
+    }
+
+    pub fn eql(a: RWConflictKey, b: RWConflictKey) bool {
+        return a.reader_xid == b.reader_xid and a.writer_xid == b.writer_xid;
+    }
+};
+
+/// An RW-conflict represents a read-write dependency: reader → writer.
+/// If reader committed before writer, this is a rw-antidependency.
+pub const RWConflict = struct {
+    /// Reader committed? (updated on reader commit).
+    reader_committed: bool,
+    /// Writer committed? (updated on writer commit).
+    writer_committed: bool,
+};
+
+/// HashMap context for SIReadLock.
+pub const SIReadLockContext = struct {
+    pub fn hash(_: SIReadLockContext, key: SIReadLock) u64 {
+        return key.hash();
+    }
+    pub fn eql(_: SIReadLockContext, a: SIReadLock, b: SIReadLock) bool {
+        return SIReadLock.eql(a, b);
+    }
+};
+
+/// HashMap context for RWConflictKey.
+pub const RWConflictContext = struct {
+    pub fn hash(_: RWConflictContext, key: RWConflictKey) u64 {
+        return key.hash();
+    }
+    pub fn eql(_: RWConflictContext, a: RWConflictKey, b: RWConflictKey) bool {
+        return RWConflictKey.eql(a, b);
+    }
+};
+
 // ── Transaction Manager ────────────────────────────────────────────────
 
 /// Manages transaction IDs, snapshots, and transaction state.
@@ -296,6 +375,18 @@ pub const TransactionManager = struct {
     oldest_active_xid: u32,
     /// Mutex for thread-safe access (required when TM is shared across connections).
     mutex: std.Thread.Mutex = .{},
+
+    // ── SSI (Serializable Snapshot Isolation) Components ──
+
+    /// Predicate locks (SIREAD locks) for SSI — tracks read ranges per transaction.
+    /// Key: (xid, table_page_id, key_start, key_end)
+    /// Value: (empty struct — presence is all we need)
+    siread_locks: std.HashMapUnmanaged(SIReadLock, void, SIReadLockContext, std.hash_map.default_max_load_percentage),
+
+    /// RW-conflicts for SSI — tracks read-write dependencies.
+    /// Key: (reader_xid, writer_xid)
+    /// Value: RWConflict metadata (timestamps, committed flags)
+    rw_conflicts: std.HashMapUnmanaged(RWConflictKey, RWConflict, RWConflictContext, std.hash_map.default_max_load_percentage),
 
     pub const TransactionInfo = struct {
         state: TransactionState,
@@ -312,6 +403,8 @@ pub const TransactionManager = struct {
             .next_xid = FIRST_NORMAL_XID,
             .active_txns = .{},
             .oldest_active_xid = FIRST_NORMAL_XID,
+            .siread_locks = .{},
+            .rw_conflicts = .{},
         };
     }
 
@@ -324,6 +417,12 @@ pub const TransactionManager = struct {
             }
         }
         self.active_txns.deinit(self.allocator);
+
+        // Clean up SSI structures (keys are owned by the hashmaps if allocated)
+        // Note: SIReadLock keys contain slices that may be owned — we need to track ownership
+        // For now, assume keys are owned by the transactions and will be freed on abort/commit
+        self.siread_locks.deinit(self.allocator);
+        self.rw_conflicts.deinit(self.allocator);
     }
 
     /// Begin a new transaction. Returns the assigned XID.
