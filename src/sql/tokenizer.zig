@@ -236,6 +236,11 @@ pub const TokenType = enum {
     kw_deferred,
     kw_immediate,
     kw_exclusive,
+    kw_isolation,
+    kw_read,
+    kw_committed,
+    kw_repeatable,
+    kw_serializable,
 
     // Keywords — Utility
     kw_explain,
@@ -916,6 +921,11 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "deferred", .kw_deferred },
         .{ "immediate", .kw_immediate },
         .{ "exclusive", .kw_exclusive },
+        .{ "isolation", .kw_isolation },
+        .{ "read", .kw_read },
+        .{ "committed", .kw_committed },
+        .{ "repeatable", .kw_repeatable },
+        .{ "serializable", .kw_serializable },
         // Utility
         .{ "explain", .kw_explain },
         .{ "analyze", .kw_analyze },

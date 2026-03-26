@@ -2628,7 +2628,7 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
-        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value };
+        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value, original_xmin: u32 };
 
         // Collect key-value pairs to update (can't modify B+Tree while iterating)
         var updates = std.ArrayListUnmanaged(UpdateEntry){};
@@ -2655,10 +2655,12 @@ pub const Database = struct {
 
             // Deserialize row (handle MVCC header if present)
             var values: []Value = undefined;
+            var original_xmin: u32 = mvcc_mod.INVALID_XID;
             if (isVersionedRowData(entry.value)) {
                 // MVCC row: check visibility first
                 if (mvcc_ctx) |ctx| {
                     const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    original_xmin = hdr.xmin; // Save for later comparison after lock
                     if (!mvcc_mod.isTupleVisibleWithTm(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
                         self.allocator.free(entry.value);
                         continue;
@@ -2670,6 +2672,34 @@ pub const Database = struct {
                             if (state == .active) {
                                 self.allocator.free(entry.value);
                                 return EngineError.LockConflict;
+                            }
+                        }
+                    }
+                    // SERIALIZABLE: First-Committer-Wins rule
+                    // If this row was modified by a transaction that committed after our snapshot,
+                    // abort to prevent lost updates.
+                    if (self.current_txn) |txn| {
+                        if (txn.isolation == .serializable) {
+                            // Check if row was created after our snapshot started
+                            if (hdr.xmin >= ctx.snapshot.xmax and hdr.xmin != ctx.current_xid) {
+                                self.allocator.free(entry.value);
+                                return EngineError.SerializationFailure;
+                            }
+                            // Check if row was updated (xmax committed) after our snapshot
+                            if (hdr.xmax != mvcc_mod.INVALID_XID and hdr.xmax != ctx.current_xid) {
+                                if (hdr.xmax >= ctx.snapshot.xmax) {
+                                    self.allocator.free(entry.value);
+                                    return EngineError.SerializationFailure;
+                                }
+                                // Also check if xmax committed after we took our snapshot
+                                if (ctx.tm) |tm| {
+                                    if (tm.isCommitted(hdr.xmax)) {
+                                        if (!ctx.snapshot.isVisible(hdr.xmax)) {
+                                            self.allocator.free(entry.value);
+                                            return EngineError.SerializationFailure;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2754,6 +2784,26 @@ pub const Database = struct {
                         for (row.values) |v| v.free(self.allocator);
                         self.allocator.free(row.values);
                         continue;
+                    }
+                    // SERIALIZABLE: First-Committer-Wins check after lock acquisition
+                    // If the row's xmin changed since our initial read, it means another
+                    // transaction modified it. For SERIALIZABLE, this is a lost update.
+                    if (self.current_txn) |txn| {
+                        if (txn.isolation == .serializable) {
+                            // Case 1: Original row was versioned, check if xmin changed
+                            if (original_xmin != mvcc_mod.INVALID_XID and fresh_hdr.xmin != original_xmin) {
+                                for (row.values) |v| v.free(self.allocator);
+                                self.allocator.free(row.values);
+                                return EngineError.SerializationFailure;
+                            }
+                            // Case 2: Original row was non-versioned, now it's versioned
+                            // This means another transaction modified it first
+                            if (original_xmin == mvcc_mod.INVALID_XID and fresh_hdr.xmin != ctx.current_xid) {
+                                for (row.values) |v| v.free(self.allocator);
+                                self.allocator.free(row.values);
+                                return EngineError.SerializationFailure;
+                            }
+                        }
                     }
                 }
                 fresh_values = executor_mod.deserializeRow(self.allocator, fresh_value_bytes[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
@@ -2855,7 +2905,7 @@ pub const Database = struct {
                 return EngineError.OutOfMemory;
             };
 
-            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values }) catch {
+            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values, .original_xmin = original_xmin }) catch {
                 self.allocator.free(key_copy);
                 self.allocator.free(new_data);
                 for (old_values) |ov| ov.free(self.allocator);
@@ -3249,8 +3299,16 @@ pub const Database = struct {
                 arena.?.deinit();
                 self.allocator.destroy(arena.?);
                 switch (txn) {
-                    .begin => {
-                        self.beginTransaction(.read_committed) catch {
+                    .begin => |begin_stmt| {
+                        const isolation: mvcc_mod.IsolationLevel = if (begin_stmt.isolation_level) |iso|
+                            switch (iso) {
+                                .read_committed => .read_committed,
+                                .repeatable_read => .repeatable_read,
+                                .serializable => .serializable,
+                            }
+                        else
+                            .read_committed;
+                        self.beginTransaction(isolation) catch {
                             return .{ .message = "ERROR: already in a transaction" };
                         };
                         return .{ .message = "BEGIN" };

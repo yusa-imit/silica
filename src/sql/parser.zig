@@ -2186,7 +2186,26 @@ pub const Parser = struct {
             mode = .exclusive;
         }
         _ = self.match(.kw_transaction);
-        return .{ .begin = .{ .mode = mode } };
+
+        // Parse optional ISOLATION LEVEL clause
+        var isolation_level: ?ast.IsolationLevel = null;
+        if (self.match(.kw_isolation)) {
+            _ = try self.expect(.kw_level);
+            if (self.match(.kw_read)) {
+                _ = try self.expect(.kw_committed);
+                isolation_level = .read_committed;
+            } else if (self.match(.kw_repeatable)) {
+                _ = try self.expect(.kw_read);
+                isolation_level = .repeatable_read;
+            } else if (self.match(.kw_serializable)) {
+                isolation_level = .serializable;
+            } else {
+                try self.addError(self.peek(), "Expected READ COMMITTED, REPEATABLE READ, or SERIALIZABLE");
+                return Error.ParseFailed;
+            }
+        }
+
+        return .{ .begin = .{ .mode = mode, .isolation_level = isolation_level } };
     }
 
     fn parseCommit(self: *Parser) ast.TransactionStmt {

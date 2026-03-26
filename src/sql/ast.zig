@@ -474,6 +474,7 @@ pub const DropIndexStmt = struct {
 pub const TransactionStmt = union(enum) {
     begin: struct {
         mode: TransactionMode = .deferred,
+        isolation_level: ?IsolationLevel = null,
     },
     commit,
     rollback: struct {
@@ -487,6 +488,12 @@ pub const TransactionMode = enum {
     deferred,
     immediate,
     exclusive,
+};
+
+pub const IsolationLevel = enum {
+    read_committed,
+    repeatable_read,
+    serializable,
 };
 
 /// EXPLAIN statement.
