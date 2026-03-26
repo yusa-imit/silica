@@ -50,6 +50,24 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-27 — Session 36) — Microbench Bug Fix
+- **Mode**: FEATURE (session #36, counter % 5 == 1)
+- **Focus**: Bug fix — microbench.zig using wrong Zig 0.15 API
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #36 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful
+  3. **Issue Review**: Issue #20 (MVCC UPDATE bug) — architectural limitation requiring Milestone 26+
+  4. **Bug Discovery**: Found `bench/microbench.zig` using `std.io.out` which doesn't exist in Zig 0.15
+  5. **Root Cause**: Zig 0.15 changed stdout API — correct API is `std.fs.File.stdout().writer()`
+  6. **Fix Applied** (Commit 580ef9d):
+     - Updated line 14 in bench/microbench.zig: `std.io.out` → `std.fs.File.stdout().writer()`
+     - Verified benchmark file now compiles successfully
+- **Commits**:
+  - 580ef9d: fix: correct stdout API in microbench.zig for Zig 0.15
+- **Build Status**: ✅ `zig build` passes
+- **Next Priority**: Verify CI passes, monitor for any other Zig 0.15 API compatibility issues
+- **Key Finding**: Benchmark file was non-functional since Zig 0.15 upgrade. Fixed with single-line API correction.
+
 ### STABILIZATION Session (2026-03-27 — Session 35) — SERIALIZABLE Test Analysis & Skip
 - **Mode**: STABILIZATION (session #35, counter % 5 == 0)
 - **Focus**: Fix CI RED by addressing SERIALIZABLE test failures
