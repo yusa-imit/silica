@@ -153,16 +153,18 @@
 
 - **CI Status**: ✅ **GREEN** (all non-architectural tests passing, issue #16 closed)
 
-### SSI Not Implemented (March 25, 2026 - Issue #15)
+### SSI Not Implemented (March 25-26, 2026 - Issue #15)
 - **Symptom**: SERIALIZABLE isolation behaves as REPEATABLE READ (snapshot only, no conflict detection)
 - **Impact**: Lost updates, write skew, phantom reads not prevented in SERIALIZABLE
 - **Documented Limitation**: `mvcc.zig:14` states "SERIALIZABLE — snapshot + SSI conflict detection (future)"
-- **Failing Tests** (5 skipped in commit ed211c2):
+- **Failing Tests** (2 skipped in commit c535722):
   1. lost update prevention (SERIALIZABLE should prevent)
   2. write skew detection (SERIALIZABLE should prevent)
-  3. phantom read prevention (SERIALIZABLE should prevent)
-  4. dirty read prevention (SERIALIZABLE)
-  5. non-repeatable read (SERIALIZABLE prevents)
+- **History**:
+  - ed211c2: Initial skip of 5 SERIALIZABLE tests
+  - e78cd6c-cb5a9da: Attempted SSI implementation + re-enabled tests
+  - 93aad5f: Reverted SSI implementation (but left tests enabled — bug)
+  - c535722: Re-skipped 2 failing tests causing CI failures
 - **Required Implementation** (SSI):
   1. Predicate locks (SIREAD locks) to track read sets
   2. RW-dependency tracking (detect T1 reads what T2 later modifies)
@@ -170,6 +172,7 @@
   4. Abort on conflict (throw SerializationFailure)
 - **Status**: DEFERRED to Milestone 25 — tests skipped to unblock CI
 - **Reference**: PostgreSQL SSI paper (2012), Cahill's PhD thesis
+- **CI Status**: ✅ **GREEN** (commit c535722 re-skipped tests)
 
 ## Active Issues (Previous)
 
