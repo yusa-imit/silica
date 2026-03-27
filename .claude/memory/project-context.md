@@ -50,6 +50,34 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-28 — Session 48) — Sailor v1.25.0 Migration
+- **Mode**: FEATURE (session #48, counter % 5 == 3)
+- **Focus**: Dependency migration — sailor v1.24.0 → v1.25.0
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #48 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest 3 runs successful, exit code 0
+  3. **Issue Review**:
+     - Issue #20 (MVCC UPDATE bug) — Known architectural limitation (deferred to Milestone 26+)
+     - Issue #15 (SSI) — Already complete, tests skipped due to #20
+     - No new critical issues
+  4. **Dependency Check**: Identified sailor v1.25.0 release (form & validation features)
+  5. **Migration Execution**:
+     - Upgraded sailor dependency: v1.24.0 → v1.25.0
+     - `zig fetch --save https://github.com/yusa-imit/sailor/archive/refs/tags/v1.25.0.tar.gz`
+     - New features available:
+       - Form widget with multi-field container and fluent API
+       - Field focus management (Tab/Shift+Tab navigation)
+       - Password field masking with configurable label width
+       - 15+ built-in validators (notEmpty, minLength, email, url, ipv4, numeric, etc.)
+       - Input masks (SSN, US phone, date formats, credit card, ZIP codes)
+     - All tests pass (2766 tests)
+     - No breaking changes
+  6. **Commits Created**:
+     - `6c16ea0`: chore: migrate to sailor v1.25.0 (form & validation)
+  7. **Documentation**: Updated `docs/milestones.md` with v1.25.0 entry
+- **Next Priority**: Monitor for sailor v1.26.0+, routine maintenance
+- **Key Achievement**: Successfully migrated to sailor v1.25.0. Form validation features now available for TUI SQL query input and authentication forms.
+
 ### FEATURE Session (2026-03-28 — Session 47) — Sailor v1.24.0 Migration
 - **Mode**: FEATURE (session #47, counter % 5 == 2)
 - **Focus**: Dependency migration — sailor v1.23.0 → v1.24.0
