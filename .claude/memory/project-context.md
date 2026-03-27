@@ -50,6 +50,33 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-28 — Session 47) — Sailor v1.24.0 Migration
+- **Mode**: FEATURE (session #47, counter % 5 == 2)
+- **Focus**: Dependency migration — sailor v1.23.0 → v1.24.0
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #47 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest 3 runs successful
+  3. **Issue Review**:
+     - Issue #23 (sailor v1.24.0 animation features) — **COMPLETED**
+     - Issue #20 (MVCC UPDATE bug) — Known architectural limitation (deferred)
+     - Issue #15 (SSI) — Already complete, tests skipped due to #20
+  4. **Migration Execution**:
+     - Upgraded sailor dependency: v1.23.0 → v1.24.0
+     - `zig fetch --save https://github.com/yusa-imit/sailor/archive/refs/tags/v1.24.0.tar.gz`
+     - New features available:
+       - 22 easing functions (linear, cubic, elastic, bounce, back, circ, expo)
+       - Animation system (value/color interpolation with easing)
+       - Timer system for async animation scheduling
+       - Transition helpers (fade, slide effects)
+     - All tests pass (2766 tests: 2766 passing, 12 skipped)
+     - No breaking changes
+  5. **Commits Created**:
+     - `55c9a8c`: chore: migrate to sailor v1.24.0 (animation & transitions)
+  6. **Documentation**: Updated `docs/milestones.md` with v1.24.0 entry
+  7. **Issue Closure**: Closed #23 with completion summary
+- **Next Priority**: Routine maintenance, monitoring for new issues/updates
+- **Key Achievement**: Successfully migrated to sailor v1.24.0. Animation features now available for TUI enhancements.
+
 ### FEATURE Session (2026-03-27 — Session 46) — zuda LRU Cache Migration
 - **Mode**: FEATURE (session #46, counter % 5 == 1)
 - **Focus**: Dependency migration — BufferPool LRU eviction to zuda LRUCache
