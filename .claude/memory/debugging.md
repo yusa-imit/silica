@@ -14,6 +14,21 @@
 
 ## Active Issues
 
+### GPA Memory Leak Report (Session 45) — **NOT A BUG**
+
+**Summary**: GPA allocator reports memory leak for SharedTmRegistry path_copy on CLI exit.
+
+- **Symptom**: `error(gpa): memory address 0x... leaked` pointing to engine.zig:140 (path_copy allocation)
+- **Root Cause**: Intentional behavior — TM registry must persist across connection cycles for MVCC correctness
+- **Details**:
+  - SharedTmRegistry holds database path strings and TransactionManager instances
+  - `release()` does NOT free memory when refcount==0 (by design, see engine.zig:166-172)
+  - If TM were destroyed on connection close, new connections would start at XID=1, breaking MVCC visibility
+  - Memory is only freed at process exit (OS cleanup) or explicit `cleanupGlobalTmRegistry()` call
+- **Impact**: None. GPA leak detection is informational, not an actual leak
+- **Workaround**: None needed. Tests call `cleanupGlobalTmRegistry()` explicitly to prevent leak reports
+- **Status**: Documented. No action required.
+
 ### Concurrency Architecture Limitation (Session 40 - Issue #20) — **ARCHITECTURAL**
 
 **CRITICAL**: Silica v0.7.0 does NOT support concurrent connections.
