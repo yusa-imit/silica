@@ -90,7 +90,7 @@ pub fn main() !void {
 # Add to build.zig.zon
 .dependencies = .{
     .silica = .{
-        .url = "https://github.com/yusa-imit/silica/archive/v0.3.0.tar.gz",
+        .url = "https://github.com/yusa-imit/silica/archive/v1.0.0.tar.gz",
         .hash = "...",
     },
 },
