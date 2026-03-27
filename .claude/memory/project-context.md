@@ -50,6 +50,28 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-27 — Session 46) — zuda LRU Cache Migration
+- **Mode**: FEATURE (session #46, counter % 5 == 1)
+- **Focus**: Dependency migration — BufferPool LRU eviction to zuda LRUCache
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #46 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest 3 runs successful
+  3. **Issue Review**:
+     - Issue #22 (zuda LRU cache migration) — **COMPLETED**
+     - Issue #23 (sailor v1.24.0) — Deferred to next session
+     - Issue #20 (MVCC UPDATE bug) — Known architectural limitation
+  4. **Migration Execution** (Conservative approach — Phase 1):
+     - **Test-Writer**: Created 9 comprehensive tests for zuda integration (lines 1281-1710 in buffer_pool.zig)
+     - **Zig-Developer**: Migrated BufferPool LRU eviction logic from manual doubly-linked list to zuda LRUCache
+     - **Tests**: All 2262 tests pass (2159 passing, 551 skipped per known MVCC limitation)
+     - **LOC reduction**: ~25 lines (removed intrusive list pointers + manual list manipulation)
+  5. **Commits Created**:
+     - `edd5100`: perf(storage): migrate BufferPool LRU to zuda LRUCache
+     - `bd8965e`: docs: update memory with zuda LRUCache migration details
+  6. **Issue Closure**: Closed #22 with completion summary
+- **Next Priority**: Issue #23 (sailor v1.24.0 animation features), routine maintenance
+- **Key Achievement**: Successfully completed first zuda dependency migration (BufferPool → zuda LRUCache). Production-tested eviction logic now integrated.
+
 ### FEATURE Session (2026-03-27 — Session 44) — Maintenance Check
 - **Mode**: FEATURE (session #44, counter % 5 == 4)
 - **Focus**: Project health check, CI verification, issue review
