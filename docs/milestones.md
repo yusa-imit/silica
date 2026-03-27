@@ -139,8 +139,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.24.0
-- **Latest available**: v1.24.0
+- **Current in silica**: v1.25.0
+- **Latest available**: v1.25.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -178,6 +178,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.22.0 | rich text & formatting | DONE | SpanBuilder/LineBuilder APIs, rich text parser, line breaking, Unicode-aware text measurements |
 | v1.23.0 | plugin architecture | DONE | Widget trait system, custom renderer hooks, theme plugins, composition helpers (Padding/Centered/Aligned/Stack/Constrained) |
 | v1.24.0 | animation & transitions | DONE | Easing functions (22 types: linear/cubic/elastic/bounce/back/circ/expo), animation system (value/color interpolation), timer system, transition helpers (fade/slide) |
+| v1.25.0 | form & validation | DONE | Form widget with field focus management, password masking, 15+ validators (notEmpty/email/url/ipv4/numeric/etc), input masks (SSN/phone/date/credit card) |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: CompletionPopup for SQL keyword/table/column completion
