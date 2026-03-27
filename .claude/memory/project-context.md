@@ -50,6 +50,26 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-28 — Session 49) — Documentation Maintenance
+- **Mode**: FEATURE (session #49, counter % 5 == 4)
+- **Focus**: Documentation updates and routine maintenance
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #49 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest run successful (2026-03-27)
+  3. **Issue Review**:
+     - Issue #20 (MVCC UPDATE bug) — Known architectural limitation (deferred to Milestone 26+)
+     - Issue #15 (SSI) — Already complete, tests skipped due to #20
+     - No actionable issues
+  4. **Dependency Check**: Sailor v1.25.0 up to date (latest), zuda blocked (awaiting #9, #10)
+  5. **Documentation Update**:
+     - Updated README.md version reference: v0.3.0 → v1.0.0 in build.zig.zon example
+     - Reflects current production release status
+  6. **Commits Created**:
+     - `48d416f`: docs: update README version reference to v1.0.0
+  7. **Build & Tests**: ✅ Build successful, no regressions
+- **Next Priority**: Monitor for new issues, dependency updates, or user requests
+- **Key Achievement**: Maintained documentation accuracy for v1.0.0 production release. All core features complete.
+
 ### FEATURE Session (2026-03-28 — Session 48) — Sailor v1.25.0 Migration
 - **Mode**: FEATURE (session #48, counter % 5 == 3)
 - **Focus**: Dependency migration — sailor v1.24.0 → v1.25.0
