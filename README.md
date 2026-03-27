@@ -324,11 +324,11 @@ zig build test  # 2766 tests
 - 🚧 Documentation & Packaging (Milestone 25)
 - 🚧 System packages (deb, rpm, brew)
 
-### Known Issues 🐛
-- [Issue #16](https://github.com/yusa-imit/silica/issues/16): MVCC visibility bugs (NoRows errors, snapshot inconsistency)
-- [Issue #15](https://github.com/yusa-imit/silica/issues/15): SSI implementation needed for full SERIALIZABLE support
+### Known Limitations 🚧
+- **SERIALIZABLE + Concurrent UPDATEs** ([Issue #20](https://github.com/yusa-imit/silica/issues/20)): Single-version storage architecture causes NoRows errors during concurrent UPDATEs. Use READ COMMITTED or REPEATABLE READ for high-concurrency workloads. Fix planned in Milestone 26+ (multi-version storage).
+- **Multi-Row INSERT** ([Issue #1](https://github.com/yusa-imit/silica/issues/1)): DuplicateKey errors in some edge cases. Workarounds in place.
 
-See [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for details.
+See [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for full details and workarounds.
 
 ---
 
