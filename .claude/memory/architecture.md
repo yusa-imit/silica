@@ -1,5 +1,36 @@
 # Silica — Architecture
 
+## Concurrency Limitations (CRITICAL — Session 40 Finding)
+
+**Silica v0.7.0 does NOT support concurrent connections.**
+
+### Per-Connection Resource Isolation
+
+Each `Database.open()` creates isolated instances:
+1. **Buffer Pool** (engine.zig:743-746) — Separate in-memory page cache per connection
+2. **WAL** (engine.zig:751-756) — **CRITICAL BUG**: Multiple Wal instances write to same file without synchronization!
+3. **Transaction Manager** — Correctly shared via global registry
+
+### Concurrency Bugs
+
+1. **WAL Corruption**: Multiple connections write interleaved frames to `db-wal` → corrupt checksums, lost frames
+2. **Stale Cache**: Connection A modifies page → Connection B serves old cached copy from its buffer pool
+3. **Rollback Hazard**: Connection A's rollback truncates WAL, may discard Connection B's committed data
+
+### Impact
+
+- Jepsen-style concurrent tests fail with data loss (expected 1000, found 995)
+- UPDATE/DELETE in concurrent transactions cause NoRows errors (issue #20)
+- Multi-connection workloads are UNSAFE
+
+### Fix Required (Milestone 26+)
+
+1. **Shared Buffer Pool** with proper locking (like PostgreSQL's shared_buffers)
+2. **Single WAL Manager** or serialized WAL writes
+3. **Multi-version storage** for true MVCC
+
+**Current Status**: Single-connection mode only. Multi-connection support deferred to Milestone 26.
+
 ## Layered Architecture
 
 ```

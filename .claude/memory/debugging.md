@@ -14,7 +14,24 @@
 
 ## Active Issues
 
-### MVCC Visibility Bugs (March 25-26, 2026 - Issue #16) — **FIXED**
+### Concurrency Architecture Limitation (Session 40 - Issue #20) — **ARCHITECTURAL**
+
+**CRITICAL**: Silica v0.7.0 does NOT support concurrent connections.
+
+- **Symptom**: Jepsen tests fail with data loss (expected 1000, found 995) and NoRows errors
+- **Root Cause**: Per-connection Buffer Pool + WAL instances → isolated in-memory state + WAL corruption
+- **Details**:
+  1. Each `Database.open()` creates separate BufferPool and Wal instances
+  2. Multiple Wal instances write to same `-wal` file without synchronization → interleaved frames, corrupt checksums
+  3. Buffer pools cache stale pages (Connection A modifies → flushes to WAL → Connection B still serves old cached copy)
+  4. Rollback in one connection truncates WAL, may discard other connections' committed frames
+
+- **Impact**: Multi-connection workloads are UNSAFE. Concurrent tests are invalid for current architecture.
+- **Fix Required (Milestone 26+)**: Shared buffer pool + WAL manager + multi-version storage
+- **Workaround**: Single-connection mode only
+- **Status**: Documented in architecture.md, issue #20 updated with analysis
+
+### MVCC Visibility Bugs (March 25-26, 2026 - Issue #16) — **FIXED (except concurrency)**
 - **Symptom**: Jepsen consistency tests failing with NoRows errors and lost updates
 - **Status**:
   - ✅ **FIXED** (commit 2a239e7): Shared TransactionManager across connections — phantom reads prevented
