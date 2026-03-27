@@ -50,6 +50,25 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-28 — Session 51) — Code Cleanup
+- **Mode**: FEATURE (session #51, counter % 5 == 1)
+- **Focus**: Removing stale TODO comments and code maintenance
+- **Work Done**:
+  1. **Mode Determination**: Read/incremented `.claude/session-counter` → session #51 → FEATURE mode
+  2. **CI Status Check**: ✅ GREEN — Latest 3 runs successful, no open issues
+  3. **Dependency Check**: Sailor v1.25.0 ✅ (latest), zuda v2.0.0 ✅ (latest)
+  4. **Code Audit**: Searched for TODO/FIXME comments across codebase
+  5. **Stale TODO Removal**:
+     - Removed 14 outdated TODO comments in `src/sql/planner.zig`
+     - Comments referred to Milestone 14F (Triggers), 17A-D (Authorization/RBAC), 23 (REINDEX)
+     - All these features are **already implemented and complete** in v1.0.0
+     - Updated comments to reflect "handled early in engine"
+  6. **Commits Created**:
+     - `79a3ecd`: chore: remove stale TODO comments for completed milestones
+  7. **Build & Tests**: ✅ Build successful
+- **Next Priority**: Monitor for new issues, dependency updates
+- **Key Achievement**: Cleaned up outdated TODOs, improved code clarity. Remaining TODOs are legitimate future enhancements (LIKE pattern analysis, index-only scans, JSONB binary format).
+
 ### FEATURE Session (2026-03-28 — Session 49) — Documentation Maintenance
 - **Mode**: FEATURE (session #49, counter % 5 == 4)
 - **Focus**: Documentation updates and routine maintenance
