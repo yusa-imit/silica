@@ -81,7 +81,7 @@ const lib = b.addLibrary(.{ .name = "silica", .root_module = mod, .linkage = .st
 const tests = b.addTest(.{ .root_module = mod });
 ```
 
-### Buffer Pool pin/unpin — VERIFIED
+### Buffer Pool pin/unpin with zuda LRUCache — VERIFIED
 ```zig
 const buffer_pool = @import("storage/buffer_pool.zig");
 var pool = try buffer_pool.BufferPool.init(allocator, &pager, 0); // 0 = default 2000
@@ -98,6 +98,11 @@ const new_frame = try pool.fetchNewPage(new_pid);
 // new_frame is auto-dirty, write content, then unpin
 pool.unpinPage(new_pid, true);
 try pool.flushAll();
+
+// Internal LRU management: BufferPool uses zuda.containers.cache.LRUCache(u32, u32, AutoContext, null)
+// - Unpinned frames are tracked: page_id -> frame_index
+// - getEvictableFrame() finds oldest unpinned frame (LRU end of iterator)
+// - Error handling: lru.put() failures in unpinPage() are caught and ignored (cleanup path)
 ```
 
 ### B+Tree usage — VERIFIED

@@ -80,6 +80,14 @@ util (checksum, varint) → storage (page, btree, buffer_pool) → tx (wal, lock
 - `unpinPage(page_num: u32, dirty: bool) -> void`
 - `flushAll() -> void`
 
+## Dependency Migrations (Silica v1.0.0+)
+
+### zuda LRUCache (Session 46 — COMPLETED)
+**Completed**: BufferPool LRU eviction replaced with `zuda.containers.cache.LRUCache(u32, u32, AutoContext, null)`
+- **Removed**: Manual doubly-linked list (prev/next fields, lru_head/lru_tail/lru_size)
+- **Benefit**: Production-tested LRU implementation, ~30 LOC reduction
+- **Impact**: All 2262 tests pass, zero regressions
+
 ## File Format
 
 ```
