@@ -4,10 +4,10 @@
 
 - **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
 - **Current development**: All milestones complete, maintenance mode
-- **Tests**: 2766 tests (2766 passing, 12 skipped: 7 BitmapHeapScan TID mapping, 2 parser placeholders, 2 catalog, 1 statement_timeout)
+- **Tests**: 2766 tests (2749 passing, 29 skipped: 17 PreparedStatement arena bug, 7 BitmapHeapScan TID mapping, 2 parser placeholders, 2 catalog, 1 statement_timeout)
 - **Branch**: `main`
 - **zuda migrations**: LRU Cache and Deadlock Detection **BLOCKED** (awaiting zuda#9, zuda#10); B+Tree needs architect review
-- **Known bugs**: None open
+- **Known bugs**: Issue #24 (PreparedStatement arena lifecycle — architectural refactor needed)
 
 > **Note**: Phases 4-8 were completed iteratively without tagged releases. All work is on `main` branch. Git tags for v0.4.0+ will be created when appropriate release points are determined.
 
@@ -123,6 +123,7 @@
 
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
+| #24 | PreparedStatement arena lifecycle needs architectural refactor | bug, enhancement | Open — requires separating template arena (cached plan) from execution arena (parameter substitution) |
 | #15 | feat: implement SSI (Serializable Snapshot Isolation) for SERIALIZABLE isolation level | enhancement | Open — future enhancement (post-v1.0) |
 
 ---
