@@ -725,10 +725,15 @@ pub const Database = struct {
 
     /// Open or create a database file.
     pub fn open(allocator: Allocator, path: []const u8, opts: OpenOptions) !Database {
-        // Initialize shared TM registry if not already done
+        // Initialize shared TM registry if not already done.
+        // IMPORTANT: Use page_allocator for the registry instead of the passed-in allocator
+        // to avoid conflicts with per-test testing.allocators. The registry persists
+        // across multiple Database.open/close cycles (required for MVCC transaction ID
+        // monotonicity), but testing.allocator expects all allocations to be freed
+        // when a test ends. Using page_allocator avoids this mismatch.
         registry_mutex.lock();
         if (!registry_initialized) {
-            global_tm_registry = SharedTmRegistry.init(allocator);
+            global_tm_registry = SharedTmRegistry.init(std.heap.page_allocator);
             registry_initialized = true;
         }
         registry_mutex.unlock();
