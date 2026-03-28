@@ -575,7 +575,10 @@ pub const PreparedStatement = struct {
         // Execute the cached plan with bound parameters
         // Note: We pass the arena by pointer but don't transfer ownership.
         // The PreparedStatement retains ownership of the arena.
-        return self.db.executePlanWithParams(self.arena, self.plan, self.bound_params);
+        var result = try self.db.executePlanWithParams(self.arena, self.plan, self.bound_params);
+        // Clear arena ownership from result to prevent double-free
+        result._arena = null;
+        return result;
     }
 
     /// Close the prepared statement and free all resources.
@@ -4404,8 +4407,12 @@ pub const Database = struct {
 
             row_count += 1;
 
-            // Deserialize row to collect column values
-            const values = executor_mod.deserializeRow(self.allocator, entry.value) catch continue;
+            // Deserialize row to collect column values (handle MVCC-versioned rows)
+            const values = if (mvcc_mod.isVersionedRow(entry.value)) blk: {
+                const result = mvcc_mod.deserializeVersionedRow(self.allocator, entry.value) catch continue;
+                // Note: We only need the values, header is discarded
+                break :blk result.values;
+            } else executor_mod.deserializeRow(self.allocator, entry.value) catch continue;
             defer {
                 for (values) |v| v.free(self.allocator);
                 self.allocator.free(values);
@@ -4434,15 +4441,15 @@ pub const Database = struct {
 
         // Create and store column stats
         for (table_info.columns) |col| {
-            const values = column_values.get(col.name).?;
+            const values = column_values.getPtr(col.name).?.items;
 
             // Calculate column statistics
-            const distinct_count = self.countDistinct(values.items);
-            const null_fraction = calculateNullFraction(values.items);
-            const avg_width = calculateAvgWidth(values.items);
+            const distinct_count = try self.countDistinct(values);
+            const null_fraction = calculateNullFraction(values);
+            const avg_width = calculateAvgWidth(values);
 
             // Build histogram from non-NULL values
-            const histogram_buckets = try self.buildHistogram(values.items);
+            const histogram_buckets = try self.buildHistogram(values);
             defer {
                 for (histogram_buckets) |bucket| {
                     self.allocator.free(bucket.lower);
@@ -4685,14 +4692,14 @@ pub const Database = struct {
     }
 
     /// Count distinct values in a list.
-    fn countDistinct(self: *Database, values: []const []const u8) u64 {
+    fn countDistinct(self: *Database, values: []const []const u8) EngineError!u64 {
         var seen = std.StringHashMapUnmanaged(void){};
         defer seen.deinit(self.allocator);
 
         for (values) |val| {
             // Skip NULL values (0x00 tag) — only count non-NULL distinct values
             if (val.len > 0 and val[0] != 0x00) {
-                seen.put(self.allocator, val, {}) catch continue;
+                seen.put(self.allocator, val, {}) catch return EngineError.OutOfMemory;
             }
         }
 
