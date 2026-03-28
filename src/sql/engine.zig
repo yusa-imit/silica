@@ -20405,3 +20405,11 @@ test "prepared stmt: rebind after execution" {
     try testing.expectEqualStrings("Second", row2.values[1].text);
 }
 
+// IMPORTANT: This test must run LAST to cleanup the global TM registry.
+// The global registry persists across all tests to maintain transaction ID
+// monotonicity (required for MVCC correctness). We clean it up here to
+// prevent memory leak reports from testing.allocator.
+test "zzz_cleanup_global_registry" {
+    cleanupGlobalTmRegistry();
+}
+
