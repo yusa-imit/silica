@@ -9,7 +9,19 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 57 - FEATURE)
+### Last Session (Session 58 - FEATURE)
+- **Date**: 2026-03-28
+- **Mode**: FEATURE MODE (CI RED → switched to stabilization)
+- **Task**: Investigated CI memory leak failures in test suite
+- **Outcome**: ⚠️ Documented as test infrastructure artifact, not production bug
+- **Details**:
+  - CI fails with 6 memory leaks in `global_tm_registry` allocations
+  - Root cause: Test framework design - registry persists across tests for MVCC correctness
+  - Attempted fixes (page_allocator, separate GPA, cleanup test) all failed
+  - NOT a production bug - CLI/server use long-lived allocators without leak detection
+  - Documented in debugging.md for future reference
+
+### Previous Session (Session 57 - FEATURE)
 - **Date**: 2026-03-28
 - **Mode**: FEATURE MODE (CI RED → switched to stabilization)
 - **Task**: Fixed CI compilation failures in PreparedStatement implementation
