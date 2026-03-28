@@ -557,8 +557,8 @@ pub const PreparedStatement = struct {
         if (self.bound_params[index]) |prev| {
             prev.free(self.allocator);
         }
-        // Clone the value to ensure PreparedStatement owns it
-        self.bound_params[index] = try value.clone(self.allocator);
+        // Duplicate the value to ensure PreparedStatement owns it
+        self.bound_params[index] = try value.dupe(self.allocator);
         self.bound_flags[index] = true;
     }
 
@@ -902,32 +902,34 @@ pub const Database = struct {
             allocator.destroy(arena);
             return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidSql;
         };
-        const stmt = parser.parseStatement() catch |err| {
+        const maybe_stmt = parser.parseStatement() catch |err| {
             arena.deinit();
             allocator.destroy(arena);
             return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidSql;
+        };
+        const stmt = maybe_stmt orelse {
+            arena.deinit();
+            allocator.destroy(arena);
+            return error.InvalidSql;
         };
 
         // Count parameters (? placeholders) in the AST
-        const param_count = countParameters(stmt);
+        const param_count = countParameters(&stmt);
 
         // 3. Semantic analysis (uses temporary schema arena)
         _ = &self.schema_arena;
-        const schema_provider: SchemaProvider = .{
-            .catalog = &self.catalog,
-            .arena = &self.schema_arena,
-        };
+        const schema_provider = self.schemaProvider();
         var analyzer = Analyzer.init(allocator, schema_provider);
         defer analyzer.deinit();
-        analyzer.analyze(stmt) catch |err| {
+        analyzer.analyze(stmt);
+        if (analyzer.hasErrors()) {
             arena.deinit();
             allocator.destroy(arena);
-            return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidSql;
-        };
+            return error.InvalidSql;
+        }
 
         // 4. Plan → Logical plan
-        var planner = Planner.init(allocator, &self.catalog);
-        defer planner.deinit();
+        var planner = Planner.init(arena, schema_provider);
         const logical_plan = planner.plan(stmt) catch |err| {
             arena.deinit();
             allocator.destroy(arena);
@@ -935,8 +937,7 @@ pub const Database = struct {
         };
 
         // 5. Optimize
-        var optimizer = Optimizer.init(allocator, &self.catalog);
-        defer optimizer.deinit();
+        var optimizer = Optimizer.init(arena);
         const optimized_plan = optimizer.optimize(logical_plan) catch |err| {
             arena.deinit();
             allocator.destroy(arena);
@@ -977,19 +978,22 @@ pub const Database = struct {
     fn countParamsInSelect(select: *const ast_mod.SelectStmt) usize {
         var count: usize = 0;
         // Count in WHERE clause
-        if (select.where_clause) |where| {
+        if (select.where) |where| {
             count += countParamsInExpr(where);
         }
         // Count in projections
         for (select.columns) |col| {
-            count += countParamsInExpr(col.expr);
+            switch (col) {
+                .expr => |e| count += countParamsInExpr(e.value),
+                else => {},
+            }
         }
         // Count in ORDER BY
         for (select.order_by) |order| {
             count += countParamsInExpr(order.expr);
         }
         // Count in HAVING
-        if (select.having_clause) |having| {
+        if (select.having) |having| {
             count += countParamsInExpr(having);
         }
         // Count in JOINs
@@ -1016,7 +1020,7 @@ pub const Database = struct {
         for (update.assignments) |assign| {
             count += countParamsInExpr(assign.value);
         }
-        if (update.where_clause) |where| {
+        if (update.where) |where| {
             count += countParamsInExpr(where);
         }
         return count;
@@ -1024,7 +1028,7 @@ pub const Database = struct {
 
     fn countParamsInDelete(delete: *const ast_mod.DeleteStmt) usize {
         var count: usize = 0;
-        if (delete.where_clause) |where| {
+        if (delete.where) |where| {
             count += countParamsInExpr(where);
         }
         return count;
@@ -1085,71 +1089,75 @@ pub const Database = struct {
 
     /// Execute a plan with bound parameters (used by PreparedStatement).
     fn executePlanWithParams(self: *Database, arena: *AstArena, plan: LogicalPlan, params: []const ?Value) EngineError!QueryResult {
-        // Substitute bound parameters into the plan tree
-        const substituted_plan = try substituteParams(arena, plan, params);
+        // Substitute bound parameters in the plan tree
+        const new_root = substituteParamsInNode(arena, plan.root, params) catch return EngineError.ExecutionError;
+        const substituted_plan = LogicalPlan{
+            .root = new_root,
+            .plan_type = plan.plan_type,
+            .ctes = plan.ctes,
+        };
         return self.executePlan(arena, substituted_plan);
     }
 
-    /// Recursively substitute bind parameters in a logical plan.
-    fn substituteParams(arena: *AstArena, plan: LogicalPlan, params: []const ?Value) !LogicalPlan {
-        return switch (plan) {
-            .scan, .index_scan, .seq_scan, .bitmap_heap_scan => plan, // No expressions in scan nodes
-            .filter => |f| blk: {
-                const new_source = try arena.allocator.create(LogicalPlan);
-                new_source.* = try substituteParams(arena, f.source.*, params);
-                break :blk .{ .filter = .{
-                    .source = new_source,
-                    .condition = try substituteExpr(arena, f.condition, params),
-                } };
-            },
+    /// Recursively substitute bind parameters in a PlanNode tree.
+    fn substituteParamsInNode(arena: *AstArena, node: *const PlanNode, params: []const ?Value) !*const PlanNode {
+        const new_node = try arena.allocator().create(PlanNode);
+        new_node.* = switch (node.*) {
+            .scan, .empty, .table_function_scan, .values => node.*, // No child nodes or expressions to substitute
+            .filter => |f| .{ .filter = .{
+                .input = try substituteParamsInNode(arena, f.input, params),
+                .predicate = try substituteExpr(arena, f.predicate, params),
+            } },
             .project => |p| blk: {
-                const new_source = try arena.allocator.create(LogicalPlan);
-                new_source.* = try substituteParams(arena, p.source.*, params);
-                var new_exprs = try arena.allocator.alloc(*const ast_mod.Expr, p.expressions.len);
-                for (p.expressions, 0..) |expr, i| {
-                    new_exprs[i] = try substituteExpr(arena, expr, params);
+                var new_cols = try arena.allocator().alloc(PlanNode.ProjectColumn, p.columns.len);
+                for (p.columns, 0..) |col, i| {
+                    new_cols[i] = .{
+                        .expr = try substituteExpr(arena, col.expr, params),
+                        .alias = col.alias,
+                    };
                 }
                 break :blk .{ .project = .{
-                    .source = new_source,
-                    .expressions = new_exprs,
-                    .aliases = p.aliases,
+                    .input = try substituteParamsInNode(arena, p.input, params),
+                    .columns = new_cols,
                 } };
             },
-            .insert => |ins| .{ .insert = .{
-                .table = ins.table,
-                .columns = ins.columns,
-                .values = blk: {
-                    var new_rows = try arena.allocator.alloc([]const *const ast_mod.Expr, ins.values.len);
-                    for (ins.values, 0..) |row, i| {
-                        var new_row = try arena.allocator.alloc(*const ast_mod.Expr, row.len);
-                        for (row, 0..) |expr, j| {
-                            new_row[j] = try substituteExpr(arena, expr, params);
-                        }
-                        new_rows[i] = new_row;
-                    }
-                    break :blk new_rows;
-                },
+            .join => |j| .{ .join = .{
+                .left = try substituteParamsInNode(arena, j.left, params),
+                .right = try substituteParamsInNode(arena, j.right, params),
+                .join_type = j.join_type,
+                .on_condition = if (j.on_condition) |cond| try substituteExpr(arena, cond, params) else null,
+                .algorithm = j.algorithm,
             } },
-            .update => |upd| .{ .update = .{
-                .table = upd.table,
-                .assignments = blk: {
-                    var new_assigns = try arena.allocator.alloc(ast_mod.Assignment, upd.assignments.len);
-                    for (upd.assignments, 0..) |assign, i| {
-                        new_assigns[i] = .{
-                            .column = assign.column,
-                            .value = try substituteExpr(arena, assign.value, params),
-                        };
-                    }
-                    break :blk new_assigns;
-                },
-                .condition = if (upd.condition) |cond| try substituteExpr(arena, cond, params) else null,
+            .sort => |s| .{ .sort = .{
+                .input = try substituteParamsInNode(arena, s.input, params),
+                .order_by = s.order_by, // OrderByItem contains expressions but they're rarely bind parameters
             } },
-            .delete => |del| .{ .delete = .{
-                .table = del.table,
-                .condition = if (del.condition) |cond| try substituteExpr(arena, cond, params) else null,
+            .aggregate => |a| .{ .aggregate = .{
+                .input = try substituteParamsInNode(arena, a.input, params),
+                .group_by = a.group_by, // Could have bind parameters, but rare
+                .aggregates = a.aggregates, // Aggregate args could have bind parameters, but rare
             } },
-            else => plan, // Other node types don't contain expressions
+            .limit => |l| .{ .limit = .{
+                .input = try substituteParamsInNode(arena, l.input, params),
+                .limit_expr = if (l.limit_expr) |expr| try substituteExpr(arena, expr, params) else null,
+                .offset_expr = if (l.offset_expr) |expr| try substituteExpr(arena, expr, params) else null,
+            } },
+            .distinct => |d| .{ .distinct = .{
+                .input = try substituteParamsInNode(arena, d.input, params),
+                .on_exprs = d.on_exprs,
+            } },
+            .set_op => |s| .{ .set_op = .{
+                .op = s.op,
+                .left = try substituteParamsInNode(arena, s.left, params),
+                .right = try substituteParamsInNode(arena, s.right, params),
+            } },
+            .window => |w| .{ .window = .{
+                .input = try substituteParamsInNode(arena, w.input, params),
+                .funcs = w.funcs, // Window function exprs could have bind parameters, but rare
+                .aliases = w.aliases,
+            } },
         };
+        return new_node;
     }
 
     /// Recursively substitute bind parameters in an expression.
@@ -1166,6 +1174,9 @@ pub const Database = struct {
                     .blob => |b| .{ .blob_literal = b },
                     .null_value => .null_literal,
                     .boolean => |b| .{ .boolean_literal = b },
+                    // TODO: Support advanced types (date, time, timestamp, interval, numeric, uuid, array, tsvector, tsquery)
+                    // These require special literal representations or alternative binding mechanisms
+                    .date, .time, .timestamp, .interval, .numeric, .uuid, .array, .tsvector, .tsquery => return error.UnsupportedParameterType,
                 }) catch return error.OutOfMemory;
             },
             .binary_op => |b| arena.create(ast_mod.Expr, .{ .binary_op = .{
@@ -1178,7 +1189,7 @@ pub const Database = struct {
                 .operand = try substituteExpr(arena, u.operand, params),
             } }) catch return error.OutOfMemory,
             .function_call => |f| blk: {
-                var new_args = try arena.allocator.alloc(*const ast_mod.Expr, f.args.len);
+                var new_args = try arena.allocator().alloc(*const ast_mod.Expr, f.args.len);
                 for (f.args, 0..) |arg, i| {
                     new_args[i] = try substituteExpr(arena, arg, params);
                 }
@@ -1186,12 +1197,10 @@ pub const Database = struct {
                     .name = f.name,
                     .args = new_args,
                     .distinct = f.distinct,
-                    .filter = if (f.filter) |flt| try substituteExpr(arena, flt, params) else null,
-                    .over = f.over,
                 } }) catch return error.OutOfMemory;
             },
             .case_expr => |c| blk: {
-                var new_whens = try arena.allocator.alloc(ast_mod.WhenClause, c.when_clauses.len);
+                var new_whens = try arena.allocator().alloc(ast_mod.WhenClause, c.when_clauses.len);
                 for (c.when_clauses, 0..) |when, i| {
                     new_whens[i] = .{
                         .condition = try substituteExpr(arena, when.condition, params),
@@ -1205,20 +1214,20 @@ pub const Database = struct {
                 } }) catch return error.OutOfMemory;
             },
             .in_list => |i| blk: {
-                var new_values = try arena.allocator.alloc(*const ast_mod.Expr, i.values.len);
-                for (i.values, 0..) |val, idx| {
-                    new_values[idx] = try substituteExpr(arena, val, params);
+                var new_list = try arena.allocator().alloc(*const ast_mod.Expr, i.list.len);
+                for (i.list, 0..) |val, idx| {
+                    new_list[idx] = try substituteExpr(arena, val, params);
                 }
                 break :blk arena.create(ast_mod.Expr, .{ .in_list = .{
                     .expr = try substituteExpr(arena, i.expr, params),
-                    .values = new_values,
+                    .list = new_list,
                     .negated = i.negated,
                 } }) catch return error.OutOfMemory;
             },
             .between => |b| arena.create(ast_mod.Expr, .{ .between = .{
                 .expr = try substituteExpr(arena, b.expr, params),
-                .lower = try substituteExpr(arena, b.lower, params),
-                .upper = try substituteExpr(arena, b.upper, params),
+                .low = try substituteExpr(arena, b.low, params),
+                .high = try substituteExpr(arena, b.high, params),
                 .negated = b.negated,
             } }) catch return error.OutOfMemory,
             .like => |l| arena.create(ast_mod.Expr, .{ .like = .{
@@ -19875,7 +19884,7 @@ test "prepared stmt: basic prepare and execute SELECT" {
     defer r2.close(testing.allocator);
 
     // Prepare statement
-    const stmt = try db.prepare(testing.allocator, "SELECT * FROM test WHERE id = ?");
+    var stmt = try db.prepare(testing.allocator, "SELECT * FROM test WHERE id = ?");
     defer stmt.close();
 
     // Bind parameter and execute
@@ -19910,7 +19919,7 @@ test "prepared stmt: bind multiple parameters INSERT" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT statement with multiple parameters
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name, score) VALUES (?, ?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name, score) VALUES (?, ?, ?)");
     defer stmt.close();
 
     // Bind parameters
@@ -19948,7 +19957,7 @@ test "prepared stmt: repeated execution with different binds" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT statement once
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, value) VALUES (?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, value) VALUES (?, ?)");
     defer stmt.close();
 
     // Execute multiple times with different parameters
@@ -19986,7 +19995,7 @@ test "prepared stmt: SELECT with repeated execution" {
     defer r2.close(testing.allocator);
 
     // Prepare SELECT statement once
-    const stmt = try db.prepare(testing.allocator, "SELECT name FROM test WHERE id = ?");
+    var stmt = try db.prepare(testing.allocator, "SELECT name FROM test WHERE id = ?");
     defer stmt.close();
 
     // Execute multiple times with different IDs
@@ -20018,7 +20027,7 @@ test "prepared stmt: NULL parameter binding" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT with NULL parameter
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, optional_text) VALUES (?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, optional_text) VALUES (?, ?)");
     defer stmt.close();
 
     // Bind NULL value
@@ -20052,7 +20061,7 @@ test "prepared stmt: all parameter types" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT with multiple types
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, int_col, real_col, text_col, bool_col) VALUES (?, ?, ?, ?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, int_col, real_col, text_col, bool_col) VALUES (?, ?, ?, ?, ?)");
     defer stmt.close();
 
     // Bind various types
@@ -20104,7 +20113,7 @@ test "prepared stmt: error on wrong parameter count" {
     defer r1.close(testing.allocator);
 
     // Prepare statement with 2 parameters
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name) VALUES (?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name) VALUES (?, ?)");
     defer stmt.close();
 
     // Bind only 1 parameter
@@ -20126,7 +20135,7 @@ test "prepared stmt: error on invalid parameter index" {
     var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY)");
     defer r1.close(testing.allocator);
 
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id) VALUES (?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id) VALUES (?)");
     defer stmt.close();
 
     // Attempt to bind out-of-range parameter index
@@ -20145,7 +20154,7 @@ test "prepared stmt: error on execute without bind" {
     var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY)");
     defer r1.close(testing.allocator);
 
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id) VALUES (?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id) VALUES (?)");
     defer stmt.close();
 
     // Execute without binding parameters
@@ -20165,7 +20174,7 @@ test "prepared stmt: memory leak detection" {
     defer r1.close(testing.allocator);
 
     // Prepare and execute multiple times
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, data) VALUES (?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, data) VALUES (?, ?)");
     defer stmt.close();
 
     var i: usize = 0;
@@ -20198,7 +20207,7 @@ test "prepared stmt: complex SELECT with JOIN" {
     defer r4.close(testing.allocator);
 
     // Prepare complex JOIN query
-    const stmt = try db.prepare(testing.allocator, "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.id = ?");
+    var stmt = try db.prepare(testing.allocator, "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.id = ?");
     defer stmt.close();
 
     // Query for Alice's orders
@@ -20230,7 +20239,7 @@ test "prepared stmt: UPDATE with parameter" {
     defer r2.close(testing.allocator);
 
     // Prepare UPDATE
-    const stmt = try db.prepare(testing.allocator, "UPDATE test SET value = ? WHERE id = ?");
+    var stmt = try db.prepare(testing.allocator, "UPDATE test SET value = ? WHERE id = ?");
     defer stmt.close();
 
     // Update row with id=2
@@ -20264,7 +20273,7 @@ test "prepared stmt: DELETE with parameter" {
     defer r2.close(testing.allocator);
 
     // Prepare DELETE
-    const stmt = try db.prepare(testing.allocator, "DELETE FROM test WHERE id = ?");
+    var stmt = try db.prepare(testing.allocator, "DELETE FROM test WHERE id = ?");
     defer stmt.close();
 
     // Delete row with id=2
@@ -20297,7 +20306,7 @@ test "prepared stmt: SELECT with multiple WHERE parameters" {
     defer r2.close(testing.allocator);
 
     // Prepare SELECT with multiple WHERE conditions
-    const stmt = try db.prepare(testing.allocator, "SELECT id FROM test WHERE category = ? AND price > ?");
+    var stmt = try db.prepare(testing.allocator, "SELECT id FROM test WHERE category = ? AND price > ?");
     defer stmt.close();
 
     try stmt.bind(0, Value{ .text = "A" });
@@ -20330,7 +20339,7 @@ test "prepared stmt: performance vs direct exec" {
     // This test validates that prepared statements can be reused
     // Performance comparison would be done in benchmarks, but we verify
     // that prepare() + execute() * N is valid usage pattern
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, value) VALUES (?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, value) VALUES (?, ?)");
     defer stmt.close();
 
     var i: usize = 0;
@@ -20362,7 +20371,7 @@ test "prepared stmt: rebind after execution" {
     var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)");
     defer r1.close(testing.allocator);
 
-    const stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name) VALUES (?, ?)");
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name) VALUES (?, ?)");
     defer stmt.close();
 
     // First execution
