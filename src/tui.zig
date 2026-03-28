@@ -9,6 +9,12 @@ const executor = silica.executor;
 const Value = executor.Value;
 const Row = executor.Row;
 const Catalog = silica.catalog.Catalog;
+// Note: CompletionPopup from sailor has a bug with border_type field
+// Using our own CompletionItem struct instead
+const CompletionItem = struct {
+    text: []const u8,
+    description: ?[]const u8 = null,
+};
 
 // ── Focus Pane ───────────────────────────────────────────────────────
 
@@ -44,6 +50,12 @@ const App = struct {
     status_left: []const u8 = "",
     status_right: []const u8 = "",
 
+    // Autocomplete
+    completion_items: std.ArrayListUnmanaged(CompletionItem) = .{},
+    completion_selected: usize = 0,
+    completion_visible: bool = false,
+    completion_prefix: []const u8 = "",
+
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
             .allocator = allocator,
@@ -55,6 +67,7 @@ const App = struct {
     fn deinit(self: *App) void {
         self.clearSchema();
         self.clearResults();
+        self.clearCompletions();
         self.input_text.deinit(self.allocator);
         if (self.status_left.len > 0) self.allocator.free(self.status_left);
         if (self.status_right.len > 0) self.allocator.free(self.status_right);
@@ -87,6 +100,92 @@ const App = struct {
 
         self.result_selected = 0;
         self.result_offset = 0;
+    }
+
+    fn clearCompletions(self: *App) void {
+        for (self.completion_items.items) |item| {
+            self.allocator.free(item.text);
+            if (item.description) |desc| self.allocator.free(desc);
+        }
+        self.completion_items.deinit(self.allocator);
+        self.completion_items = .{};
+        if (self.completion_prefix.len > 0) {
+            self.allocator.free(self.completion_prefix);
+            self.completion_prefix = "";
+        }
+        self.completion_selected = 0;
+        self.completion_visible = false;
+    }
+
+    fn buildCompletions(self: *App, prefix: []const u8) void {
+        self.clearCompletions();
+
+        const sql_keywords = [_][]const u8{
+            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET",
+            "DELETE", "CREATE", "TABLE", "INDEX", "DROP", "ALTER", "PRIMARY", "KEY",
+            "FOREIGN", "REFERENCES", "UNIQUE", "NOT", "NULL", "DEFAULT", "CHECK",
+            "AND", "OR", "IN", "LIKE", "BETWEEN", "IS", "AS", "ON", "JOIN", "LEFT",
+            "RIGHT", "INNER", "OUTER", "GROUP", "BY", "HAVING", "ORDER", "ASC", "DESC",
+            "LIMIT", "OFFSET", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX",
+            "INTEGER", "REAL", "TEXT", "BLOB", "BOOLEAN", "DATE", "TIME", "TIMESTAMP",
+        };
+
+        // Filter keywords by prefix
+        for (sql_keywords) |kw| {
+            if (std.ascii.startsWithIgnoreCase(kw, prefix)) {
+                const text = self.allocator.dupe(u8, kw) catch continue;
+                const item = CompletionItem{
+                    .text = text,
+                    .description = self.allocator.dupe(u8, "keyword") catch null,
+                };
+                self.completion_items.append(self.allocator, item) catch {
+                    self.allocator.free(text);
+                    continue;
+                };
+            }
+        }
+
+        // Add table names
+        const tables = self.db.catalog.listTables(self.allocator) catch &[_][]const u8{};
+        defer self.allocator.free(tables);
+
+        for (tables) |table_name| {
+            if (std.ascii.startsWithIgnoreCase(table_name, prefix)) {
+                const text = self.allocator.dupe(u8, table_name) catch continue;
+                const item = CompletionItem{
+                    .text = text,
+                    .description = self.allocator.dupe(u8, "table") catch null,
+                };
+                self.completion_items.append(self.allocator, item) catch {
+                    self.allocator.free(text);
+                    continue;
+                };
+            }
+        }
+
+        if (self.completion_items.items.len > 0) {
+            self.completion_prefix = self.allocator.dupe(u8, prefix) catch "";
+            self.completion_selected = 0;
+            self.completion_visible = true;
+        }
+    }
+
+    fn hideCompletions(self: *App) void {
+        self.completion_visible = false;
+    }
+
+    fn selectNextCompletion(self: *App) void {
+        if (self.completion_items.items.len == 0) return;
+        self.completion_selected = (self.completion_selected + 1) % self.completion_items.items.len;
+    }
+
+    fn selectPrevCompletion(self: *App) void {
+        if (self.completion_items.items.len == 0) return;
+        if (self.completion_selected == 0) {
+            self.completion_selected = self.completion_items.items.len - 1;
+        } else {
+            self.completion_selected -= 1;
+        }
     }
 
     fn refreshSchema(self: *App) void {
@@ -258,6 +357,18 @@ const App = struct {
                 }
             },
             .input => {
+                // If completion popup is showing, arrow up/down navigates it
+                if (self.completion_visible) {
+                    if (b3.? == 'A') { // Up
+                        self.selectPrevCompletion();
+                        return;
+                    } else if (b3.? == 'B') { // Down
+                        self.selectNextCompletion();
+                        return;
+                    }
+                }
+
+                // Otherwise, left/right moves cursor
                 if (b3.? == 'C') { // Right
                     if (self.input_cursor < self.input_text.items.len) self.input_cursor += 1;
                 } else if (b3.? == 'D') { // Left
@@ -290,10 +401,76 @@ const App = struct {
     }
 
     fn handleInputKey(self: *App, byte: u8) void {
-        if (byte == '\r' or byte == '\n') {
-            // Enter: execute SQL
-            self.executeSQL();
+        // Ctrl+Space (0): trigger completion or hide if already showing
+        if (byte == 0) {
+            if (self.completion_visible) {
+                self.hideCompletions();
+            } else {
+                const prefix = self.getCurrentWord();
+                if (prefix.len > 0) {
+                    self.buildCompletions(prefix);
+                } else {
+                    // Show all completions if no prefix
+                    self.buildCompletions("");
+                }
+            }
             return;
+        }
+
+        // If completion popup is showing, handle navigation
+        if (self.completion_visible) {
+            // Ctrl+N: next item
+            if (byte == 14) {
+                self.selectNextCompletion();
+                return;
+            }
+
+            // Ctrl+P: previous item
+            if (byte == 16) {
+                self.selectPrevCompletion();
+                return;
+            }
+
+            // Enter: insert selected completion
+            if (byte == '\r' or byte == '\n') {
+                if (self.completion_selected < self.completion_items.items.len) {
+                    const item = self.completion_items.items[self.completion_selected];
+
+                    // Delete the prefix and insert the completion
+                    const prefix_len = self.completion_prefix.len;
+                    if (prefix_len <= self.input_cursor) {
+                        const cursor_start = self.input_cursor - prefix_len;
+
+                        // Remove prefix characters
+                        var i: usize = 0;
+                        while (i < prefix_len and cursor_start < self.input_text.items.len) : (i += 1) {
+                            _ = self.input_text.orderedRemove(cursor_start);
+                        }
+                        self.input_cursor = cursor_start;
+
+                        // Insert completion text
+                        for (item.text) |ch| {
+                            self.input_text.insert(self.allocator, self.input_cursor, ch) catch break;
+                            self.input_cursor += 1;
+                        }
+                    }
+
+                    self.hideCompletions();
+                }
+                return;
+            }
+
+            // Escape: hide completion
+            if (byte == 27) {
+                self.hideCompletions();
+                return;
+            }
+        } else {
+            // No popup showing, normal Enter executes SQL
+            if (byte == '\r' or byte == '\n') {
+                self.executeSQL();
+                return;
+            }
         }
 
         if (byte == 127 or byte == 8) {
@@ -301,6 +478,7 @@ const App = struct {
             if (self.input_cursor > 0) {
                 _ = self.input_text.orderedRemove(self.input_cursor - 1);
                 self.input_cursor -= 1;
+                self.hideCompletions(); // Hide on edit
             }
             return;
         }
@@ -309,6 +487,7 @@ const App = struct {
         if (byte == 21) {
             self.input_text.clearRetainingCapacity();
             self.input_cursor = 0;
+            self.hideCompletions();
             return;
         }
 
@@ -328,7 +507,22 @@ const App = struct {
         if (byte >= 32 and byte < 127) {
             self.input_text.insert(self.allocator, self.input_cursor, byte) catch return;
             self.input_cursor += 1;
+            self.hideCompletions(); // Hide on edit
         }
+    }
+
+    fn getCurrentWord(self: *const App) []const u8 {
+        if (self.input_text.items.len == 0 or self.input_cursor == 0) return "";
+
+        // Find word start (scan backwards from cursor)
+        var start: usize = self.input_cursor;
+        while (start > 0) {
+            const ch = self.input_text.items[start - 1];
+            if (!std.ascii.isAlphanumeric(ch) and ch != '_') break;
+            start -= 1;
+        }
+
+        return self.input_text.items[start..self.input_cursor];
     }
 };
 
@@ -624,16 +818,120 @@ fn renderSQLInput(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     }
 
     // Render cursor (reverse style at cursor position)
-    if (is_focused and has_text) {
-        const cursor_x = inner.x + @as(u16, @intCast(@min(app.input_cursor, inner.width - 1)));
-        const cursor_char: u8 = if (app.input_cursor < app.input_text.items.len)
-            app.input_text.items[app.input_cursor]
+    const cursor_x: u16 = blk: {
+        if (is_focused and has_text) {
+            const cx = inner.x + @as(u16, @intCast(@min(app.input_cursor, inner.width - 1)));
+            const cursor_char: u8 = if (app.input_cursor < app.input_text.items.len)
+                app.input_text.items[app.input_cursor]
+            else
+                ' ';
+            buf.setChar(cx, inner.y, cursor_char, .{ .reverse = true });
+            break :blk cx;
+        } else if (is_focused) {
+            // Empty input — cursor on first cell
+            buf.setChar(inner.x, inner.y, ' ', .{ .reverse = true });
+            break :blk inner.x;
+        }
+        break :blk 0;
+    };
+
+    // Render completion popup if active
+    if (app.completion_visible and app.completion_items.items.len > 0) {
+        renderCompletionPopup(app, buf, cursor_x, inner.y);
+    }
+}
+
+fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u16) void {
+    const items = app.completion_items.items;
+    if (items.len == 0) return;
+
+    const max_visible: usize = 10;
+    const visible_count = @min(items.len, max_visible);
+
+    // Calculate popup dimensions
+    var max_width: usize = 12; // "Completions" title
+    for (items) |item| {
+        var item_width = item.text.len;
+        if (item.description) |desc| {
+            item_width += 3 + desc.len; // " - description"
+        }
+        if (item_width > max_width) max_width = item_width;
+    }
+
+    const width: u16 = @min(@as(u16, @intCast(max_width + 4)), 80);
+    const height: u16 = @intCast(visible_count + 2); // +2 for borders
+
+    // Calculate popup position (below cursor, with bounds checking)
+    const popup_x: u16 = @intCast(@max(0, @min(
+        @as(i32, cursor_x),
+        @as(i32, buf.width) - @as(i32, width),
+    )));
+
+    const popup_y: u16 = @intCast(@max(0, @min(
+        @as(i32, cursor_y) + 1,
+        @as(i32, buf.height) - @as(i32, height),
+    )));
+
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = width,
+        .height = height,
+    };
+
+    // Draw border
+    const block = tui.widgets.Block.init()
+        .withTitle("Completions", .top_left)
+        .withBorderStyle(.{ .fg = .cyan });
+    block.render(buf, popup_area);
+    const inner = block.inner(popup_area);
+
+    // Render visible items
+    const scroll_offset: usize = if (app.completion_selected >= max_visible)
+        app.completion_selected - max_visible + 1
+    else
+        0;
+
+    const visible_end = @min(scroll_offset + max_visible, items.len);
+    var row: u16 = 0;
+
+    for (items[scroll_offset..visible_end], scroll_offset..) |item, i| {
+        if (row >= inner.height) break;
+
+        const is_selected = (i == app.completion_selected);
+        const item_style: tui.Style = if (is_selected)
+            .{ .fg = .cyan, .reverse = true }
         else
-            ' ';
-        buf.setChar(cursor_x, inner.y, cursor_char, .{ .reverse = true });
-    } else if (is_focused) {
-        // Empty input — cursor on first cell
-        buf.setChar(inner.x, inner.y, ' ', .{ .reverse = true });
+            .{};
+
+        // Clear the row
+        var cx: u16 = 0;
+        while (cx < inner.width) : (cx += 1) {
+            buf.setChar(inner.x + cx, inner.y + row, ' ', if (is_selected) item_style else .{});
+        }
+
+        // Render item text
+        var x: u16 = 0;
+        for (item.text) |c| {
+            if (x >= inner.width) break;
+            buf.setChar(inner.x + x, inner.y + row, c, item_style);
+            x += 1;
+        }
+
+        // Render description if present
+        if (item.description) |desc| {
+            if (x + 3 < inner.width) {
+                buf.setString(inner.x + x, inner.y + row, " - ", .{ .fg = .bright_black });
+                x += 3;
+                for (desc) |c| {
+                    if (x >= inner.width) break;
+                    buf.setChar(inner.x + x, inner.y + row, c, .{ .fg = .bright_black });
+                    x += 1;
+                }
+            }
+        }
+
+        row += 1;
     }
 }
 

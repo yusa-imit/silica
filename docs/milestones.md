@@ -162,7 +162,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.6.1 | bug fix (PieChart overflow) | READY | Integer overflow fix for data viz widgets |
 | v1.7.0 | advanced layout & rendering | READY | FlexBox, viewport clipping, shadow effects, layout caching |
 | v1.8.0 | network & async | READY | HttpClient, WebSocket, AsyncEventLoop, TaskRunner, LogViewer |
-| v1.9.0 | developer tools | READY | WidgetDebugger, PerformanceProfiler, CompletionPopup, ThemeEditor |
+| v1.9.0 | developer tools | PARTIAL | SQL autocomplete implemented (custom rendering due to sailor#13); WidgetDebugger, PerformanceProfiler, ThemeEditor pending |
 | v1.10.0 | mouse & gamepad | READY | Mouse events, widget interaction, gamepad, touch, input mapping |
 | v1.11.0 | terminal graphics | DONE | Particle effects, blur/transparency, Sixel/Kitty, transitions |
 | v1.12.0 | enterprise & accessibility | READY | Session recording, audit logging, WCAG AAA themes, screen reader |
@@ -182,7 +182,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.25.0 | form & validation | DONE | Form widget with field focus management, password masking, 15+ validators (notEmpty/email/url/ipv4/numeric/etc), input masks (SSN/phone/date/credit card) |
 
 **High-priority sailor upgrades for silica**:
-- v1.9.0: CompletionPopup for SQL keyword/table/column completion
+- v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
 - v1.13.0: Code editor widget for SQL editing, autocomplete for SQL completion
 - v1.12.0: Audit logging for SQL query compliance tracking
 - v1.5.0: MockTerminal/snapshot testing for TUI test coverage
