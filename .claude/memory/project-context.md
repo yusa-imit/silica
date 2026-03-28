@@ -9,7 +9,19 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 58 - FEATURE)
+### Last Session (Session 63 - FEATURE)
+- **Date**: 2026-03-29
+- **Mode**: FEATURE MODE
+- **Task**: Implemented SQL autocomplete in TUI
+- **Outcome**: ✅ SQL autocomplete working with keyword and table name completion
+- **Details**:
+  - Added Ctrl+Space triggered autocomplete in TUI input pane
+  - Completion suggestions: SQL keywords + table names from catalog
+  - Navigation: Ctrl+N/P or arrow keys, Enter to select, Esc to hide
+  - Filed sailor#13 for CompletionPopup.border_type bug (used custom rendering as workaround)
+  - Updated docs/milestones.md: v1.9.0 marked PARTIAL (autocomplete done)
+
+### Previous Session (Session 58 - FEATURE)
 - **Date**: 2026-03-28
 - **Mode**: FEATURE MODE (CI RED → switched to stabilization)
 - **Task**: Investigated CI memory leak failures in test suite
