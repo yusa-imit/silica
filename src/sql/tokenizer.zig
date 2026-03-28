@@ -12,6 +12,9 @@ pub const TokenType = enum {
     identifier,
     quoted_identifier,
 
+    // Parameters
+    placeholder, // ? for prepared statements
+
     // Operators
     plus,
     minus,
@@ -454,7 +457,8 @@ pub const Tokenizer = struct {
                         else => {},
                     }
                 }
-                return .{ .type = .json_key_exists, .start = start, .len = 1 };
+                // Standalone ? is a bind parameter placeholder for prepared statements
+                return .{ .type = .placeholder, .start = start, .len = 1 };
             },
             '#' => {
                 self.pos += 1;

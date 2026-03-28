@@ -2498,8 +2498,8 @@ pub const Parser = struct {
                 _ = self.advance();
                 return self.arena.create(ast.Expr, .null_literal) catch return error.OutOfMemory;
             },
-            .json_key_exists => {
-                // In value position, ? is a bind parameter placeholder (not JSON operator)
+            .placeholder => {
+                // Bind parameter placeholder: ?
                 _ = self.advance();
                 const idx = self.bind_param_index;
                 self.bind_param_index += 1;
