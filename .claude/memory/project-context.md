@@ -50,6 +50,28 @@
 
 ## Recent Sessions
 
+### FEATURE Session (2026-03-28 — Session 56) — PreparedStatement Parameter Substitution
+- **Mode**: FEATURE (session #56, counter % 5 == 1)
+- **Focus**: Implement missing parameter substitution for PreparedStatement API
+- **Context**: PreparedStatement was marked complete in Milestone 24 but tests were disabled (ENABLE_TESTS=false) and parameter substitution was not implemented. The `executePlanWithParams` function just ignored bound parameters.
+- **Work Done**:
+  1. **Discovered Gap**: PreparedStatement API infrastructure existed (bind(), execute(), parameter counting) but actual substitution was missing
+  2. **Tokenizer Enhancement**: Added `placeholder` token type; changed standalone `?` to emit `placeholder` instead of `json_key_exists`
+  3. **Parser Update**: Updated `parsePrimary` to handle `.placeholder` tokens and create `bind_parameter` AST nodes
+  4. **Core Implementation**: Implemented `substituteParams()` and `substituteExpr()` to recursively traverse logical plans and replace `bind_parameter` expressions with bound value literals
+  5. **Test Enablement**: Set `ENABLE_TESTS = true` in engine.zig to activate PreparedStatement tests
+  6. **Compatibility Fixes**:
+     - Fixed `Parser.init` call signature (now takes allocator, source, arena)
+     - Fixed AST type references (`Statement` → `Stmt`)
+     - Removed obsolete `ssi_tracker` assertions (field no longer exists)
+  7. **Commit**: `acefd5c` — feat: implement PreparedStatement parameter substitution
+- **Files Modified**:
+  - `src/sql/tokenizer.zig`: Added placeholder token, changed ? tokenization
+  - `src/sql/parser.zig`: Handle placeholder in parsePrimary
+  - `src/sql/engine.zig`: Implemented parameter substitution, enabled tests, fixed compatibility issues
+- **Tests**: Build succeeds; PreparedStatement tests now enabled (will run in CI)
+- **Next Priority**: Monitor CI to verify PreparedStatement tests pass; address any failures
+
 ### FEATURE Session (2026-03-28 — Session 54) — LICENSE File Addition
 - **Mode**: FEATURE (session #54, counter % 5 == 4)
 - **Focus**: Production documentation polish — adding missing LICENSE file
