@@ -14,9 +14,11 @@
 
 ## Active Issues
 
-### Test Infrastructure Memory Leaks (Session 58) — **NOT A BUG, TEST ARTIFACT**
+### Test Infrastructure Memory Leaks (Session 58, 70) — **NOT A BUG, TEST ARTIFACT**
 
 **Summary**: Test suite reports 6 memory leaks in `global_tm_registry` allocations. This is **expected behavior**, not a production bug.
+
+**Update (Session 70)**: Conformance tests fixed to use unique DB paths but remain disabled due to this issue.
 
 - **Symptom**: `zig build test` reports 6 memory leaks from `SharedTmRegistry`:
   - `path_copy` allocations (engine.zig:140)
@@ -36,6 +38,12 @@
   3. ✗ Call `cleanupGlobalTmRegistry()` in cleanup test → test execution order not guaranteed
 - **Actual Solution**: Document as expected test infrastructure artifact. NOT a production bug.
 - **Status**: Documented. CI failure due to leak detection is a test runner limitation, not a code bug.
+- **Impact on Conformance Tests (Session 70)**:
+  - Conformance tests were disabled with comment "may have long-running tests"
+  - Real issue: Tests used shared `:memory:` database causing `TableAlreadyExists` errors
+  - Fixed in commit c6b2e69: Each test now uses unique temp file (`test_conformance_NN.db`)
+  - Tests still disabled: Trigger same `global_tm_registry` leak detection as other DB tests
+  - When leak detection issue is resolved, conformance tests can be re-enabled immediately
 
 ### GPA Memory Leak Report (Session 45) — **NOT A BUG**
 

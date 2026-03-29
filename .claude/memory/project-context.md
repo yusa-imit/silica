@@ -9,7 +9,21 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 69 - FEATURE)
+### Last Session (Session 70 - STABILIZATION)
+- **Date**: 2026-03-29
+- **Mode**: STABILIZATION MODE (session counter % 5 == 0)
+- **Task**: Test quality improvement — fixed conformance test isolation issues
+- **Outcome**: ✅ Conformance tests fixed but remain disabled due to existing memory leak detection
+- **Details**:
+  - Identified root cause: All 32 conformance tests used shared `:memory:` database
+  - Tests were failing with `TableAlreadyExists` due to state sharing across tests
+  - Fixed: Replaced `:memory:` with unique temp files (`test_conformance_NN.db`) per test
+  - Added proper cleanup with `defer deleteFile()` in all tests
+  - Tests remain disabled: `global_tm_registry` memory leak detection (test artifact, see Session 58)
+  - Improved documentation in main.zig explaining disable reason
+- **Commit**: c6b2e69
+
+### Previous Session (Session 69 - FEATURE)
 - **Date**: 2026-03-29
 - **Mode**: FEATURE MODE
 - **Task**: Documentation cleanup and status verification
