@@ -38,7 +38,9 @@ pub const engine = @import("sql/engine.zig");
 pub const stats = @import("sql/stats.zig");
 pub const selectivity = @import("sql/selectivity.zig");
 pub const cost = @import("sql/cost.zig");
-// TEMPORARILY DISABLED: may have long-running tests
+// TEMPORARILY DISABLED: Tests trigger global_tm_registry memory leak detection (test infrastructure artifact, not a bug)
+// Fixed: Tests now use unique DB paths instead of shared :memory:
+// Issue: std.testing.allocator reports leaks from SharedTmRegistry (see debugging.md Session 58)
 // pub const conformance_test = @import("sql/conformance_test.zig");
 
 // Transaction modules
