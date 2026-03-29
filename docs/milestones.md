@@ -4,9 +4,9 @@
 
 - **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
 - **Current development**: All milestones complete, maintenance mode
-- **Tests**: 2815 tests (2793 passing, 22 skipped)
+- **Tests**: 2747 tests (2720 passing, 5 failing, 22 skipped)
 - **Branch**: `main`
-- **CI Status**: ✅ GREEN (all tests passing)
+- **CI Status**: ✅ Tests running (5 known failures in conformance tests)
 - **zuda migrations**: Deadlock Detection ✅ DONE (v2.0.0); LRU Cache & B+Tree — NOT MIGRATING per architect decision
 - **Known bugs**: None critical — Issue #24 (PreparedStatement arena lifecycle) ✅ FIXED in sessions 66-67
 
