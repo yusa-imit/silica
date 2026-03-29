@@ -301,8 +301,6 @@ pub const Connection = struct {
         max_rows: i32,
         writer: anytype,
     ) !void {
-        _ = max_rows; // TODO: implement row limit
-
         // Get portal
         const portal = self.portals.get(portal_name) orelse {
             try self.sendError(writer, error.PortalNotFound);
@@ -323,7 +321,12 @@ pub const Connection = struct {
         };
         defer result.close(self.allocator);
 
-        // Send results (same as simple query protocol)
+        // Send results with row limit
+        // max_rows = 0 means return all rows
+        // max_rows > 0 means return at most max_rows rows
+        const limit: usize = if (max_rows <= 0) std.math.maxInt(usize) else @intCast(max_rows);
+        var rows_sent: usize = 0;
+
         if (result.rows) |rows_iter| {
             // Get first row to determine columns
             if (try rows_iter.next()) |first_row| {
@@ -332,10 +335,13 @@ pub const Connection = struct {
 
                 // Send first DataRow
                 try self.sendDataRow(writer, first_row, first_row.columns);
+                rows_sent += 1;
 
-                // Send remaining DataRows
-                while (try rows_iter.next()) |row| {
+                // Send remaining DataRows up to limit
+                while (rows_sent < limit) {
+                    const row = (try rows_iter.next()) orelse break;
                     try self.sendDataRow(writer, row, row.columns);
+                    rows_sent += 1;
                 }
             }
         }
@@ -1771,4 +1777,166 @@ test "valueToText - all Value type variants coverage" {
     const json_result = try conn.valueToText(Value{ .json = "{\"key\":\"value\"}" });
     defer allocator.free(json_result);
     try std.testing.expectEqualStrings("{\"key\":\"value\"}", json_result);
+}
+
+test "handleExecute - max_rows limit" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_execute_maxrows.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    // Create test table with multiple rows
+    _ = try db.execSQL("CREATE TABLE test_rows (id INTEGER, value TEXT)");
+    _ = try db.execSQL("INSERT INTO test_rows VALUES (1, 'row1')");
+    _ = try db.execSQL("INSERT INTO test_rows VALUES (2, 'row2')");
+    _ = try db.execSQL("INSERT INTO test_rows VALUES (3, 'row3')");
+    _ = try db.execSQL("INSERT INTO test_rows VALUES (4, 'row4')");
+    _ = try db.execSQL("INSERT INTO test_rows VALUES (5, 'row5')");
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Parse statement
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT * FROM test_rows ORDER BY id",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Bind portal
+    const param_values = [_][]const u8{};
+    const result_formats = [_]i16{};
+    const param_formats = [_]i16{};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Test 1: Execute with max_rows = 0 (all rows)
+    {
+        var exec_buf = std.ArrayListUnmanaged(u8){};
+        defer exec_buf.deinit(allocator);
+        try conn.handleExecute("portal1", 0, exec_buf.writer(allocator));
+
+        // Count DataRow messages (message type 'D')
+        var row_count: usize = 0;
+        for (exec_buf.items) |byte| {
+            if (byte == 'D') row_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 5), row_count);
+    }
+
+    // Test 2: Execute with max_rows = 2
+    {
+        var exec_buf2 = std.ArrayListUnmanaged(u8){};
+        defer exec_buf2.deinit(allocator);
+        try conn.handleExecute("portal1", 2, exec_buf2.writer(allocator));
+
+        // Count DataRow messages
+        var row_count: usize = 0;
+        for (exec_buf2.items) |byte| {
+            if (byte == 'D') row_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), row_count);
+    }
+
+    // Test 3: Execute with max_rows = 10 (more than available)
+    {
+        var exec_buf3 = std.ArrayListUnmanaged(u8){};
+        defer exec_buf3.deinit(allocator);
+        try conn.handleExecute("portal1", 10, exec_buf3.writer(allocator));
+
+        // Count DataRow messages - should return all 5 rows
+        var row_count: usize = 0;
+        for (exec_buf3.items) |byte| {
+            if (byte == 'D') row_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 5), row_count);
+    }
+
+    // Test 4: Execute with max_rows = 1
+    {
+        var exec_buf4 = std.ArrayListUnmanaged(u8){};
+        defer exec_buf4.deinit(allocator);
+        try conn.handleExecute("portal1", 1, exec_buf4.writer(allocator));
+
+        // Count DataRow messages
+        var row_count: usize = 0;
+        for (exec_buf4.items) |byte| {
+            if (byte == 'D') row_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), row_count);
+    }
+}
+
+test "handleExecute - max_rows with negative value" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_execute_negative.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    // Create test table
+    _ = try db.execSQL("CREATE TABLE test_neg (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO test_neg VALUES (1)");
+    _ = try db.execSQL("INSERT INTO test_neg VALUES (2)");
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Parse and bind
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT * FROM test_neg",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    const param_values = [_][]const u8{};
+    const result_formats = [_]i16{};
+    const param_formats = [_]i16{};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Execute with negative max_rows (should return all rows)
+    var exec_buf = std.ArrayListUnmanaged(u8){};
+    defer exec_buf.deinit(allocator);
+    try conn.handleExecute("portal1", -1, exec_buf.writer(allocator));
+
+    // Count DataRow messages - should return all 2 rows
+    var row_count: usize = 0;
+    for (exec_buf.items) |byte| {
+        if (byte == 'D') row_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), row_count);
 }
