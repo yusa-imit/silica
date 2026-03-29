@@ -880,6 +880,9 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
         try execSql(&db, "INSERT INTO data VALUES (1, 100)");
     }
 
+    // Synchronization: reader signals when it has started its transaction
+    var reader_started = std.atomic.Value(bool).init(false);
+
     // Reader task
     const ReaderTask = struct {
         db_path: []const u8,
@@ -887,6 +890,7 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
         allocator: std.mem.Allocator,
         value1: *i64,
         value2: *i64,
+        reader_started: *std.atomic.Value(bool),
 
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
@@ -894,11 +898,14 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
 
             try beginTx(&db, self.isolation);
 
+            // Signal writer that we've captured our snapshot
+            self.reader_started.store(true, .release);
+
             // First read
             self.value1.* = try execSqlGetInt(&db, "SELECT value FROM data WHERE id = 1");
 
             // Wait for writer to commit
-            std.Thread.sleep(50_000_000); // 50ms
+            std.Thread.sleep(100_000_000); // 100ms (increased for reliability)
 
             // Second read (should be different under READ COMMITTED, same under REPEATABLE READ)
             self.value2.* = try execSqlGetInt(&db, "SELECT value FROM data WHERE id = 1");
@@ -911,15 +918,18 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
     const WriterTask = struct {
         db_path: []const u8,
         allocator: std.mem.Allocator,
+        reader_started: *std.atomic.Value(bool),
 
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
 
-            // Wait for reader to start
-            std.Thread.sleep(10_000_000); // 10ms
+            // Wait for reader to begin transaction and capture snapshot
+            while (!self.reader_started.load(.acquire)) {
+                std.Thread.sleep(1_000_000); // 1ms poll interval
+            }
 
-            // Update and commit
+            // Update and commit (reader's snapshot is already captured)
             try execSql(&db, "UPDATE data SET value = 200 WHERE id = 1");
         }
     };
@@ -932,10 +942,12 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
         .allocator = allocator,
         .value1 = &value1,
         .value2 = &value2,
+        .reader_started = &reader_started,
     };
     var writer_task = WriterTask{
         .db_path = db_path,
         .allocator = allocator,
+        .reader_started = &reader_started,
     };
 
     const reader_thread = try std.Thread.spawn(.{}, ReaderTask.run, .{&reader_task});
