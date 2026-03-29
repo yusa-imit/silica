@@ -5,7 +5,7 @@ const silica = @import("silica");
 const tui_mod = @import("tui.zig");
 const server_mod = @import("server/server.zig");
 
-const version = "0.4.0";
+const version = "1.0.0";
 
 const executor = silica.executor;
 const Value = executor.Value;
@@ -990,7 +990,7 @@ test "printError formats error message" {
 }
 
 test "version string is set" {
-    try std.testing.expectEqualStrings("0.4.0", version);
+    try std.testing.expectEqualStrings("1.0.0", version);
 }
 
 test "sqlValidator complete with semicolon" {
