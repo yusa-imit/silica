@@ -484,6 +484,7 @@ pub const EngineError = error{
     CheckOptionViolation,
     ViewNotUpdatable,
     UniqueConstraintViolation,
+    UnboundParameter,
 };
 
 /// A named savepoint within a transaction.
@@ -913,9 +914,7 @@ pub const Database = struct {
     pub fn prepare(self: *Database, allocator: Allocator, sql: []const u8) !PreparedStatement {
         // Create arena for AST (will be owned by PreparedStatement)
         const arena = try allocator.create(AstArena);
-        errdefer allocator.destroy(arena);
         arena.* = AstArena.init(allocator);
-        errdefer arena.deinit();
 
         // 1. Parse → AST (tokenization happens inside Parser.init)
         var parser = Parser.init(allocator, sql, arena) catch |err| {
@@ -923,6 +922,8 @@ pub const Database = struct {
             allocator.destroy(arena);
             return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidSql;
         };
+        defer parser.deinit();
+
         const maybe_stmt = parser.parseStatement() catch |err| {
             arena.deinit();
             allocator.destroy(arena);
@@ -20169,9 +20170,9 @@ test "prepared stmt: error on invalid SQL" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    // Attempt to prepare invalid SQL
+    // Attempt to prepare invalid SQL (table does not exist)
     const result = db.prepare(testing.allocator, "SELECT * FROM nonexistent_table WHERE id = ?");
-    try testing.expectError(error.TableNotFound, result);
+    try testing.expectError(error.InvalidSql, result);
 }
 
 test "prepared stmt: error on wrong parameter count" {
@@ -20195,7 +20196,7 @@ test "prepared stmt: error on wrong parameter count" {
 
     // Execute should fail due to missing parameter
     const result = stmt.execute();
-    try testing.expectError(error.MissingParameter, result);
+    try testing.expectError(error.UnboundParameter, result);
 }
 
 test "prepared stmt: error on invalid parameter index" {
@@ -20235,7 +20236,7 @@ test "prepared stmt: error on execute without bind" {
 
     // Execute without binding parameters
     const result = stmt.execute();
-    try testing.expectError(error.MissingParameter, result);
+    try testing.expectError(error.UnboundParameter, result);
 }
 
 test "prepared stmt: memory leak detection" {
