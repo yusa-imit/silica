@@ -136,8 +136,46 @@
 - **None critical** — Issue #24 (PreparedStatement arena lifecycle) was CLOSED after fix
 - Tokenizer "?" ambiguity (JSON operator vs bind parameter) — low priority, deferred
 
+## Session 71 — FEATURE MODE: Analysis & Prioritization
+
+### Summary
+**Mode**: FEATURE MODE
+**Focus**: Analyzed codebase for enhancement opportunities, identified MVCC UPDATE architectural limitation
+
+### Actions Completed
+1. **Verified CI status**: ✅ GREEN, no open issues
+2. **Analyzed TODOs**: Identified config file watching, MVCC bugs, crash tests, GIN index completion
+3. **Investigated MVCC UPDATE bug**: Confirmed architectural limitation (documented in debugging.md lines 119-154)
+   - Root cause: `tree.delete() + tree.insert()` physically removes old tuple before inserting new one
+   - Impact: Concurrent readers see NoRows (old deleted, new invisible)
+   - Fix requirements: Multi-version storage, delayed deletion, version chains
+   - Status: Known limitation, deferred to Milestone 26+ (requires B+Tree refactoring)
+4. **Attempted config file watcher**: Implemented polling-based FileWatcher with threading, but tests hung
+   - Reverted changes to avoid introducing instability in maintenance mode
+   - Decision: Threading-based features require more extensive testing
+
+### Key Findings
+- **MVCC UPDATE Limitation**: Already well-documented in debugging.md, requires major architectural work
+- **Config File Watching**: TODO exists but implementing threading in maintenance mode is risky
+- **Project Status**: All 12 phases complete, v1.0.0 production ready, appropriate for maintenance mode
+
+### Result
+- ✅ No changes committed (avoided introducing instability)
+- ✅ Confirmed project is in healthy maintenance state
+- ✅ Identified that significant enhancements (MVCC fix, config watching) require dedicated milestones
+
+### Decision Rationale
+Given v1.0.0 production status and maintenance mode:
+- Prioritize stability over new features
+- Major architectural changes (MVCC multi-version storage) should be v2.0 scope
+- Threading-based enhancements (config watching) need comprehensive testing strategy
+- Current focus should be bug fixes and incremental improvements only
+
+---
+
 ## Next Priority
 - Project is in **maintenance mode** — all 12 phases complete
 - Monitor CI for any regressions
 - Address user-reported issues as they arise
 - Consider enhancement features (e.g., tokenizer improvements, additional index types)
+- **v2.0 candidates**: MVCC multi-version storage, config file hot-reload with proper test coverage
