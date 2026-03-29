@@ -9,7 +9,20 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 70 - STABILIZATION)
+### Last Session (Session 72 - FEATURE)
+- **Date**: 2026-03-30
+- **Mode**: FEATURE MODE
+- **Task**: Fixed CLI version string mismatch
+- **Outcome**: ✅ Version string updated to match release v1.0.0
+- **Details**:
+  - Discovered CLI was displaying "0.4.0" while build.zig.zon has "1.0.0"
+  - Updated hardcoded version string in src/cli.zig from "0.4.0" to "1.0.0"
+  - Updated corresponding test expectation
+  - Verified with `silica --version` command
+  - Cleaned up leftover test database files (*.db, :memory:)
+- **Commit**: 933cdc2
+
+### Previous Session (Session 70 - STABILIZATION)
 - **Date**: 2026-03-29
 - **Mode**: STABILIZATION MODE (session counter % 5 == 0)
 - **Task**: Test quality improvement — fixed conformance test isolation issues
