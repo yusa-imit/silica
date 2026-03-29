@@ -21,7 +21,7 @@ const ENABLE_TESTS = true;
 // executePlan() which frees it. Need architectural refactor: separate template arena
 // (owned by PreparedStatement) vs execution arena (temporary per-execute call).
 // See .claude/memory/MEMORY.md session 61 for detailed analysis.
-const ENABLE_PREPARED_STMT_TESTS = false;
+const ENABLE_PREPARED_STMT_TESTS = true;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -544,8 +544,9 @@ pub const QueryResult = struct {
 pub const PreparedStatement = struct {
     db: *Database,
     allocator: Allocator,
-    /// Cached AST arena (owns all plan/expr memory).
-    arena: *AstArena,
+    /// Template arena: owns the original cached plan (read-only after prepare).
+    /// Never modified during execution. Only freed when PreparedStatement closes.
+    template_arena: *AstArena,
     /// Cached optimized logical plan.
     plan: LogicalPlan,
     /// Parameter count (number of ? placeholders).
@@ -579,13 +580,18 @@ pub const PreparedStatement = struct {
             _ = i; // Suppress unused
         }
 
-        // Execute the cached plan with bound parameters
-        // Note: We pass the arena by pointer but don't transfer ownership.
-        // The PreparedStatement retains ownership of the arena.
-        var result = try self.db.executePlanWithParams(self.arena, self.plan, self.bound_params);
-        // Clear arena ownership from result to prevent double-free
-        result._arena = null;
-        return result;
+        // Create a fresh execution arena for this execution.
+        // This arena is used for parameter substitution (creating new AST nodes)
+        // and is passed to the executor, which will free it (even on error).
+        const execution_arena = try self.allocator.create(AstArena);
+        execution_arena.* = AstArena.init(self.allocator);
+
+        // Execute with both arenas:
+        // - template_arena: read-only, contains cached plan
+        // - execution_arena: writable, used for parameter substitution and temporary data
+        // NOTE: Ownership of execution_arena is transferred to executePlanWithParams.
+        // It will be freed by the executor (in executeInsert/Update/Delete/Select/etc) even on error.
+        return self.db.executePlanWithParams(self.template_arena, execution_arena, self.plan, self.bound_params);
     }
 
     /// Close the prepared statement and free all resources.
@@ -598,9 +604,9 @@ pub const PreparedStatement = struct {
         }
         self.allocator.free(self.bound_params);
         self.allocator.free(self.bound_flags);
-        // Free the AST arena
-        self.arena.deinit();
-        self.allocator.destroy(self.arena);
+        // Free the template arena (execution arenas are freed by executor)
+        self.template_arena.deinit();
+        self.allocator.destroy(self.template_arena);
     }
 };
 
@@ -971,7 +977,7 @@ pub const Database = struct {
         return PreparedStatement{
             .db = self,
             .allocator = allocator,
-            .arena = arena,
+            .template_arena = arena,
             .plan = optimized_plan,
             .param_count = param_count,
             .bound_params = bound_params,
@@ -1103,71 +1109,106 @@ pub const Database = struct {
     }
 
     /// Execute a plan with bound parameters (used by PreparedStatement).
-    fn executePlanWithParams(self: *Database, arena: *AstArena, plan: LogicalPlan, params: []const ?Value) EngineError!QueryResult {
-        // Substitute bound parameters in the plan tree
-        const new_root = substituteParamsInNode(arena, plan.root, params) catch return EngineError.ExecutionError;
+    fn executePlanWithParams(
+        self: *Database,
+        template_arena: *AstArena,
+        execution_arena: *AstArena,
+        plan: LogicalPlan,
+        params: []const ?Value,
+    ) EngineError!QueryResult {
+        // Substitute bound parameters in the plan tree.
+        // Read from template_arena (cached plan), allocate new nodes in execution_arena.
+        const new_root = substituteParamsInNode(template_arena, execution_arena, plan.root, params) catch |err| {
+            // If substitution fails, free the execution_arena (executor hasn't taken ownership yet)
+            execution_arena.deinit();
+            self.allocator.destroy(execution_arena);
+            return if (err == error.OutOfMemory) EngineError.OutOfMemory else EngineError.ExecutionError;
+        };
         const substituted_plan = LogicalPlan{
             .root = new_root,
             .plan_type = plan.plan_type,
             .ctes = plan.ctes,
         };
-        return self.executePlan(arena, substituted_plan);
+        // Pass execution_arena to executor — it will be freed in executor's defer block
+        return self.executePlan(execution_arena, substituted_plan);
     }
 
     /// Recursively substitute bind parameters in a PlanNode tree.
-    fn substituteParamsInNode(arena: *AstArena, node: *const PlanNode, params: []const ?Value) !*const PlanNode {
-        const new_node = try arena.allocator().create(PlanNode);
+    /// Reads from template nodes (via `node`), allocates new nodes in `execution_arena`.
+    fn substituteParamsInNode(
+        template_arena: *AstArena,
+        execution_arena: *AstArena,
+        node: *const PlanNode,
+        params: []const ?Value,
+    ) !*const PlanNode {
+        const new_node = try execution_arena.allocator().create(PlanNode);
         new_node.* = switch (node.*) {
-            .scan, .empty, .table_function_scan, .values => node.*, // No child nodes or expressions to substitute
+            .scan, .empty, .table_function_scan => node.*, // No expressions to substitute
+            .values => |v| blk: {
+                // Substitute bind parameters in VALUES expressions
+                var new_rows = try execution_arena.allocator().alloc([]const *const ast_mod.Expr, v.rows.len);
+                for (v.rows, 0..) |row, i| {
+                    var new_row = try execution_arena.allocator().alloc(*const ast_mod.Expr, row.len);
+                    for (row, 0..) |expr, j| {
+                        new_row[j] = try substituteExpr(template_arena, execution_arena, expr, params);
+                    }
+                    new_rows[i] = new_row;
+                }
+                break :blk .{ .values = .{
+                    .table = v.table,
+                    .columns = v.columns,
+                    .rows = new_rows,
+                } };
+            },
             .filter => |f| .{ .filter = .{
-                .input = try substituteParamsInNode(arena, f.input, params),
-                .predicate = try substituteExpr(arena, f.predicate, params),
+                .input = try substituteParamsInNode(template_arena, execution_arena, f.input, params),
+                .predicate = try substituteExpr(template_arena, execution_arena, f.predicate, params),
             } },
             .project => |p| blk: {
-                var new_cols = try arena.allocator().alloc(PlanNode.ProjectColumn, p.columns.len);
+                var new_cols = try execution_arena.allocator().alloc(PlanNode.ProjectColumn, p.columns.len);
                 for (p.columns, 0..) |col, i| {
                     new_cols[i] = .{
-                        .expr = try substituteExpr(arena, col.expr, params),
+                        .expr = try substituteExpr(template_arena, execution_arena, col.expr, params),
                         .alias = col.alias,
                     };
                 }
                 break :blk .{ .project = .{
-                    .input = try substituteParamsInNode(arena, p.input, params),
+                    .input = try substituteParamsInNode(template_arena, execution_arena, p.input, params),
                     .columns = new_cols,
                 } };
             },
             .join => |j| .{ .join = .{
-                .left = try substituteParamsInNode(arena, j.left, params),
-                .right = try substituteParamsInNode(arena, j.right, params),
+                .left = try substituteParamsInNode(template_arena, execution_arena, j.left, params),
+                .right = try substituteParamsInNode(template_arena, execution_arena, j.right, params),
                 .join_type = j.join_type,
-                .on_condition = if (j.on_condition) |cond| try substituteExpr(arena, cond, params) else null,
+                .on_condition = if (j.on_condition) |cond| try substituteExpr(template_arena, execution_arena, cond, params) else null,
                 .algorithm = j.algorithm,
             } },
             .sort => |s| .{ .sort = .{
-                .input = try substituteParamsInNode(arena, s.input, params),
+                .input = try substituteParamsInNode(template_arena, execution_arena, s.input, params),
                 .order_by = s.order_by, // OrderByItem contains expressions but they're rarely bind parameters
             } },
             .aggregate => |a| .{ .aggregate = .{
-                .input = try substituteParamsInNode(arena, a.input, params),
+                .input = try substituteParamsInNode(template_arena, execution_arena, a.input, params),
                 .group_by = a.group_by, // Could have bind parameters, but rare
                 .aggregates = a.aggregates, // Aggregate args could have bind parameters, but rare
             } },
             .limit => |l| .{ .limit = .{
-                .input = try substituteParamsInNode(arena, l.input, params),
-                .limit_expr = if (l.limit_expr) |expr| try substituteExpr(arena, expr, params) else null,
-                .offset_expr = if (l.offset_expr) |expr| try substituteExpr(arena, expr, params) else null,
+                .input = try substituteParamsInNode(template_arena, execution_arena, l.input, params),
+                .limit_expr = if (l.limit_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
+                .offset_expr = if (l.offset_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
             } },
             .distinct => |d| .{ .distinct = .{
-                .input = try substituteParamsInNode(arena, d.input, params),
+                .input = try substituteParamsInNode(template_arena, execution_arena, d.input, params),
                 .on_exprs = d.on_exprs,
             } },
             .set_op => |s| .{ .set_op = .{
                 .op = s.op,
-                .left = try substituteParamsInNode(arena, s.left, params),
-                .right = try substituteParamsInNode(arena, s.right, params),
+                .left = try substituteParamsInNode(template_arena, execution_arena, s.left, params),
+                .right = try substituteParamsInNode(template_arena, execution_arena, s.right, params),
             } },
             .window => |w| .{ .window = .{
-                .input = try substituteParamsInNode(arena, w.input, params),
+                .input = try substituteParamsInNode(template_arena, execution_arena, w.input, params),
                 .funcs = w.funcs, // Window function exprs could have bind parameters, but rare
                 .aliases = w.aliases,
             } },
@@ -1176,13 +1217,19 @@ pub const Database = struct {
     }
 
     /// Recursively substitute bind parameters in an expression.
-    fn substituteExpr(arena: *AstArena, expr: *const ast_mod.Expr, params: []const ?Value) !*const ast_mod.Expr {
+    /// Reads from template expressions (via `expr`), allocates new expressions in `execution_arena`.
+    fn substituteExpr(
+        template_arena: *AstArena,
+        execution_arena: *AstArena,
+        expr: *const ast_mod.Expr,
+        params: []const ?Value,
+    ) !*const ast_mod.Expr {
         return switch (expr.*) {
             .bind_parameter => |idx| blk: {
                 // Replace bind parameter with the corresponding value literal
                 if (idx >= params.len) return error.InvalidParameterIndex;
                 const value = params[idx] orelse return error.UnboundParameter;
-                break :blk arena.create(ast_mod.Expr, switch (value) {
+                break :blk execution_arena.create(ast_mod.Expr, switch (value) {
                     .integer => |i| .{ .integer_literal = i },
                     .real => |r| .{ .float_literal = r },
                     .text => |t| .{ .string_literal = t },
@@ -1194,65 +1241,65 @@ pub const Database = struct {
                     .date, .time, .timestamp, .interval, .numeric, .uuid, .array, .tsvector, .tsquery => return error.UnsupportedParameterType,
                 }) catch return error.OutOfMemory;
             },
-            .binary_op => |b| arena.create(ast_mod.Expr, .{ .binary_op = .{
+            .binary_op => |b| execution_arena.create(ast_mod.Expr, .{ .binary_op = .{
                 .op = b.op,
-                .left = try substituteExpr(arena, b.left, params),
-                .right = try substituteExpr(arena, b.right, params),
+                .left = try substituteExpr(template_arena, execution_arena, b.left, params),
+                .right = try substituteExpr(template_arena, execution_arena, b.right, params),
             } }) catch return error.OutOfMemory,
-            .unary_op => |u| arena.create(ast_mod.Expr, .{ .unary_op = .{
+            .unary_op => |u| execution_arena.create(ast_mod.Expr, .{ .unary_op = .{
                 .op = u.op,
-                .operand = try substituteExpr(arena, u.operand, params),
+                .operand = try substituteExpr(template_arena, execution_arena, u.operand, params),
             } }) catch return error.OutOfMemory,
             .function_call => |f| blk: {
-                var new_args = try arena.allocator().alloc(*const ast_mod.Expr, f.args.len);
+                var new_args = try execution_arena.allocator().alloc(*const ast_mod.Expr, f.args.len);
                 for (f.args, 0..) |arg, i| {
-                    new_args[i] = try substituteExpr(arena, arg, params);
+                    new_args[i] = try substituteExpr(template_arena, execution_arena, arg, params);
                 }
-                break :blk arena.create(ast_mod.Expr, .{ .function_call = .{
+                break :blk execution_arena.create(ast_mod.Expr, .{ .function_call = .{
                     .name = f.name,
                     .args = new_args,
                     .distinct = f.distinct,
                 } }) catch return error.OutOfMemory;
             },
             .case_expr => |c| blk: {
-                var new_whens = try arena.allocator().alloc(ast_mod.WhenClause, c.when_clauses.len);
+                var new_whens = try execution_arena.allocator().alloc(ast_mod.WhenClause, c.when_clauses.len);
                 for (c.when_clauses, 0..) |when, i| {
                     new_whens[i] = .{
-                        .condition = try substituteExpr(arena, when.condition, params),
-                        .result = try substituteExpr(arena, when.result, params),
+                        .condition = try substituteExpr(template_arena, execution_arena, when.condition, params),
+                        .result = try substituteExpr(template_arena, execution_arena, when.result, params),
                     };
                 }
-                break :blk arena.create(ast_mod.Expr, .{ .case_expr = .{
-                    .operand = if (c.operand) |op| try substituteExpr(arena, op, params) else null,
+                break :blk execution_arena.create(ast_mod.Expr, .{ .case_expr = .{
+                    .operand = if (c.operand) |op| try substituteExpr(template_arena, execution_arena, op, params) else null,
                     .when_clauses = new_whens,
-                    .else_expr = if (c.else_expr) |els| try substituteExpr(arena, els, params) else null,
+                    .else_expr = if (c.else_expr) |els| try substituteExpr(template_arena, execution_arena, els, params) else null,
                 } }) catch return error.OutOfMemory;
             },
             .in_list => |i| blk: {
-                var new_list = try arena.allocator().alloc(*const ast_mod.Expr, i.list.len);
+                var new_list = try execution_arena.allocator().alloc(*const ast_mod.Expr, i.list.len);
                 for (i.list, 0..) |val, idx| {
-                    new_list[idx] = try substituteExpr(arena, val, params);
+                    new_list[idx] = try substituteExpr(template_arena, execution_arena, val, params);
                 }
-                break :blk arena.create(ast_mod.Expr, .{ .in_list = .{
-                    .expr = try substituteExpr(arena, i.expr, params),
+                break :blk execution_arena.create(ast_mod.Expr, .{ .in_list = .{
+                    .expr = try substituteExpr(template_arena, execution_arena, i.expr, params),
                     .list = new_list,
                     .negated = i.negated,
                 } }) catch return error.OutOfMemory;
             },
-            .between => |b| arena.create(ast_mod.Expr, .{ .between = .{
-                .expr = try substituteExpr(arena, b.expr, params),
-                .low = try substituteExpr(arena, b.low, params),
-                .high = try substituteExpr(arena, b.high, params),
+            .between => |b| execution_arena.create(ast_mod.Expr, .{ .between = .{
+                .expr = try substituteExpr(template_arena, execution_arena, b.expr, params),
+                .low = try substituteExpr(template_arena, execution_arena, b.low, params),
+                .high = try substituteExpr(template_arena, execution_arena, b.high, params),
                 .negated = b.negated,
             } }) catch return error.OutOfMemory,
-            .like => |l| arena.create(ast_mod.Expr, .{ .like = .{
-                .expr = try substituteExpr(arena, l.expr, params),
-                .pattern = try substituteExpr(arena, l.pattern, params),
+            .like => |l| execution_arena.create(ast_mod.Expr, .{ .like = .{
+                .expr = try substituteExpr(template_arena, execution_arena, l.expr, params),
+                .pattern = try substituteExpr(template_arena, execution_arena, l.pattern, params),
                 .negated = l.negated,
             } }) catch return error.OutOfMemory,
-            .array_subscript => |s| arena.create(ast_mod.Expr, .{ .array_subscript = .{
-                .array = try substituteExpr(arena, s.array, params),
-                .index = try substituteExpr(arena, s.index, params),
+            .array_subscript => |s| execution_arena.create(ast_mod.Expr, .{ .array_subscript = .{
+                .array = try substituteExpr(template_arena, execution_arena, s.array, params),
+                .index = try substituteExpr(template_arena, execution_arena, s.index, params),
             } }) catch return error.OutOfMemory,
             // Literals and column refs don't need substitution
             else => expr,
