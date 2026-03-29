@@ -6,7 +6,7 @@
 //! Estimation methods:
 //! - Equality (col = val): Uses MCVs if available, otherwise 1/distinct_count
 //! - Range (col > val, col BETWEEN a AND b): Uses histogram buckets
-//! - LIKE (col LIKE 'prefix%'): Fixed estimate based on pattern type
+//! - LIKE (col LIKE pattern): Pattern-aware estimates (prefix 10%, suffix/substring 20%, exact 1%)
 //! - IN (col IN (v1, v2, ...)): Sum of individual equality estimates
 //! - IS NULL: Uses null_fraction from statistics
 
@@ -202,13 +202,40 @@ pub const SelectivityEstimator = struct {
 
     fn estimateLike(self: *SelectivityEstimator, like: anytype) f64 {
         _ = self;
-        _ = like;
 
-        // Simple heuristic based on pattern type:
-        // 'prefix%' → 10% selectivity (common case)
-        // '%suffix' or '%substring%' → 20% selectivity (less selective)
-        // TODO: Analyze the pattern string to determine type
-        return LIKE_PREFIX_SELECTIVITY;
+        // Analyze the pattern to determine selectivity
+        const base_sel = blk: {
+            // Try to extract the pattern string
+            const pattern_str = switch (like.pattern.*) {
+                .string_literal => |s| s,
+                else => break :blk LIKE_PREFIX_SELECTIVITY, // Unknown pattern type
+            };
+
+            // Analyze pattern structure
+            if (pattern_str.len == 0) {
+                break :blk MIN_SELECTIVITY; // Empty pattern matches nothing
+            }
+
+            const starts_with_wildcard = pattern_str[0] == '%';
+            const ends_with_wildcard = pattern_str[pattern_str.len - 1] == '%';
+
+            if (!starts_with_wildcard and ends_with_wildcard) {
+                // 'prefix%' → most selective (10%)
+                break :blk LIKE_PREFIX_SELECTIVITY;
+            } else if (starts_with_wildcard and !ends_with_wildcard) {
+                // '%suffix' → less selective (20%)
+                break :blk LIKE_SUBSTRING_SELECTIVITY;
+            } else if (starts_with_wildcard and ends_with_wildcard) {
+                // '%substring%' → least selective (20%)
+                break :blk LIKE_SUBSTRING_SELECTIVITY;
+            } else {
+                // Exact match (no wildcards) → very selective (1%)
+                break :blk DEFAULT_EQUALITY_SELECTIVITY;
+            }
+        };
+
+        // Handle negation (NOT LIKE)
+        return if (like.negated) (1.0 - base_sel) else base_sel;
     }
 
     // ── Logical Combinators ─────────────────────────────────────────────
@@ -486,13 +513,65 @@ test "SelectivityEstimator: LIKE selectivity" {
     const allocator = std.testing.allocator;
     var estimator = SelectivityEstimator.init(allocator);
 
-    // name LIKE 'A%'
+    // name LIKE 'A%' (prefix match)
     var col = ast.Expr{ .column_ref = .{ .name = "name" } };
     var pattern = ast.Expr{ .string_literal = "A%" };
     var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = false } };
 
     const sel = estimator.estimatePredicate(&like_expr, null, null);
     try std.testing.expectEqual(LIKE_PREFIX_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: LIKE suffix pattern" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // name LIKE '%son' (suffix match)
+    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
+    var pattern = ast.Expr{ .string_literal = "%son" };
+    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&like_expr, null, null);
+    try std.testing.expectEqual(LIKE_SUBSTRING_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: LIKE substring pattern" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // name LIKE '%john%' (substring match)
+    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
+    var pattern = ast.Expr{ .string_literal = "%john%" };
+    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&like_expr, null, null);
+    try std.testing.expectEqual(LIKE_SUBSTRING_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: LIKE exact pattern" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // name LIKE 'John' (exact match, no wildcards)
+    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
+    var pattern = ast.Expr{ .string_literal = "John" };
+    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = false } };
+
+    const sel = estimator.estimatePredicate(&like_expr, null, null);
+    try std.testing.expectEqual(DEFAULT_EQUALITY_SELECTIVITY, sel);
+}
+
+test "SelectivityEstimator: NOT LIKE pattern" {
+    const allocator = std.testing.allocator;
+    var estimator = SelectivityEstimator.init(allocator);
+
+    // name NOT LIKE 'A%' (negated prefix match)
+    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
+    var pattern = ast.Expr{ .string_literal = "A%" };
+    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = true } };
+
+    const sel = estimator.estimatePredicate(&like_expr, null, null);
+    try std.testing.expectApproxEqRel(1.0 - LIKE_PREFIX_SELECTIVITY, sel, 0.0001);
 }
 
 // ── Edge Case Tests ─────────────────────────────────────────────────────
@@ -513,21 +592,6 @@ test "SelectivityEstimator: NOT EQUAL selectivity" {
     const sel = estimator.estimatePredicate(&expr, null, null);
     const expected = 1.0 - DEFAULT_EQUALITY_SELECTIVITY;
     try std.testing.expectEqual(expected, sel);
-}
-
-test "SelectivityEstimator: negated LIKE" {
-    const allocator = std.testing.allocator;
-    var estimator = SelectivityEstimator.init(allocator);
-
-    // name NOT LIKE 'A%' → currently estimateLike doesn't check negated flag
-    // TODO: Implement negation support in estimateLike
-    var col = ast.Expr{ .column_ref = .{ .name = "name" } };
-    var pattern = ast.Expr{ .string_literal = "A%" };
-    var like_expr = ast.Expr{ .like = .{ .expr = &col, .pattern = &pattern, .negated = true } };
-
-    const sel = estimator.estimatePredicate(&like_expr, null, null);
-    // Current implementation ignores negated flag
-    try std.testing.expectEqual(LIKE_PREFIX_SELECTIVITY, sel);
 }
 
 test "SelectivityEstimator: less_than_or_equal operator" {
