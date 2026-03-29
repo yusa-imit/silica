@@ -2663,38 +2663,41 @@ test "visibility: tuple deleted by concurrent txn becomes invisible after commit
     try tm.commit(xid1);
 }
 
-// DISABLED: hits known DuplicateKey bug #1 (multi-txn getSnapshot B+Tree inserts)
-// test "visibility: in-progress delete is invisible to other txns" {
-//     const allocator = std.testing.allocator;
-//     var tm = TransactionManager.init(allocator);
-//     defer tm.deinit();
+// Re-enabled after bug #1 (DuplicateKey) was fixed in issue #1.
+// This test only checks MVCC visibility logic, no actual B+Tree operations.
+test "visibility: in-progress delete is invisible to other txns" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
 
-//     // T0: creates tuple and commits
-//     const xid0 = try tm.begin(.read_committed);
-//     const header = TupleHeader{
-//         .xmin = xid0,
-//         .xmax = 0,
-//         .cid = 0,
-//         .flags = .{},
-//     };
-//     try tm.commit(xid0);
+    // T0: creates tuple and commits
+    const xid0 = try tm.begin(.read_committed);
+    const header = TupleHeader{
+        .xmin = xid0,
+        .xmax = 0,
+        .cid = 0,
+        .flags = .{},
+    };
+    try tm.commit(xid0);
 
-//     // T1: begins
-//     const xid1 = try tm.begin(.read_committed);
+    // T1: begins
+    const xid1 = try tm.begin(.read_committed);
 
-//     // T2: deletes the tuple but does NOT commit yet
-//     const xid2 = try tm.begin(.read_committed);
-//     var header_deleting = header;
-//     header_deleting.xmax = xid2;
+    // T2: deletes the tuple but does NOT commit yet
+    const xid2 = try tm.begin(.read_committed);
+    var header_deleting = header;
+    header_deleting.xmax = xid2;
 
-//     // T1 should STILL see the tuple (T2's delete is in-progress)
-//     const snap1 = try tm.getSnapshot(xid1);
-//     try std.testing.expect(isTupleVisible(header_deleting, snap1, xid1, 0));
+    // T1 should STILL see the tuple (T2's delete is in-progress)
+    var snap1 = try tm.getSnapshot(xid1);
+    defer snap1.deinit();
+    try std.testing.expect(isTupleVisibleWithTm(header_deleting, snap1, xid1, 0, &tm));
 
-//     // After T2 aborts, tuple should still be visible
-//     try tm.abort(xid2);
-//     const snap1_after = try tm.getSnapshot(xid1);
-//     try std.testing.expect(isTupleVisible(header_deleting, snap1_after, xid1, 0));
+    // After T2 aborts, tuple should still be visible
+    try tm.abort(xid2);
+    var snap1_after = try tm.getSnapshot(xid1);
+    defer snap1_after.deinit();
+    try std.testing.expect(isTupleVisibleWithTm(header_deleting, snap1_after, xid1, 0, &tm));
 
-//     try tm.commit(xid1);
-// }
+    try tm.commit(xid1);
+}
