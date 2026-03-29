@@ -9,7 +9,23 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 72 - FEATURE)
+### Last Session (Session 73 - FEATURE)
+- **Date**: 2026-03-30
+- **Mode**: FEATURE MODE
+- **Task**: Enhanced LIKE pattern selectivity estimation
+- **Outcome**: ✅ Pattern-aware selectivity estimation implemented
+- **Details**:
+  - Improved `estimateLike()` to analyze pattern structure (prefix/suffix/substring/exact)
+  - Prefix patterns (`'prefix%'`): 10% selectivity (most selective)
+  - Suffix/substring patterns (`'%suffix'`, `'%substring%'`): 20% selectivity
+  - Exact patterns (no wildcards): 1% selectivity (equality-like)
+  - Added NOT LIKE negation support
+  - Added 4 comprehensive tests for different pattern types
+  - Removed duplicate test with outdated TODO
+  - All 2796/2818 tests passing (22 skipped)
+- **Commit**: 82480bc
+
+### Previous Session (Session 72 - FEATURE)
 - **Date**: 2026-03-30
 - **Mode**: FEATURE MODE
 - **Task**: Fixed CLI version string mismatch
