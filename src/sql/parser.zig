@@ -5368,10 +5368,10 @@ test "parse CREATE POLICY FOR INSERT with WITH CHECK (no USING)" {
 }
 
 test "parse CREATE POLICY with subquery in USING" {
-    // DISABLED: triggers bug #1 (BTreeError.DuplicateKey with subquery catalog operations)
-    // This test creates a policy with a subquery, which internally performs multiple catalog
-    // inserts (CREATE TABLE for subquery materialization), hitting the buffer pool cache
-    // staleness issue documented in bug #1.
+    // DISABLED: Parser does not yet support IN (SELECT ...) syntax
+    // Only IN (value_list) is currently implemented. Subquery support in IN expressions
+    // requires adding a new AST node type (in_subquery) and updating parseInExpr().
+    // See: src/sql/ast.zig (no in_subquery node), src/sql/parser.zig:2900 (parseInExpr)
     return error.SkipZigTest;
 
     // var r = try testParseWithArena("CREATE POLICY sub ON t USING (user_id IN (SELECT id FROM allowed))");
