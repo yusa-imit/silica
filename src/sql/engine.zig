@@ -1625,7 +1625,7 @@ pub const Database = struct {
             .distinct => |d| self.buildDistinct(d, ops),
             .window => |w| self.buildWindow(w, ops),
             .values => |v| self.buildValues(v, ops),
-            .empty => self.buildEmpty(ops),
+            .empty => |e| self.buildEmpty(e, ops),
         };
     }
 
@@ -2407,9 +2407,12 @@ pub const Database = struct {
         return values_op.iterator();
     }
 
-    fn buildEmpty(self: *Database, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildEmpty(self: *Database, empty: PlanNode.Empty, ops: *OperatorChain) EngineError!RowIterator {
         const empty_op = self.allocator.create(EmptyOp) catch return EngineError.OutOfMemory;
-        empty_op.* = .{ .allocator = self.allocator };
+        empty_op.* = .{
+            .allocator = self.allocator,
+            .description = empty.description,
+        };
         ops.empty = empty_op;
         return empty_op.iterator();
     }

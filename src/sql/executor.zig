@@ -5601,12 +5601,21 @@ pub const ValuesOp = struct {
 pub const EmptyOp = struct {
     allocator: Allocator,
     done: bool = false,
+    /// Description from PlanNode.Empty. If contains "LIMIT 0", returns no rows.
+    /// Otherwise returns one DUAL row for literal expressions (SELECT 1).
+    description: []const u8 = "",
 
     pub fn next(self: *EmptyOp) ExecError!?Row {
         if (self.done) return null;
         self.done = true;
+
+        // LIMIT 0 optimization: return zero rows
+        if (std.mem.indexOf(u8, self.description, "LIMIT 0") != null) {
+            return null;
+        }
+
         // Return a single row with no columns — ProjectOp will evaluate
-        // literal expressions against this empty row.
+        // literal expressions against this empty row (DUAL table behavior).
         const cols = self.allocator.alloc([]const u8, 0) catch return ExecError.OutOfMemory;
         const vals = self.allocator.alloc(Value, 0) catch {
             self.allocator.free(cols);

@@ -64,7 +64,9 @@ fn expectRowCount(db: *Database, sql: []const u8, expected: usize) !void {
     // Count rows by iterating
     if (result.rows) |*iter| {
         var count: usize = 0;
-        while (try iter.next()) |_| {
+        while (try iter.next()) |row_val| {
+            var row = row_val;
+            defer row.deinit();
             count += 1;
         }
         try std.testing.expectEqual(expected, count);
@@ -541,7 +543,8 @@ test "conformance: T611-03 AVG aggregate" {
             }
             rows.deinit(allocator);
         }
-        try std.testing.expectEqual(@as(i64, 20), rows.items[0].values[0].integer);
+        // AVG returns a real (floating point), not integer
+        try std.testing.expectEqual(@as(f64, 20.0), rows.items[0].values[0].real);
     } else {
         return error.NoRowsReturned;
     }
