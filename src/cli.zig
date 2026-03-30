@@ -966,6 +966,17 @@ const sql_keywords = [_][]const u8{
     "LEAD",       "FIRST_VALUE", "LAST_VALUE", "ROWS",         "RANGE",
     "UNBOUNDED",  "PRECEDING",  "FOLLOWING",   "CURRENT",      "GRANT",
     "REVOKE",     "ROLE",       "POLICY",      "CONCURRENTLY", "MATERIALIZED",
+    "TO",         "WITHOUT",    "ROWID",       "STRICT",       "TEMP",
+    "TEMPORARY",  "REPLACE",    "CONSTRAINT",  "CASCADE",      "RESTRICT",
+    "ACTION",     "NO",         "OF",          "ENUM",         "DOMAIN",
+    "RETURNS",    "LANGUAGE",   "IMMUTABLE",   "STABLE",       "VOLATILE",
+    "BEFORE",     "AFTER",      "INSTEAD",     "EACH",         "STATEMENT",
+    "OLD",        "NEW",        "ENABLE",      "DISABLE",      "TRUNCATE",
+    "GLOB",       "ANY",        "ROW",         "ISOLATION",    "READ",
+    "COMMITTED",  "REPEATABLE", "SERIALIZABLE", "PRAGMA",      "SHOW",
+    "RESET",      "DATE",       "TIME",        "TIMESTAMP",    "INTERVAL",
+    "NUMERIC",    "DECIMAL",    "UUID",        "SERIAL",       "BIGSERIAL",
+    "ARRAY",      "JSON",       "JSONB",       "TSVECTOR",     "TSQUERY",
 };
 
 // ── Tests ────────────────────────────────────────────────────
