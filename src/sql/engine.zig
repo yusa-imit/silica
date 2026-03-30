@@ -4557,6 +4557,7 @@ pub const Database = struct {
             const distinct_count = try self.countDistinct(values);
             const null_fraction = calculateNullFraction(values);
             const avg_width = calculateAvgWidth(values);
+            const correlation = try self.calculateCorrelation(values);
 
             // Build histogram from non-NULL values
             const histogram_buckets = try self.buildHistogram(values);
@@ -4573,7 +4574,7 @@ pub const Database = struct {
                 .distinct_count = distinct_count,
                 .null_fraction = null_fraction,
                 .avg_width = avg_width,
-                .correlation = 0.0, // TODO: calculate correlation with row order
+                .correlation = correlation,
                 .most_common_values = &.{},
                 .histogram_buckets = histogram_buckets,
             };
@@ -4939,6 +4940,116 @@ pub const Database = struct {
         }
 
         return try buckets.toOwnedSlice(self.allocator);
+    }
+
+    /// Calculate Spearman's rank correlation coefficient between logical (sorted) order and physical (storage) order.
+    /// Returns a value from -1.0 to 1.0:
+    ///   - Values close to +1.0: Column values are ordered in storage (index scans efficient)
+    ///   - Values close to -1.0: Column values are reverse-ordered in storage
+    ///   - Values close to 0.0: Column values are randomly ordered (no correlation)
+    ///
+    /// This statistic helps the optimizer decide whether an index scan or sequential scan is more efficient.
+    fn calculateCorrelation(self: *Database, values: []const []const u8) EngineError!f64 {
+        // Filter out NULL values
+        var non_null = std.ArrayListUnmanaged([]const u8){};
+        defer non_null.deinit(self.allocator);
+
+        for (values) |val| {
+            if (val.len > 0 and val[0] != 0x00) { // Skip NULL marker
+                non_null.append(self.allocator, val) catch return EngineError.OutOfMemory;
+            }
+        }
+
+        // Need at least 2 values to compute correlation
+        if (non_null.items.len < 2) return 0.0;
+
+        // Create array of (value, physical_position) pairs
+        const ValuePos = struct {
+            value: []const u8,
+            physical_pos: usize,
+        };
+
+        var pairs = std.ArrayListUnmanaged(ValuePos){};
+        defer pairs.deinit(self.allocator);
+
+        for (non_null.items, 0..) |val, pos| {
+            pairs.append(self.allocator, .{ .value = val, .physical_pos = pos }) catch return EngineError.OutOfMemory;
+        }
+
+        // Sort by value (logical order)
+        std.mem.sort(ValuePos, pairs.items, {}, struct {
+            fn compare(_: void, a: ValuePos, b: ValuePos) bool {
+                return std.mem.order(u8, a.value, b.value) == .lt;
+            }
+        }.compare);
+
+        // Assign ranks to logical order (handling ties by averaging ranks)
+        var logical_ranks = std.ArrayListUnmanaged(f64){};
+        defer logical_ranks.deinit(self.allocator);
+        try logical_ranks.resize(self.allocator, pairs.items.len);
+
+        var i: usize = 0;
+        while (i < pairs.items.len) {
+            // Find extent of tie group
+            var j: usize = i + 1;
+            while (j < pairs.items.len and std.mem.eql(u8, pairs.items[i].value, pairs.items[j].value)) {
+                j += 1;
+            }
+
+            // Assign average rank to all ties (rank is 1-indexed)
+            const avg_rank = @as(f64, @floatFromInt(i + j + 1)) / 2.0;
+            for (i..j) |k| {
+                logical_ranks.items[k] = avg_rank;
+            }
+
+            i = j;
+        }
+
+        // Compute physical ranks (based on physical_pos, same tie-handling logic)
+        var physical_ranks = std.ArrayListUnmanaged(f64){};
+        defer physical_ranks.deinit(self.allocator);
+        try physical_ranks.resize(self.allocator, pairs.items.len);
+
+        // Create temporary array sorted by physical position to assign ranks
+        var phys_sorted = std.ArrayListUnmanaged(struct { physical_pos: usize, idx: usize }){};
+        defer phys_sorted.deinit(self.allocator);
+        for (pairs.items, 0..) |pair, idx| {
+            phys_sorted.append(self.allocator, .{ .physical_pos = pair.physical_pos, .idx = idx }) catch return EngineError.OutOfMemory;
+        }
+
+        std.mem.sort(@TypeOf(phys_sorted.items[0]), phys_sorted.items, {}, struct {
+            fn compare(_: void, a: @TypeOf(phys_sorted.items[0]), b: @TypeOf(phys_sorted.items[0])) bool {
+                return a.physical_pos < b.physical_pos;
+            }
+        }.compare);
+
+        i = 0;
+        while (i < phys_sorted.items.len) {
+            var j: usize = i + 1;
+            while (j < phys_sorted.items.len and phys_sorted.items[i].physical_pos == phys_sorted.items[j].physical_pos) {
+                j += 1;
+            }
+
+            const avg_rank = @as(f64, @floatFromInt(i + j + 1)) / 2.0;
+            for (i..j) |k| {
+                physical_ranks.items[phys_sorted.items[k].idx] = avg_rank;
+            }
+
+            i = j;
+        }
+
+        // Compute Spearman's rank correlation coefficient: r = 1 - (6 * Σd²) / (n * (n² - 1))
+        // where d = difference in ranks
+        const n = @as(f64, @floatFromInt(pairs.items.len));
+        var sum_d_squared: f64 = 0.0;
+
+        for (0..pairs.items.len) |k| {
+            const d = logical_ranks.items[k] - physical_ranks.items[k];
+            sum_d_squared += d * d;
+        }
+
+        const correlation = 1.0 - (6.0 * sum_d_squared) / (n * (n * n - 1.0));
+        return correlation;
     }
 
     // ── Auto-Vacuum ──────────────────────────────────────────────────
@@ -18227,6 +18338,173 @@ test "ANALYZE histogram on TEXT column" {
 }
 
 // ── Comprehensive Edge Case Tests for ANALYZE ──────────────────────
+
+test "ANALYZE calculates correlation with physical row order" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_analyze_correlation.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Test 1: Perfectly ordered data (correlation = +1.0)
+    {
+        var r1 = try db.execSQL("CREATE TABLE t_ordered (val INTEGER);");
+        defer r1.close(allocator);
+
+        // Insert values in ascending order: 1, 2, 3, ..., 20
+        var i: u64 = 1;
+        while (i <= 20) : (i += 1) {
+            const query = try std.fmt.allocPrint(allocator, "INSERT INTO t_ordered VALUES ({});", .{i});
+            defer allocator.free(query);
+            var r = try db.execSQL(query);
+            defer r.close(allocator);
+        }
+
+        var r_analyze = try db.execSQL("ANALYZE t_ordered;");
+        defer r_analyze.close(allocator);
+
+        const col_key = try db.catalog.allocator.alloc(u8, "stats:t_ordered:val".len);
+        defer db.catalog.allocator.free(col_key);
+        @memcpy(col_key, "stats:t_ordered:val");
+
+        const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+        defer db.catalog.allocator.free(col_stats_data);
+
+        var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+        defer col_stats.deinit(allocator);
+
+        // Correlation should be very close to +1.0 (perfectly ordered)
+        try std.testing.expect(col_stats.correlation > 0.95);
+        try std.testing.expect(col_stats.correlation <= 1.0);
+    }
+
+    // Test 2: Reverse-ordered data (correlation = -1.0)
+    {
+        var r1 = try db.execSQL("CREATE TABLE t_reverse (val INTEGER);");
+        defer r1.close(allocator);
+
+        // Insert values in descending order: 20, 19, 18, ..., 1
+        var i: u64 = 20;
+        while (i >= 1) : (i -= 1) {
+            const query = try std.fmt.allocPrint(allocator, "INSERT INTO t_reverse VALUES ({});", .{i});
+            defer allocator.free(query);
+            var r = try db.execSQL(query);
+            defer r.close(allocator);
+            if (i == 1) break;
+        }
+
+        var r_analyze = try db.execSQL("ANALYZE t_reverse;");
+        defer r_analyze.close(allocator);
+
+        const col_key = try db.catalog.allocator.alloc(u8, "stats:t_reverse:val".len);
+        defer db.catalog.allocator.free(col_key);
+        @memcpy(col_key, "stats:t_reverse:val");
+
+        const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+        defer db.catalog.allocator.free(col_stats_data);
+
+        var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+        defer col_stats.deinit(allocator);
+
+        // Correlation should be very close to -1.0 (reverse ordered)
+        try std.testing.expect(col_stats.correlation < -0.95);
+        try std.testing.expect(col_stats.correlation >= -1.0);
+    }
+
+    // Test 3: Randomly ordered data (correlation ≈ 0.0)
+    {
+        var r1 = try db.execSQL("CREATE TABLE t_random (val INTEGER);");
+        defer r1.close(allocator);
+
+        // Insert values in pseudo-random order: alternate high/low
+        const random_order = [_]u64{ 15, 3, 18, 7, 1, 12, 9, 20, 4, 16, 6, 13, 2, 19, 8, 11, 5, 14, 10, 17 };
+        for (random_order) |val| {
+            const query = try std.fmt.allocPrint(allocator, "INSERT INTO t_random VALUES ({});", .{val});
+            defer allocator.free(query);
+            var r = try db.execSQL(query);
+            defer r.close(allocator);
+        }
+
+        var r_analyze = try db.execSQL("ANALYZE t_random;");
+        defer r_analyze.close(allocator);
+
+        const col_key = try db.catalog.allocator.alloc(u8, "stats:t_random:val".len);
+        defer db.catalog.allocator.free(col_key);
+        @memcpy(col_key, "stats:t_random:val");
+
+        const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+        defer db.catalog.allocator.free(col_stats_data);
+
+        var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+        defer col_stats.deinit(allocator);
+
+        // Correlation should be close to 0.0 (randomly ordered)
+        try std.testing.expect(@abs(col_stats.correlation) < 0.5);
+    }
+
+    // Test 4: Column with NULL values (should be excluded from correlation)
+    {
+        var r1 = try db.execSQL("CREATE TABLE t_nulls (val INTEGER);");
+        defer r1.close(allocator);
+
+        // Insert mix of NULL and ordered values
+        var i: u64 = 1;
+        while (i <= 10) : (i += 1) {
+            const query = if (i % 3 == 0)
+                try std.fmt.allocPrint(allocator, "INSERT INTO t_nulls VALUES (NULL);", .{})
+            else
+                try std.fmt.allocPrint(allocator, "INSERT INTO t_nulls VALUES ({});", .{i});
+            defer allocator.free(query);
+            var r = try db.execSQL(query);
+            defer r.close(allocator);
+        }
+
+        var r_analyze = try db.execSQL("ANALYZE t_nulls;");
+        defer r_analyze.close(allocator);
+
+        const col_key = try db.catalog.allocator.alloc(u8, "stats:t_nulls:val".len);
+        defer db.catalog.allocator.free(col_key);
+        @memcpy(col_key, "stats:t_nulls:val");
+
+        const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+        defer db.catalog.allocator.free(col_stats_data);
+
+        var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+        defer col_stats.deinit(allocator);
+
+        // Should still calculate correlation from non-NULL values
+        try std.testing.expect(@abs(col_stats.correlation) <= 1.0);
+        try std.testing.expect(col_stats.null_fraction > 0.0); // Verify NULLs were counted
+    }
+
+    // Test 5: Edge case — single non-NULL value (correlation = 0.0)
+    {
+        var r1 = try db.execSQL("CREATE TABLE t_single (val INTEGER);");
+        defer r1.close(allocator);
+
+        var r_insert = try db.execSQL("INSERT INTO t_single VALUES (42);");
+        defer r_insert.close(allocator);
+
+        var r_analyze = try db.execSQL("ANALYZE t_single;");
+        defer r_analyze.close(allocator);
+
+        const col_key = try db.catalog.allocator.alloc(u8, "stats:t_single:val".len);
+        defer db.catalog.allocator.free(col_key);
+        @memcpy(col_key, "stats:t_single:val");
+
+        const col_stats_data = (try db.catalog.tree.get(db.catalog.allocator, col_key)).?;
+        defer db.catalog.allocator.free(col_stats_data);
+
+        var col_stats = try stats_mod.deserializeColumnStats(allocator, col_stats_data);
+        defer col_stats.deinit(allocator);
+
+        // Single value → correlation = 0.0 (not enough data)
+        try std.testing.expectEqual(@as(f64, 0.0), col_stats.correlation);
+    }
+}
 
 test "ANALYZE with very large dataset (stress test)" {
 
