@@ -1095,3 +1095,274 @@ fn longForkTestDisabled() !void {
     try testing.expectEqual(sum1, sum2);
     try testing.expectEqual(@as(i64, 550), sum1); // 10+20+30+...+100 = 550
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// Test 8: Auto-Commit MVCC Visibility (Regression Tests for Session 78 Bug)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Verifies that auto-commit queries correctly filter aborted transactions.
+// Without MVCC filtering in auto-commit mode, aborted data becomes visible.
+//
+// Bug History (Session 78, commit 2b6eeb1):
+//   - Before fix: getMvccContextWithOps() returned null for auto-commit
+//   - Result: MVCC visibility checks skipped, aborted tuples visible
+//   - After fix: Auto-commit uses Snapshot.EMPTY with TM reference
+//   - isTupleVisibleWithTm() checks tm.isAborted(xmin) even for EMPTY snapshot
+
+test "auto-commit: aborted INSERT is invisible" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_abort_insert_{d}.db", .{std.time.milliTimestamp()});
+    const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(db_full_path);
+
+    var full_path_buf: [512]u8 = undefined;
+    const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+
+    var db = try Database.open(allocator, full_path, .{});
+    defer db.close();
+
+    try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+
+    // Transaction: INSERT then ROLLBACK
+    try execSql(&db, "BEGIN");
+    try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+    try execSql(&db, "ROLLBACK");
+
+    // Auto-commit SELECT should NOT see aborted row
+    const count = try execSqlGetInt(&db, "SELECT COUNT(*) FROM t1");
+    try testing.expectEqual(@as(i64, 0), count);
+
+    // Explicit check: SELECT with WHERE should also return nothing
+    var result = try db.exec("SELECT id, val FROM t1 WHERE id = 1");
+    defer result.close(allocator);
+
+    if (result.rows) |*iter| {
+        // Should be empty
+        try testing.expect(try iter.next() == null);
+    }
+}
+
+test "auto-commit: aborted UPDATE is invisible" {
+    // SKIPPED: UPDATE uses delete+insert without multi-version storage.
+    // After ROLLBACK, old row is physically deleted from B+Tree.
+    // Fix requires Milestone 26+ (multi-version storage with version chains).
+    // See issue #20 and debugging.md
+    return error.SkipZigTest;
+
+    // const allocator = testing.allocator;
+    //
+    // var tmp = testing.tmpDir(.{});
+    // defer tmp.cleanup();
+    //
+    // var path_buf: [256]u8 = undefined;
+    // const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_abort_update_{d}.db", .{std.time.milliTimestamp()});
+    // const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    // defer allocator.free(db_full_path);
+    //
+    // var full_path_buf: [512]u8 = undefined;
+    // const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+    //
+    // var db = try Database.open(allocator, full_path, .{});
+    // defer db.close();
+    //
+    // try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+    // try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+    //
+    // // Transaction: UPDATE then ROLLBACK
+    // try execSql(&db, "BEGIN");
+    // try execSql(&db, "UPDATE t1 SET val = 999 WHERE id = 1");
+    // try execSql(&db, "ROLLBACK");
+    //
+    // // Auto-commit SELECT should see original value (100), not aborted value (999)
+    // const val = try execSqlGetInt(&db, "SELECT val FROM t1 WHERE id = 1");
+    // try testing.expectEqual(@as(i64, 100), val);
+}
+
+test "auto-commit: aborted DELETE is invisible" {
+    // SKIPPED: DELETE physically removes row from B+Tree without multi-version storage.
+    // After ROLLBACK, deleted row cannot be restored.
+    // Fix requires Milestone 26+ (multi-version storage with version chains).
+    // See issue #20 and debugging.md
+    return error.SkipZigTest;
+
+    // const allocator = testing.allocator;
+    //
+    // var tmp = testing.tmpDir(.{});
+    // defer tmp.cleanup();
+    //
+    // var path_buf: [256]u8 = undefined;
+    // const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_abort_delete_{d}.db", .{std.time.milliTimestamp()});
+    // const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    // defer allocator.free(db_full_path);
+    //
+    // var full_path_buf: [512]u8 = undefined;
+    // const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+    //
+    // var db = try Database.open(allocator, full_path, .{});
+    // defer db.close();
+    //
+    // try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+    // try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+    // try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
+    //
+    // // Transaction: DELETE then ROLLBACK
+    // try execSql(&db, "BEGIN");
+    // try execSql(&db, "DELETE FROM t1 WHERE id = 1");
+    // try execSql(&db, "ROLLBACK");
+    //
+    // // Auto-commit SELECT should still see both rows
+    // const count = try execSqlGetInt(&db, "SELECT COUNT(*) FROM t1");
+    // try testing.expectEqual(@as(i64, 2), count);
+    //
+    // // Deleted row should still be visible
+    // const val = try execSqlGetInt(&db, "SELECT val FROM t1 WHERE id = 1");
+    // try testing.expectEqual(@as(i64, 100), val);
+}
+
+test "auto-commit: mixed committed and aborted rows" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_mixed_{d}.db", .{std.time.milliTimestamp()});
+    const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(db_full_path);
+
+    var full_path_buf: [512]u8 = undefined;
+    const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+
+    var db = try Database.open(allocator, full_path, .{});
+    defer db.close();
+
+    try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+
+    // Committed row
+    try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
+
+    // Aborted row
+    try execSql(&db, "BEGIN");
+    try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
+    try execSql(&db, "ROLLBACK");
+
+    // Another committed row
+    try execSql(&db, "INSERT INTO t1 VALUES (3, 300)");
+
+    // Aborted row
+    try execSql(&db, "BEGIN");
+    try execSql(&db, "INSERT INTO t1 VALUES (4, 400)");
+    try execSql(&db, "ROLLBACK");
+
+    // Auto-commit SELECT should see only committed rows (1 and 3)
+    const count = try execSqlGetInt(&db, "SELECT COUNT(*) FROM t1");
+    try testing.expectEqual(@as(i64, 2), count);
+
+    // Verify specific IDs
+    var result = try db.exec("SELECT id FROM t1 ORDER BY id");
+    defer result.close(allocator);
+
+    if (result.rows) |*iter| {
+        // First row: id=1
+        {
+            const row_val = try iter.next();
+            try testing.expect(row_val != null);
+            var row = row_val.?;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        }
+
+        // Second row: id=3
+        {
+            const row_val = try iter.next();
+            try testing.expect(row_val != null);
+            var row = row_val.?;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+        }
+
+        // No more rows
+        try testing.expect(try iter.next() == null);
+    }
+}
+
+test "auto-commit: aggregate functions skip aborted rows" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_aggregates_{d}.db", .{std.time.milliTimestamp()});
+    const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(db_full_path);
+
+    var full_path_buf: [512]u8 = undefined;
+    const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+
+    var db = try Database.open(allocator, full_path, .{});
+    defer db.close();
+
+    try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
+
+    // Committed rows
+    try execSql(&db, "INSERT INTO t1 VALUES (1, 10)");
+    try execSql(&db, "INSERT INTO t1 VALUES (2, 20)");
+
+    // Aborted row
+    try execSql(&db, "BEGIN");
+    try execSql(&db, "INSERT INTO t1 VALUES (3, 30)");
+    try execSql(&db, "ROLLBACK");
+
+    // Auto-commit aggregates should only see committed rows
+    const count = try execSqlGetInt(&db, "SELECT COUNT(*) FROM t1");
+    try testing.expectEqual(@as(i64, 2), count);
+
+    const sum = try execSqlGetInt(&db, "SELECT SUM(val) FROM t1");
+    try testing.expectEqual(@as(i64, 30), sum); // 10 + 20 (not 10+20+30)
+
+    const max_val = try execSqlGetInt(&db, "SELECT MAX(val) FROM t1");
+    try testing.expectEqual(@as(i64, 20), max_val); // Not 30
+}
+
+test "auto-commit: JOIN does not see aborted rows" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_join_{d}.db", .{std.time.milliTimestamp()});
+    const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(db_full_path);
+
+    var full_path_buf: [512]u8 = undefined;
+    const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+
+    var db = try Database.open(allocator, full_path, .{});
+    defer db.close();
+
+    try execSql(&db, "CREATE TABLE t1 (id INTEGER, name TEXT)");
+    try execSql(&db, "CREATE TABLE t2 (t1_id INTEGER, val INTEGER)");
+
+    // Committed data
+    try execSql(&db, "INSERT INTO t1 VALUES (1, 'Alice')");
+    try execSql(&db, "INSERT INTO t2 VALUES (1, 100)");
+
+    // Aborted data in t2
+    try execSql(&db, "BEGIN");
+    try execSql(&db, "INSERT INTO t2 VALUES (1, 200)");
+    try execSql(&db, "ROLLBACK");
+
+    // Auto-commit JOIN should see only committed row in t2
+    const count = try execSqlGetInt(&db, "SELECT COUNT(*) FROM t1 JOIN t2 ON t1.id = t2.t1_id");
+    try testing.expectEqual(@as(i64, 1), count); // Only one join result
+
+    const sum = try execSqlGetInt(&db, "SELECT SUM(t2.val) FROM t1 JOIN t2 ON t1.id = t2.t1_id");
+    try testing.expectEqual(@as(i64, 100), sum); // Not 300 (100+200)
+}
