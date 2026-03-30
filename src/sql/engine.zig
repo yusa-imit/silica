@@ -1486,8 +1486,14 @@ pub const Database = struct {
                 };
             }
         }
-        // No explicit transaction — return null (auto-commit, no MVCC filtering needed)
-        return null;
+        // Auto-commit mode: use empty snapshot with TM for visibility filtering.
+        // This ensures aborted transactions are filtered out even without an explicit transaction.
+        return MvccContext{
+            .snapshot = mvcc_mod.Snapshot.EMPTY,
+            .current_xid = mvcc_mod.INVALID_XID,
+            .current_cid = 0,
+            .tm = self.tm,
+        };
     }
 
     /// Register a table read for SSI tracking (SERIALIZABLE transactions only).

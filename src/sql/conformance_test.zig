@@ -836,24 +836,20 @@ test "conformance: T211-01 COMMIT transaction" {
 }
 
 test "conformance: T211-02 ROLLBACK transaction" {
-    // SKIP: ROLLBACK isolation issue — data visible after rollback
-    // Expected: 0 rows, Found: 1 row (isolation level visibility bug)
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_conformance_31.db";
 
-    // const allocator = std.testing.allocator;
-    // const path = "test_conformance_31.db";
-    //
-    // defer std.fs.cwd().deleteFile(path) catch {};
-    //
-    // var db = try createTestDb(allocator, path);
-    // defer db.close();
-    //
-    // try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
-    // try execSql(&db, "BEGIN");
-    // try execSql(&db, "INSERT INTO t1 VALUES (1)");
-    // try execSql(&db, "ROLLBACK");
-    //
-    // try expectRowCount(&db, "SELECT * FROM t1", 0);
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(allocator, path);
+    defer db.close();
+
+    try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
+    try execSql(&db, "BEGIN");
+    try execSql(&db, "INSERT INTO t1 VALUES (1)");
+    try execSql(&db, "ROLLBACK");
+
+    try expectRowCount(&db, "SELECT * FROM t1", 0);
 }
 
 test "conformance: T211-03 Isolation: READ COMMITTED" {
