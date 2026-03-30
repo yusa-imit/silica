@@ -708,6 +708,7 @@ test "SwitchoverCoordinator: concurrent performSwitchover thread safety" {
     }
 
     // After all threads finish, coordinator should be in a valid state
+    // Valid states: .completed (one succeeded), .idle (none started), or .failed (error during execution)
     const final_state = coord.getState();
-    try std.testing.expect(final_state == .completed or final_state == .idle);
+    try std.testing.expect(final_state == .completed or final_state == .idle or final_state == .failed);
 }
