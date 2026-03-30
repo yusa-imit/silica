@@ -9,7 +9,38 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 83 - FEATURE)
+### Last Session (Session 84 - FEATURE)
+- **Date**: 2026-03-31
+- **Mode**: FEATURE MODE
+- **Task**: Implemented correlation coefficient calculation in ANALYZE statistics
+- **Outcome**: ✅ Optimizer can now make better cost decisions for index vs sequential scans
+- **Details**:
+  - **CI Status**: ✅ GREEN — all workflows passing
+  - **Open Issues**: 0
+  - **Feature**: Implemented Spearman's rank correlation coefficient for column statistics
+  - **Implementation**:
+    - Added `calculateCorrelation()` function in engine.zig (line 4943+)
+    - Computes correlation between logical order (sorted values) and physical storage order
+    - Formula: r = 1 - (6 * Σd²) / (n(n²-1)) where d = rank difference
+    - Handles ties using standard rank averaging method
+    - Filters out NULL values before calculation
+    - Returns 0.0 for edge cases (< 2 non-NULL values)
+  - **Correlation Interpretation**:
+    - +1.0: Perfect ordering → index scans very efficient (sequential I/O)
+    - -1.0: Perfect reverse order → reverse index scans efficient
+    -  0.0: Random order → sequential scan preferred (avoid random I/O)
+  - **Testing**: Added comprehensive test with 5 scenarios:
+    1. Perfectly ordered data (validates correlation ≈ +1.0)
+    2. Reverse-ordered data (validates correlation ≈ -1.0)
+    3. Randomly ordered data (validates correlation ≈ 0.0)
+    4. Mixed NULL/non-NULL values (NULLs excluded from calculation)
+    5. Edge case: single value (correlation = 0.0)
+  - **Impact**: Query optimizer can now use correlation to choose between index scans (good for high correlation) and sequential scans (good for low correlation)
+  - **Files Changed**: `src/sql/engine.zig` (+279 lines)
+  - **Removed TODO**: Line 4576 (calculate correlation with row order)
+- **Commit**: 801afe1
+
+### Previous Session (Session 83 - FEATURE)
 - **Date**: 2026-03-31
 - **Mode**: FEATURE MODE (switched to CI fix priority)
 - **Task**: Fixed CI test failures caused by Session 82 EXPLAIN ANALYZE changes
