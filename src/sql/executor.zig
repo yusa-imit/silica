@@ -3477,6 +3477,91 @@ pub const RowIterator = struct {
     }
 };
 
+// ── Runtime Statistics (for EXPLAIN ANALYZE) ─────────────────────────────
+
+/// Runtime statistics for a single operator.
+pub const OperatorStats = struct {
+    /// Operator name (e.g., "Scan", "Filter", "Join")
+    name: []const u8,
+    /// Total execution time in microseconds
+    total_time_us: u64 = 0,
+    /// Number of rows produced by this operator
+    rows_produced: u64 = 0,
+    /// Number of next() calls that returned a row
+    next_calls: u64 = 0,
+
+    pub fn format(
+        self: OperatorStats,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print("{s}: {d} rows in {d}.{d:0>3} ms (avg {d}.{d:0>3} µs/row)", .{
+            self.name,
+            self.rows_produced,
+            self.total_time_us / 1000,
+            self.total_time_us % 1000,
+            if (self.rows_produced > 0) self.total_time_us / self.rows_produced else 0,
+            if (self.rows_produced > 0) (self.total_time_us % self.rows_produced) else 0,
+        });
+    }
+};
+
+/// Wraps a RowIterator and collects runtime statistics.
+pub const InstrumentedIterator = struct {
+    inner: RowIterator,
+    stats: *OperatorStats,
+    timer: std.time.Timer,
+
+    pub fn init(inner: RowIterator, stats: *OperatorStats) !InstrumentedIterator {
+        return .{
+            .inner = inner,
+            .stats = stats,
+            .timer = try std.time.Timer.start(),
+        };
+    }
+
+    pub fn next(self: *InstrumentedIterator) ExecError!?Row {
+        const start = self.timer.read();
+        const row = try self.inner.next();
+        const elapsed = self.timer.read() - start;
+
+        self.stats.total_time_us += elapsed / 1000; // ns to µs
+        self.stats.next_calls += 1;
+        if (row != null) {
+            self.stats.rows_produced += 1;
+        }
+
+        return row;
+    }
+
+    pub fn close(self: *InstrumentedIterator) void {
+        self.inner.close();
+    }
+
+    pub fn iterator(self: *InstrumentedIterator) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = nextErased,
+                .close = closeErased,
+            },
+        };
+    }
+
+    fn nextErased(ptr: *anyopaque) ExecError!?Row {
+        const self: *InstrumentedIterator = @ptrCast(@alignCast(ptr));
+        return self.next();
+    }
+
+    fn closeErased(ptr: *anyopaque) void {
+        const self: *InstrumentedIterator = @ptrCast(@alignCast(ptr));
+        self.close();
+    }
+};
+
 // ── Scan Operator ───────────────────────────────────────────────────────
 
 /// Full table scan via B+Tree cursor.

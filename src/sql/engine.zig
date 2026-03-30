@@ -4313,9 +4313,55 @@ pub const Database = struct {
 
                 // If ANALYZE flag is set, execute the query and show runtime stats
                 if (ex.analyze) {
-                    // TODO: Collect runtime statistics during execution
-                    // For now, just append a note that ANALYZE is not yet implemented
-                    writer.writeAll("\n(ANALYZE: runtime statistics collection not yet implemented)\n") catch return EngineError.ExecutionError;
+                    writer.writeAll("\n--- Runtime Statistics ---\n") catch return EngineError.ExecutionError;
+
+                    // Execute the query to collect actual runtime statistics
+                    const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+                    ops.* = .{};
+                    defer ops.deinit(self.allocator);
+
+                    const iter = self.buildIterator(optimized.root, ops) catch |err| {
+                        writer.print("(Execution failed: {})\n", .{err}) catch return EngineError.ExecutionError;
+                        const plan_str = plan_text.toOwnedSlice(arena.?.allocator()) catch return EngineError.OutOfMemory;
+                        return .{ .message = plan_str, ._arena = arena };
+                    };
+
+                    // Create a stats object for the root operator
+                    var root_stats = executor_mod.OperatorStats{
+                        .name = @tagName(optimized.root.*),
+                    };
+
+                    // Wrap the iterator with instrumentation
+                    var instrumented = executor_mod.InstrumentedIterator.init(iter, &root_stats) catch {
+                        writer.writeAll("(Failed to initialize instrumentation)\n") catch return EngineError.ExecutionError;
+                        const plan_str = plan_text.toOwnedSlice(arena.?.allocator()) catch return EngineError.OutOfMemory;
+                        return .{ .message = plan_str, ._arena = arena };
+                    };
+                    const inst_iter = instrumented.iterator();
+
+                    // Execute the query by consuming all rows
+                    var total_rows: u64 = 0;
+                    var exec_error = false;
+                    while (true) {
+                        const maybe_row = inst_iter.next() catch |err| {
+                            writer.print("(Execution error: {})\n", .{err}) catch return EngineError.ExecutionError;
+                            exec_error = true;
+                            break;
+                        };
+                        if (maybe_row) |row| {
+                            var mutable_row = row;
+                            mutable_row.deinit();
+                            total_rows += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Display statistics
+                    writer.print("Total rows returned: {d}\n", .{total_rows}) catch return EngineError.ExecutionError;
+                    writer.print("{any}\n", .{root_stats}) catch return EngineError.ExecutionError;
+
+                    inst_iter.close();
                 }
 
                 // Return plan text as a single-row result; owned by arena
