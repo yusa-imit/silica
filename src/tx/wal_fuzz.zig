@@ -262,14 +262,15 @@ test "fuzz: WAL header with random salts is accepted (salts are opaque)" {
         }
 
         // Should accept any salts
-        var wal = try Wal.init(allocator, path, 512);
-        defer wal.deinit();
+        {
+            var wal = try Wal.init(allocator, path, 512);
+            defer wal.deinit();
 
-        // No frames, but header should be loaded
-        try std.testing.expectEqual(@as(u32, 0), wal.committed_frame_count);
+            // No frames, but header should be loaded
+            try std.testing.expectEqual(@as(u32, 0), wal.committed_frame_count);
+        }
 
         // Clean up for next iteration
-        wal.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};
     }
 }
@@ -455,12 +456,13 @@ test "fuzz: WAL with partial frames at end is truncated gracefully" {
         }
 
         // Recovery should ignore partial frame, recover only committed frames
-        var wal = try Wal.init(allocator, path, page_size);
-        defer wal.deinit();
+        {
+            var wal = try Wal.init(allocator, path, page_size);
+            defer wal.deinit();
 
-        try std.testing.expectEqual(@as(u32, 3), wal.committed_frame_count);
+            try std.testing.expectEqual(@as(u32, 3), wal.committed_frame_count);
+        }
 
-        wal.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};
     }
 }
@@ -584,16 +586,17 @@ test "fuzz: WAL recovery with interrupted writes (partial frame at end)" {
         }
 
         // Recovery should discard uncommitted frame
-        var wal2 = try Wal.init(allocator, path, page_size);
-        defer wal2.deinit();
+        {
+            var wal2 = try Wal.init(allocator, path, page_size);
+            defer wal2.deinit();
 
-        try std.testing.expectEqual(@as(u32, 5), wal2.committed_frame_count);
+            try std.testing.expectEqual(@as(u32, 5), wal2.committed_frame_count);
 
-        var buf: [512]u8 = undefined;
-        const found = try wal2.readPage(100, &buf);
-        try std.testing.expect(!found); // Uncommitted page should be gone
+            var buf: [512]u8 = undefined;
+            const found = try wal2.readPage(100, &buf);
+            try std.testing.expect(!found); // Uncommitted page should be gone
+        }
 
-        wal2.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};
     }
 }
@@ -638,12 +641,13 @@ test "fuzz: WAL recovery discards uncommitted trailing frames" {
         }
 
         // Recovery should keep only committed frames
-        var wal2 = try Wal.init(allocator, path, page_size);
-        defer wal2.deinit();
+        {
+            var wal2 = try Wal.init(allocator, path, page_size);
+            defer wal2.deinit();
 
-        try std.testing.expectEqual(@as(u32, 5), wal2.committed_frame_count);
+            try std.testing.expectEqual(@as(u32, 5), wal2.committed_frame_count);
+        }
 
-        wal2.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};
     }
 }
@@ -686,12 +690,13 @@ test "fuzz: WAL recovery with multiple committed transactions replays all" {
         }
 
         // Recovery should replay all transactions
-        var wal2 = try Wal.init(allocator, path, page_size);
-        defer wal2.deinit();
+        {
+            var wal2 = try Wal.init(allocator, path, page_size);
+            defer wal2.deinit();
 
-        try std.testing.expectEqual(total_frames, wal2.committed_frame_count);
+            try std.testing.expectEqual(total_frames, wal2.committed_frame_count);
+        }
 
-        wal2.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};
     }
 }
@@ -760,12 +765,13 @@ test "fuzz: WAL recovery with mixed valid and corrupt frames" {
         }
 
         // Recovery should stop at corrupt frame, keep committed good frames
-        var wal = try Wal.init(allocator, path, page_size);
-        defer wal.deinit();
+        {
+            var wal = try Wal.init(allocator, path, page_size);
+            defer wal.deinit();
 
-        try std.testing.expectEqual(good_frames, wal.committed_frame_count);
+            try std.testing.expectEqual(good_frames, wal.committed_frame_count);
+        }
 
-        wal.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};
     }
 }

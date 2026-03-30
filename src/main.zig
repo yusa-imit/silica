@@ -18,16 +18,14 @@ pub const gist_index = @import("storage/gist_index.zig");
 pub const gin_index = @import("storage/gin_index.zig");
 pub const overflow = @import("storage/overflow.zig");
 pub const fsm = @import("storage/fsm.zig");
-// TEMPORARILY DISABLED: fuzz tests may be hanging
-// pub const fuzz = @import("storage/fuzz.zig");
+pub const fuzz = @import("storage/fuzz.zig");
 
 // SQL modules
 pub const tokenizer = @import("sql/tokenizer.zig");
-// TEMPORARILY DISABLED: fuzz tests may be hanging
-// pub const tokenizer_fuzz = @import("sql/tokenizer_fuzz.zig");
+pub const tokenizer_fuzz = @import("sql/tokenizer_fuzz.zig");
 pub const ast = @import("sql/ast.zig");
 pub const parser = @import("sql/parser.zig");
-// TEMPORARILY DISABLED: fuzz tests may be hanging
+// STILL DISABLED: parser_fuzz is slow (>2min), needs optimization before re-enabling
 // pub const parser_fuzz = @import("sql/parser_fuzz.zig");
 pub const catalog = @import("sql/catalog.zig");
 pub const analyzer = @import("sql/analyzer.zig");
@@ -43,8 +41,7 @@ pub const conformance_test = @import("sql/conformance_test.zig");
 
 // Transaction modules
 pub const wal = @import("tx/wal.zig");
-// TEMPORARILY DISABLED: fuzz tests may be hanging
-// pub const wal_fuzz = @import("tx/wal_fuzz.zig");
+pub const wal_fuzz = @import("tx/wal_fuzz.zig");
 // TEMPORARILY DISABLED: crash_test hangs in CI - need to debug
 // pub const crash_test = @import("tx/crash_test.zig");
 pub const mvcc = @import("tx/mvcc.zig");
