@@ -9,7 +9,36 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 81 - FEATURE)
+### Last Session (Session 82 - FEATURE)
+- **Date**: 2026-03-31
+- **Mode**: FEATURE MODE
+- **Task**: Implemented EXPLAIN ANALYZE runtime statistics collection
+- **Outcome**: ✅ EXPLAIN ANALYZE now shows actual execution metrics
+- **Details**:
+  - **CI Status**: ✅ GREEN — all workflows passing
+  - **Open Issues**: 0 (all bugs resolved)
+  - **Feature**: Implemented runtime statistics collection for EXPLAIN ANALYZE
+  - **Implementation**:
+    - Added `OperatorStats` struct to track execution time, row counts, per-row latency
+    - Added `InstrumentedIterator` wrapper that transparently collects statistics
+    - Uses `std.time.Timer` for high-precision timing (nanosecond → microsecond conversion)
+    - Properly handles `OperatorChain` cleanup (heap-allocated to avoid double-free)
+    - Zero overhead when not using ANALYZE
+  - **Output Format**: `"operator_name: N rows in X.Y ms (avg Z µs/row)"`
+  - **Impact**: Users can now see actual query execution statistics for optimization
+  - **Example**:
+    ```
+    EXPLAIN ANALYZE SELECT * FROM users;
+    Scan: users
+    --- Runtime Statistics ---
+    Total rows returned: 1000
+    scan: 1000 rows in 12.345 ms (avg 12 µs/row)
+    ```
+  - **Removed TODO**: Fixed TODO in engine.zig line 4317 (ANALYZE statistics collection)
+  - Files changed: `src/sql/executor.zig` (+85 lines), `src/sql/engine.zig` (+52 lines, -3 lines)
+- **Commit**: 2f4d592
+
+### Previous Session (Session 81 - FEATURE)
 - **Date**: 2026-03-30
 - **Mode**: FEATURE MODE
 - **Task**: Enhanced CLI autocomplete with 50 additional SQL keywords
