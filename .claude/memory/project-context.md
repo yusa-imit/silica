@@ -9,7 +9,31 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 80 - STABILIZATION)
+### Last Session (Session 81 - FEATURE)
+- **Date**: 2026-03-30
+- **Mode**: FEATURE MODE
+- **Task**: Enhanced CLI autocomplete with 50 additional SQL keywords
+- **Outcome**: ✅ Comprehensive keyword coverage for interactive SQL shell
+- **Details**:
+  - **CI Status**: ✅ GREEN — all workflows passing
+  - **Open Issues**: 0 (all bugs resolved)
+  - **Enhancement**: Added 50 SQL keywords from tokenizer that were missing from CLI autocomplete
+  - **Categories Added**:
+    - DDL keywords: TO, WITHOUT, ROWID, STRICT, TEMP, TEMPORARY, REPLACE, CONSTRAINT, CASCADE, RESTRICT, ACTION, NO, OF, ENUM, DOMAIN
+    - Function keywords: RETURNS, LANGUAGE, IMMUTABLE, STABLE, VOLATILE
+    - Trigger keywords: BEFORE, AFTER, INSTEAD, EACH, STATEMENT, OLD, NEW
+    - Admin keywords: ENABLE, DISABLE, TRUNCATE
+    - Pattern matching: GLOB, ANY
+    - Window functions: ROW (for ROWS frame type)
+    - Transaction isolation: ISOLATION, READ, COMMITTED, REPEATABLE, SERIALIZABLE
+    - Utility: PRAGMA, SHOW, RESET
+    - Data types: DATE, TIME, TIMESTAMP, INTERVAL, NUMERIC, DECIMAL, UUID, SERIAL, BIGSERIAL, ARRAY, JSON, JSONB, TSVECTOR, TSQUERY
+  - **Rationale**: All added keywords exist in tokenizer (src/sql/tokenizer.zig) and are valid SQL syntax
+  - **Impact**: Improved developer experience when typing advanced SQL features (triggers, functions, isolation levels, data types)
+  - Files changed: `src/cli.zig` (+11 lines in sql_keywords array)
+- **Commit**: 568a790
+
+### Previous Session (Session 80 - STABILIZATION)
 - **Date**: 2026-03-30
 - **Mode**: STABILIZATION MODE (every 5th execution)
 - **Task**: Test quality audit — added auto-commit MVCC visibility regression tests
