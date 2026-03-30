@@ -9,7 +9,24 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 74 - FEATURE)
+### Last Session (Session 77 - FEATURE)
+- **Date**: 2026-03-30
+- **Mode**: FEATURE MODE
+- **Task**: Added 24 SQL keywords to CLI autocomplete
+- **Outcome**: ✅ Enhanced autocomplete coverage for advanced SQL features
+- **Details**:
+  - Added missing keywords to `sql_keywords` array in cli.zig
+  - DDL keywords: ANALYZE, REINDEX, VIEW, TRIGGER, FUNCTION, MATERIALIZED
+  - CTE keywords: WITH, RECURSIVE
+  - Window function keywords: WINDOW, PARTITION, OVER, ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE
+  - Window frame keywords: ROWS, RANGE, UNBOUNDED, PRECEDING, FOLLOWING, CURRENT
+  - RBAC keywords: GRANT, REVOKE, ROLE, POLICY
+  - Index keyword: CONCURRENTLY
+  - All 2823/2850 tests passing (27 skipped)
+  - Improves developer experience when using interactive SQL shell
+- **Commit**: 887c660
+
+### Previous Session (Session 74 - FEATURE)
 - **Date**: 2026-03-30
 - **Mode**: FEATURE MODE
 - **Task**: Implemented max_rows parameter in PostgreSQL wire protocol Execute handler
