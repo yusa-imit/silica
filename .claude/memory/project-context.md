@@ -9,7 +9,22 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 77 - FEATURE)
+### Last Session (Session 78 - FEATURE)
+- **Date**: 2026-03-30
+- **Mode**: FEATURE MODE
+- **Task**: Fixed ROLLBACK visibility bug — auto-commit MVCC filtering
+- **Outcome**: ✅ Re-enabled conformance test T211-02, now passing
+- **Details**:
+  - **Problem**: After ROLLBACK, SELECT saw aborted data because auto-commit mode skipped MVCC visibility checks
+  - **Root Cause**: `getMvccContextWithOps()` returned `null` for auto-commit queries → no filtering
+  - **Fix**: Auto-commit now uses `Snapshot.EMPTY` with TM reference for visibility filtering
+  - **Result**: Conformance test T211-02 (ROLLBACK transaction) ✅ PASSING
+  - Tests: 2824/2850 passing (26 skipped, down from 27)
+  - Impact: One of 5 skipped SQL:2016 conformance tests now passing
+  - Files changed: `src/sql/engine.zig` (getMvccContextWithOps), `src/sql/conformance_test.zig` (re-enabled T211-02)
+- **Commit**: 2b6eeb1
+
+### Previous Session (Session 77 - FEATURE)
 - **Date**: 2026-03-30
 - **Mode**: FEATURE MODE
 - **Task**: Added 24 SQL keywords to CLI autocomplete
