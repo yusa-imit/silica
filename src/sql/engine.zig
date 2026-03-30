@@ -4313,7 +4313,7 @@ pub const Database = struct {
 
                 // If ANALYZE flag is set, execute the query and show runtime stats
                 if (ex.analyze) {
-                    writer.writeAll("\n--- Runtime Statistics ---\n") catch return EngineError.ExecutionError;
+                    writer.writeAll("\n--- ANALYZE Runtime Statistics ---\n") catch return EngineError.ExecutionError;
 
                     // Execute the query to collect actual runtime statistics
                     const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
