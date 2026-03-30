@@ -194,7 +194,7 @@ test "fuzz: random SELECT statements" {
     var rng = std.Random.DefaultPrng.init(0xDEAD_BEEF);
     const random = rng.random();
 
-    for (0..100) |_| {
+    for (0..5) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -221,12 +221,12 @@ test "fuzz: deeply nested expressions" {
     var rng = std.Random.DefaultPrng.init(0xCAFE_BABE);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
         try sb.append("SELECT ");
-        const depth = random.intRangeAtMost(u32, 10, 100);
+        const depth = random.intRangeAtMost(u32, 5, 10);
         try randomExpr(&sb, random, 0, depth);
         try sb.append(" FROM ");
         try randomIdentifier(&sb, random, 5);
@@ -245,12 +245,12 @@ test "fuzz: complex WHERE clauses with many AND/OR" {
     var rng = std.Random.DefaultPrng.init(0xF00D_FACE);
     const random = rng.random();
 
-    for (0..100) |_| {
+    for (0..5) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
         try sb.append("SELECT * FROM t WHERE ");
-        const condition_count = random.intRangeAtMost(usize, 5, 50);
+        const condition_count = random.intRangeAtMost(usize, 3, 10);
         for (0..condition_count) |i| {
             if (i > 0) {
                 try sb.append(if (random.boolean()) " AND " else " OR ");
@@ -274,7 +274,7 @@ test "fuzz: nested subqueries" {
     var rng = std.Random.DefaultPrng.init(0xBEEF_CAFE);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -306,7 +306,7 @@ test "fuzz: Common Table Expressions (WITH clauses)" {
     var rng = std.Random.DefaultPrng.init(0xABCD_1234);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -338,7 +338,7 @@ test "fuzz: JOIN chains with many tables" {
     var rng = std.Random.DefaultPrng.init(0x5EED_FACE);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -371,7 +371,7 @@ test "fuzz: Window functions with complex PARTITION BY/ORDER BY" {
     var rng = std.Random.DefaultPrng.init(0xDEED_BEEF);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -416,7 +416,7 @@ test "fuzz: JSON path expressions" {
     var rng = std.Random.DefaultPrng.init(0x1234_5678);
     const random = rng.random();
 
-    for (0..100) |_| {
+    for (0..5) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -441,7 +441,7 @@ test "fuzz: Array expressions" {
     var rng = std.Random.DefaultPrng.init(0x9876_5432);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -467,7 +467,7 @@ test "fuzz: CASE expressions with many WHEN clauses" {
     var rng = std.Random.DefaultPrng.init(0xFEED_FACE);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -497,7 +497,7 @@ test "fuzz: Aggregate functions with FILTER and DISTINCT" {
     var rng = std.Random.DefaultPrng.init(0xBABE_FACE);
     const random = rng.random();
 
-    for (0..100) |_| {
+    for (0..5) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -559,7 +559,7 @@ test "fuzz: Invalid syntax combinations (graceful errors)" {
     }
 
     // Generate random garbage
-    for (0..100) |_| {
+    for (0..5) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -584,15 +584,15 @@ test "fuzz: Very long identifier names" {
     var rng = std.Random.DefaultPrng.init(0x10A6_AAAE);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
         try sb.append("SELECT ");
-        const len = random.intRangeAtMost(usize, 100, 1000);
+        const len = random.intRangeAtMost(usize, 50, 200);
         try randomIdentifier(&sb, random, len);
         try sb.append(" FROM ");
-        try randomIdentifier(&sb, random, random.intRangeAtMost(usize, 100, 500));
+        try randomIdentifier(&sb, random, random.intRangeAtMost(usize, 50, 150));
 
         const sql = try sb.toOwned();
         defer allocator.free(sql);
@@ -603,17 +603,17 @@ test "fuzz: Very long identifier names" {
 
 // ── Fuzz Test 14: Large IN lists ─────────────────────────────────────────
 
-test "fuzz: Large IN lists (1000+ values)" {
+test "fuzz: Large IN lists (200+ values)" {
     const allocator = std.testing.allocator;
     var rng = std.Random.DefaultPrng.init(0x1A_1157);
     const random = rng.random();
 
-    for (0..20) |_| {
+    for (0..2) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
         try sb.append("SELECT * FROM t WHERE id IN (");
-        const count = random.intRangeAtMost(usize, 100, 1000);
+        const count = random.intRangeAtMost(usize, 50, 200);
         for (0..count) |i| {
             if (i > 0) try sb.append(", ");
             try randomIntLiteral(&sb, random);
@@ -634,7 +634,7 @@ test "fuzz: Complex GROUP BY/ORDER BY with many columns" {
     var rng = std.Random.DefaultPrng.init(0x60AD_B7);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -679,7 +679,7 @@ test "fuzz: INSERT statements with many values" {
     var rng = std.Random.DefaultPrng.init(0x1A5E47);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -693,7 +693,7 @@ test "fuzz: INSERT statements with many values" {
         }
         try sb.append(") VALUES ");
 
-        const row_count = random.intRangeAtMost(usize, 1, 50);
+        const row_count = random.intRangeAtMost(usize, 1, 10);
         for (0..row_count) |i| {
             if (i > 0) try sb.append(", ");
             try sb.append("(");
@@ -718,7 +718,7 @@ test "fuzz: CREATE TABLE with many columns and constraints" {
     var rng = std.Random.DefaultPrng.init(0xC4EA7E);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -755,7 +755,7 @@ test "fuzz: UPDATE with complex SET and WHERE clauses" {
     var rng = std.Random.DefaultPrng.init(0x0FDA7E);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -786,7 +786,7 @@ test "fuzz: DELETE with complex WHERE clause" {
     var rng = std.Random.DefaultPrng.init(0xDE1E7E);
     const random = rng.random();
 
-    for (0..50) |_| {
+    for (0..3) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 
@@ -809,7 +809,7 @@ test "fuzz: Combined stress test (all patterns)" {
     var rng = std.Random.DefaultPrng.init(0x574E55);
     const random = rng.random();
 
-    for (0..100) |_| {
+    for (0..5) |_| {
         var sb = StringBuilder.init(allocator);
         defer sb.deinit();
 

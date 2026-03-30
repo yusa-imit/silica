@@ -25,8 +25,7 @@ pub const tokenizer = @import("sql/tokenizer.zig");
 pub const tokenizer_fuzz = @import("sql/tokenizer_fuzz.zig");
 pub const ast = @import("sql/ast.zig");
 pub const parser = @import("sql/parser.zig");
-// STILL DISABLED: parser_fuzz is slow (>2min), needs optimization before re-enabling
-// pub const parser_fuzz = @import("sql/parser_fuzz.zig");
+pub const parser_fuzz = @import("sql/parser_fuzz.zig");
 pub const catalog = @import("sql/catalog.zig");
 pub const analyzer = @import("sql/analyzer.zig");
 pub const planner = @import("sql/planner.zig");
