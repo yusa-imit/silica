@@ -4,6 +4,56 @@
 
 ## Known Issues
 
+### Auto-Commit MVCC Visibility Bug (Session 78) — **FIXED**
+
+**Summary**: After ROLLBACK, auto-commit SELECT queries saw aborted data because MVCC visibility filtering was skipped.
+
+- **Symptom**: Conformance test T211-02 failed — after ROLLBACK, SELECT returned 1 row (expected 0)
+  ```sql
+  BEGIN;
+  INSERT INTO t1 VALUES (1);
+  ROLLBACK;
+  SELECT * FROM t1;  -- Expected: 0 rows, Got: 1 row
+  ```
+- **Root Cause**: `getMvccContextWithOps()` returned `null` for auto-commit queries
+  - Line 1489: "No explicit transaction — return null (auto-commit, no MVCC filtering needed)"
+  - This caused all MVCC visibility checks to be skipped in auto-commit mode
+  - Aborted transactions (`xmin` with `tm.isAborted() = true`) were never filtered out
+- **Timeline**:
+  1. `BEGIN; INSERT INTO t1 VALUES (1);` → Row stored with `xmin=2`
+  2. `ROLLBACK` → `tm.abort(2)` marks transaction as aborted
+  3. `SELECT * FROM t1` → No active transaction → `getMvccContext()` returns `null`
+  4. Scan loop: `if (mvcc_ctx) |ctx|` fails → visibility check **skipped**
+  5. Row with `xmin=2` returned despite being aborted
+- **Fix (Session 78, commit 2b6eeb1)**:
+  - Auto-commit mode now uses `Snapshot.EMPTY` with TM reference
+  - `isTupleVisibleWithTm()` checks `tm.isAborted(xmin)` even for EMPTY snapshot (line 245)
+  - Changed line 1489-1490 from:
+    ```zig
+    // No explicit transaction — return null (auto-commit, no MVCC filtering needed)
+    return null;
+    ```
+    To:
+    ```zig
+    // Auto-commit mode: use empty snapshot with TM for visibility filtering.
+    // This ensures aborted transactions are filtered out even without an explicit transaction.
+    return MvccContext{
+        .snapshot = mvcc_mod.Snapshot.EMPTY,
+        .current_xid = mvcc_mod.INVALID_XID,
+        .current_cid = 0,
+        .tm = self.tm,
+    };
+    ```
+- **Result**:
+  - Conformance test T211-02 ✅ **NOW PASSING**
+  - Tests: 2824/2850 passing (26 skipped, down from 27)
+  - No performance impact: `Snapshot.EMPTY` is a static const
+- **Remaining Skipped Conformance Tests** (4 tests):
+  - T611-06: HAVING clause with aggregate functions (not implemented)
+  - E061-01: Scalar subqueries (not fully implemented)
+  - E061-02: IN subquery (parser doesn't support `IN (SELECT ...)`)
+  - E061-03: EXISTS subquery (not fully implemented in WHERE)
+
 ### GitHub Issue #1: DuplicateKey Bug (RESOLVED)
 - **Symptom**: `BTreeError.DuplicateKey` in OR REPLACE and ALTER operations for functions/triggers
 - **Root Cause**: Catalog code checked if key existed but didn't delete before inserting, causing B+Tree to reject duplicate
