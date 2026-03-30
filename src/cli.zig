@@ -960,7 +960,12 @@ const sql_keywords = [_][]const u8{
     "MIN",        "MAX",        "INTEGER",     "INT",          "REAL",
     "TEXT",       "BLOB",       "BOOLEAN",     "VARCHAR",      "TRUE",
     "FALSE",      "IF",         "EXISTS",      "AUTOINCREMENT", "TRANSACTION",
-    "VACUUM",
+    "VACUUM",     "ANALYZE",    "REINDEX",     "VIEW",         "TRIGGER",
+    "FUNCTION",   "WITH",       "RECURSIVE",   "WINDOW",       "PARTITION",
+    "OVER",       "ROW_NUMBER", "RANK",        "DENSE_RANK",   "LAG",
+    "LEAD",       "FIRST_VALUE", "LAST_VALUE", "ROWS",         "RANGE",
+    "UNBOUNDED",  "PRECEDING",  "FOLLOWING",   "CURRENT",      "GRANT",
+    "REVOKE",     "ROLE",       "POLICY",      "CONCURRENTLY", "MATERIALIZED",
 };
 
 // ── Tests ────────────────────────────────────────────────────
