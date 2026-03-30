@@ -313,11 +313,45 @@ pub const Connection = struct {
             return;
         };
 
-        // Substitute parameters in query (simplified - just execute as-is for now)
-        // TODO: implement proper parameter substitution
-        var result = self.db.execSQL(stmt.query) catch |err| {
-            try self.sendError(writer, err);
-            return;
+        // Execute query with parameter substitution
+        var result = blk: {
+            // If no parameters, use simple execSQL
+            if (portal.param_values.len == 0) {
+                break :blk self.db.execSQL(stmt.query) catch |err| {
+                    try self.sendError(writer, err);
+                    return;
+                };
+            }
+
+            // Otherwise, use prepare/bind/execute for parameter substitution
+            var prepared_stmt = self.db.prepare(self.allocator, stmt.query) catch |err| {
+                try self.sendError(writer, err);
+                return;
+            };
+            defer prepared_stmt.close();
+
+            // Bind parameters from portal
+            for (portal.param_values, 0..) |param_text, i| {
+                // Parse parameter value from text format
+                // For now, support simple types: integers, strings, null
+                const value = if (std.mem.eql(u8, param_text, "null"))
+                    Value{ .null_value = {} }
+                else if (std.fmt.parseInt(i64, param_text, 10)) |int_val|
+                    Value{ .integer = int_val }
+                else |_|
+                    Value{ .text = param_text };
+
+                prepared_stmt.bind(i, value) catch |err| {
+                    try self.sendError(writer, err);
+                    return;
+                };
+            }
+
+            // Execute prepared statement
+            break :blk prepared_stmt.execute() catch |err| {
+                try self.sendError(writer, err);
+                return;
+            };
         };
         defer result.close(self.allocator);
 
@@ -1939,4 +1973,63 @@ test "handleExecute - max_rows with negative value" {
         if (byte == 'D') row_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "handleExecute - with parameter binding" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_execute_params.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    // Create test table
+    _ = try db.execSQL("CREATE TABLE test_params (id INTEGER, name TEXT, value INTEGER)");
+    _ = try db.execSQL("INSERT INTO test_params VALUES (1, 'alice', 100)");
+    _ = try db.execSQL("INSERT INTO test_params VALUES (2, 'bob', 200)");
+    _ = try db.execSQL("INSERT INTO test_params VALUES (3, 'charlie', 300)");
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Parse statement with parameter placeholders
+    const param_types = [_]i32{ 20, 23 }; // text, integer (PostgreSQL type OIDs)
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT * FROM test_params WHERE name = $1 AND value > $2",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Bind portal with parameter values
+    const param_values = [_][]const u8{ "bob", "100" };
+    const result_formats = [_]i16{};
+    const param_formats = [_]i16{ 0, 0 }; // text format for both parameters
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Execute with parameters
+    var exec_buf = std.ArrayListUnmanaged(u8){};
+    defer exec_buf.deinit(allocator);
+    try conn.handleExecute("portal1", 0, exec_buf.writer(allocator));
+
+    // Should return 1 row (bob with value 200, which is > 100)
+    var row_count: usize = 0;
+    for (exec_buf.items) |byte| {
+        if (byte == 'D') row_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), row_count);
 }
