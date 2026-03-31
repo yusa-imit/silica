@@ -15,7 +15,10 @@ pub const buffer_pool = @import("storage/buffer_pool.zig");
 pub const btree = @import("storage/btree.zig");
 pub const hash_index = @import("storage/hash_index.zig");
 pub const gist_index = @import("storage/gist_index.zig");
-// TEMPORARILY DISABLED: GIN tests timing issues - under investigation
+// TEMPORARILY DISABLED: GIN implementation has architectural issues with page layout
+// - Key storage location conflicts with offset pointer area
+// - insertNewEntry() writes key but doesn't account for offset pointers
+// - Needs redesign: either fixed-size slots or better space management
 // pub const gin_index = @import("storage/gin_index.zig");
 pub const overflow = @import("storage/overflow.zig");
 pub const fsm = @import("storage/fsm.zig");
