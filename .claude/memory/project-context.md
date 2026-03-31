@@ -9,7 +9,31 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 95 - STABILIZATION)
+### Last Session (Session 97 - FEATURE)
+- **Date**: 2026-04-01
+- **Mode**: FEATURE MODE
+- **Focus**: Sailor v1.29.0 migration + CLI enhancement — `.tables` command
+- **Outcome**: ✅ Dependency upgraded, new CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN (all checks passing)
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **Sailor migration**: v1.28.0 → v1.29.0 (documentation-only release, closed issue #28)
+    2. **`.tables` command**: Implemented table listing in interactive shell
+       - Queries `silica_tables` catalog
+       - Displays tables alphabetically
+       - Updated `.help` text (removed "not yet implemented")
+    3. **Refactored `handleDotCommand`**: Added `allocator` and `db` parameters for catalog queries
+    4. **Test coverage**: Added test for `.tables`, updated 6 existing tests for new signature
+  - **Files Changed**:
+    - `build.zig.zon`: sailor v1.28.0 → v1.29.0
+    - `docs/milestones.md`: sailor version update
+    - `src/cli.zig`: +110 lines, -10 lines (listTables + handleDotCommand refactor)
+  - **Test Count**: 2894 tests (2866 passing, 28 skipped)
+  - **Impact**: Dependency up-to-date, improved CLI UX (SQLite-like `.tables` command)
+- **Commits**: f63038f (sailor), 19f44c0 (docs), 249bd8a (.tables feature)
+
+### Previous Session (Session 95 - STABILIZATION)
 - **Date**: 2026-04-01
 - **Mode**: STABILIZATION MODE (every 5th execution)
 - **Focus**: Code quality, dependency maintenance, test stability, bug fixes
