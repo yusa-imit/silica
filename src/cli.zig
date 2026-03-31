@@ -230,7 +230,7 @@ pub fn main() !void {
 
         // Handle dot-commands (only on first line, not continuation)
         if (!is_continuation and trimmed[0] == '.') {
-            const result = handleDotCommand(trimmed, &mode, stdout, stderr);
+            const result = handleDotCommand(allocator, &db, trimmed, &mode, stdout, stderr);
             stdout.flush() catch {};
             stderr.flush() catch {};
             if (result == .quit) break;
@@ -827,9 +827,54 @@ fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError
 
 // ── Dot Commands ───────────────────────────────────────────────────────
 
+/// List all tables in the database
+fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
+    // Query the catalog to get table names
+    const sql = "SELECT name FROM silica_tables ORDER BY name;";
+
+    var result = db.exec(sql) catch |err| {
+        const msg = switch (err) {
+            error.TableNotFound => "Catalog not initialized.",
+            else => "Failed to query tables.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer result.close(allocator);
+
+    if (result.rows) |*rows| {
+        var count: usize = 0;
+        while (true) {
+            var row = rows.next() catch {
+                printError(stderr, "Error reading table list.");
+                return;
+            };
+
+            if (row == null) break;
+            defer row.?.deinit();
+
+            if (row.?.values.len > 0) {
+                switch (row.?.values[0]) {
+                    .text => |name| {
+                        stdout.print("{s}\n", .{name}) catch {};
+                        count += 1;
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        if (count == 0) {
+            stdout.writeAll("No tables found.\n") catch {};
+        }
+    } else {
+        stdout.writeAll("No tables found.\n") catch {};
+    }
+}
+
 const DotCommandResult = enum { ok, quit };
 
-fn handleDotCommand(cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr: anytype) DotCommandResult {
+fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr: anytype) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
@@ -840,7 +885,7 @@ fn handleDotCommand(cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr:
             \\.exit               Exit the shell
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
-            \\.tables             List tables (not yet implemented)
+            \\.tables             List all tables
             \\.schema             Show schema (not yet implemented)
             \\
         ) catch {};
@@ -858,7 +903,9 @@ fn handleDotCommand(cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr:
                 printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
             }
         }
-    } else if (std.mem.eql(u8, cmd, ".tables") or std.mem.eql(u8, cmd, ".schema")) {
+    } else if (std.mem.eql(u8, cmd, ".tables")) {
+        listTables(allocator, db, stdout, stderr);
+    } else if (std.mem.eql(u8, cmd, ".schema")) {
         stdout.writeAll("Not yet implemented.\n") catch {};
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
@@ -1114,6 +1161,11 @@ test "sqlCompleter empty input" {
 }
 
 test "handleDotCommand help" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
@@ -1121,7 +1173,7 @@ test "handleDotCommand help" {
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
     var mode: OutputMode = .table;
-    const result = handleDotCommand(".help", &mode, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
@@ -1130,6 +1182,11 @@ test "handleDotCommand help" {
 }
 
 test "handleDotCommand quit" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
@@ -1137,13 +1194,18 @@ test "handleDotCommand quit" {
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
     var mode: OutputMode = .table;
-    const result = handleDotCommand(".quit", &mode, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".quit", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
 }
 
 test "handleDotCommand unknown" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
@@ -1151,13 +1213,18 @@ test "handleDotCommand unknown" {
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
     var mode: OutputMode = .table;
-    const result = handleDotCommand(".foobar", &mode, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".foobar", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Unknown command") != null);
 }
 
 test "handleDotCommand mode set" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
@@ -1165,13 +1232,18 @@ test "handleDotCommand mode set" {
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
     var mode: OutputMode = .table;
-    _ = handleDotCommand(".mode csv", &mode, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".mode csv", &mode, &w, &ew);
     try std.testing.expectEqual(OutputMode.csv, mode);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "csv") != null);
 }
 
 test "handleDotCommand mode show" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
@@ -1179,12 +1251,17 @@ test "handleDotCommand mode show" {
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
     var mode: OutputMode = .json;
-    _ = handleDotCommand(".mode", &mode, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".mode", &mode, &w, &ew);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "json") != null);
 }
 
 test "handleDotCommand mode invalid" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
@@ -1192,10 +1269,33 @@ test "handleDotCommand mode invalid" {
     var efbs = std.io.fixedBufferStream(&ebuf);
     var ew = efbs.writer();
     var mode: OutputMode = .table;
-    _ = handleDotCommand(".mode foobar", &mode, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".mode foobar", &mode, &w, &ew);
     try std.testing.expectEqual(OutputMode.table, mode); // unchanged
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Invalid mode") != null);
+}
+
+test "handleDotCommand tables" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create a test table
+    _ = db.exec("CREATE TABLE users (id INTEGER, name TEXT);") catch return error.SkipZigTest;
+
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".tables", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "users") != null);
 }
 
 test "processSQL parses valid SQL" {
