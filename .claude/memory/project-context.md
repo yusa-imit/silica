@@ -9,27 +9,30 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 93 - FEATURE)
+### Last Session (Session 94 - FEATURE)
+- **Date**: 2026-04-01
+- **Mode**: FEATURE MODE
+- **Task**: Updated CHANGELOG.md with post-v1.0.0 changes (sessions 66-93)
+- **Outcome**: ✅ Comprehensive changelog update completed
+- **Details**:
+  - **CI Status**: ✅ GREEN (pre-session)
+  - **Open Issues**: 1 (issue #25: GIN architectural redesign)
+  - **Work Completed**:
+    - Added [Unreleased] section tracking 28 sessions of changes since v1.0.0
+    - Documented bug fixes: GIN readEntryKey, PreparedStatement lifecycle, EXPLAIN ANALYZE, MVCC visibility
+    - Listed feature additions: correlation coefficient stats, wire protocol enhancements, CLI autocomplete
+    - Updated dependency versions: sailor v1.25.0 → v1.27.0, zuda v2.0.0
+    - Documented open issues: #25 (GIN tests hang), #15 (SSI implementation)
+  - **Files Changed**:
+    - `CHANGELOG.md`: +34 lines, comprehensive update
+  - **Impact**: Users can now track all post-v1.0.0 improvements and bug fixes
+- **Commit**: 956183e
+
+### Previous Session (Session 93 - FEATURE)
 - **Date**: 2026-03-31
 - **Mode**: FEATURE MODE
 - **Task**: Migrated sailor dependency from v1.26.0 to v1.27.0 (issue #26)
 - **Outcome**: ✅ Dependency upgrade completed successfully
-- **Details**:
-  - **CI Status**: ✅ GREEN (pre-session)
-  - **Open Issues**: 2 → 1 (closed issue #26)
-  - **Migration**: No breaking changes, documentation-focused release
-  - **Key Features**:
-    - 98% API documentation coverage (1351/1378 functions documented)
-    - Comprehensive guides added (getting started, troubleshooting, performance)
-    - 5 new example applications (hello, counter, dashboard, task_list, layout_showcase)
-  - **Verification**:
-    - ✅ `zig build` successful
-    - ✅ `zig build test` all tests pass (took 64 seconds)
-    - ✅ No compilation errors or warnings
-  - **Files Changed**:
-    - `build.zig.zon`: Updated sailor URL and hash to v1.27.0
-    - `docs/milestones.md`: Updated current version and added v1.27.0 entry
-  - **Impact**: Silica now uses latest sailor version with improved documentation
 - **Commit**: d150c61
 
 ### Previous Session (Session 92 - FEATURE)
