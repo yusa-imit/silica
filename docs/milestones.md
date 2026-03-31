@@ -4,7 +4,7 @@
 
 - **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
 - **Current development**: All milestones complete, maintenance mode
-- **Tests**: 2850 tests (2824 passing, 0 failing, 26 skipped)
+- **Tests**: 2894 tests (2866 passing, 0 failing, 28 skipped)
 - **Branch**: `main`
 - **CI Status**: ✅ GREEN (all tests passing)
 - **zuda migrations**: Deadlock Detection ✅ DONE (v2.0.0); LRU Cache & B+Tree — NOT MIGRATING per architect decision
@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.27.0
-- **Latest available**: v1.27.0
+- **Current in silica**: v1.28.0
+- **Latest available**: v1.28.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -184,6 +184,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.25.0 | form & validation | DONE | Form widget with field focus management, password masking, 15+ validators (notEmpty/email/url/ipv4/numeric/etc), input masks (SSN/phone/date/credit card) |
 | v1.26.0 | testing & quality assurance | DONE | Comprehensive test suite, test coverage improvements, Zig 0.15 compatibility fixes (sailor#1) |
 | v1.27.0 | documentation & examples | DONE | 98% API documentation coverage, comprehensive guides (getting started, troubleshooting, performance), 5 new examples (hello, counter, dashboard, task_list, layout_showcase) |
+| v1.28.0 | performance validation & zuda audit | DONE | 12 core widgets benchmarked (all <0.02ms/op), zuda integration audit (no changes needed) |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
