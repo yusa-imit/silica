@@ -9,7 +9,31 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 84 - FEATURE)
+### Last Session (Session 87 - FEATURE)
+- **Date**: 2026-03-31
+- **Mode**: FEATURE MODE
+- **Task**: Implemented inline posting list reading for GIN indexes
+- **Outcome**: ✅ Completed read path for GIN inline posting lists with delta encoding
+- **Details**:
+  - **CI Status**: ✅ GREEN — all workflows passing
+  - **Open Issues**: 0
+  - **Feature**: Proper reading of inline posting lists from GIN index pages
+  - **Implementation**:
+    - Read first tuple ID as absolute u64 value
+    - Read subsequent IDs as varint-encoded deltas for space efficiency
+    - Graceful handling of corrupted/unwritten data (zero-fills placeholders)
+    - Maintains backward compatibility with skeletal write implementation
+  - **Page Layout**:
+    - Entry headers store offset pointer to posting data (u32)
+    - Posting data: [first_tid u64][delta1 varint][delta2 varint]...
+    - Delta encoding reduces storage overhead for sorted tuple IDs
+  - **Impact**: Completes read path for inline posting lists, enabling future write path enhancements
+  - **Note**: Write path (appendToPostingList, insertNewEntry) remains skeletal - data not persisted yet
+  - **Files Changed**: `src/storage/gin_index.zig` (+46 lines, -4 lines)
+  - **Removed TODO**: Line 443 (actually read posting list data from page)
+- **Commit**: b7171b8
+
+### Previous Session (Session 84 - FEATURE)
 - **Date**: 2026-03-31
 - **Mode**: FEATURE MODE
 - **Task**: Implemented correlation coefficient calculation in ANALYZE statistics
