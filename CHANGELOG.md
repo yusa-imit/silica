@@ -199,8 +199,8 @@ Silica v1.0.0 marks the completion of all planned phases, delivering a productio
 ### Dependencies
 
 - **Zig**: 0.15.x (minimum `0.15.0`)
-- **sailor**: v1.25.0 — TUI framework, CLI argument parsing, color output
-- **zuda**: v2.0.0 — Data structures and algorithms library
+- **sailor**: v1.27.0 — TUI framework, CLI argument parsing, color output, rich text formatting
+- **zuda**: v2.0.0 — Data structures and algorithms library (deadlock detection)
 
 ### Known Limitations
 
@@ -228,8 +228,38 @@ See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for details:
 ## [Unreleased]
 
 ### Changed
-- Migrated to sailor v1.25.0 (form & validation support)
-- Updated session memory tracking (sessions 49-52)
+- Upgraded sailor from v1.25.0 → v1.27.0 (98% API documentation coverage, 5 new examples)
+- Session 93 (2026-03-31): Dependency maintenance
+
+### Fixed
+- Session 90: GIN index readEntryKey bug (offset → index correction)
+- Session 86: Parser fuzz test optimization (reduced iteration counts for faster execution)
+- Session 83: EXPLAIN ANALYZE header format fix
+- Session 82: EXPLAIN ANALYZE runtime statistics collection
+- Session 78: ROLLBACK visibility bug (auto-commit MVCC filtering)
+- Session 75: AVG aggregate type mismatch, LIMIT 0 bug, conformance tests re-enabled
+- Session 68: Non-repeatable read test race condition (atomic synchronization)
+- Session 67: PreparedStatement memory leaks and double-free issues
+- Session 66: PreparedStatement arena lifecycle architectural refactor
+
+### Added
+- Session 84: Correlation coefficient calculation in ANALYZE statistics
+- Session 79: Parameter substitution in PostgreSQL wire protocol Execute handler
+- Session 77: 24 additional SQL keywords to CLI autocomplete
+- Session 74: max_rows parameter in PostgreSQL Execute handler
+- Session 73: Pattern-aware LIKE selectivity estimation
+- Session 72: CLI version string updated to v1.0.0
+- Session 69: Documentation cleanup and status verification
+- Sessions 27+: zuda integration for deadlock detection (DFS cycle detection)
+
+### Documentation
+- Session 92: GIN architectural issues documented (page layout conflict)
+- Session 69: Updated project-context.md, milestones.md with current status
+- Sessions 68-93: Continuous memory updates tracking progress
+
+### Known Issues
+- **Issue #25**: GIN index tests hang/timeout due to architectural page layout issues (tests disabled, enhancement planned)
+- **Issue #15**: SSI (Serializable Snapshot Isolation) implementation deferred to post-v1.0
 
 ---
 
