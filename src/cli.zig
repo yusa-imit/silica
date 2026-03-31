@@ -265,6 +265,49 @@ pub fn main() !void {
 
 /// Execute SQL via the Database engine and display results.
 fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, stdout: anytype, stderr: anytype) void {
+    // Start timer for query execution
+    var timer = std.time.Timer.start() catch {
+        // If timer fails, continue without timing
+        execAndDisplayWithoutTiming(allocator, db, sql, mode, stdout, stderr);
+        return;
+    };
+
+    var result = db.exec(sql) catch |err| {
+        const msg = switch (err) {
+            error.ParseError => "SQL parse error.",
+            error.AnalysisError => "Semantic analysis error.",
+            error.PlanError => "Query planning error.",
+            error.ExecutionError => "Execution error.",
+            error.TableNotFound => "Table not found.",
+            error.TableAlreadyExists => "Table already exists.",
+            error.InvalidData => "Invalid data.",
+            else => "Database error.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer result.close(allocator);
+
+    if (result.rows != null) {
+        // SELECT — format rows
+        displayRows(allocator, &result, mode, stdout, stderr);
+    } else if (result.message.len > 0) {
+        stdout.writeAll(result.message) catch {};
+        stdout.writeByte('\n') catch {};
+    }
+
+    if (result.rows_affected > 0) {
+        stdout.print("Rows affected: {d}\n", .{result.rows_affected}) catch {};
+    }
+
+    // Display query execution time
+    const elapsed_ns = timer.read();
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+    stdout.print("Query time: {d:.3} ms\n", .{elapsed_ms}) catch {};
+}
+
+/// Fallback for when timer is unavailable (executes without timing).
+fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, stdout: anytype, stderr: anytype) void {
     var result = db.exec(sql) catch |err| {
         const msg = switch (err) {
             error.ParseError => "SQL parse error.",
