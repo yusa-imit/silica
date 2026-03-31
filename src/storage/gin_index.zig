@@ -401,8 +401,8 @@ pub const GIN = struct {
         var offset = keys_base_offset;
 
         // Skip to the idx-th key
-        for (0..idx) |_| {
-            const size = readKeySize(page, offset);
+        for (0..idx) |i| {
+            const size = readKeySize(page, i);
             offset += size;
         }
 
