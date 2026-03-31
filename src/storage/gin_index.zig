@@ -488,13 +488,83 @@ pub const GIN = struct {
     }
 
     /// Append tuple_id to posting list at given entry index.
-    fn appendToPostingList(self: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
-        _ = self;
-        _ = page;
-        _ = idx;
-        _ = tuple_id;
-        // Simplified: mark as having 1 item
-        // Real implementation would maintain a proper posting list
+    fn appendToPostingList(_: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
+        const posting_info = readPostingInfo(page, idx);
+        const current_count = posting_info & 0x7FFFFFFF;
+
+        if (current_count == 0) {
+            return error.InvalidPostingList; // Should not append to empty list
+        }
+
+        // Check if this would exceed inline threshold
+        if (current_count >= 100) {
+            return error.PostingListFull;
+        }
+
+        const entry_count = readEntryCount(page);
+        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (idx * 4);
+
+        if (data_offset_ptr + 4 > page.len) {
+            return error.InvalidOffset;
+        }
+
+        const data_offset = std.mem.readInt(u32, page[data_offset_ptr..][0..4], .little);
+        if (data_offset == 0 or data_offset + 8 > page.len) {
+            return error.InvalidOffset;
+        }
+
+        const new_tid = tuple_id.toU64();
+
+        // Read last tuple ID to compute delta
+        const last_tid = blk: {
+            const first_tid = std.mem.readInt(u64, page[data_offset..][0..8], .little);
+            if (current_count == 1) break :blk first_tid;
+
+            // Scan through deltas to find last
+            var offset: usize = data_offset + 8;
+            var tid = first_tid;
+            for (1..current_count) |_| {
+                const result = varint.decode(page[offset..]) catch break :blk tid;
+                tid += result.value;
+                offset += result.bytes_read;
+                if (offset >= page.len) break;
+            }
+            break :blk tid;
+        };
+
+        // Compute delta and encode
+        if (new_tid <= last_tid) {
+            return error.PostingListNotSorted;
+        }
+        const delta = new_tid - last_tid;
+
+        var varint_buf: [10]u8 = undefined;
+        const varint_len = try varint.encode(delta, &varint_buf);
+
+        // Find append position (after last varint)
+        const append_pos = blk: {
+            var offset: usize = data_offset + 8;
+            for (1..current_count) |_| {
+                const result = varint.decode(page[offset..]) catch break :blk offset;
+                offset += result.bytes_read;
+                if (offset >= page.len) break;
+            }
+            break :blk offset;
+        };
+
+        // Check space availability
+        if (append_pos + varint_len > page.len) {
+            return error.PageFull;
+        }
+
+        // Write delta
+        @memcpy(page[append_pos..][0..varint_len], varint_buf[0..varint_len]);
+
+        // Update posting_info count
+        const new_count = current_count + 1;
+        const new_posting_info = new_count; // Keep high bit 0 for inline
+        const info_offset = GIN_HEADER_SIZE + (idx * GIN_ENTRY_HEADER_SIZE) + 2;
+        std.mem.writeInt(u32, page[info_offset..][0..4], new_posting_info, .little);
     }
 
     /// Remove tuple_id from posting list at given entry index.
@@ -507,27 +577,39 @@ pub const GIN = struct {
     }
 
     /// Insert a new entry into the page.
-    fn insertNewEntry(self: *GIN, page: []u8, key: []const u8, tuple_id: ItemPointer) !void {
+    fn insertNewEntry(_: *GIN, page: []u8, key: []const u8, tuple_id: ItemPointer) !void {
         const entry_count = readEntryCount(page);
 
-        if (entry_count >= self.max_entries_per_page) {
+        // Write entry header: [key_size u16][posting_info u32]
+        const header_offset = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+        std.mem.writeInt(u16, page[header_offset..][0..2], @intCast(key.len), .little);
+
+        // posting_info: inline list with 1 item (high bit 0, lower 31 bits = count)
+        const posting_info: u32 = 1;
+        std.mem.writeInt(u32, page[header_offset + 2..][0..4], posting_info, .little);
+
+        // Calculate where to write offset pointer and data
+        // Layout: [headers...][offset_ptrs...][variable data area grows from end]
+        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+
+        // Allocate posting data from end of page
+        // Use fixed 128-byte blocks per entry (matching INLINE_POSTING_LIST_MAX_SIZE)
+        const block_size: u32 = 128;
+        const posting_data_offset = page.len - ((entry_count + 1) * block_size);
+
+        if (posting_data_offset < data_offset_ptr + 4) {
             return error.PageFull;
         }
 
-        // Write entry header
-        const offset = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
-        std.mem.writeInt(u16, page[offset..][0..2], @intCast(key.len), .little);
+        // Write first tuple ID (absolute value) at start of allocated block
+        const tid = tuple_id.toU64();
+        std.mem.writeInt(u64, page[posting_data_offset..][0..8], tid, .little);
 
-        // Write posting_info: inline list with 1 item
-        const posting_info: u32 = 1; // Lower 31 bits = count
-        std.mem.writeInt(u32, page[offset + 2..][0..4], posting_info, .little);
+        // Write offset pointer to posting data
+        std.mem.writeInt(u32, page[data_offset_ptr..][0..4], @intCast(posting_data_offset), .little);
 
         // Update entry count
         writeEntryCount(page, entry_count + 1);
-
-        // For now, we don't actually store the key bytes or posting list
-        // This is a minimal implementation to pass basic tests
-        _ = tuple_id;
     }
 };
 
