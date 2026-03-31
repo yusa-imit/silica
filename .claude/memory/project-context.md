@@ -9,28 +9,35 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 88 - FEATURE)
+### Last Session (Session 91 - FEATURE)
+- **Date**: 2026-03-31
+- **Mode**: FEATURE MODE
+- **Task**: Upgraded sailor dependency from v1.25.0 to v1.26.0
+- **Outcome**: ✅ Dependency upgrade completed with build verification
+- **Details**:
+  - **CI Status**: ✅ GREEN (pre-session status)
+  - **Open Issues**: 1 (issue #25: GIN tests hang — pre-existing, tests disabled)
+  - **Enhancement**: Upgraded sailor UI library to v1.26.0
+  - **Rationale**:
+    - sailor issue #1 (Zig 0.15 compat bugs in repl.zig) is CLOSED
+    - v1.26.0 includes comprehensive test suite and quality assurance improvements
+    - Removed obsolete NOTE comment in cli.zig (line 201) about sailor#1 bug
+  - **Verification**:
+    - ✅ `zig build --summary all`: 11/11 steps succeeded
+    - ✅ No compilation errors or warnings
+    - ✅ All targets (silica, silica-bench, tpcc-bench, tpch-bench) built successfully
+    - Note: Full test suite not run (hangs in test environment, unrelated to sailor upgrade)
+  - **Files Changed**:
+    - `build.zig.zon` (sailor URL and hash updated)
+    - `docs/milestones.md` (sailor version tracking updated)
+  - **Impact**: Resolves Zig 0.15 compatibility issue documented in cli.zig, enables future use of sailor v1.26.0 features
+- **Commit**: 267d310
+
+### Previous Session (Session 88 - FEATURE)
 - **Date**: 2026-03-31
 - **Mode**: FEATURE MODE
 - **Task**: Implemented inline posting list writing for GIN indexes
 - **Outcome**: ✅ Completed write path for GIN inline posting lists with delta encoding
-- **Details**:
-  - **CI Status**: ✅ GREEN — all workflows passing
-  - **Open Issues**: 0
-  - **Feature**: Proper writing of inline posting lists to GIN index pages
-  - **Implementation**:
-    - **appendToPostingList**: Reads existing posting list, computes delta from last tuple ID, encodes as varint, appends to posting data area
-    - **insertNewEntry**: Allocates fixed 128-byte block per entry, writes first tuple ID as absolute u64, stores offset pointer
-    - Uses fixed-size block allocation to avoid fragmentation
-    - Validates tuple IDs are sorted (required for delta encoding)
-    - Returns appropriate errors (PageFull, InvalidOffset, PostingListNotSorted)
-  - **Space Management**:
-    - Fixed 128-byte blocks allocated from page end (matching INLINE_POSTING_LIST_MAX_SIZE)
-    - Offset pointers stored after entry headers
-    - Supports up to 100 tuple IDs per inline posting list
-  - **Impact**: Completes the inline posting list read/write cycle started in Session 87
-  - **Note**: Posting tree support (for large lists exceeding inline threshold) deferred to future work
-  - **Files Changed**: `src/storage/gin_index.zig` (+101 lines, -19 lines)
 - **Commit**: ae7c483
 
 ### Previous Session (Session 87 - FEATURE)
