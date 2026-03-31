@@ -436,12 +436,54 @@ pub const GIN = struct {
         const posting_info = readPostingInfo(page, idx);
         const tuple_count = posting_info & 0x7FFFFFFF; // Lower 31 bits
 
-        // For simplicity, allocate empty list for now
-        // In a real implementation, this would read from the variable-length area
-        const list = try self.allocator.alloc(ItemPointer, tuple_count);
+        if (tuple_count == 0) {
+            return try self.allocator.alloc(ItemPointer, 0);
+        }
 
-        // TODO: Actually read posting list data from page
-        // Currently returns allocated but empty/uninitialized list
+        // Allocate result list
+        const list = try self.allocator.alloc(ItemPointer, tuple_count);
+        errdefer self.allocator.free(list);
+
+        // Posting list data is stored in variable-length area at end of page
+        // Format: [offset_to_data u32] stored after entry headers, then actual data
+        // Data layout: [first_tid u64][delta1 varint][delta2 varint]...
+
+        // Calculate offset to posting data pointer
+        const entry_count = readEntryCount(page);
+        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (idx * 4);
+
+        if (data_offset_ptr + 4 > page.len) {
+            // No data stored yet (skeletal implementation)
+            @memset(std.mem.sliceAsBytes(list), 0);
+            return list;
+        }
+
+        const data_offset = std.mem.readInt(u32, page[data_offset_ptr..][0..4], .little);
+        if (data_offset == 0 or data_offset + 8 > page.len) {
+            // No data or invalid offset
+            @memset(std.mem.sliceAsBytes(list), 0);
+            return list;
+        }
+
+        // Read first tuple ID (absolute value)
+        const first_tid = std.mem.readInt(u64, page[data_offset..][0..8], .little);
+        list[0] = ItemPointer.fromU64(first_tid);
+
+        // Read delta-encoded remaining tuple IDs
+        var offset: usize = data_offset + 8;
+        for (1..tuple_count) |i| {
+            const delta_result = varint.decode(page[offset..]) catch {
+                // Corrupted data or not written yet
+                @memset(std.mem.sliceAsBytes(list[i..]), 0);
+                break;
+            };
+            const prev_tid = list[i - 1].toU64();
+            list[i] = ItemPointer.fromU64(prev_tid + delta_result.value);
+            offset += delta_result.bytes_read;
+
+            if (offset >= page.len) break;
+        }
+
         return list;
     }
 
