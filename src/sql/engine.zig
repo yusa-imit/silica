@@ -11,9 +11,6 @@
 //!   var db = try Database.open(allocator, "app.db", .{});
 //!   defer db.close();
 //!   var result = try db.exec("SELECT * FROM users");
-
-// TEMPORARILY DISABLED: Tests in this file are hanging (one of 515 tests)
-// TODO: Bisect to find which specific test hangs, then fix and re-enable
 const ENABLE_TESTS = true;
 
 // TEMPORARILY DISABLED: PreparedStatement arena lifecycle bug (double-free + memory leak)
