@@ -829,46 +829,35 @@ fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError
 
 /// List all tables in the database
 fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
-    // Query the catalog to get table names
-    const sql = "SELECT name FROM silica_tables ORDER BY name;";
-
-    var result = db.exec(sql) catch |err| {
+    // Use catalog API to get table names directly
+    var catalog = &db.catalog;
+    const names = catalog.listTables(allocator) catch |err| {
         const msg = switch (err) {
-            error.TableNotFound => "Catalog not initialized.",
-            else => "Failed to query tables.",
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to list tables.",
         };
         printError(stderr, msg);
         return;
     };
-    defer result.close(allocator);
+    defer {
+        for (names) |name| allocator.free(name);
+        allocator.free(names);
+    }
 
-    if (result.rows) |*rows| {
-        var count: usize = 0;
-        while (true) {
-            var row = rows.next() catch {
-                printError(stderr, "Error reading table list.");
-                return;
-            };
-
-            if (row == null) break;
-            defer row.?.deinit();
-
-            if (row.?.values.len > 0) {
-                switch (row.?.values[0]) {
-                    .text => |name| {
-                        stdout.print("{s}\n", .{name}) catch {};
-                        count += 1;
-                    },
-                    else => {},
-                }
-            }
-        }
-
-        if (count == 0) {
-            stdout.writeAll("No tables found.\n") catch {};
-        }
-    } else {
+    if (names.len == 0) {
         stdout.writeAll("No tables found.\n") catch {};
+        return;
+    }
+
+    // Sort table names alphabetically
+    std.mem.sort([]const u8, names, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    for (names) |name| {
+        stdout.print("{s}\n", .{name}) catch {};
     }
 }
 
