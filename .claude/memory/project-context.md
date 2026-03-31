@@ -9,28 +9,37 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 91 - FEATURE)
+### Last Session (Session 92 - FEATURE)
+- **Date**: 2026-03-31
+- **Mode**: FEATURE MODE
+- **Task**: Investigated GIN index hang bug (issue #25)
+- **Outcome**: ✅ Root cause identified, documented architectural issues
+- **Details**:
+  - **CI Status**: ✅ GREEN (pre-session, in_progress post-session)
+  - **Open Issues**: 1 (issue #25: GIN architectural issues — tagged as enhancement)
+  - **Investigation**: Deep-dive into GIN page layout implementation
+  - **Root Cause Found**:
+    1. **Missing key writes**: `insertNewEntry()` never writes key bytes to page
+    2. **Layout conflict**: Keys and offset pointers overlap in memory
+    3. **Calculation error**: `keys_base_offset` points to offset pointer area
+  - **Architectural Problem**:
+    - Current design: `[headers][keys?][offset_ptrs][...free...][posting_data]`
+    - `keys_base_offset = GIN_HEADER_SIZE + (entry_count * 6)` (line 418)
+    - `data_offset_ptr = GIN_HEADER_SIZE + (entry_count * 6) + (entry_count * 4)` (line 593)
+    - When entry_count > 0, keys overwrite offset pointers
+  - **Fix Attempted**: Added key writing to `insertNewEntry()` but reverted (incomplete, doesn't solve overlap)
+  - **Proper Fix Required**: Layout redesign needed (options: fixed-size slots, separate areas, or PostgreSQL-style)
+  - **Decision**: Keep GIN tests disabled, defer redesign to post-v1.0 milestone
+  - **Files Changed**:
+    - `src/main.zig`: Updated disable comment with architectural explanation
+  - **Impact**: Issue #25 now has detailed root cause analysis and fix recommendations
+- **Commit**: b92305d
+
+### Previous Session (Session 91 - FEATURE)
 - **Date**: 2026-03-31
 - **Mode**: FEATURE MODE
 - **Task**: Upgraded sailor dependency from v1.25.0 to v1.26.0
 - **Outcome**: ✅ Dependency upgrade completed with build verification
-- **Details**:
-  - **CI Status**: ✅ GREEN (pre-session status)
-  - **Open Issues**: 1 (issue #25: GIN tests hang — pre-existing, tests disabled)
-  - **Enhancement**: Upgraded sailor UI library to v1.26.0
-  - **Rationale**:
-    - sailor issue #1 (Zig 0.15 compat bugs in repl.zig) is CLOSED
-    - v1.26.0 includes comprehensive test suite and quality assurance improvements
-    - Removed obsolete NOTE comment in cli.zig (line 201) about sailor#1 bug
-  - **Verification**:
-    - ✅ `zig build --summary all`: 11/11 steps succeeded
-    - ✅ No compilation errors or warnings
-    - ✅ All targets (silica, silica-bench, tpcc-bench, tpch-bench) built successfully
-    - Note: Full test suite not run (hangs in test environment, unrelated to sailor upgrade)
-  - **Files Changed**:
-    - `build.zig.zon` (sailor URL and hash updated)
-    - `docs/milestones.md` (sailor version tracking updated)
-  - **Impact**: Resolves Zig 0.15 compatibility issue documented in cli.zig, enables future use of sailor v1.26.0 features
 - **Commit**: 267d310
 
 ### Previous Session (Session 88 - FEATURE)
