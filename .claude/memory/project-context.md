@@ -9,7 +9,37 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 102 - FEATURE)
+### Last Session (Session 104 - FEATURE)
+- **Date**: 2026-04-01
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.databases` command implementation
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.databases` command**: SQLite-compatible database connection listing
+       - Displays seq, name, and file path in tabular format
+       - Shows single "main" connection (Silica's single-database model)
+       - Compatible with SQLite output format for user familiarity
+       - Works with both file-based and `:memory:` databases
+    2. **Implementation details**:
+       - `showDatabases()`: Main entry point, displays connection table
+       - Uses `db.db_path` field from Database struct
+       - Header: "seq  name             file" with separator line
+       - Output: "0    main             {path}"
+    3. **Test coverage**: Added 2 comprehensive tests
+       - File-based database (verifies path in output)
+       - In-memory database (verifies `:memory:` display)
+       - Updated `.help` test to verify new command appears
+    4. **Updated `.help` text**: Added `.databases` description
+  - **Files Changed**:
+    - `src/cli.zig`: +65 lines (showDatabases function + 2 tests + help text + command handler)
+  - **Test Count**: 2910 tests (2 new tests added, all passing)
+  - **Impact**: Enhanced CLI UX — users can inspect database connections like SQLite
+- **Commits**: 4591938 (`.databases` feature)
+
+### Previous Session (Session 102 - FEATURE)
 - **Date**: 2026-04-01
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.dump` command implementation
