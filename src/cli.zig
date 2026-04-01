@@ -861,6 +861,135 @@ fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stde
     }
 }
 
+/// Show indexes for all tables or a specific table
+fn showIndexes(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const u8, stdout: anytype, stderr: anytype) void {
+    var catalog = &db.catalog;
+
+    if (table_name) |name| {
+        // Show indexes for specific table
+        const trimmed = std.mem.trim(u8, name, " \t");
+        if (trimmed.len == 0) {
+            printError(stderr, "Table name cannot be empty.");
+            return;
+        }
+
+        const table_info = catalog.getTable(trimmed) catch |err| {
+            const msg = switch (err) {
+                error.TableNotFound => "Table not found.",
+                error.OutOfMemory => "Out of memory.",
+                else => "Failed to retrieve table info.",
+            };
+            printError(stderr, msg);
+            return;
+        };
+        defer table_info.deinit(catalog.allocator);
+
+        if (table_info.indexes.len == 0) {
+            stdout.print("No indexes found for table '{s}'.\n", .{trimmed}) catch {};
+            return;
+        }
+
+        for (table_info.indexes) |idx| {
+            const index_type = @tagName(idx.index_type);
+            const unique_str = if (idx.is_unique) " UNIQUE" else "";
+            const state_str = switch (idx.state) {
+                .valid => "",
+                .building => " (BUILDING)",
+                .invalid => " (INVALID)",
+            };
+
+            if (idx.index_name.len > 0) {
+                stdout.print("{s} ({s}{s} on {s}.{s}){s}\n", .{
+                    idx.index_name,
+                    index_type,
+                    unique_str,
+                    trimmed,
+                    idx.column_name,
+                    state_str,
+                }) catch {};
+            } else {
+                // Auto-generated index (e.g., from PRIMARY KEY or UNIQUE constraint)
+                stdout.print("(auto) ({s}{s} on {s}.{s}){s}\n", .{
+                    index_type,
+                    unique_str,
+                    trimmed,
+                    idx.column_name,
+                    state_str,
+                }) catch {};
+            }
+        }
+    } else {
+        // Show indexes for all tables
+        const names = catalog.listTables(allocator) catch |err| {
+            const msg = switch (err) {
+                error.OutOfMemory => "Out of memory.",
+                else => "Failed to list tables.",
+            };
+            printError(stderr, msg);
+            return;
+        };
+        defer {
+            for (names) |n| allocator.free(n);
+            allocator.free(names);
+        }
+
+        if (names.len == 0) {
+            stdout.writeAll("No tables found.\n") catch {};
+            return;
+        }
+
+        // Sort table names alphabetically
+        std.mem.sort([]const u8, names, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        var has_indexes = false;
+        for (names) |name| {
+            const table_info = catalog.getTable(name) catch continue;
+            defer table_info.deinit(catalog.allocator);
+
+            if (table_info.indexes.len == 0) continue;
+
+            has_indexes = true;
+            for (table_info.indexes) |idx| {
+                const index_type = @tagName(idx.index_type);
+                const unique_str = if (idx.is_unique) " UNIQUE" else "";
+                const state_str = switch (idx.state) {
+                    .valid => "",
+                    .building => " (BUILDING)",
+                    .invalid => " (INVALID)",
+                };
+
+                if (idx.index_name.len > 0) {
+                    stdout.print("{s} ({s}{s} on {s}.{s}){s}\n", .{
+                        idx.index_name,
+                        index_type,
+                        unique_str,
+                        name,
+                        idx.column_name,
+                        state_str,
+                    }) catch {};
+                } else {
+                    // Auto-generated index
+                    stdout.print("(auto) ({s}{s} on {s}.{s}){s}\n", .{
+                        index_type,
+                        unique_str,
+                        name,
+                        idx.column_name,
+                        state_str,
+                    }) catch {};
+                }
+            }
+        }
+
+        if (!has_indexes) {
+            stdout.writeAll("No indexes found.\n") catch {};
+        }
+    }
+}
+
 /// Show schema (CREATE TABLE statements) for all tables or a specific table
 fn showSchema(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const u8, stdout: anytype, stderr: anytype) void {
     var catalog = &db.catalog;
@@ -1042,6 +1171,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
             \\.tables             List all tables
+            \\.indexes [TABLE]    List all indexes or indexes for a specific table
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
             \\
         ) catch {};
@@ -1061,6 +1191,10 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         }
     } else if (std.mem.eql(u8, cmd, ".tables")) {
         listTables(allocator, db, stdout, stderr);
+    } else if (std.mem.startsWith(u8, cmd, ".indexes")) {
+        const rest = std.mem.trimLeft(u8, cmd[8..], " \t");
+        const table_name = if (rest.len > 0) rest else null;
+        showIndexes(allocator, db, table_name, stdout, stderr);
     } else if (std.mem.startsWith(u8, cmd, ".schema")) {
         const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
         const table_name = if (rest.len > 0) rest else null;
@@ -1581,6 +1715,128 @@ test "handleDotCommand schema - no tables" {
     var mode: OutputMode = .table;
 
     const result = handleDotCommand(allocator, &db, ".schema", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
+}
+
+test "handleDotCommand indexes - named index" {
+    const allocator = std.testing.allocator;
+    const path = "test_indexes_named.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table and index
+    _ = db.exec("CREATE TABLE users (id INTEGER, email TEXT);") catch return error.SkipZigTest;
+    _ = db.exec("CREATE INDEX idx_email ON users(email);") catch return error.SkipZigTest;
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".indexes users", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "idx_email") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "email") != null);
+}
+
+test "handleDotCommand indexes - all tables" {
+    const allocator = std.testing.allocator;
+    const path = "test_indexes_all.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create tables with indexes
+    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch return error.SkipZigTest;
+    _ = db.exec("CREATE INDEX idx_name ON users(name);") catch return error.SkipZigTest;
+    _ = db.exec("CREATE TABLE posts (id INTEGER, title TEXT);") catch return error.SkipZigTest;
+    _ = db.exec("CREATE UNIQUE INDEX idx_title ON posts(title);") catch return error.SkipZigTest;
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    // Verify both indexes appear
+    try std.testing.expect(std.mem.indexOf(u8, output, "idx_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "idx_title") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "UNIQUE") != null);
+}
+
+test "handleDotCommand indexes - no indexes" {
+    const allocator = std.testing.allocator;
+    const path = "test_indexes_none.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table without indexes
+    _ = db.exec("CREATE TABLE plain (id INTEGER, data TEXT);") catch return error.SkipZigTest;
+
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".indexes plain", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "No indexes found") != null);
+}
+
+test "handleDotCommand indexes - table not found" {
+    const allocator = std.testing.allocator;
+    const path = "test_indexes_notfound.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".indexes nonexistent", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const eoutput = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
+}
+
+test "handleDotCommand indexes - no tables" {
+    const allocator = std.testing.allocator;
+    const path = "test_indexes_no_tables.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
