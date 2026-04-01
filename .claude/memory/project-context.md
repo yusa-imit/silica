@@ -9,7 +9,35 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 99 - FEATURE)
+### Last Session (Session 101 - FEATURE)
+- **Date**: 2026-04-01
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.indexes` command implementation
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session (will verify after push)
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.indexes` command**: Implemented index listing for database inspection
+       - `.indexes` — lists all indexes across all tables
+       - `.indexes TABLE` — lists indexes for specific table
+       - Shows index name, type (btree/hash/gist/gin), uniqueness, and state
+       - Distinguishes named indexes from auto-generated indexes (PRIMARY KEY, UNIQUE)
+       - Displays index state (valid/building/invalid) for concurrent builds
+    2. **Test coverage**: Added 5 comprehensive tests
+       - Named index display
+       - All tables with multiple indexes (including UNIQUE)
+       - No indexes found for table
+       - Table not found error handling
+       - Empty database (no tables)
+    3. **Updated `.help` text**: Added `.indexes [TABLE]` description
+  - **Files Changed**:
+    - `src/cli.zig`: +256 lines (showIndexes function + 5 tests + help text)
+  - **Test Count**: 2905 tests (5 new tests added)
+  - **Impact**: Enhanced CLI UX — SQLite-like index inspection capability
+- **Commits**: 76c4ab3 (`.indexes` feature)
+
+### Previous Session (Session 99 - FEATURE)
 - **Date**: 2026-04-01
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.schema` command implementation
