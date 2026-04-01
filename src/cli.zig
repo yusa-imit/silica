@@ -1567,7 +1567,8 @@ test "handleDotCommand schema - table not found" {
 
 test "handleDotCommand schema - no tables" {
     const allocator = std.testing.allocator;
-    const path = ":memory:";
+    const path = "test_schema_no_tables.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
