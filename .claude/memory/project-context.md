@@ -9,7 +9,52 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 108 - FEATURE)
+### Last Session (Session 109 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.output FILENAME` command for query result redirection
+- **Outcome**: ✅ New CLI feature implemented, manual testing verified, build successful
+- **Details**:
+  - **CI Status**: ✅ GREEN before session (will verify after push)
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.output FILENAME` command**: SQLite-compatible output redirection
+       - `.output FILENAME` — redirects all query results to the specified file
+       - `.output` — resets output back to stdout
+       - Automatic file creation/truncation when redirecting
+       - Proper file handle cleanup (defer close when REPL exits)
+       - Seamless integration with existing output modes (table, csv, json, etc.)
+    2. **Implementation details**:
+       - Added `output_file` state variable in REPL loop (`?std.fs.File`)
+       - Updated `handleDotCommand()` signature to accept `output_file` parameter
+       - Modified SQL execution to use dynamic writer (file or stdout)
+       - Conditional writer: `if (output_file) |f|` uses file writer, else uses stdout
+       - File operations: `std.fs.cwd().createFile()` for redirection
+       - Updated ALL 36 existing test calls with new `output_file` parameter
+    3. **Test coverage**: Added 5 comprehensive tests
+       - `.output FILENAME` — verifies redirection and file creation
+       - `.output` — verifies reset to stdout from file
+       - `.output` — handles already-stdout case gracefully
+       - `.output /invalid/path` — error handling for file creation failures
+       - `.help` includes `.output` — verifies command in help text
+    4. **Manual testing verified**:
+       - Query results correctly written to file
+       - Timing and row count messages included in file output
+       - Output reset works correctly
+       - Subsequent queries go to stdout after reset
+    5. **Updated `.help` text**: Added `.output FILENAME` description
+  - **Files Changed**:
+    - `src/cli.zig`: +273 lines, -40 lines (output command + 5 tests + signature updates for all existing tests)
+  - **Test Count**: 2930 tests estimated (5 new tests added)
+  - **Impact**: Major CLI enhancement — users can now redirect query results to files for exports, reports, and scripting workflows
+  - **Use cases**:
+    - `silica> .output results.txt` — export query results to file
+    - `silica> .mode csv` + `.output data.csv` — CSV file export
+    - `silica> .output` — reset to interactive mode
+    - Scripting: redirect to file, run queries, reset to stdout
+- **Commits**: c09686e (`.output` feature)
+
+### Previous Session (Session 108 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.headers on|off` command implementation
