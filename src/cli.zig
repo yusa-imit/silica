@@ -1157,6 +1157,248 @@ fn showTableSchema(allocator: std.mem.Allocator, catalog: *silica.catalog.Catalo
     }
 }
 
+/// Dump entire database as SQL text (CREATE TABLE + INSERT statements)
+fn dumpDatabase(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
+    var catalog = &db.catalog;
+
+    // Get all table names
+    const names = catalog.listTables(allocator) catch |err| {
+        const msg = switch (err) {
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to list tables.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer {
+        for (names) |name| allocator.free(name);
+        allocator.free(names);
+    }
+
+    if (names.len == 0) {
+        stdout.writeAll("-- No tables found.\n") catch {};
+        return;
+    }
+
+    // Sort table names alphabetically
+    std.mem.sort([]const u8, names, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    stdout.writeAll("-- Silica database dump\n") catch {};
+    stdout.writeAll("BEGIN TRANSACTION;\n\n") catch {};
+
+    // Dump each table
+    for (names) |table_name| {
+        dumpTable(allocator, db, catalog, table_name, stdout, stderr);
+        stdout.writeAll("\n") catch {};
+    }
+
+    stdout.writeAll("COMMIT;\n") catch {};
+}
+
+/// Dump a single table (CREATE TABLE + CREATE INDEX + INSERT statements)
+fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catalog.Catalog, table_name: []const u8, stdout: anytype, stderr: anytype) void {
+    // Get table schema
+    const table = catalog.getTable(table_name) catch |err| {
+        const msg = switch (err) {
+            error.TableNotFound => "Table not found.",
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to get table schema.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer table.deinit(allocator);
+
+    // Generate CREATE TABLE statement
+    stdout.print("CREATE TABLE {s} (\n", .{table_name}) catch {};
+
+    // Columns
+    for (table.columns, 0..) |col, i| {
+        stdout.writeAll("  ") catch {};
+        stdout.print("{s} ", .{col.name}) catch {};
+
+        // Column type
+        const type_name = switch (col.column_type) {
+            .integer => "INTEGER",
+            .real => "REAL",
+            .text => "TEXT",
+            .blob => "BLOB",
+            .boolean => "BOOLEAN",
+            .date => "DATE",
+            .time => "TIME",
+            .timestamp => "TIMESTAMP",
+            .interval => "INTERVAL",
+            .numeric => "NUMERIC",
+            .uuid => "UUID",
+            .array => "ARRAY",
+            .json => "JSON",
+            .jsonb => "JSONB",
+            .tsvector => "TSVECTOR",
+            .tsquery => "TSQUERY",
+            .untyped => "",
+        };
+        if (type_name.len > 0) {
+            stdout.writeAll(type_name) catch {};
+        }
+
+        // Column constraints
+        if (col.flags.primary_key) {
+            stdout.writeAll(" PRIMARY KEY") catch {};
+        }
+        if (col.flags.not_null) {
+            stdout.writeAll(" NOT NULL") catch {};
+        }
+        if (col.flags.unique) {
+            stdout.writeAll(" UNIQUE") catch {};
+        }
+        if (col.flags.autoincrement) {
+            stdout.writeAll(" AUTOINCREMENT") catch {};
+        }
+
+        // Comma for all but last column (unless there are table constraints)
+        const is_last_column = (i == table.columns.len - 1);
+        const has_table_constraints = table.table_constraints.len > 0;
+        if (!is_last_column or has_table_constraints) {
+            stdout.writeAll(",") catch {};
+        }
+        stdout.writeAll("\n") catch {};
+    }
+
+    // Table-level constraints
+    for (table.table_constraints, 0..) |constraint, i| {
+        stdout.writeAll("  ") catch {};
+        switch (constraint) {
+            .primary_key => |cols| {
+                stdout.writeAll("PRIMARY KEY (") catch {};
+                for (cols, 0..) |col_name, j| {
+                    stdout.writeAll(col_name) catch {};
+                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
+                }
+                stdout.writeAll(")") catch {};
+            },
+            .unique => |cols| {
+                stdout.writeAll("UNIQUE (") catch {};
+                for (cols, 0..) |col_name, j| {
+                    stdout.writeAll(col_name) catch {};
+                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
+                }
+                stdout.writeAll(")") catch {};
+            },
+        }
+        if (i < table.table_constraints.len - 1) {
+            stdout.writeAll(",") catch {};
+        }
+        stdout.writeAll("\n") catch {};
+    }
+
+    stdout.writeAll(");\n") catch {};
+
+    // Show indexes (skip auto-generated indexes with empty names)
+    if (table.indexes.len > 0) {
+        for (table.indexes) |idx| {
+            // Skip auto-generated indexes (empty name)
+            if (idx.index_name.len == 0) continue;
+
+            const index_type = switch (idx.index_type) {
+                .btree => "BTREE",
+                .hash => "HASH",
+                .gist => "GIST",
+                .gin => "GIN",
+            };
+            const unique_str = if (idx.is_unique) "UNIQUE " else "";
+            stdout.print("CREATE {s}INDEX {s} ON {s} USING {s} ({s});\n", .{
+                unique_str,
+                idx.index_name,
+                table_name,
+                index_type,
+                idx.column_name,
+            }) catch {};
+        }
+    }
+
+    // Dump data as INSERT statements
+    const sql = std.fmt.allocPrint(allocator, "SELECT * FROM {s};", .{table_name}) catch {
+        printError(stderr, "Out of memory.");
+        return;
+    };
+    defer allocator.free(sql);
+
+    var result = db.exec(sql) catch |err| {
+        const msg = switch (err) {
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to query table data.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer result.close(allocator);
+
+    // Generate INSERT statements
+    if (result.rows) |*rows| {
+        while (true) {
+            const maybe_row = rows.next() catch break;
+            if (maybe_row) |row| {
+                defer {
+                    // Free row resources
+                    for (row.values) |v| v.free(allocator);
+                    allocator.free(row.values);
+                    allocator.free(row.columns);
+                }
+
+                // Build INSERT statement
+                stdout.print("INSERT INTO {s} VALUES (", .{table_name}) catch {};
+
+                for (row.values, 0..) |value, i| {
+                    switch (value) {
+                        .null_value => stdout.writeAll("NULL") catch {},
+                        .integer => |v| stdout.print("{}", .{v}) catch {},
+                        .real => |v| stdout.print("{d}", .{v}) catch {},
+                        .text => |v| {
+                            // Escape single quotes in text
+                            stdout.writeAll("'") catch {};
+                            for (v) |ch| {
+                                if (ch == '\'') {
+                                    stdout.writeAll("''") catch {};
+                                } else {
+                                    stdout.writeByte(ch) catch {};
+                                }
+                            }
+                            stdout.writeAll("'") catch {};
+                        },
+                        .blob => |v| {
+                            // Output as hex string
+                            stdout.writeAll("X'") catch {};
+                            for (v) |byte| {
+                                stdout.print("{X:0>2}", .{byte}) catch {};
+                            }
+                            stdout.writeAll("'") catch {};
+                        },
+                        .boolean => |v| {
+                            const bool_str = if (v) "TRUE" else "FALSE";
+                            stdout.writeAll(bool_str) catch {};
+                        },
+                        else => {
+                            // For other types (date, time, timestamp, numeric, uuid, array, etc.)
+                            // Use NULL placeholder for now
+                            stdout.writeAll("NULL") catch {};
+                        },
+                    }
+
+                    if (i < row.values.len - 1) {
+                        stdout.writeAll(", ") catch {};
+                    }
+                }
+
+                stdout.writeAll(");\n") catch {};
+            } else break;
+        }
+    }
+}
+
 const DotCommandResult = enum { ok, quit };
 
 fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr: anytype) DotCommandResult {
@@ -1173,6 +1415,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.tables             List all tables
             \\.indexes [TABLE]    List all indexes or indexes for a specific table
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
+            \\.dump               Dump database as SQL text (CREATE TABLE + INSERT statements)
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".mode")) {
@@ -1199,6 +1442,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
         const table_name = if (rest.len > 0) rest else null;
         showSchema(allocator, db, table_name, stdout, stderr);
+    } else if (std.mem.eql(u8, cmd, ".dump")) {
+        dumpDatabase(allocator, db, stdout, stderr);
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
@@ -1840,6 +2085,96 @@ test "handleDotCommand indexes - no tables" {
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
+}
+
+test "handleDotCommand dump - basic table" {
+    const allocator = std.testing.allocator;
+    const path = "test_dump_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table and insert data
+    var result1 = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);") catch return error.SkipZigTest;
+    defer result1.close(allocator);
+    var result2 = db.exec("INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
+    defer result2.close(allocator);
+
+    // Run .dump
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify output contains expected SQL
+    try std.testing.expect(std.mem.indexOf(u8, output, "BEGIN TRANSACTION") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE users") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "id INTEGER PRIMARY KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "name TEXT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO users VALUES (1, 'Alice')") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO users VALUES (2, 'Bob')") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "COMMIT") != null);
+}
+
+test "handleDotCommand dump - empty database" {
+    const allocator = std.testing.allocator;
+    const path = "test_dump_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
+}
+
+test "handleDotCommand dump - with indexes" {
+    const allocator = std.testing.allocator;
+    const path = "test_dump_indexes.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table with index
+    var result1 = db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT UNIQUE);") catch return error.SkipZigTest;
+    defer result1.close(allocator);
+    var result2 = db.exec("CREATE INDEX idx_sku ON products (sku);") catch return error.SkipZigTest;
+    defer result2.close(allocator);
+    var result3 = db.exec("INSERT INTO products (id, sku) VALUES (1, 'ABC123');") catch return error.SkipZigTest;
+    defer result3.close(allocator);
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify CREATE TABLE and CREATE INDEX statements
+    try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE products") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "CREATE INDEX idx_sku ON products") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO products VALUES (1, 'ABC123')") != null);
 }
 
 test "processSQL parses valid SQL" {
