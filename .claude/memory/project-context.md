@@ -9,7 +9,46 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 104 - FEATURE)
+### Last Session (Session 106 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.read` command implementation
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.read FILENAME` command**: Execute SQL scripts from files
+       - Reads SQL file (max 100 MB)
+       - Parses line-by-line to skip SQL comments (lines starting with --)
+       - Splits statements by semicolon delimiter
+       - Executes each statement sequentially
+       - Displays results/errors for each statement
+       - Shows summary: "Executed N statement(s) from FILENAME"
+       - Error handling: file not found, access denied, file too large
+    2. **Implementation details**:
+       - `readAndExecuteFile()`: Main entry point
+       - Uses `ArrayListUnmanaged(u8)` to build multi-line statements
+       - Skips empty lines and comment-only lines
+       - Calls `execAndDisplay()` for each complete statement
+    3. **Test coverage**: Added 4 comprehensive tests
+       - Basic execution with multiple statements (CREATE TABLE + INSERTs)
+       - File not found error handling
+       - SQL comment skipping (verifies comments aren't counted)
+       - Missing filename validation
+       - Updated `.help` test to verify `.read` appears
+    4. **Updated `.help` text**: Added `.read FILENAME` description
+  - **Files Changed**:
+    - `src/cli.zig`: +223 lines (readAndExecuteFile function + 4 tests + help text + command handler)
+  - **Test Count**: 2914 tests (4 new tests added, all passing)
+  - **Impact**: Major UX improvement — users can now run SQL migration scripts, seed data, and batch operations from files
+  - **Use cases**:
+    - `silica> .read schema.sql` — run schema migrations
+    - `silica> .read seed_data.sql` — populate test data
+    - `silica> .read migrations/001_add_users.sql` — version-controlled migrations
+- **Commits**: e6f9dbd (`.read` feature)
+
+### Previous Session (Session 104 - FEATURE)
 - **Date**: 2026-04-01
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.databases` command implementation
