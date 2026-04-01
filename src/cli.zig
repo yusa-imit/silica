@@ -828,6 +828,16 @@ fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError
 // ── Dot Commands ───────────────────────────────────────────────────────
 
 /// List all tables in the database
+/// List all open database connections
+fn showDatabases(db: *Database, stdout: anytype) void {
+    // Silica currently supports only one database connection at a time
+    // Display the current database path in SQLite-compatible format
+    stdout.writeAll("seq  name             file\n") catch {};
+    stdout.writeAll("---  ---------------  ") catch {};
+    stdout.writeAll("------------------------------------------------------------\n") catch {};
+    stdout.print("0    main             {s}\n", .{db.db_path}) catch {};
+}
+
 fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
     // Use catalog API to get table names directly
     var catalog = &db.catalog;
@@ -1412,6 +1422,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.exit               Exit the shell
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
+            \\.databases          List database connections
             \\.tables             List all tables
             \\.indexes [TABLE]    List all indexes or indexes for a specific table
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
@@ -1432,6 +1443,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
                 printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
             }
         }
+    } else if (std.mem.eql(u8, cmd, ".databases")) {
+        showDatabases(db, stdout);
     } else if (std.mem.eql(u8, cmd, ".tables")) {
         listTables(allocator, db, stdout, stderr);
     } else if (std.mem.startsWith(u8, cmd, ".indexes")) {
@@ -1716,6 +1729,58 @@ test "handleDotCommand help" {
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".quit") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".databases") != null);
+}
+
+test "handleDotCommand databases" {
+    const allocator = std.testing.allocator;
+    const path = "test_databases.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".databases", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify output contains SQLite-compatible format
+    try std.testing.expect(std.mem.indexOf(u8, output, "seq") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "main") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, path) != null);
+}
+
+test "handleDotCommand databases - memory database" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".databases", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify output shows :memory: database
+    try std.testing.expect(std.mem.indexOf(u8, output, ":memory:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "main") != null);
 }
 
 test "handleDotCommand quit" {
