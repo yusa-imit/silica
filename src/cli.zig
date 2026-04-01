@@ -1209,6 +1209,77 @@ fn dumpDatabase(allocator: std.mem.Allocator, db: *Database, stdout: anytype, st
     stdout.writeAll("COMMIT;\n") catch {};
 }
 
+/// Read and execute SQL statements from a file
+fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []const u8, mode: OutputMode, stdout: anytype, stderr: anytype) void {
+    // Open file
+    const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+        const msg = switch (err) {
+            error.FileNotFound => "File not found.",
+            error.AccessDenied => "Access denied.",
+            error.IsDir => "Path is a directory.",
+            else => "Failed to open file.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer file.close();
+
+    // Read file contents
+    const max_size = 100 * 1024 * 1024; // 100 MB limit
+    const content = file.readToEndAlloc(allocator, max_size) catch |err| {
+        const msg = switch (err) {
+            error.OutOfMemory => "Out of memory.",
+            error.FileTooBig => "File too large (max 100 MB).",
+            else => "Failed to read file.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer allocator.free(content);
+
+    // Split content into statements by lines first to handle comments
+    var statement_buf = std.ArrayListUnmanaged(u8){};
+    defer statement_buf.deinit(allocator);
+    var statement_count: usize = 0;
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        const trimmed_line = std.mem.trim(u8, line, " \t\r");
+
+        // Skip empty lines
+        if (trimmed_line.len == 0) continue;
+
+        // Skip comment-only lines
+        if (std.mem.startsWith(u8, trimmed_line, "--")) continue;
+
+        // Append line to statement buffer
+        if (statement_buf.items.len > 0) {
+            statement_buf.append(allocator, '\n') catch continue;
+        }
+        statement_buf.appendSlice(allocator, trimmed_line) catch continue;
+
+        // Check if statement is complete (ends with semicolon)
+        if (std.mem.endsWith(u8, trimmed_line, ";")) {
+            const statement = statement_buf.items;
+            if (statement.len > 0) {
+                statement_count += 1;
+                execAndDisplay(allocator, db, statement, mode, stdout, stderr);
+            }
+            statement_buf.clearRetainingCapacity();
+        }
+    }
+
+    // Check for unterminated statement
+    if (statement_buf.items.len > 0) {
+        const remaining = std.mem.trim(u8, statement_buf.items, " \t\r\n");
+        if (remaining.len > 0) {
+            printError(stderr, "Warning: Unterminated statement at end of file (missing ';')");
+        }
+    }
+
+    stdout.print("Executed {} statement(s) from {s}\n", .{ statement_count, filename }) catch {};
+}
+
 /// Dump a single table (CREATE TABLE + CREATE INDEX + INSERT statements)
 fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catalog.Catalog, table_name: []const u8, stdout: anytype, stderr: anytype) void {
     // Get table schema
@@ -1427,6 +1498,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.indexes [TABLE]    List all indexes or indexes for a specific table
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
             \\.dump               Dump database as SQL text (CREATE TABLE + INSERT statements)
+            \\.read FILENAME      Read and execute SQL from file
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".mode")) {
@@ -1457,6 +1529,13 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         showSchema(allocator, db, table_name, stdout, stderr);
     } else if (std.mem.eql(u8, cmd, ".dump")) {
         dumpDatabase(allocator, db, stdout, stderr);
+    } else if (std.mem.startsWith(u8, cmd, ".read")) {
+        const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
+        if (rest.len == 0) {
+            printError(stderr, "Usage: .read FILENAME");
+        } else {
+            readAndExecuteFile(allocator, db, rest, mode.*, stdout, stderr);
+        }
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
@@ -1730,6 +1809,7 @@ test "handleDotCommand help" {
     try std.testing.expect(std.mem.indexOf(u8, output, ".quit") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".mode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".databases") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".read") != null);
 }
 
 test "handleDotCommand databases" {
@@ -2524,6 +2604,149 @@ test "formatPlain renders key-value pairs" {
 
     try std.testing.expect(std.mem.indexOf(u8, output, "id = 42") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "name = World") != null);
+}
+
+test "handleDotCommand .read executes SQL from file" {
+    const allocator = std.testing.allocator;
+
+    // Create test database
+    const path = "test_read_command.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    // Create a SQL file with multiple statements
+    const sql_file = "test_script.sql";
+    defer std.fs.cwd().deleteFile(sql_file) catch {};
+
+    const sql_content =
+        \\CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+        \\INSERT INTO users (id, name) VALUES (1, 'Alice');
+        \\INSERT INTO users (id, name) VALUES (2, 'Bob');
+    ;
+
+    const file = try std.fs.cwd().createFile(sql_file, .{});
+    defer file.close();
+    try file.writeAll(sql_content);
+
+    // Execute .read command
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    const result = handleDotCommand(allocator, &db, ".read test_script.sql", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Executed 3 statement(s)") != null);
+
+    // Verify data was inserted
+    var query_result = db.exec("SELECT COUNT(*) FROM users;") catch unreachable;
+    defer query_result.close(allocator);
+
+    if (query_result.rows) |*rows| {
+        const row = rows.next() catch unreachable;
+        if (row) |r| {
+            defer {
+                for (r.values) |v| v.free(allocator);
+                allocator.free(r.values);
+                allocator.free(r.columns);
+            }
+            try std.testing.expectEqual(Value{ .integer = 2 }, r.values[0]);
+        }
+    }
+}
+
+test "handleDotCommand .read handles file not found" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_read_not_found.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    const result = handleDotCommand(allocator, &db, ".read nonexistent.sql", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const error_output = ebs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, error_output, "File not found") != null);
+}
+
+test "handleDotCommand .read skips SQL comments" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_read_comments.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    const sql_file = "test_comments.sql";
+    defer std.fs.cwd().deleteFile(sql_file) catch {};
+
+    const sql_content =
+        \\-- This is a comment
+        \\CREATE TABLE test (id INTEGER);
+        \\-- Another comment
+        \\INSERT INTO test VALUES (1);
+    ;
+
+    const file = try std.fs.cwd().createFile(sql_file, .{});
+    defer file.close();
+    try file.writeAll(sql_content);
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    const result = handleDotCommand(allocator, &db, ".read test_comments.sql", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    // Should execute 2 statements (CREATE TABLE + INSERT), not 4 (skipped comments)
+    try std.testing.expect(std.mem.indexOf(u8, output, "Executed 2 statement(s)") != null);
+}
+
+test "handleDotCommand .read requires filename" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_read_no_arg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    const result = handleDotCommand(allocator, &db, ".read", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const error_output = ebs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, error_output, "Usage: .read FILENAME") != null);
 }
 
 // Import wire_fuzz tests
