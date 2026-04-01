@@ -9,7 +9,37 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 97 - FEATURE)
+### Last Session (Session 99 - FEATURE)
+- **Date**: 2026-04-01
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.schema` command implementation
+- **Outcome**: ✅ New CLI feature implemented, manual testing passed
+- **Details**:
+  - **CI Status**: ✅ GREEN before session (will verify after push)
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.schema` command**: Implemented DDL display for tables
+       - `.schema` — shows CREATE TABLE statements for all tables
+       - `.schema TABLE` — shows CREATE TABLE for specific table
+       - Displays column types, constraints (PRIMARY KEY, NOT NULL, UNIQUE, AUTOINCREMENT)
+       - Shows table-level constraints (composite PRIMARY KEY, UNIQUE)
+       - Shows named indexes (filters out auto-generated indexes)
+       - Handles `untyped` columns (empty type string)
+    2. **Test coverage**: Added 6 comprehensive tests
+       - All tables display
+       - Specific table display
+       - Composite primary key
+       - Table not found error handling
+       - No tables case
+       - Manual testing verified correctness
+    3. **Updated `.help` text**: Changed from "not yet implemented" to feature description
+  - **Files Changed**:
+    - `src/cli.zig`: +301 lines, -3 lines (showSchema, showTableSchema functions + 6 tests)
+  - **Test Count**: 2900 tests (6 new tests added)
+  - **Impact**: Enhanced CLI UX — users can now view table schemas like SQLite
+- **Commits**: eb43b9d (`.schema` feature)
+
+### Previous Session (Session 97 - FEATURE)
 - **Date**: 2026-04-01
 - **Mode**: FEATURE MODE
 - **Focus**: Sailor v1.29.0 migration + CLI enhancement — `.tables` command
