@@ -9,7 +9,45 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 106 - FEATURE)
+### Last Session (Session 107 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.timer on|off` command implementation
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.timer on|off` command**: Toggle query execution timing display
+       - `.timer on` — enables timing display (shows "Query time: X.XXX ms" after each query)
+       - `.timer off` — disables timing display
+       - `.timer` — shows current setting (on/off)
+       - Default: `on` (maintains Session 96 behavior where timing was always shown)
+       - Invalid arguments show usage hint: "Usage: .timer on|off"
+    2. **Implementation details**:
+       - Added `show_timer` boolean flag in REPL loop (line 210)
+       - Updated `execAndDisplay()` signature to accept `show_timer` parameter
+       - Timer only starts if `show_timer` is true (optional Timer pattern)
+       - Updated `handleDotCommand()` to manage timer state
+       - Updated `readAndExecuteFile()` to respect timer setting
+    3. **Test coverage**: Added 5 comprehensive tests
+       - `.timer on` — verifies timer is enabled and message appears
+       - `.timer off` — verifies timer is disabled and message appears
+       - `.timer` — shows current setting (on/off)
+       - `.timer foobar` — invalid argument error handling
+       - `.help` includes `.timer` — verifies command appears in help text
+    4. **Updated `.help` text**: Added `.timer on|off` description
+  - **Files Changed**:
+    - `src/cli.zig`: +218 lines, -40 lines (timer command + 5 tests + signature updates for all dot-command tests)
+  - **Test Count**: 2919 tests (5 new tests added, all passing)
+  - **Impact**: User control over timing display — SQLite-compatible CLI enhancement
+  - **Use cases**:
+    - `silica> .timer off` — clean output without timing (useful for scripts)
+    - `silica> .timer on` — re-enable timing for performance analysis
+    - `silica> .timer` — check current setting
+- **Commits**: 9a3c8b1 (`.timer` feature)
+
+### Previous Session (Session 106 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.read` command implementation
