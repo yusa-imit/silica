@@ -9,7 +9,48 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 107 - FEATURE)
+### Last Session (Session 108 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.headers on|off` command implementation
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.headers on|off` command**: Toggle column headers display in output
+       - `.headers on` — enables column headers in output (default)
+       - `.headers off` — disables column headers (data only)
+       - `.headers` — shows current setting (on/off)
+       - Invalid arguments show usage hint: "Usage: .headers on|off"
+       - SQLite-compatible feature for cleaner script output
+    2. **Implementation details**:
+       - Added `show_headers` boolean flag in REPL loop (default: `on`)
+       - Updated `handleDotCommand()` signature to accept `show_headers` pointer
+       - Updated `execAndDisplay()`, `displayRows()`, and all format functions to respect flag
+       - `formatTable()`: Uses sailor.fmt.Table when headers on, pipe-separated rows when off
+       - `formatCsv()`: Conditionally includes header row
+       - `formatPlain()`: Shows "column = value" when headers on, just values when off
+       - JSON/JSONL formats unchanged (always include structure)
+    3. **Test coverage**: Added 6 comprehensive tests
+       - `.headers on` — verifies headers are enabled and message appears
+       - `.headers off` — verifies headers are disabled and message appears
+       - `.headers` — shows current setting (on/off)
+       - `.headers foobar` — invalid argument error handling
+       - `.help` includes `.headers` — verifies command appears in help text
+       - Updated 33 existing handleDotCommand test calls with new parameter
+    4. **Updated `.help` text**: Added `.headers on|off` description
+  - **Files Changed**:
+    - `src/cli.zig`: +311 lines, -96 lines (headers command + 6 tests + format function updates)
+  - **Test Count**: 2925 tests (6 new tests added, all passing)
+  - **Impact**: SQLite-compatible CLI enhancement — users can now toggle headers for cleaner script output
+  - **Use cases**:
+    - `silica> .headers off` — clean output for parsing/scripts (no column names)
+    - `silica> .headers on` — human-readable output with column names
+    - `silica> .headers` — check current setting
+- **Commits**: c62b380 (`.headers` feature)
+
+### Previous Session (Session 107 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.timer on|off` command implementation
