@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.29.0
-- **Latest available**: v1.29.0
+- **Current in silica**: v1.30.0
+- **Latest available**: v1.30.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -186,6 +186,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.27.0 | documentation & examples | DONE | 98% API documentation coverage, comprehensive guides (getting started, troubleshooting, performance), 5 new examples (hello, counter, dashboard, task_list, layout_showcase) |
 | v1.28.0 | performance validation & zuda audit | DONE | 12 core widgets benchmarked (all <0.02ms/op), zuda integration audit (no changes needed) |
 | v1.29.0 | documentation coverage | DONE | 99.9% API documentation coverage, comprehensive doc comments (31 newly documented functions) |
+| v1.30.0 | error handling & debugging | DONE | Debug logging system (SAILOR_DEBUG env), stack trace helpers, error recovery patterns |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
