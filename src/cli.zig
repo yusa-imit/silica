@@ -208,6 +208,7 @@ pub fn main() !void {
 
     var is_continuation = false;
     var show_timer = true; // Default: show query execution time
+    var show_headers = true; // Default: show column headers
 
     while (true) {
         const prompt = if (is_continuation) "   ...> " else "silica> ";
@@ -231,7 +232,7 @@ pub fn main() !void {
 
         // Handle dot-commands (only on first line, not continuation)
         if (!is_continuation and trimmed[0] == '.') {
-            const result = handleDotCommand(allocator, &db, trimmed, &mode, &show_timer, stdout, stderr);
+            const result = handleDotCommand(allocator, &db, trimmed, &mode, &show_timer, &show_headers, stdout, stderr);
             stdout.flush() catch {};
             stderr.flush() catch {};
             if (result == .quit) break;
@@ -254,7 +255,7 @@ pub fn main() !void {
         }
 
         // Execute SQL via engine
-        execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, stdout, stderr);
+        execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_headers, stdout, stderr);
         stdout.flush() catch {};
         stderr.flush() catch {};
         input_buf.clearRetainingCapacity();
@@ -265,11 +266,11 @@ pub fn main() !void {
 // ── SQL Execution ──────────────────────────────────────────────────────
 
 /// Execute SQL via the Database engine and display results.
-fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_timer: bool, stdout: anytype, stderr: anytype) void {
+fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_timer: bool, show_headers: bool, stdout: anytype, stderr: anytype) void {
     // Start timer for query execution (if enabled)
     var timer = if (show_timer) std.time.Timer.start() catch {
         // If timer fails, continue without timing
-        execAndDisplayWithoutTiming(allocator, db, sql, mode, stdout, stderr);
+        execAndDisplayWithoutTiming(allocator, db, sql, mode, show_headers, stdout, stderr);
         return;
     } else null;
 
@@ -291,7 +292,7 @@ fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, 
 
     if (result.rows != null) {
         // SELECT — format rows
-        displayRows(allocator, &result, mode, stdout, stderr);
+        displayRows(allocator, &result, mode, show_headers, stdout, stderr);
     } else if (result.message.len > 0) {
         stdout.writeAll(result.message) catch {};
         stdout.writeByte('\n') catch {};
@@ -310,7 +311,7 @@ fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, 
 }
 
 /// Fallback for when timer is unavailable (executes without timing).
-fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, stdout: anytype, stderr: anytype) void {
+fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_headers: bool, stdout: anytype, stderr: anytype) void {
     var result = db.exec(sql) catch |err| {
         const msg = switch (err) {
             error.ParseError => "SQL parse error.",
@@ -329,7 +330,7 @@ fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql:
 
     if (result.rows != null) {
         // SELECT — format rows
-        displayRows(allocator, &result, mode, stdout, stderr);
+        displayRows(allocator, &result, mode, show_headers, stdout, stderr);
     } else if (result.message.len > 0) {
         stdout.writeAll(result.message) catch {};
         stdout.writeByte('\n') catch {};
@@ -341,7 +342,7 @@ fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql:
 }
 
 /// Drain all rows from a QueryResult and display them in the given output mode.
-fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputMode, stdout: anytype, stderr: anytype) void {
+fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputMode, show_headers: bool, stdout: anytype, stderr: anytype) void {
     _ = stderr;
 
     // Collect all rows (we need them all for table mode column widths)
@@ -381,11 +382,11 @@ fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputM
     const headers = col_names.?;
 
     switch (mode) {
-        .table => formatTable(allocator, headers, all_rows.items, stdout),
-        .csv => formatCsv(headers, all_rows.items, allocator, stdout),
+        .table => formatTable(allocator, headers, all_rows.items, show_headers, stdout),
+        .csv => formatCsv(headers, all_rows.items, allocator, show_headers, stdout),
         .json => formatJson(headers, all_rows.items, allocator, stdout),
         .jsonl => formatJsonl(headers, all_rows.items, allocator, stdout),
-        .plain => formatPlain(headers, all_rows.items, allocator, stdout),
+        .plain => formatPlain(headers, all_rows.items, allocator, show_headers, stdout),
     }
 }
 
@@ -427,61 +428,77 @@ fn valueToText(allocator: std.mem.Allocator, val: Value) ?[]const u8 {
 
 // ── Table Format ───────────────────────────────────────────────────────
 
-fn formatTable(allocator: std.mem.Allocator, headers: []const []const u8, rows: []Row, writer: anytype) void {
-    var table = sailor.fmt.Table.init(allocator, headers, .{}) catch return;
-    defer table.deinit();
+fn formatTable(allocator: std.mem.Allocator, headers: []const []const u8, rows: []Row, show_headers: bool, writer: anytype) void {
+    if (show_headers) {
+        // Use sailor.fmt.Table with headers
+        var table = sailor.fmt.Table.init(allocator, headers, .{}) catch return;
+        defer table.deinit();
 
-    // Convert all rows to string slices
-    var str_rows = std.ArrayListUnmanaged([]const []const u8){};
-    defer {
-        for (str_rows.items) |row| {
-            for (row) |cell| allocator.free(cell);
-            allocator.free(row);
+        // Convert all rows to string slices
+        var str_rows = std.ArrayListUnmanaged([]const []const u8){};
+        defer {
+            for (str_rows.items) |row| {
+                for (row) |cell| allocator.free(cell);
+                allocator.free(row);
+            }
+            str_rows.deinit(allocator);
         }
-        str_rows.deinit(allocator);
-    }
 
-    for (rows) |row| {
-        const cells = allocator.alloc([]const u8, row.values.len) catch continue;
-        var valid = true;
-        for (row.values, 0..) |val, i| {
-            cells[i] = valueToText(allocator, val) orelse {
-                valid = false;
-                // Free already allocated cells
-                for (cells[0..i]) |c| allocator.free(c);
-                break;
+        for (rows) |row| {
+            const cells = allocator.alloc([]const u8, row.values.len) catch continue;
+            var valid = true;
+            for (row.values, 0..) |val, i| {
+                cells[i] = valueToText(allocator, val) orelse {
+                    valid = false;
+                    // Free already allocated cells
+                    for (cells[0..i]) |c| allocator.free(c);
+                    break;
+                };
+            }
+            if (!valid) {
+                allocator.free(cells);
+                continue;
+            }
+            table.addRow(cells) catch {
+                for (cells) |c| allocator.free(c);
+                allocator.free(cells);
+                continue;
+            };
+            str_rows.append(allocator, cells) catch {
+                for (cells) |c| allocator.free(c);
+                allocator.free(cells);
+                continue;
             };
         }
-        if (!valid) {
-            allocator.free(cells);
-            continue;
-        }
-        table.addRow(cells) catch {
-            for (cells) |c| allocator.free(c);
-            allocator.free(cells);
-            continue;
-        };
-        str_rows.append(allocator, cells) catch {
-            for (cells) |c| allocator.free(c);
-            allocator.free(cells);
-            continue;
-        };
-    }
 
-    table.render(writer) catch {};
+        table.render(writer) catch {};
+    } else {
+        // No headers — just print rows separated by '|'
+        for (rows) |row| {
+            for (row.values, 0..) |val, i| {
+                if (i > 0) writer.writeAll("|") catch {};
+                const text = valueToText(allocator, val) orelse continue;
+                defer allocator.free(text);
+                writer.writeAll(text) catch {};
+            }
+            writer.writeAll("\n") catch {};
+        }
+    }
 }
 
 // ── CSV Format ────────────────────────────────────────────────────────
 
-fn formatCsv(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+fn formatCsv(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, show_headers: bool, writer: anytype) void {
     const WriterType = @TypeOf(writer);
     var csv = sailor.fmt.Csv(WriterType).init(writer, .{});
 
-    // Write headers
-    for (headers) |h| {
-        csv.writeField(h) catch return;
+    // Write headers (if enabled)
+    if (show_headers) {
+        for (headers) |h| {
+            csv.writeField(h) catch return;
+        }
+        csv.endRow() catch return;
     }
-    csv.endRow() catch return;
 
     // Write rows
     for (rows) |row| {
@@ -588,16 +605,29 @@ fn writeJsonValue(obj: anytype, key: []const u8, val: Value, allocator: std.mem.
 
 // ── Plain Format ──────────────────────────────────────────────────────
 
-fn formatPlain(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
-    for (rows) |row| {
-        for (headers, 0..) |h, i| {
-            if (i < row.values.len) {
-                const text = valueToText(allocator, row.values[i]) orelse "NULL";
-                defer if (text.ptr != "NULL".ptr) allocator.free(text);
-                writer.print("{s} = {s}\n", .{ h, text }) catch {};
+fn formatPlain(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, show_headers: bool, writer: anytype) void {
+    if (show_headers) {
+        // Show headers as "column = value" format
+        for (rows) |row| {
+            for (headers, 0..) |h, i| {
+                if (i < row.values.len) {
+                    const text = valueToText(allocator, row.values[i]) orelse "NULL";
+                    defer if (text.ptr != "NULL".ptr) allocator.free(text);
+                    writer.print("{s} = {s}\n", .{ h, text }) catch {};
+                }
             }
+            if (rows.len > 1) writer.writeByte('\n') catch {};
         }
-        if (rows.len > 1) writer.writeByte('\n') catch {};
+    } else {
+        // No headers — just print values separated by newlines
+        for (rows) |row| {
+            for (row.values) |val| {
+                const text = valueToText(allocator, val) orelse "NULL";
+                defer if (text.ptr != "NULL".ptr) allocator.free(text);
+                writer.print("{s}\n", .{text}) catch {};
+            }
+            if (rows.len > 1) writer.writeByte('\n') catch {};
+        }
     }
 }
 
@@ -1213,7 +1243,7 @@ fn dumpDatabase(allocator: std.mem.Allocator, db: *Database, stdout: anytype, st
 }
 
 /// Read and execute SQL statements from a file
-fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []const u8, mode: OutputMode, show_timer: bool, stdout: anytype, stderr: anytype) void {
+fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []const u8, mode: OutputMode, show_timer: bool, show_headers: bool, stdout: anytype, stderr: anytype) void {
     // Open file
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         const msg = switch (err) {
@@ -1266,7 +1296,7 @@ fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []c
             const statement = statement_buf.items;
             if (statement.len > 0) {
                 statement_count += 1;
-                execAndDisplay(allocator, db, statement, mode, show_timer, stdout, stderr);
+                execAndDisplay(allocator, db, statement, mode, show_timer, show_headers, stdout, stderr);
             }
             statement_buf.clearRetainingCapacity();
         }
@@ -1485,7 +1515,7 @@ fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catal
 
 const DotCommandResult = enum { ok, quit };
 
-fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, show_timer: *bool, stdout: anytype, stderr: anytype) DotCommandResult {
+fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, stdout: anytype, stderr: anytype) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
@@ -1496,6 +1526,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.exit               Exit the shell
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
+            \\.headers on|off     Enable or disable column headers in output
+            \\.headers            Show current headers setting
             \\.timer on|off       Enable or disable query execution timing
             \\.timer              Show current timer setting
             \\.databases          List database connections
@@ -1506,6 +1538,21 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.read FILENAME      Read and execute SQL from file
             \\
         ) catch {};
+    } else if (std.mem.startsWith(u8, cmd, ".headers")) {
+        const rest = std.mem.trimLeft(u8, cmd[8..], " \t");
+        if (rest.len == 0) {
+            // Show current headers setting
+            const setting = if (show_headers.*) "on" else "off";
+            stdout.print("Headers: {s}\n", .{setting}) catch {};
+        } else if (std.mem.eql(u8, rest, "on")) {
+            show_headers.* = true;
+            stdout.writeAll("Headers enabled\n") catch {};
+        } else if (std.mem.eql(u8, rest, "off")) {
+            show_headers.* = false;
+            stdout.writeAll("Headers disabled\n") catch {};
+        } else {
+            printError(stderr, "Usage: .headers on|off");
+        }
     } else if (std.mem.startsWith(u8, cmd, ".timer")) {
         const rest = std.mem.trimLeft(u8, cmd[6..], " \t");
         if (rest.len == 0) {
@@ -1554,7 +1601,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         if (rest.len == 0) {
             printError(stderr, "Usage: .read FILENAME");
         } else {
-            readAndExecuteFile(allocator, db, rest, mode.*, show_timer.*, stdout, stderr);
+            readAndExecuteFile(allocator, db, rest, mode.*, show_timer.*, show_headers.*, stdout, stderr);
         }
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
@@ -1823,7 +1870,8 @@ test "handleDotCommand help" {
     var ew = efbs.writer();
     var mode: OutputMode = .table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
@@ -1849,7 +1897,8 @@ test "handleDotCommand databases" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -1877,7 +1926,8 @@ test "handleDotCommand databases - memory database" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -1900,7 +1950,8 @@ test "handleDotCommand quit" {
     var ew = efbs.writer();
     var mode: OutputMode = .table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".quit", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".quit", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
@@ -1920,7 +1971,8 @@ test "handleDotCommand unknown" {
     var ew = efbs.writer();
     var mode: OutputMode = .table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".foobar", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".foobar", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Unknown command") != null);
@@ -1940,7 +1992,8 @@ test "handleDotCommand mode set" {
     var ew = efbs.writer();
     var mode: OutputMode = .table;
     var show_timer = true;
-    _ = handleDotCommand(allocator, &db, ".mode csv", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    _ = handleDotCommand(allocator, &db, ".mode csv", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(OutputMode.csv, mode);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "csv") != null);
@@ -1960,7 +2013,8 @@ test "handleDotCommand mode show" {
     var ew = efbs.writer();
     var mode: OutputMode = .json;
     var show_timer = true;
-    _ = handleDotCommand(allocator, &db, ".mode", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    _ = handleDotCommand(allocator, &db, ".mode", &mode, &show_timer, &show_headers, &w, &ew);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "json") != null);
 }
@@ -1979,7 +2033,8 @@ test "handleDotCommand mode invalid" {
     var ew = efbs.writer();
     var mode: OutputMode = .table;
     var show_timer = true;
-    _ = handleDotCommand(allocator, &db, ".mode foobar", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    _ = handleDotCommand(allocator, &db, ".mode foobar", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(OutputMode.table, mode); // unchanged
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Invalid mode") != null);
@@ -2003,7 +2058,8 @@ test "handleDotCommand tables" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".tables", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".tables", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "users") != null);
@@ -2028,7 +2084,8 @@ test "handleDotCommand schema - all tables" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2061,7 +2118,8 @@ test "handleDotCommand schema - specific table" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".schema users", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".schema users", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2093,7 +2151,8 @@ test "handleDotCommand schema - with composite primary key" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".schema user_roles", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".schema user_roles", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2116,7 +2175,8 @@ test "handleDotCommand schema - table not found" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".schema nonexistent", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".schema nonexistent", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -2138,7 +2198,8 @@ test "handleDotCommand schema - no tables" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -2164,7 +2225,8 @@ test "handleDotCommand indexes - named index" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".indexes users", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".indexes users", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "idx_email") != null);
@@ -2193,7 +2255,8 @@ test "handleDotCommand indexes - all tables" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     // Verify both indexes appear
@@ -2221,7 +2284,8 @@ test "handleDotCommand indexes - no indexes" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".indexes plain", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".indexes plain", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No indexes found") != null);
@@ -2243,7 +2307,8 @@ test "handleDotCommand indexes - table not found" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".indexes nonexistent", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".indexes nonexistent", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -2265,7 +2330,8 @@ test "handleDotCommand indexes - no tables" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -2294,7 +2360,8 @@ test "handleDotCommand dump - basic table" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2324,7 +2391,8 @@ test "handleDotCommand dump - empty database" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -2354,7 +2422,8 @@ test "handleDotCommand dump - with indexes" {
     var mode: OutputMode = .table;
 
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2527,7 +2596,7 @@ test "formatTable renders bordered table" {
     var out_buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out_buf);
     var w = fbs.writer();
-    formatTable(allocator, headers, &rows, &w);
+    formatTable(allocator, headers, &rows, true, &w);
     const output = fbs.getWritten();
 
     try std.testing.expect(output.len > 0);
@@ -2556,7 +2625,7 @@ test "formatCsv renders CSV output" {
     var out_buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out_buf);
     var w = fbs.writer();
-    formatCsv(headers, &rows, allocator, &w);
+    formatCsv(headers, &rows, allocator, true, &w);
     const output = fbs.getWritten();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "id,name") != null);
@@ -2641,7 +2710,7 @@ test "formatPlain renders key-value pairs" {
     var out_buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out_buf);
     var w = fbs.writer();
-    formatPlain(headers, &rows, allocator, &w);
+    formatPlain(headers, &rows, allocator, true, &w);
     const output = fbs.getWritten();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "id = 42") != null);
@@ -2682,7 +2751,8 @@ test "handleDotCommand .read executes SQL from file" {
 
     var mode = OutputMode.table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".read test_script.sql", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".read test_script.sql", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -2723,7 +2793,8 @@ test "handleDotCommand .read handles file not found" {
 
     var mode = OutputMode.table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".read nonexistent.sql", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".read nonexistent.sql", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -2762,7 +2833,8 @@ test "handleDotCommand .read skips SQL comments" {
 
     var mode = OutputMode.table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".read test_comments.sql", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".read test_comments.sql", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -2788,7 +2860,8 @@ test "handleDotCommand .read requires filename" {
 
     var mode = OutputMode.table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".read", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".read", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -2813,8 +2886,9 @@ test "handleDotCommand .timer on" {
 
     var mode = OutputMode.table;
     var show_timer = false; // Start disabled
+    var show_headers = true;
 
-    const result = handleDotCommand(allocator, &db, ".timer on", &mode, &show_timer, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer on", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should be enabled now
 
@@ -2840,8 +2914,9 @@ test "handleDotCommand .timer off" {
 
     var mode = OutputMode.table;
     var show_timer = true; // Start enabled
+    var show_headers = true;
 
-    const result = handleDotCommand(allocator, &db, ".timer off", &mode, &show_timer, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer off", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_timer); // Should be disabled now
 
@@ -2867,8 +2942,9 @@ test "handleDotCommand .timer shows current setting" {
 
     var mode = OutputMode.table;
     var show_timer = true;
+    var show_headers = true;
 
-    const result = handleDotCommand(allocator, &db, ".timer", &mode, &show_timer, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -2893,8 +2969,9 @@ test "handleDotCommand .timer invalid argument" {
 
     var mode = OutputMode.table;
     var show_timer = true;
+    var show_headers = true;
 
-    const result = handleDotCommand(allocator, &db, ".timer foobar", &mode, &show_timer, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer foobar", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should remain unchanged
 
@@ -2920,11 +2997,149 @@ test "handleDotCommand .help includes .timer" {
 
     var mode = OutputMode.table;
     var show_timer = true;
-    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &w, &ew);
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".timer") != null);
+}
+
+test "handleDotCommand .headers on" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_headers_on.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = false; // Start disabled
+
+    const result = handleDotCommand(allocator, &db, ".headers on", &mode, &show_timer, &show_headers, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    try std.testing.expectEqual(true, show_headers); // Should be enabled now
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Headers enabled") != null);
+}
+
+test "handleDotCommand .headers off" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_headers_off.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true; // Start enabled
+
+    const result = handleDotCommand(allocator, &db, ".headers off", &mode, &show_timer, &show_headers, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    try std.testing.expectEqual(false, show_headers); // Should be disabled now
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Headers disabled") != null);
+}
+
+test "handleDotCommand .headers shows current setting" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_headers_show.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+
+    const result = handleDotCommand(allocator, &db, ".headers", &mode, &show_timer, &show_headers, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Headers: on") != null);
+}
+
+test "handleDotCommand .headers invalid argument" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_headers_invalid.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+
+    const result = handleDotCommand(allocator, &db, ".headers foobar", &mode, &show_timer, &show_headers, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    try std.testing.expectEqual(true, show_headers); // Should remain unchanged
+
+    const error_output = ebs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, error_output, "Usage: .headers on|off") != null);
+}
+
+test "handleDotCommand .help includes .headers" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_help_headers.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [8192]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".headers") != null);
 }
 
 // Import wire_fuzz tests
