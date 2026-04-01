@@ -9,7 +9,41 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 101 - FEATURE)
+### Last Session (Session 102 - FEATURE)
+- **Date**: 2026-04-01
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.dump` command implementation
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session (will verify after push)
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.dump` command**: SQLite-compatible database export
+       - Exports all CREATE TABLE statements with columns and constraints
+       - Exports all CREATE INDEX statements (named indexes only)
+       - Exports all data as INSERT statements
+       - Wraps in BEGIN TRANSACTION / COMMIT for atomicity
+       - Proper text escaping (single quotes → '')
+       - BLOB output as hex strings (X'...')
+       - NULL value handling
+    2. **Implementation details**:
+       - `dumpDatabase()`: Main entry point, lists all tables and dumps each
+       - `dumpTable()`: Dumps single table (schema + indexes + data)
+       - Uses `result.rows.?.next()` iterator for data export
+       - Manual memory cleanup: `v.free()` for each value
+    3. **Test coverage**: Added 3 comprehensive tests
+       - Basic table with data (verifies CREATE, INSERT, transaction)
+       - Empty database (handles no tables gracefully)
+       - Table with indexes (verifies INDEX statements)
+    4. **Updated `.help` text**: Added `.dump` description
+  - **Files Changed**:
+    - `src/cli.zig`: +335 lines (dumpDatabase, dumpTable functions + 3 tests + help text)
+  - **Test Count**: 2908 tests (3 new tests added, all passing)
+  - **Known Limitation**: Advanced types (date, time, timestamp, numeric, uuid, array, tsvector, tsquery) use NULL placeholder — proper serialization TODO
+  - **Impact**: Major CLI feature — enables database backups and migrations via SQL text export
+- **Commits**: a9e1518 (`.dump` feature)
+
+### Previous Session (Session 101 - FEATURE)
 - **Date**: 2026-04-01
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.indexes` command implementation
