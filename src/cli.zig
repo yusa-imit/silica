@@ -861,6 +861,173 @@ fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stde
     }
 }
 
+/// Show schema (CREATE TABLE statements) for all tables or a specific table
+fn showSchema(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const u8, stdout: anytype, stderr: anytype) void {
+    var catalog = &db.catalog;
+
+    if (table_name) |name| {
+        // Show schema for specific table
+        const trimmed = std.mem.trim(u8, name, " \t");
+        if (trimmed.len == 0) {
+            printError(stderr, "Table name cannot be empty.");
+            return;
+        }
+        showTableSchema(allocator, catalog, trimmed, stdout, stderr);
+    } else {
+        // Show schema for all tables
+        const names = catalog.listTables(allocator) catch |err| {
+            const msg = switch (err) {
+                error.OutOfMemory => "Out of memory.",
+                else => "Failed to list tables.",
+            };
+            printError(stderr, msg);
+            return;
+        };
+        defer {
+            for (names) |name| allocator.free(name);
+            allocator.free(names);
+        }
+
+        if (names.len == 0) {
+            stdout.writeAll("No tables found.\n") catch {};
+            return;
+        }
+
+        // Sort table names alphabetically
+        std.mem.sort([]const u8, names, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        for (names, 0..) |name, i| {
+            if (i > 0) stdout.writeAll("\n") catch {};
+            showTableSchema(allocator, catalog, name, stdout, stderr);
+        }
+    }
+}
+
+/// Helper to show schema for a single table
+fn showTableSchema(allocator: std.mem.Allocator, catalog: *silica.catalog.Catalog, table_name: []const u8, stdout: anytype, stderr: anytype) void {
+    const table = catalog.getTable(table_name) catch |err| {
+        const msg = switch (err) {
+            error.TableNotFound => "Table not found.",
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to get table schema.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer table.deinit(allocator);
+
+    // Generate CREATE TABLE statement
+    stdout.print("CREATE TABLE {s} (\n", .{table_name}) catch {};
+
+    // Columns
+    for (table.columns, 0..) |col, i| {
+        stdout.writeAll("  ") catch {};
+        stdout.print("{s} ", .{col.name}) catch {};
+
+        // Column type
+        const type_name = switch (col.column_type) {
+            .integer => "INTEGER",
+            .real => "REAL",
+            .text => "TEXT",
+            .blob => "BLOB",
+            .boolean => "BOOLEAN",
+            .date => "DATE",
+            .time => "TIME",
+            .timestamp => "TIMESTAMP",
+            .interval => "INTERVAL",
+            .numeric => "NUMERIC",
+            .uuid => "UUID",
+            .array => "ARRAY",
+            .json => "JSON",
+            .jsonb => "JSONB",
+            .tsvector => "TSVECTOR",
+            .tsquery => "TSQUERY",
+            .untyped => "",
+        };
+        if (type_name.len > 0) {
+            stdout.writeAll(type_name) catch {};
+        }
+
+        // Column constraints
+        if (col.flags.primary_key) {
+            stdout.writeAll(" PRIMARY KEY") catch {};
+        }
+        if (col.flags.not_null) {
+            stdout.writeAll(" NOT NULL") catch {};
+        }
+        if (col.flags.unique) {
+            stdout.writeAll(" UNIQUE") catch {};
+        }
+        if (col.flags.autoincrement) {
+            stdout.writeAll(" AUTOINCREMENT") catch {};
+        }
+
+        // Comma for all but last column (unless there are table constraints)
+        const is_last_column = (i == table.columns.len - 1);
+        const has_table_constraints = table.table_constraints.len > 0;
+        if (!is_last_column or has_table_constraints) {
+            stdout.writeAll(",") catch {};
+        }
+        stdout.writeAll("\n") catch {};
+    }
+
+    // Table-level constraints
+    for (table.table_constraints, 0..) |constraint, i| {
+        stdout.writeAll("  ") catch {};
+        switch (constraint) {
+            .primary_key => |cols| {
+                stdout.writeAll("PRIMARY KEY (") catch {};
+                for (cols, 0..) |col_name, j| {
+                    stdout.writeAll(col_name) catch {};
+                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
+                }
+                stdout.writeAll(")") catch {};
+            },
+            .unique => |cols| {
+                stdout.writeAll("UNIQUE (") catch {};
+                for (cols, 0..) |col_name, j| {
+                    stdout.writeAll(col_name) catch {};
+                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
+                }
+                stdout.writeAll(")") catch {};
+            },
+        }
+        if (i < table.table_constraints.len - 1) {
+            stdout.writeAll(",") catch {};
+        }
+        stdout.writeAll("\n") catch {};
+    }
+
+    stdout.writeAll(");\n") catch {};
+
+    // Show indexes if any (skip auto-generated indexes with empty names)
+    if (table.indexes.len > 0) {
+        for (table.indexes) |idx| {
+            // Skip auto-generated indexes (empty name)
+            if (idx.index_name.len == 0) continue;
+
+            const index_type = switch (idx.index_type) {
+                .btree => "BTREE",
+                .hash => "HASH",
+                .gist => "GIST",
+                .gin => "GIN",
+            };
+            const unique_str = if (idx.is_unique) "UNIQUE " else "";
+            stdout.print("CREATE {s}INDEX {s} ON {s} USING {s} ({s});\n", .{
+                unique_str,
+                idx.index_name,
+                table_name,
+                index_type,
+                idx.column_name,
+            }) catch {};
+        }
+    }
+}
+
 const DotCommandResult = enum { ok, quit };
 
 fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, stdout: anytype, stderr: anytype) DotCommandResult {
@@ -875,7 +1042,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
             \\.tables             List all tables
-            \\.schema             Show schema (not yet implemented)
+            \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".mode")) {
@@ -894,8 +1061,10 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         }
     } else if (std.mem.eql(u8, cmd, ".tables")) {
         listTables(allocator, db, stdout, stderr);
-    } else if (std.mem.eql(u8, cmd, ".schema")) {
-        stdout.writeAll("Not yet implemented.\n") catch {};
+    } else if (std.mem.startsWith(u8, cmd, ".schema")) {
+        const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
+        const table_name = if (rest.len > 0) rest else null;
+        showSchema(allocator, db, table_name, stdout, stderr);
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
@@ -1285,6 +1454,135 @@ test "handleDotCommand tables" {
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "users") != null);
+}
+
+test "handleDotCommand schema - all tables" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create test tables
+    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);") catch return error.SkipZigTest;
+    _ = db.exec("CREATE TABLE posts (id INTEGER, title TEXT, UNIQUE(title));") catch return error.SkipZigTest;
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".schema", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify both tables appear
+    try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE posts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE users") != null);
+
+    // Verify column types and constraints
+    try std.testing.expect(std.mem.indexOf(u8, output, "id INTEGER PRIMARY KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "name TEXT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "UNIQUE (title)") != null);
+}
+
+test "handleDotCommand schema - specific table" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create test tables
+    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE);") catch return error.SkipZigTest;
+    _ = db.exec("CREATE TABLE posts (id INTEGER, content TEXT);") catch return error.SkipZigTest;
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".schema users", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify only users table appears
+    try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE users") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "posts") == null);
+
+    // Verify constraints
+    try std.testing.expect(std.mem.indexOf(u8, output, "PRIMARY KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "AUTOINCREMENT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "UNIQUE") != null);
+}
+
+test "handleDotCommand schema - with composite primary key" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table with composite primary key
+    _ = db.exec("CREATE TABLE user_roles (user_id INTEGER, role_id INTEGER, PRIMARY KEY (user_id, role_id));") catch return error.SkipZigTest;
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".schema user_roles", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify composite primary key
+    try std.testing.expect(std.mem.indexOf(u8, output, "PRIMARY KEY (user_id, role_id)") != null);
+}
+
+test "handleDotCommand schema - table not found" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".schema nonexistent", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const eoutput = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
+}
+
+test "handleDotCommand schema - no tables" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    const result = handleDotCommand(allocator, &db, ".schema", &mode, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
 }
 
 test "processSQL parses valid SQL" {
