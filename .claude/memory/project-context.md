@@ -9,38 +9,48 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 114 - FEATURE)
+### Last Session (Session 116 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
-- **Focus**: CLI enhancement — `.echo` command for literal text output
+- **Focus**: CLI enhancement — `.show` command for consolidated settings view
 - **Outcome**: ✅ New CLI feature implemented, all tests passing
 - **Details**:
   - **CI Status**: ✅ GREEN before session
   - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred, non-blocking)
   - **Work Completed**:
-    1. **`.echo TEXT` command**: Print literal text to output
-       - `.echo Hello, World!` — prints "Hello, World!" to output
-       - `.echo` — prints empty line
-       - Useful for progress messages in SQL scripts (e.g., migration files)
-       - Simple command with no state variables (stateless)
+    1. **`.show` command**: Display all current settings in one view
+       - Shows mode (table/csv/json/jsonl/plain)
+       - Shows headers (on/off)
+       - Shows timer (on/off)
+       - Shows CSV separator (quoted string)
+       - Shows NULL display value (quoted string)
+       - Shows output destination (stdout/file)
+       - Formatted output with aligned labels (right-aligned field names)
     2. **Implementation details**:
-       - Added `.echo` handler to `handleDotCommand()` function
-       - Trims leading whitespace from argument
-       - Prints text followed by newline
-       - No function signature changes (unlike `.timer`, `.headers`, etc.)
+       - Added `.show` handler to `handleDotCommand()` function
+       - Reads all 6 current state variables (mode, headers, timer, separator, nullvalue, output)
+       - Consistent formatting with individual command outputs
+       - SQLite-compatible feature for debugging and reference
     3. **Test coverage**: Added 3 comprehensive tests
-       - `.echo Hello, World!` — verifies text printing
-       - `.echo` with no args — verifies empty line output
-       - `.help` includes `.echo` — verifies command in help text
-    4. **Updated `.help` text**: Added `.echo TEXT` description
+       - `.show` with custom settings — verifies all fields displayed correctly
+       - `.show` with defaults — verifies initial state
+       - `.help` includes `.show` — verifies command in help text
+    4. **Updated `.help` text**: Added `.show` description
   - **Files Changed**:
-    - `src/cli.zig`: +96 lines (echo command + 3 tests + help text)
-  - **Test Count**: 2897 tests estimated (3 new tests added)
-  - **Impact**: Scripting enhancement — users can add progress messages to `.read` scripts
+    - `src/cli.zig`: +122 lines (show command + 3 tests + help text)
+  - **Test Count**: 2911 tests (3 new tests added, all passing, 32 skipped)
+  - **Impact**: Enhanced UX — users can now view all settings at once instead of checking each individually
   - **Use cases**:
-    - Migration scripts: `.echo Creating users table...` before CREATE TABLE
-    - Progress tracking: `.echo Step 1/5 — schema setup`
-    - Section markers: `.echo === Data Import ==`
+    - `silica> .show` — quick overview of all settings
+    - Debugging output issues
+    - Reference when scripting or configuring output
+- **Commits**: 6579f96 (`.show` feature)
+
+### Previous Session (Session 114 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.echo` command for literal text output
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
 - **Commits**: cb9cd68 (`.echo` feature)
 
 ### Previous Session (Session 113 - FEATURE)
