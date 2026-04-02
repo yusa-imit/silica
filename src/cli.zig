@@ -1558,6 +1558,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.quit               Exit the shell
             \\.exit               Exit the shell
             \\.echo TEXT          Print literal text to output
+            \\.show               Show current settings (mode, headers, timer, separator, nullvalue, output)
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
             \\.separator STRING   Set CSV output separator (default: ",")
@@ -1691,6 +1692,24 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
         // Print the literal text argument (useful in scripts for progress messages)
         stdout.print("{s}\n", .{rest}) catch {};
+    } else if (std.mem.eql(u8, cmd, ".show")) {
+        // Show all current settings
+        stdout.writeAll("        mode: ") catch {};
+        stdout.print("{s}\n", .{@tagName(mode.*)}) catch {};
+        stdout.writeAll("     headers: ") catch {};
+        stdout.print("{s}\n", .{if (show_headers.*) "on" else "off"}) catch {};
+        stdout.writeAll("       timer: ") catch {};
+        stdout.print("{s}\n", .{if (show_timer.*) "on" else "off"}) catch {};
+        stdout.writeAll("   separator: ") catch {};
+        stdout.print("\"{s}\"\n", .{csv_separator.*}) catch {};
+        stdout.writeAll("   nullvalue: ") catch {};
+        stdout.print("\"{s}\"\n", .{null_display.*}) catch {};
+        stdout.writeAll("      output: ") catch {};
+        if (output_file.*) |_| {
+            stdout.writeAll("file\n") catch {};
+        } else {
+            stdout.writeAll("stdout\n") catch {};
+        }
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
@@ -3860,6 +3879,109 @@ test "handleDotCommand .help includes .echo" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".echo") != null);
+}
+
+test "handleDotCommand .show displays all settings" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_show.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [2048]u8 = undefined;
+    var err_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.csv;
+    var show_timer = false;
+    var show_headers = false;
+    var csv_separator: []const u8 = "|";
+    var null_display: []const u8 = "<empty>";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db,".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    // Verify all settings are displayed
+    try std.testing.expect(std.mem.indexOf(u8, output, "mode: csv") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "headers: off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "timer: off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "separator: \"|\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "nullvalue: \"<empty>\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "output: stdout") != null);
+}
+
+test "handleDotCommand .show with defaults" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_show_defaults.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [2048]u8 = undefined;
+    var err_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    // Default settings
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db,".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    // Verify default settings
+    try std.testing.expect(std.mem.indexOf(u8, output, "mode: table") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "headers: on") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "timer: on") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "separator: \",\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "nullvalue: \"NULL\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "output: stdout") != null);
+}
+
+test "handleDotCommand .help includes .show" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_help_show.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [8192]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db,".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".show") != null);
 }
 
 // Import wire_fuzz tests
