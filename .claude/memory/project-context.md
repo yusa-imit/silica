@@ -9,7 +9,48 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 112 - FEATURE)
+### Last Session (Session 114 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.echo` command for literal text output
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred, non-blocking)
+  - **Work Completed**:
+    1. **`.echo TEXT` command**: Print literal text to output
+       - `.echo Hello, World!` — prints "Hello, World!" to output
+       - `.echo` — prints empty line
+       - Useful for progress messages in SQL scripts (e.g., migration files)
+       - Simple command with no state variables (stateless)
+    2. **Implementation details**:
+       - Added `.echo` handler to `handleDotCommand()` function
+       - Trims leading whitespace from argument
+       - Prints text followed by newline
+       - No function signature changes (unlike `.timer`, `.headers`, etc.)
+    3. **Test coverage**: Added 3 comprehensive tests
+       - `.echo Hello, World!` — verifies text printing
+       - `.echo` with no args — verifies empty line output
+       - `.help` includes `.echo` — verifies command in help text
+    4. **Updated `.help` text**: Added `.echo TEXT` description
+  - **Files Changed**:
+    - `src/cli.zig`: +96 lines (echo command + 3 tests + help text)
+  - **Test Count**: 2897 tests estimated (3 new tests added)
+  - **Impact**: Scripting enhancement — users can add progress messages to `.read` scripts
+  - **Use cases**:
+    - Migration scripts: `.echo Creating users table...` before CREATE TABLE
+    - Progress tracking: `.echo Step 1/5 — schema setup`
+    - Section markers: `.echo === Data Import ==`
+- **Commits**: cb9cd68 (`.echo` feature)
+
+### Previous Session (Session 113 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: Dependency migration (sailor v1.31.0)
+- **Outcome**: ✅ sailor v1.31.0 migration complete, all tests passing
+- **Commits**: e102255 (sailor upgrade)
+
+### Previous Session (Session 112 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.nullvalue` command for custom NULL display
