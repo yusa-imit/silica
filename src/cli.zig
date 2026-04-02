@@ -1557,6 +1557,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.help               Show this help
             \\.quit               Exit the shell
             \\.exit               Exit the shell
+            \\.echo TEXT          Print literal text to output
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
             \\.separator STRING   Set CSV output separator (default: ",")
@@ -1686,6 +1687,10 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             null_display.* = rest;
             stdout.print("Nullvalue set to: \"{s}\"\n", .{null_display.*}) catch {};
         }
+    } else if (std.mem.startsWith(u8, cmd, ".echo")) {
+        const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
+        // Print the literal text argument (useful in scripts for progress messages)
+        stdout.print("{s}\n", .{rest}) catch {};
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
@@ -3764,6 +3769,97 @@ test "handleDotCommand .help includes .nullvalue" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".nullvalue") != null);
+}
+
+test "handleDotCommand .echo prints literal text" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_echo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [1024]u8 = undefined;
+    var err_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db,".echo Hello, World!", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Hello, World!") != null);
+}
+
+test "handleDotCommand .echo with no text" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_echo_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [1024]u8 = undefined;
+    var err_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db,".echo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    // Should just print a newline
+    try std.testing.expectEqualStrings("\n", output);
+}
+
+test "handleDotCommand .help includes .echo" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_help_echo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [8192]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db,".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".echo") != null);
 }
 
 // Import wire_fuzz tests
