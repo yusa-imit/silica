@@ -9,7 +9,44 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 109 - FEATURE)
+### Last Session (Session 112 - FEATURE)
+- **Date**: 2026-04-02
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.nullvalue` command for custom NULL display
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session (will verify after push)
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred)
+  - **Work Completed**:
+    1. **`.nullvalue STRING` command**: Customizable NULL value display
+       - `.nullvalue STRING` — sets custom NULL display string (e.g., "", "<empty>", "N/A")
+       - `.nullvalue` — shows current NULL display string
+       - Default: "NULL" (maintains backward compatibility)
+       - SQLite-compatible feature for cleaner data exports
+    2. **Implementation details**:
+       - Added `null_display` state variable in REPL loop (default: "NULL")
+       - Updated `valueToText()` signature to accept null_display parameter
+       - Threaded null_display through all format functions (formatTable, formatCsv, formatPlain)
+       - Updated `displayRows()`, `execAndDisplay()`, `execAndDisplayWithoutTiming()`, `readAndExecuteFile()`, `handleDotCommand()` signatures
+       - Updated ALL 46+ existing test calls with new null_display parameter
+    3. **Test coverage**: Added 4 comprehensive tests
+       - `.nullvalue <empty>` — sets custom string and verifies state
+       - `.nullvalue` — shows current setting (default "NULL")
+       - Query with NULL values — verifies custom display in output
+       - `.help` includes `.nullvalue` — verifies command appears in help text
+    4. **Updated `.help` text**: Added `.nullvalue` command description
+  - **Files Changed**:
+    - `src/cli.zig`: +276 lines, -85 lines (nullvalue command + 4 tests + parameter threading)
+  - **Test Count**: 2898 tests (4 new tests added, all passing)
+  - **Impact**: SQLite-compatible CLI enhancement — users can customize NULL display for data exports and readability
+  - **Use cases**:
+    - `silica> .nullvalue ""` — empty string for CSV exports
+    - `silica> .nullvalue <empty>` — human-readable missing value marker
+    - `silica> .mode csv` + `.nullvalue ""` — clean CSV with empty fields
+    - `silica> .nullvalue N/A` — explicit missing value indicator
+- **Commits**: 83cc80a (`.nullvalue` feature)
+
+### Previous Session (Session 109 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.output FILENAME` command for query result redirection
