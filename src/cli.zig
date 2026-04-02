@@ -209,6 +209,7 @@ pub fn main() !void {
     var is_continuation = false;
     var show_timer = true; // Default: show query execution time
     var show_headers = true; // Default: show column headers
+    var csv_separator: []const u8 = ","; // Default CSV separator
 
     // Output redirection state
     var output_file: ?std.fs.File = null;
@@ -237,7 +238,7 @@ pub fn main() !void {
 
         // Handle dot-commands (only on first line, not continuation)
         if (!is_continuation and trimmed[0] == '.') {
-            const result = handleDotCommand(allocator, &db, trimmed, &mode, &show_timer, &show_headers, &output_file, stdout, stderr);
+            const result = handleDotCommand(allocator, &db, trimmed, &mode, &show_timer, &show_headers, &csv_separator, &output_file, stdout, stderr);
             stdout.flush() catch {};
             stderr.flush() catch {};
             if (result == .quit) break;
@@ -264,10 +265,10 @@ pub fn main() !void {
         if (output_file) |f| {
             var file_writer = f.writer(&output_file_buf);
             const file_out = &file_writer.interface;
-            execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_headers, file_out, stderr);
+            execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_headers, csv_separator, file_out, stderr);
             file_out.flush() catch {};
         } else {
-            execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_headers, stdout, stderr);
+            execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_headers, csv_separator, stdout, stderr);
             stdout.flush() catch {};
         }
         stderr.flush() catch {};
@@ -279,11 +280,11 @@ pub fn main() !void {
 // ── SQL Execution ──────────────────────────────────────────────────────
 
 /// Execute SQL via the Database engine and display results.
-fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_timer: bool, show_headers: bool, stdout: anytype, stderr: anytype) void {
+fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_timer: bool, show_headers: bool, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
     // Start timer for query execution (if enabled)
     var timer = if (show_timer) std.time.Timer.start() catch {
         // If timer fails, continue without timing
-        execAndDisplayWithoutTiming(allocator, db, sql, mode, show_headers, stdout, stderr);
+        execAndDisplayWithoutTiming(allocator, db, sql, mode, show_headers, csv_separator, stdout, stderr);
         return;
     } else null;
 
@@ -305,7 +306,7 @@ fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, 
 
     if (result.rows != null) {
         // SELECT — format rows
-        displayRows(allocator, &result, mode, show_headers, stdout, stderr);
+        displayRows(allocator, &result, mode, show_headers, csv_separator, stdout, stderr);
     } else if (result.message.len > 0) {
         stdout.writeAll(result.message) catch {};
         stdout.writeByte('\n') catch {};
@@ -324,7 +325,7 @@ fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, 
 }
 
 /// Fallback for when timer is unavailable (executes without timing).
-fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_headers: bool, stdout: anytype, stderr: anytype) void {
+fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_headers: bool, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
     var result = db.exec(sql) catch |err| {
         const msg = switch (err) {
             error.ParseError => "SQL parse error.",
@@ -343,7 +344,7 @@ fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql:
 
     if (result.rows != null) {
         // SELECT — format rows
-        displayRows(allocator, &result, mode, show_headers, stdout, stderr);
+        displayRows(allocator, &result, mode, show_headers, csv_separator, stdout, stderr);
     } else if (result.message.len > 0) {
         stdout.writeAll(result.message) catch {};
         stdout.writeByte('\n') catch {};
@@ -355,7 +356,7 @@ fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql:
 }
 
 /// Drain all rows from a QueryResult and display them in the given output mode.
-fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputMode, show_headers: bool, stdout: anytype, stderr: anytype) void {
+fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputMode, show_headers: bool, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
     _ = stderr;
 
     // Collect all rows (we need them all for table mode column widths)
@@ -396,7 +397,7 @@ fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputM
 
     switch (mode) {
         .table => formatTable(allocator, headers, all_rows.items, show_headers, stdout),
-        .csv => formatCsv(headers, all_rows.items, allocator, show_headers, stdout),
+        .csv => formatCsv(headers, all_rows.items, allocator, show_headers, csv_separator, stdout),
         .json => formatJson(headers, all_rows.items, allocator, stdout),
         .jsonl => formatJsonl(headers, all_rows.items, allocator, stdout),
         .plain => formatPlain(headers, all_rows.items, allocator, show_headers, stdout),
@@ -501,26 +502,44 @@ fn formatTable(allocator: std.mem.Allocator, headers: []const []const u8, rows: 
 
 // ── CSV Format ────────────────────────────────────────────────────────
 
-fn formatCsv(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, show_headers: bool, writer: anytype) void {
-    const WriterType = @TypeOf(writer);
-    var csv = sailor.fmt.Csv(WriterType).init(writer, .{});
-
+fn formatCsv(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, show_headers: bool, separator: []const u8, writer: anytype) void {
     // Write headers (if enabled)
     if (show_headers) {
-        for (headers) |h| {
-            csv.writeField(h) catch return;
+        for (headers, 0..) |h, i| {
+            if (i > 0) writer.writeAll(separator) catch return;
+            writeCsvField(writer, h) catch return;
         }
-        csv.endRow() catch return;
+        writer.writeByte('\n') catch return;
     }
 
     // Write rows
     for (rows) |row| {
-        for (row.values) |val| {
+        for (row.values, 0..) |val, i| {
+            if (i > 0) writer.writeAll(separator) catch return;
             const text = valueToText(allocator, val) orelse "NULL";
             defer if (text.ptr != "NULL".ptr) allocator.free(text);
-            csv.writeField(text) catch return;
+            writeCsvField(writer, text) catch return;
         }
-        csv.endRow() catch return;
+        writer.writeByte('\n') catch return;
+    }
+}
+
+fn writeCsvField(writer: anytype, field: []const u8) !void {
+    // Quote field if it contains separator, quotes, or newlines
+    const needs_quoting = std.mem.indexOfAny(u8, field, ",\"\n\r") != null;
+
+    if (needs_quoting) {
+        try writer.writeByte('"');
+        for (field) |ch| {
+            if (ch == '"') {
+                try writer.writeAll("\"\""); // Escape quotes by doubling
+            } else {
+                try writer.writeByte(ch);
+            }
+        }
+        try writer.writeByte('"');
+    } else {
+        try writer.writeAll(field);
     }
 }
 
@@ -1256,7 +1275,7 @@ fn dumpDatabase(allocator: std.mem.Allocator, db: *Database, stdout: anytype, st
 }
 
 /// Read and execute SQL statements from a file
-fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []const u8, mode: OutputMode, show_timer: bool, show_headers: bool, stdout: anytype, stderr: anytype) void {
+fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []const u8, mode: OutputMode, show_timer: bool, show_headers: bool, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
     // Open file
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         const msg = switch (err) {
@@ -1309,7 +1328,7 @@ fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []c
             const statement = statement_buf.items;
             if (statement.len > 0) {
                 statement_count += 1;
-                execAndDisplay(allocator, db, statement, mode, show_timer, show_headers, stdout, stderr);
+                execAndDisplay(allocator, db, statement, mode, show_timer, show_headers, csv_separator, stdout, stderr);
             }
             statement_buf.clearRetainingCapacity();
         }
@@ -1528,7 +1547,7 @@ fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catal
 
 const DotCommandResult = enum { ok, quit };
 
-fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, output_file: *?std.fs.File, stdout: anytype, stderr: anytype) DotCommandResult {
+fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, csv_separator: *[]const u8, output_file: *?std.fs.File, stdout: anytype, stderr: anytype) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
@@ -1539,6 +1558,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
             \\.exit               Exit the shell
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
             \\.mode               Show current output mode
+            \\.separator STRING   Set CSV output separator (default: ",")
+            \\.separator          Show current separator
             \\.headers on|off     Enable or disable column headers in output
             \\.headers            Show current headers setting
             \\.timer on|off       Enable or disable query execution timing
@@ -1621,6 +1642,16 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
                 printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
             }
         }
+    } else if (std.mem.startsWith(u8, cmd, ".separator")) {
+        const rest = std.mem.trimLeft(u8, cmd[10..], " \t");
+        if (rest.len == 0) {
+            // Show current separator
+            stdout.print("Separator: \"{s}\"\n", .{csv_separator.*}) catch {};
+        } else {
+            // Set new separator
+            csv_separator.* = rest;
+            stdout.print("Separator set to: \"{s}\"\n", .{rest}) catch {};
+        }
     } else if (std.mem.eql(u8, cmd, ".databases")) {
         showDatabases(db, stdout);
     } else if (std.mem.eql(u8, cmd, ".tables")) {
@@ -1640,7 +1671,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, cmd: []const u8
         if (rest.len == 0) {
             printError(stderr, "Usage: .read FILENAME");
         } else {
-            readAndExecuteFile(allocator, db, rest, mode.*, show_timer.*, show_headers.*, stdout, stderr);
+            readAndExecuteFile(allocator, db, rest, mode.*, show_timer.*, show_headers.*, csv_separator.*, stdout, stderr);
         }
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
@@ -1910,8 +1941,9 @@ test "handleDotCommand help" {
     var mode: OutputMode = .table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
@@ -1938,8 +1970,9 @@ test "handleDotCommand databases" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -1968,8 +2001,9 @@ test "handleDotCommand databases - memory database" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -1993,8 +2027,9 @@ test "handleDotCommand quit" {
     var mode: OutputMode = .table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".quit", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".quit", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
@@ -2015,8 +2050,9 @@ test "handleDotCommand unknown" {
     var mode: OutputMode = .table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".foobar", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".foobar", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Unknown command") != null);
@@ -2037,8 +2073,9 @@ test "handleDotCommand mode set" {
     var mode: OutputMode = .table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    _ = handleDotCommand(allocator, &db, ".mode csv", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".mode csv", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(OutputMode.csv, mode);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "csv") != null);
@@ -2059,8 +2096,9 @@ test "handleDotCommand mode show" {
     var mode: OutputMode = .json;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    _ = handleDotCommand(allocator, &db, ".mode", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".mode", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "json") != null);
 }
@@ -2080,8 +2118,9 @@ test "handleDotCommand mode invalid" {
     var mode: OutputMode = .table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    _ = handleDotCommand(allocator, &db, ".mode foobar", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".mode foobar", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(OutputMode.table, mode); // unchanged
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Invalid mode") != null);
@@ -2106,8 +2145,9 @@ test "handleDotCommand tables" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".tables", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".tables", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "users") != null);
@@ -2133,8 +2173,9 @@ test "handleDotCommand schema - all tables" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2168,8 +2209,9 @@ test "handleDotCommand schema - specific table" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".schema users", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".schema users", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2202,8 +2244,9 @@ test "handleDotCommand schema - with composite primary key" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".schema user_roles", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".schema user_roles", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2227,8 +2270,9 @@ test "handleDotCommand schema - table not found" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".schema nonexistent", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".schema nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -2251,8 +2295,9 @@ test "handleDotCommand schema - no tables" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -2279,8 +2324,9 @@ test "handleDotCommand indexes - named index" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".indexes users", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".indexes users", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "idx_email") != null);
@@ -2310,8 +2356,9 @@ test "handleDotCommand indexes - all tables" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     // Verify both indexes appear
@@ -2340,8 +2387,9 @@ test "handleDotCommand indexes - no indexes" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".indexes plain", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".indexes plain", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No indexes found") != null);
@@ -2364,8 +2412,9 @@ test "handleDotCommand indexes - table not found" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".indexes nonexistent", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".indexes nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -2388,8 +2437,9 @@ test "handleDotCommand indexes - no tables" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -2419,8 +2469,9 @@ test "handleDotCommand dump - basic table" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2451,8 +2502,9 @@ test "handleDotCommand dump - empty database" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -2483,8 +2535,9 @@ test "handleDotCommand dump - with indexes" {
 
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2686,7 +2739,7 @@ test "formatCsv renders CSV output" {
     var out_buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out_buf);
     var w = fbs.writer();
-    formatCsv(headers, &rows, allocator, true, &w);
+    formatCsv(headers, &rows, allocator, true, ",", &w);
     const output = fbs.getWritten();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "id,name") != null);
@@ -2813,8 +2866,9 @@ test "handleDotCommand .read executes SQL from file" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".read test_script.sql", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".read test_script.sql", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -2856,8 +2910,9 @@ test "handleDotCommand .read handles file not found" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".read nonexistent.sql", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".read nonexistent.sql", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -2897,8 +2952,9 @@ test "handleDotCommand .read skips SQL comments" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".read test_comments.sql", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".read test_comments.sql", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -2925,8 +2981,9 @@ test "handleDotCommand .read requires filename" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".read", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".read", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -2952,12 +3009,13 @@ test "handleDotCommand .output to file" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
     const output_path = "test_output_results.txt";
     defer std.fs.cwd().deleteFile(output_path) catch {};
 
-    const result = handleDotCommand(allocator, &db, ".output test_output_results.txt", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".output test_output_results.txt", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file != null);
 
@@ -2987,13 +3045,14 @@ test "handleDotCommand .output reset to stdout" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
     // First redirect to file
     const temp_path = "test_output_temp.txt";
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
-    _ = handleDotCommand(allocator, &db, ".output test_output_temp.txt", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    _ = handleDotCommand(allocator, &db, ".output test_output_temp.txt", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expect(output_file != null);
 
     // Reset fbs for next command
@@ -3001,7 +3060,7 @@ test "handleDotCommand .output reset to stdout" {
     w = fbs.writer();
 
     // Then reset to stdout
-    const result = handleDotCommand(allocator, &db, ".output", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".output", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null);
 
@@ -3028,9 +3087,10 @@ test "handleDotCommand .output already stdout" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".output", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".output", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null);
 
@@ -3057,10 +3117,11 @@ test "handleDotCommand .output file creation error" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
     // Try to open a file in a non-existent directory
-    const result = handleDotCommand(allocator, &db, ".output /nonexistent/path/file.txt", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".output /nonexistent/path/file.txt", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null); // Should remain null on error
 
@@ -3084,8 +3145,9 @@ test "handleDotCommand .output in help text" {
     var mode: OutputMode = .table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".output") != null);
@@ -3110,9 +3172,10 @@ test "handleDotCommand .timer on" {
     var mode = OutputMode.table;
     var show_timer = false; // Start disabled
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".timer on", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer on", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should be enabled now
 
@@ -3139,9 +3202,10 @@ test "handleDotCommand .timer off" {
     var mode = OutputMode.table;
     var show_timer = true; // Start enabled
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".timer off", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer off", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_timer); // Should be disabled now
 
@@ -3168,9 +3232,10 @@ test "handleDotCommand .timer shows current setting" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".timer", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -3196,9 +3261,10 @@ test "handleDotCommand .timer invalid argument" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".timer foobar", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".timer foobar", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should remain unchanged
 
@@ -3225,8 +3291,9 @@ test "handleDotCommand .help includes .timer" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -3252,9 +3319,10 @@ test "handleDotCommand .headers on" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = false; // Start disabled
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".headers on", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".headers on", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_headers); // Should be enabled now
 
@@ -3281,9 +3349,10 @@ test "handleDotCommand .headers off" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true; // Start enabled
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".headers off", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".headers off", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_headers); // Should be disabled now
 
@@ -3310,9 +3379,10 @@ test "handleDotCommand .headers shows current setting" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".headers", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".headers", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -3338,9 +3408,10 @@ test "handleDotCommand .headers invalid argument" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
 
-    const result = handleDotCommand(allocator, &db, ".headers foobar", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".headers foobar", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_headers); // Should remain unchanged
 
@@ -3367,12 +3438,141 @@ test "handleDotCommand .help includes .headers" {
     var mode = OutputMode.table;
     var show_timer = true;
     var show_headers = true;
+    var csv_separator: []const u8 = ",";
     var output_file: ?std.fs.File = null;
-    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &output_file, &w, &ew);
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".headers") != null);
+}
+
+test "handleDotCommand .separator set custom separator" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_separator_custom.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.csv;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    try std.testing.expectEqualStrings("|", csv_separator);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "|") != null);
+}
+
+test "handleDotCommand .separator show current separator" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_separator_show.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.csv;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, ".separator", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\",\"") != null);
+}
+
+test "handleDotCommand .separator pipe then query with CSV output" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_separator_csv_output.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    // Create table and insert data
+    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch unreachable;
+    _ = db.exec("INSERT INTO users (id, name) VALUES (1, 'Alice');") catch unreachable;
+
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.csv;
+    var show_timer = false;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var output_file: ?std.fs.File = null;
+
+    // Set separator to pipe
+    _ = handleDotCommand(allocator, &db, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
+    try std.testing.expectEqualStrings("|", csv_separator);
+
+    // Execute query with CSV output
+    fbs.reset();
+    execAndDisplay(allocator, &db, "SELECT * FROM users;", mode, show_timer, show_headers, csv_separator, &w, &ew);
+
+    const output = fbs.getWritten();
+    // Verify output uses pipe separator
+    try std.testing.expect(std.mem.indexOf(u8, output, "id|name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1|Alice") != null);
+}
+
+test "handleDotCommand .help includes .separator" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_help_separator.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [8192]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var output_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, ".help", &mode, &show_timer, &show_headers, &csv_separator, &output_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".separator") != null);
 }
 
 // Import wire_fuzz tests
