@@ -9,7 +9,45 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 116 - FEATURE)
+### Last Session (Session 119 - FEATURE)
+- **Date**: 2026-04-03
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.changes` command for tracking rows affected by DML
+- **Outcome**: ✅ New CLI feature implemented, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (issue #25: GIN index architectural issues — deferred, non-blocking)
+  - **Work Completed**:
+    1. **`.changes` command**: SQLite-compatible command showing rows affected by last DML statement
+       - Displays count of rows modified by last INSERT/UPDATE/DELETE
+       - Returns 0 for SELECT statements (no rows modified)
+       - Tracks state across queries in REPL session
+    2. **Implementation details**:
+       - Added `last_rows_affected: u64` state variable in REPL loop
+       - Updated `execAndDisplay()` signature to accept `last_rows_affected` pointer
+       - Updated `execAndDisplayWithoutTiming()` to save `result.rows_affected`
+       - Updated `readAndExecuteFile()` to thread parameter through
+       - Updated `handleDotCommand()` signature (+1 parameter)
+       - Updated ALL 61 test call sites with new parameter (automated via sed)
+    3. **Test coverage**: Added 5 comprehensive tests
+       - `.changes` after INSERT — verifies correct count (3 rows)
+       - `.changes` after UPDATE — verifies correct count (2 rows)
+       - `.changes` after DELETE — verifies correct count (3 rows)
+       - `.changes` after SELECT — verifies 0 (no modification)
+       - `.help` includes `.changes` — verifies command in help text
+    4. **Updated `.help` text**: Added `.changes` description
+  - **Files Changed**:
+    - `src/cli.zig`: +327 lines, -73 lines (parameter threading, 5 new tests, help update)
+  - **Test Count**: 2919 tests (5 new tests added, all passing, 28 skipped)
+  - **Impact**: SQLite-compatible feature for debugging DML operations
+  - **Use cases**:
+    - `silica> INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');`
+    - `silica> .changes` → outputs "2"
+    - `silica> UPDATE users SET active = true WHERE id <= 10;`
+    - `silica> .changes` → outputs "10"
+- **Commits**: 5e5510d (`.changes` feature)
+
+### Previous Session (Session 116 - FEATURE)
 - **Date**: 2026-04-02
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.show` command for consolidated settings view
