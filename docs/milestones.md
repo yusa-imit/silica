@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.30.2
-- **Latest available**: v1.30.2
+- **Current in silica**: v1.31.0
+- **Latest available**: v1.31.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -189,6 +189,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.30.0 | error handling & debugging | DONE | Debug logging system (SAILOR_DEBUG env), stack trace helpers, error recovery patterns |
 | v1.30.1 | bug fix (Zig 0.15 compat) | DONE | Fixed std.BoundedArray → std.BoundedArrayAligned for Zig 0.15 |
 | v1.30.2 | bug fix (Zig 0.15.2 compat) | DONE | Fixed BoundedArrayAligned usage (doesn't exist in Zig 0.15.2) |
+| v1.31.0 | performance profiling & optimization | DONE | Render profiler, memory tracker, event loop profiler, widget metrics, profiling demo |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
