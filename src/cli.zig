@@ -1606,6 +1606,95 @@ fn backupDatabase(source_path: []const u8, dest_path: []const u8, stdout: anytyp
     stdout.print("Database backed up to: {s}\n", .{dest_path}) catch {};
 }
 
+fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const u8, table_name: []const u8, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
+    // Read CSV file (max 100 MB)
+    const max_size = 100 * 1024 * 1024;
+    const csv_content = std.fs.cwd().readFileAlloc(allocator, csv_path, max_size) catch |err| {
+        const msg = switch (err) {
+            error.FileNotFound => "CSV file not found",
+            error.AccessDenied => "Access denied. Check file permissions",
+            error.FileTooBig => "CSV file too large (max 100 MB)",
+            else => "Failed to read CSV file",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer allocator.free(csv_content);
+
+    // Split CSV into lines
+    var lines = std.mem.splitScalar(u8, csv_content, '\n');
+    var rows_imported: u64 = 0;
+
+    // Process each line
+    while (lines.next()) |line| {
+        // Skip empty lines
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        // Parse CSV fields (simple split by separator)
+        var values: std.ArrayList([]const u8) = .{};
+        defer values.deinit(allocator);
+
+        var field_iter = std.mem.splitSequence(u8, trimmed, csv_separator);
+        while (field_iter.next()) |field| {
+            // Trim quotes if present
+            var cleaned_field = std.mem.trim(u8, field, " \t");
+            if (cleaned_field.len >= 2 and cleaned_field[0] == '"' and cleaned_field[cleaned_field.len - 1] == '"') {
+                cleaned_field = cleaned_field[1 .. cleaned_field.len - 1];
+            }
+            values.append(allocator, cleaned_field) catch {
+                printError(stderr, "Out of memory while parsing CSV");
+                return;
+            };
+        }
+
+        // Build INSERT statement
+        if (values.items.len == 0) continue;
+
+        // Construct SQL: INSERT INTO table VALUES (?, ?, ...)
+        var sql_buf: std.ArrayList(u8) = .{};
+        defer sql_buf.deinit(allocator);
+
+        sql_buf.writer(allocator).print("INSERT INTO {s} VALUES (", .{table_name}) catch {
+            printError(stderr, "Out of memory while building INSERT");
+            return;
+        };
+
+        for (values.items, 0..) |value, i| {
+            if (i > 0) sql_buf.writer(allocator).writeAll(", ") catch {};
+            // Escape single quotes and wrap in quotes
+            sql_buf.writer(allocator).writeByte('\'') catch {};
+            var j: usize = 0;
+            while (j < value.len) : (j += 1) {
+                if (value[j] == '\'') {
+                    sql_buf.writer(allocator).writeAll("''") catch {};
+                } else {
+                    sql_buf.writer(allocator).writeByte(value[j]) catch {};
+                }
+            }
+            sql_buf.writer(allocator).writeByte('\'') catch {};
+        }
+        sql_buf.writer(allocator).writeAll(");") catch {};
+
+        // Execute INSERT
+        const sql = sql_buf.items;
+        _ = db.exec(sql) catch |err| {
+            const msg = switch (err) {
+                error.TableNotFound => "Table not found. Create the table first",
+                error.UniqueConstraintViolation => "Duplicate key error. Row already exists",
+                else => "Failed to insert row",
+            };
+            stderr.print("Error importing row: {s}\n", .{msg}) catch {};
+            stderr.print("SQL: {s}\n", .{sql}) catch {};
+            continue;
+        };
+
+        rows_imported += 1;
+    }
+
+    stdout.print("Imported {d} rows from {s} into {s}\n", .{ rows_imported, csv_path, table_name }) catch {};
+}
+
 const DotCommandResult = enum { ok, quit };
 
 fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []const u8, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, csv_separator: *[]const u8, null_display: *[]const u8, output_file: *?std.fs.File, last_rows_affected: *u64, bail_on_error: *bool, stdout: anytype, stderr: anytype) DotCommandResult {
@@ -1641,6 +1730,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
             \\.dump               Dump database as SQL text (CREATE TABLE + INSERT statements)
             \\.backup FILENAME    Create a backup copy of the database file
+            \\.import FILE TABLE  Import CSV data from file into table
             \\.read FILENAME      Read and execute SQL from file
             \\
         ) catch {};
@@ -1757,6 +1847,31 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             printError(stderr, "Usage: .backup FILENAME");
         } else {
             backupDatabase(db_path, rest, stdout, stderr);
+        }
+    } else if (std.mem.startsWith(u8, cmd, ".import")) {
+        const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
+        if (rest.len == 0) {
+            printError(stderr, "Usage: .import FILE TABLE");
+        } else {
+            // Parse FILE and TABLE arguments
+            var args_iter = std.mem.splitScalar(u8, rest, ' ');
+            const csv_file = args_iter.next() orelse {
+                printError(stderr, "Usage: .import FILE TABLE");
+                return .ok;
+            };
+            // Skip any spaces between arguments
+            var table_arg: ?[]const u8 = null;
+            while (args_iter.next()) |arg| {
+                if (arg.len > 0) {
+                    table_arg = arg;
+                    break;
+                }
+            }
+            const table_name = table_arg orelse {
+                printError(stderr, "Usage: .import FILE TABLE");
+                return .ok;
+            };
+            importCsvFile(allocator, db, csv_file, table_name, csv_separator.*, stdout, stderr);
         }
     } else if (std.mem.startsWith(u8, cmd, ".read")) {
         const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
@@ -4479,6 +4594,181 @@ test "handleDotCommand .help includes .backup" {
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".backup") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Create a backup copy of the database file") != null);
+}
+
+test "handleDotCommand .import imports CSV data" {
+    const allocator = std.testing.allocator;
+    const path = "test_import.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table
+    var result1 = db.exec("CREATE TABLE users (id INTEGER, name TEXT, email TEXT);") catch return error.SkipZigTest;
+    defer result1.close(allocator);
+
+    // Create CSV file
+    const csv_path = "test_import.csv";
+    const csv_content = "1,Alice,alice@example.com\n2,Bob,bob@example.com\n3,Charlie,charlie@example.com\n";
+    std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content }) catch return error.SkipZigTest;
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var buf: [512]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".import test_import.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Imported 3 rows") != null);
+
+    // Verify data was imported
+    var verify_result = db.exec("SELECT COUNT(*) FROM users;") catch return error.SkipZigTest;
+    defer verify_result.close(allocator);
+    if (try verify_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const count = row.values[0].integer;
+        try std.testing.expectEqual(@as(i64, 3), count);
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+test "handleDotCommand .import with custom separator" {
+    const allocator = std.testing.allocator;
+    const path = "test_import_pipe.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table
+    var result1 = db.exec("CREATE TABLE products (id INTEGER, name TEXT, price TEXT);") catch return error.SkipZigTest;
+    defer result1.close(allocator);
+
+    // Create pipe-separated CSV file
+    const csv_path = "test_import_pipe.csv";
+    const csv_content = "1|Apple|1.99\n2|Banana|0.99\n";
+    std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content }) catch return error.SkipZigTest;
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var buf: [512]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = "|"; // Use pipe separator
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".import test_import_pipe.csv products", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Imported 2 rows") != null);
+}
+
+test "handleDotCommand .import missing arguments" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".import", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const eoutput = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, eoutput, "Usage: .import FILE TABLE") != null);
+}
+
+test "handleDotCommand .import file not found" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".import nonexistent.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const eoutput = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, eoutput, "CSV file not found") != null);
+}
+
+test "handleDotCommand .help includes .import" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".import") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Import CSV data from file into table") != null);
 }
 
 test "handleDotCommand .changes shows rows affected by INSERT" {
