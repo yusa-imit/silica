@@ -56,132 +56,37 @@ fn materializeRows(allocator: std.mem.Allocator, iter: *executor_mod.RowIterator
 // ══════════════════════════════════════════════════════════════════════════
 
 test "crash: commit before WAL flush" {
-    const allocator = testing.allocator;
-    const db_path = ":memory:";
-
-    // Setup: Create table and insert data
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
-        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
-    }
-
     // TODO: Implement crash simulation before WAL flush
-    // For now, this is a placeholder test structure
-    try testing.expect(true);
+    // Requires: Crash injection infrastructure at WAL write boundary
+    // Expected: Transaction should be rolled back on recovery if WAL not flushed
+    return error.SkipZigTest;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
 // Crash Point 2: During WAL Checkpoint
 // ══════════════════════════════════════════════════════════════════════════
 
-// DISABLED: This test hangs due to performance issue with 1000 sequential INSERTs
-// TODO: Re-enable after investigating why bulk inserts are slow/hanging
-// Issue: Each INSERT in loop may be triggering full table scan or other O(n²) behavior
 test "crash: during checkpoint" {
-    // const allocator = testing.allocator;
-    // const db_path = ":memory:";
-
-    // // Setup: Create table and insert enough data to trigger checkpoint
-    // {
-    //     var db = try createTestDb(allocator, db_path);
-    //     defer db.close();
-
-    //     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-
-    //     // Insert many rows to fill WAL
-    //     var i: usize = 0;
-    //     while (i < 1000) : (i += 1) {
-    //         var buf: [100]u8 = undefined;
-    //         const sql = try std.fmt.bufPrint(&buf, "INSERT INTO t1 VALUES ({d}, {d})", .{i, i * 10});
-    //         try execSql(&db, sql);
-    //     }
-
-    //     // Force checkpoint (this should be a public API)
-    //     // try db.checkpoint();
-    // }
-
-    // // TODO: Simulate crash during checkpoint
-    // try testing.expect(true);
-    try testing.expect(true); // Placeholder until fixed
+    // TODO: Implement crash simulation during checkpoint operation
+    // Requires: Crash injection infrastructure at checkpoint write boundaries
+    // Known issue: 1000 sequential INSERTs are slow (O(n²) behavior suspected)
+    // Expected: Partial checkpoint should be safe, recovery completes the checkpoint
+    return error.SkipZigTest;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
 // Crash Point 3: After WAL Write, Before Main DB Update
 // ══════════════════════════════════════════════════════════════════════════
 
-// DISABLED: This test hangs - likely in db.exec() during SELECT or WAL recovery
-// TODO: Debug why this hangs. Possible causes:
-//   1. WAL recovery entering infinite loop
-//   2. SELECT query hanging (table scan issue?)
-//   3. File I/O deadlock
-//   4. Iterator not terminating properly
 test "crash: after WAL write, before main DB update" {
-    // const allocator = testing.allocator;
-
-    // // Use temp file instead of :memory: so data persists across reopens
-    // var tmp = testing.tmpDir(.{});
-    // defer tmp.cleanup();
-
-    // var path_buf: [256]u8 = undefined;
-    // const db_path = try std.fmt.bufPrint(&path_buf, "test_crash_wal_{d}.db", .{std.time.milliTimestamp()});
-    // const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
-    // defer allocator.free(db_full_path);
-
-    // var full_path_buf: [512]u8 = undefined;
-    // const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{db_full_path, db_path});
-
-    // // Phase 1: Write data and commit (WAL written, no checkpoint)
-    // {
-    //     var db = try createTestDb(allocator, full_path);
-
-    //     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-    //     try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
-    //     try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
-
-    //     // Close WITHOUT checkpoint — simulates crash after WAL write
-    //     // (db.close() should NOT call checkpoint, data remains in WAL)
-    //     db.close();
-    // }
-
-    // // Phase 2: Reopen database — WAL recovery should apply changes
-    // {
-    //     var db = try createTestDb(allocator, full_path);
-    //     defer db.close();
-
-    //     // Verify data exists after recovery
-    //     var result = try db.exec("SELECT id, val FROM t1 ORDER BY id");
-    //     defer result.close(allocator);
-
-    //     if (result.rows) |*iter| {
-    //         var rows = try materializeRows(allocator, iter);
-    //         defer {
-    //             for (rows.items) |*row| row.deinit();
-    //             rows.deinit(allocator);
-    //         }
-
-    //         // Should have 2 rows
-    //         try testing.expectEqual(@as(usize, 2), rows.items.len);
-
-    //         // Row 1: id=1, val=100
-    //         try testing.expectEqual(@as(i64, 1), rows.items[0].values[0].integer);
-    //         try testing.expectEqual(@as(i64, 100), rows.items[0].values[1].integer);
-
-    //         // Row 2: id=2, val=200
-    //         try testing.expectEqual(@as(i64, 2), rows.items[1].values[0].integer);
-    //         try testing.expectEqual(@as(i64, 200), rows.items[1].values[1].integer);
-    //     }
-    // }
-
-    // // Cleanup
-    // tmp.dir.deleteFile(db_path) catch {};
-    // var wal_path_buf: [272]u8 = undefined;
-    // const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{db_path});
-    // tmp.dir.deleteFile(wal_path) catch {};
-    try testing.expect(true); // Placeholder until fixed
+    // TODO: Debug why WAL recovery test hangs. Possible causes:
+    //   1. WAL recovery entering infinite loop
+    //   2. SELECT query hanging (table scan issue?)
+    //   3. File I/O deadlock
+    //   4. Iterator not terminating properly
+    // Requires: Fix hang issue before implementing crash simulation
+    // Expected: WAL recovery should restore committed transactions
+    return error.SkipZigTest;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -189,32 +94,13 @@ test "crash: after WAL write, before main DB update" {
 // ══════════════════════════════════════════════════════════════════════════
 
 test "crash: torn page during write" {
-    const allocator = testing.allocator;
-    const db_path = ":memory:";
-
-    // Simulate partial page write (e.g., power failure mid-write)
-    // WAL should protect against torn pages
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        try execSql(&db, "CREATE TABLE t1 (id INTEGER, data TEXT)");
-
-        // Insert large row that spans multiple pages
-        const large_text = "X" ** 8000;
-        var buf: [8200]u8 = undefined;
-        const sql = try std.fmt.bufPrint(&buf, "INSERT INTO t1 VALUES (1, '{s}')", .{large_text});
-        try execSql(&db, sql);
-
-        // TODO: Simulate torn page (partial write)
-    }
-
-    // Recovery should either:
-    // 1. See complete transaction (all pages written)
-    // 2. See no transaction (rollback via WAL)
-    // Never see partial transaction
-
-    try testing.expect(true);
+    // TODO: Implement torn page simulation (partial page write)
+    // Requires: Low-level file I/O injection to write partial page
+    // Expected: WAL should protect against torn pages - recovery shows either
+    //   1. Complete transaction (all pages written), or
+    //   2. No transaction (rollback via WAL)
+    //   Never partial transaction
+    return error.SkipZigTest;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -222,38 +108,10 @@ test "crash: torn page during write" {
 // ══════════════════════════════════════════════════════════════════════════
 
 test "crash: multiple transactions, partial commits" {
-    const allocator = testing.allocator;
-    const db_path = ":memory:";
-
-    // Test atomicity: only fully committed transactions should survive crash
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-
-        // TX1: Committed
-        try execSql(&db, "BEGIN");
-        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
-        try execSql(&db, "COMMIT");
-
-        // TX2: Started but not committed
-        try execSql(&db, "BEGIN");
-        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
-        // No COMMIT - simulating crash here
-
-        // TODO: Simulate crash
-    }
-
-    // After recovery, only TX1 should be visible
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        // TODO: Verify only row with id=1 exists
-    }
-
-    try testing.expect(true);
+    // TODO: Implement crash simulation with multiple concurrent transactions
+    // Requires: Crash injection after TX1 commit, before TX2 commit
+    // Expected: Only fully committed TX1 should survive, TX2 should be rolled back
+    return error.SkipZigTest;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -261,35 +119,11 @@ test "crash: multiple transactions, partial commits" {
 // ══════════════════════════════════════════════════════════════════════════
 
 test "crash: during index update" {
-    const allocator = testing.allocator;
-    const db_path = ":memory:";
-
-    // Indexes and data table must be in sync after crash recovery
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try execSql(&db, "CREATE INDEX idx_val ON t1(val)");
-
-        try execSql(&db, "BEGIN");
-        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
-        try execSql(&db, "INSERT INTO t1 VALUES (2, 200)");
-        try execSql(&db, "COMMIT");
-
-        // TODO: Simulate crash during index update
-    }
-
-    // After recovery, index should be consistent with table
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        // TODO: Verify index consistency
-        // SELECT via index should return same results as table scan
-    }
-
-    try testing.expect(true);
+    // TODO: Implement crash simulation during index update operation
+    // Requires: Crash injection between data write and index update
+    // Expected: Index and data table must remain in sync after recovery
+    //   (both updated or neither updated, never only one)
+    return error.SkipZigTest;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -297,31 +131,9 @@ test "crash: during index update" {
 // ══════════════════════════════════════════════════════════════════════════
 
 test "crash: during recovery (double crash)" {
-    const allocator = testing.allocator;
-    const db_path = ":memory:";
-
-    // Simulate crash during WAL replay
-    // Recovery process itself must be crash-safe
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
-        try execSql(&db, "INSERT INTO t1 VALUES (1, 100)");
-
-        // TODO: Simulate crash
-    }
-
-    // First recovery attempt
-    // TODO: Simulate crash during recovery
-
-    // Second recovery attempt - should still succeed
-    {
-        var db = try createTestDb(allocator, db_path);
-        defer db.close();
-
-        // TODO: Verify data integrity
-    }
-
-    try testing.expect(true);
+    // TODO: Implement double-crash simulation (crash during WAL recovery)
+    // Requires: Crash injection during first recovery attempt, then verify
+    //   second recovery completes successfully
+    // Expected: Recovery process itself must be idempotent and crash-safe
+    return error.SkipZigTest;
 }
