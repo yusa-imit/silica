@@ -16,6 +16,81 @@ const CompletionItem = struct {
     description: ?[]const u8 = null,
 };
 
+// SQL keyword help text for tooltips
+fn getSqlKeywordHelp(keyword: []const u8) ?[]const u8 {
+    const upper = std.ascii.allocUpperString(std.heap.page_allocator, keyword) catch return null;
+    defer std.heap.page_allocator.free(upper);
+
+    const help_map = std.StaticStringMap([]const u8).initComptime(.{
+        .{ "SELECT", "Retrieve rows from tables" },
+        .{ "INSERT", "Add new rows to a table" },
+        .{ "UPDATE", "Modify existing rows" },
+        .{ "DELETE", "Remove rows from a table" },
+        .{ "CREATE", "Create database objects (TABLE, INDEX, VIEW)" },
+        .{ "DROP", "Remove database objects" },
+        .{ "ALTER", "Modify table structure" },
+        .{ "FROM", "Specify source table(s)" },
+        .{ "WHERE", "Filter rows with conditions" },
+        .{ "JOIN", "Combine rows from multiple tables" },
+        .{ "INNER", "Return matching rows from both tables" },
+        .{ "LEFT", "Return all left table rows + matches" },
+        .{ "RIGHT", "Return all right table rows + matches" },
+        .{ "FULL", "Return all rows with matches where available" },
+        .{ "ON", "Specify join condition" },
+        .{ "GROUP", "Aggregate rows by column values" },
+        .{ "HAVING", "Filter grouped results" },
+        .{ "ORDER", "Sort result rows" },
+        .{ "BY", "Specify sort/group column(s)" },
+        .{ "LIMIT", "Restrict number of rows returned" },
+        .{ "OFFSET", "Skip N rows before returning results" },
+        .{ "DISTINCT", "Remove duplicate rows" },
+        .{ "AS", "Rename column or table (alias)" },
+        .{ "AND", "Combine conditions (both must be true)" },
+        .{ "OR", "Combine conditions (either can be true)" },
+        .{ "NOT", "Negate a condition" },
+        .{ "NULL", "Represents missing or unknown value" },
+        .{ "IS", "Test for NULL values" },
+        .{ "IN", "Match any value in a list" },
+        .{ "BETWEEN", "Match values in a range" },
+        .{ "LIKE", "Match text patterns (% and _ wildcards)" },
+        .{ "EXISTS", "Check if subquery returns rows" },
+        .{ "CASE", "Conditional expression (if-then-else)" },
+        .{ "WHEN", "Condition in CASE expression" },
+        .{ "THEN", "Result when WHEN condition is true" },
+        .{ "ELSE", "Default result in CASE expression" },
+        .{ "END", "Close CASE or compound statement" },
+        .{ "UNION", "Combine results from multiple queries" },
+        .{ "INTERSECT", "Return common rows from queries" },
+        .{ "EXCEPT", "Return rows from first query not in second" },
+        .{ "PRIMARY", "Uniquely identifies rows (PRIMARY KEY)" },
+        .{ "FOREIGN", "References another table (FOREIGN KEY)" },
+        .{ "KEY", "Constraint or index" },
+        .{ "UNIQUE", "Prevent duplicate values in column" },
+        .{ "CHECK", "Validate column values with condition" },
+        .{ "DEFAULT", "Specify default column value" },
+        .{ "INDEX", "Speed up queries on column(s)" },
+        .{ "VIEW", "Virtual table from a query" },
+        .{ "TRANSACTION", "Atomic unit of work (BEGIN...COMMIT)" },
+        .{ "BEGIN", "Start transaction" },
+        .{ "COMMIT", "Save transaction changes" },
+        .{ "ROLLBACK", "Discard transaction changes" },
+        .{ "SAVEPOINT", "Create rollback point within transaction" },
+        .{ "RELEASE", "Remove savepoint" },
+        .{ "WITH", "Define CTE (Common Table Expression)" },
+        .{ "RECURSIVE", "Enable recursive CTE" },
+        .{ "OVER", "Define window for window function" },
+        .{ "PARTITION", "Divide rows into groups for window" },
+        .{ "ROWS", "Define window frame by row count" },
+        .{ "RANGE", "Define window frame by value range" },
+        .{ "ANALYZE", "Collect table statistics for optimizer" },
+        .{ "EXPLAIN", "Show query execution plan" },
+        .{ "VACUUM", "Reclaim storage and optimize database" },
+        .{ "REINDEX", "Rebuild index from scratch" },
+    });
+
+    return help_map.get(upper);
+}
+
 // ── Focus Pane ───────────────────────────────────────────────────────
 
 const Pane = enum { schema, results, input };
@@ -895,6 +970,10 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
     const visible_end = @min(scroll_offset + max_visible, items.len);
     var row: u16 = 0;
 
+    // Track selected item for tooltip
+    var selected_item_area: ?tui.Rect = null;
+    var selected_keyword_help: ?[]const u8 = null;
+
     for (items[scroll_offset..visible_end], scroll_offset..) |item, i| {
         if (row >= inner.height) break;
 
@@ -931,7 +1010,35 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
             }
         }
 
+        // If this is the selected item, store its area and check for keyword help
+        if (is_selected) {
+            selected_item_area = tui.Rect{
+                .x = inner.x,
+                .y = inner.y + row,
+                .width = inner.width,
+                .height = 1,
+            };
+            selected_keyword_help = getSqlKeywordHelp(item.text);
+        }
+
         row += 1;
+    }
+
+    // Render tooltip for selected SQL keyword
+    if (selected_keyword_help) |help_text| {
+        if (selected_item_area) |item_area| {
+            var tooltip = tui.widgets.Tooltip.init(help_text)
+                .withPosition(.right)
+                .withStyle(.{ .fg = .black, .bg = .bright_yellow })
+                .withArrow(true);
+            tooltip.show(item_area);
+            tooltip.render(buf.*, tui.Rect{
+                .x = 0,
+                .y = 0,
+                .width = buf.width,
+                .height = buf.height,
+            });
+        }
     }
 }
 
@@ -1671,4 +1778,47 @@ test "formatColumnLabel basic types and constraints" {
         defer allocator.free(label);
         try std.testing.expectEqualStrings("  metadata JSONB NN", label);
     }
+}
+
+test "getSqlKeywordHelp returns help for known keywords" {
+    // Test case-insensitive matching
+    try std.testing.expectEqualStrings("Retrieve rows from tables", getSqlKeywordHelp("SELECT").?);
+    try std.testing.expectEqualStrings("Retrieve rows from tables", getSqlKeywordHelp("select").?);
+    try std.testing.expectEqualStrings("Retrieve rows from tables", getSqlKeywordHelp("SeLeCt").?);
+
+    // Test various SQL keywords
+    try std.testing.expectEqualStrings("Add new rows to a table", getSqlKeywordHelp("INSERT").?);
+    try std.testing.expectEqualStrings("Modify existing rows", getSqlKeywordHelp("UPDATE").?);
+    try std.testing.expectEqualStrings("Remove rows from a table", getSqlKeywordHelp("DELETE").?);
+    try std.testing.expectEqualStrings("Specify source table(s)", getSqlKeywordHelp("FROM").?);
+    try std.testing.expectEqualStrings("Filter rows with conditions", getSqlKeywordHelp("WHERE").?);
+    try std.testing.expectEqualStrings("Combine rows from multiple tables", getSqlKeywordHelp("JOIN").?);
+    try std.testing.expectEqualStrings("Return matching rows from both tables", getSqlKeywordHelp("INNER").?);
+    try std.testing.expectEqualStrings("Return all left table rows + matches", getSqlKeywordHelp("LEFT").?);
+    try std.testing.expectEqualStrings("Sort result rows", getSqlKeywordHelp("ORDER").?);
+    try std.testing.expectEqualStrings("Specify sort/group column(s)", getSqlKeywordHelp("BY").?);
+    try std.testing.expectEqualStrings("Restrict number of rows returned", getSqlKeywordHelp("LIMIT").?);
+    try std.testing.expectEqualStrings("Remove duplicate rows", getSqlKeywordHelp("DISTINCT").?);
+}
+
+test "getSqlKeywordHelp returns null for unknown keywords" {
+    try std.testing.expect(getSqlKeywordHelp("FOOBAR") == null);
+    try std.testing.expect(getSqlKeywordHelp("NOT_A_KEYWORD") == null);
+    try std.testing.expect(getSqlKeywordHelp("") == null);
+}
+
+test "getSqlKeywordHelp covers transaction keywords" {
+    try std.testing.expectEqualStrings("Start transaction", getSqlKeywordHelp("BEGIN").?);
+    try std.testing.expectEqualStrings("Save transaction changes", getSqlKeywordHelp("COMMIT").?);
+    try std.testing.expectEqualStrings("Discard transaction changes", getSqlKeywordHelp("ROLLBACK").?);
+    try std.testing.expectEqualStrings("Create rollback point within transaction", getSqlKeywordHelp("SAVEPOINT").?);
+}
+
+test "getSqlKeywordHelp covers advanced SQL features" {
+    try std.testing.expectEqualStrings("Define CTE (Common Table Expression)", getSqlKeywordHelp("WITH").?);
+    try std.testing.expectEqualStrings("Enable recursive CTE", getSqlKeywordHelp("RECURSIVE").?);
+    try std.testing.expectEqualStrings("Define window for window function", getSqlKeywordHelp("OVER").?);
+    try std.testing.expectEqualStrings("Collect table statistics for optimizer", getSqlKeywordHelp("ANALYZE").?);
+    try std.testing.expectEqualStrings("Show query execution plan", getSqlKeywordHelp("EXPLAIN").?);
+    try std.testing.expectEqualStrings("Reclaim storage and optimize database", getSqlKeywordHelp("VACUUM").?);
 }
