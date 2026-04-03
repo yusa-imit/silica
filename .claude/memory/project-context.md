@@ -9,31 +9,52 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 123 - FEATURE)
+### Last Session (Session 124 - FEATURE)
+- **Date**: 2026-04-04
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.import` command implementation
+- **Outcome**: ✅ New SQLite-compatible CSV import command added, build successful
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (#25: GIN index hang — known issue, non-blocking)
+  - **Work Completed**:
+    1. **`.import FILE TABLE` command**: SQLite-compatible CSV data import
+       - Reads CSV files (max 100 MB)
+       - Parses fields using current separator setting (respects `.separator`)
+       - Handles quoted fields (double quotes)
+       - Escapes single quotes in SQL VALUES
+       - Executes INSERT for each row
+       - Comprehensive error handling (file not found, table not found, duplicate key)
+       - Reports import progress: "Imported N rows from FILE into TABLE"
+    2. **Implementation details**:
+       - Added `importCsvFile()` function in cli.zig
+       - Uses `std.ArrayList` with `.{}` init pattern (Zig 0.15 style)
+       - Proper allocator passing to `.append()`, `.writer()`, `.deinit()`
+       - CSV parsing: splits by separator, trims quotes, builds INSERT statements
+       - SQL injection protection: escapes single quotes as ''
+    3. **Test coverage**: Added 5 comprehensive tests
+       - Successful import with data integrity verification (SELECT COUNT)
+       - Custom separator support (pipe-separated values)
+       - Missing arguments error handling
+       - File not found error handling
+       - Help text inclusion
+    4. **Updated `.help` text**: Added `.import FILE TABLE` description
+  - **Files Changed**:
+    - `src/cli.zig`: +290 lines (importCsvFile function + 5 tests + handler + help)
+  - **Test Count**: 2899+ tests estimated (5 new tests added)
+  - **Impact**: Major CLI enhancement — users can now bulk-load CSV data into tables
+  - **Use cases**:
+    - `silica> .import data.csv users` — load CSV into users table
+    - `silica> .separator |` + `.import data.psv products` — pipe-separated import
+    - `silica> .separator \t` + `.import data.tsv logs` — tab-separated import
+    - Bulk data loading from external sources (exports from other databases, spreadsheets)
+- **Commits**: 192a420 (`.import` feature)
+
+### Previous Session (Session 123 - FEATURE)
 - **Date**: 2026-04-03
 - **Mode**: FEATURE MODE
 - **Focus**: Dependency migration — sailor v1.32.0 upgrade
 - **Outcome**: ✅ sailor v1.32.0 upgrade complete, issue #33 closed
-- **Details**:
-  - **CI Status**: ✅ GREEN before session (latest run successful)
-  - **Open Issues**: 2 (#33: sailor migration, #25: GIN index hang)
-  - **Work Completed**:
-    1. **sailor v1.32.0 migration** (Priority 2 — dependency upgrade):
-       - Updated from v1.31.0 to v1.32.0 using `zig fetch --save`
-       - New features: Nested grid layouts, aspect ratio constraints, min/max size propagation, auto-margin/padding helpers, layout debugging inspector
-       - Zero breaking changes — fully backward compatible
-       - Build successful (`zig build` passes)
-    2. **Documentation updates**:
-       - Updated build.zig.zon sailor dependency URL and hash
-       - Updated docs/milestones.md sailor version tracking table
-       - Added v1.32.0 row with feature summary
-    3. **Issue closure**:
-       - Closed issue #33 (auto-closed by commit message)
-  - **Files Changed**:
-    - `build.zig.zon`: sailor dependency updated to v1.32.0
-    - `docs/milestones.md`: sailor version table updated
-  - **Known Issue**: jepsen_test.zig has flaky race condition (pre-existing, not related to sailor upgrade)
-  - **Impact**: Latest sailor features available for TUI development
 - **Commits**: 296f604 (sailor v1.32.0 upgrade)
 
 ### Previous Session (Session 122 - FEATURE)
