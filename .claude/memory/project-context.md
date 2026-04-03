@@ -9,7 +9,39 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 120 - STABILIZATION)
+### Last Session (Session 122 - FEATURE)
+- **Date**: 2026-04-03
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.print` command implementation
+- **Outcome**: ✅ New SQLite-compatible command added, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session (will verify after push)
+  - **Open Issues**: 1 (issue #25: GIN index hang — known non-blocking issue)
+  - **Work Completed**:
+    1. **`.print TEXT` command**: SQLite-compatible alias for `.echo`
+       - Functionally identical to `.echo` command
+       - Prints literal text to output (useful in scripts for progress messages)
+       - `.print` with no text prints empty line
+       - SQLite users expect both `.echo` and `.print` — now both supported
+    2. **Implementation details**:
+       - Added `.print` handler in `handleDotCommand()` (mirrors `.echo` logic)
+       - Updated help text to include `.print` description
+       - Zero signature changes — no cascading test updates needed
+    3. **Test coverage**: Added 3 comprehensive tests
+       - `.print TEXT` — verifies text output
+       - `.print` with no text — verifies empty line output
+       - `.help` includes `.print` — verifies command appears in help text
+  - **Files Changed**:
+    - `src/cli.zig`: +102 lines (print handler + 3 tests + help text)
+  - **Test Count**: 2931 tests (3 new tests added, all passing, 33 skipped)
+  - **Impact**: Enhanced SQLite compatibility — users familiar with SQLite can use `.print` or `.echo` interchangeably
+  - **Use cases**:
+    - `silica> .print Starting migration...` — script progress messages
+    - `silica> .print Done!` — completion markers
+    - Scripts written for SQLite using `.print` now work unchanged
+- **Commits**: 460bd49 (`.print` feature)
+
+### Previous Session (Session 120 - STABILIZATION)
 - **Date**: 2026-04-03
 - **Mode**: STABILIZATION MODE
 - **Focus**: Cross-compilation verification, code quality audit, dependency check
