@@ -1618,6 +1618,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.quit               Exit the shell
             \\.exit               Exit the shell
             \\.echo TEXT          Print literal text to output
+            \\.print TEXT         Print literal text to output (alias for .echo)
             \\.show               Show current settings (mode, headers, timer, separator, nullvalue, output, bail)
             \\.changes            Show number of rows changed by last DML statement
             \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
@@ -1777,6 +1778,10 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
     } else if (std.mem.startsWith(u8, cmd, ".echo")) {
         const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
         // Print the literal text argument (useful in scripts for progress messages)
+        stdout.print("{s}\n", .{rest}) catch {};
+    } else if (std.mem.startsWith(u8, cmd, ".print")) {
+        const rest = std.mem.trimLeft(u8, cmd[6..], " \t");
+        // Alias for .echo (SQLite compatibility)
         stdout.print("{s}\n", .{rest}) catch {};
     } else if (std.mem.eql(u8, cmd, ".changes")) {
         // Show number of rows changed by last DML statement
@@ -4074,6 +4079,103 @@ test "handleDotCommand .help includes .echo" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".echo") != null);
+}
+
+test "handleDotCommand .print prints literal text" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_print.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [1024]u8 = undefined;
+    var err_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".print SQLite-style output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "SQLite-style output") != null);
+}
+
+test "handleDotCommand .print with no text" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_print_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [1024]u8 = undefined;
+    var err_buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".print", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    // Should just print a newline
+    try std.testing.expectEqualStrings("\n", output);
+}
+
+test "handleDotCommand .help includes .print" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_help_print.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [8192]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".print") != null);
 }
 
 test "handleDotCommand .show displays all settings" {
