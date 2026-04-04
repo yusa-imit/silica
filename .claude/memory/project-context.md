@@ -9,7 +9,44 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 126 - FEATURE)
+### Last Session (Session 129 - FEATURE)
+- **Date**: 2026-04-04
+- **Mode**: FEATURE MODE
+- **Focus**: TUI enhancement — table metadata tooltips in autocomplete
+- **Outcome**: ✅ Extended SQL keyword tooltips to show table schema info
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (#25: GIN index hang — known issue, non-blocking)
+  - **Work Completed**:
+    1. **Table metadata tooltips** (extending Session 128):
+       - Implemented `getTableHelp()` function — queries catalog for table info
+       - Shows table name, column count, and first 3 columns with types
+       - Truncates to "..." if table has > 3 columns
+       - Uses thread-local static buffer (zero allocations per frame)
+       - Returns null for nonexistent tables (graceful degradation)
+    2. **Integration with tooltip system**:
+       - Modified `renderCompletionPopup()` to check item description
+       - If `description == "table"` → show table tooltip
+       - If `description == "keyword"` → show SQL keyword tooltip
+       - Seamless fallback to existing keyword tooltip logic
+    3. **Test coverage**: Added 3 comprehensive tests
+       - Table metadata display (verifies content format)
+       - Nonexistent table handling (null safety)
+       - Long column list truncation (max 3 columns + "...")
+    4. **User experience**:
+       - Hovering "users" → "Table: users | 3 columns | id: integer, name: text, age: integer"
+       - Hovering "products" (5 cols) → "Table: products | 5 columns | id: integer, name: text, price: real..."
+       - New users discover schemas without memorizing catalog
+       - Zero performance impact (catalog caching, static buffers)
+  - **Files Changed**:
+    - `src/tui.zig`: +118 lines, -3 lines (getTableHelp function + 3 tests + tooltip integration)
+  - **Impact**: Natural extension of Session 128's keyword tooltips — autocomplete now shows contextual help for both SQL syntax and database schema
+  - **Tooltip types now supported**:
+    - SQL keywords (Session 128) — 66 keywords with syntax descriptions
+    - Table names (Session 129) — column count, types, names
+- **Commits**: 2cb24cd (table metadata tooltips)
+
+### Previous Session (Session 126 - FEATURE)
 - **Date**: 2026-04-04
 - **Mode**: FEATURE MODE
 - **Focus**: Documentation — SQL tutorial examples for new users
