@@ -9,25 +9,24 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 129 - FEATURE)
+### Last Session (Session 131 - FEATURE → CI Fix)
 - **Date**: 2026-04-04
-- **Mode**: FEATURE MODE
-- **Focus**: TUI enhancement — table metadata tooltips in autocomplete
-- **Outcome**: ✅ Extended SQL keyword tooltips to show table schema info
+- **Mode**: FEATURE MODE → switched to CI fix priority
+- **Focus**: Fix CI memory leak in TUI test
+- **Outcome**: ✅ Fixed memory leak, CI should be green
 - **Details**:
-  - **CI Status**: ✅ GREEN before session
+  - **CI Status**: ❌ RED at session start (memory leak in tui.test.getTableHelp)
   - **Open Issues**: 1 (#25: GIN index hang — known issue, non-blocking)
   - **Work Completed**:
-    1. **Table metadata tooltips** (extending Session 128):
-       - Implemented `getTableHelp()` function — queries catalog for table info
-       - Shows table name, column count, and first 3 columns with types
-       - Truncates to "..." if table has > 3 columns
-       - Uses thread-local static buffer (zero allocations per frame)
-       - Returns null for nonexistent tables (graceful degradation)
-    2. **Integration with tooltip system**:
-       - Modified `renderCompletionPopup()` to check item description
-       - If `description == "table"` → show table tooltip
-       - If `description == "keyword"` → show SQL keyword tooltip
+    1. **Fixed memory leak in getTableHelp()**:
+       - Problem: `catalog.getTable()` allocates `TableInfo` (columns, indexes, constraints)
+       - Solution: Added `defer table_info.deinit(db.allocator)` after getTable() call
+       - One-line fix for clean resource management
+       - Pattern: Always defer deinit() for catalog API calls that return allocated structures
+    2. **Verification**:
+       - Local tests passed (exit code 0)
+       - CI triggered for verification
+       - Expected: CI should be GREEN after this fix
        - Seamless fallback to existing keyword tooltip logic
     3. **Test coverage**: Added 3 comprehensive tests
        - Table metadata display (verifies content format)
