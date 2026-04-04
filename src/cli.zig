@@ -1756,6 +1756,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.backup FILENAME    Create a backup copy of the database file
             \\.import FILE TABLE  Import CSV data from file into table
             \\.read FILENAME      Read and execute SQL from file
+            \\.cd DIRECTORY       Change the working directory
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".headers")) {
@@ -1935,6 +1936,29 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             printError(stderr, "Usage: .read FILENAME");
         } else {
             readAndExecuteFile(allocator, db, rest, mode.*, show_timer.*, show_headers.*, csv_separator.*, null_display.*, last_rows_affected, bail_on_error.*, log_file.*, stdout, stderr);
+        }
+    } else if (std.mem.startsWith(u8, cmd, ".cd")) {
+        const rest = std.mem.trimLeft(u8, cmd[3..], " \t");
+        if (rest.len == 0) {
+            // Show current directory
+            const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch {
+                printError(stderr, "Failed to get current directory");
+                return .ok;
+            };
+            defer allocator.free(cwd);
+            stdout.print("Current directory: {s}\n", .{cwd}) catch {};
+        } else {
+            // Change directory
+            const path_z = allocator.dupeZ(u8, rest) catch {
+                printError(stderr, "Out of memory");
+                return .ok;
+            };
+            defer allocator.free(path_z);
+            std.posix.chdir(path_z) catch {
+                printError(stderr, "Failed to change directory");
+                return .ok;
+            };
+            stdout.print("Changed directory to: {s}\n", .{rest}) catch {};
         }
     } else if (std.mem.startsWith(u8, cmd, ".nullvalue")) {
         const rest = std.mem.trimLeft(u8, cmd[10..], " \t");
@@ -5505,6 +5529,113 @@ test "handleDotCommand .help - includes .log" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".log") != null);
+}
+
+test "handleDotCommand .cd - show current directory" {
+    const allocator = std.testing.allocator;
+    const path = "test_cd_show.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, path, ".cd", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &log_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Current directory:") != null);
+}
+
+test "handleDotCommand .cd DIRECTORY - change directory" {
+    const allocator = std.testing.allocator;
+    const path = "test_cd_change.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create a temp directory for testing
+    const temp_dir = "test_cd_temp_dir";
+    std.fs.cwd().makeDir(temp_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return error.SkipZigTest;
+    };
+    defer std.fs.cwd().deleteDir(temp_dir) catch {};
+
+    // Get current directory to restore later
+    const original_cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch return error.SkipZigTest;
+    defer allocator.free(original_cwd);
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+
+    const cmd = ".cd " ++ temp_dir;
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &log_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Changed directory to:") != null);
+
+    // Restore original directory
+    const original_cwd_z = allocator.dupeZ(u8, original_cwd) catch return error.SkipZigTest;
+    defer allocator.free(original_cwd_z);
+    std.posix.chdir(original_cwd_z) catch {};
+}
+
+test "handleDotCommand .help includes .cd" {
+    const allocator = std.testing.allocator;
+    const path = "test_help_cd.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &log_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".cd") != null);
 }
 
 // Import wire_fuzz tests
