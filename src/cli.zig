@@ -1723,11 +1723,15 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
+    } else if (std.mem.eql(u8, cmd, ".version")) {
+        stdout.print("Silica v{s}\n", .{version}) catch {};
+        stdout.print("Zig {s}\n", .{@import("builtin").zig_version_string}) catch {};
     } else if (std.mem.eql(u8, cmd, ".help")) {
         stdout.writeAll(
             \\.help               Show this help
             \\.quit               Exit the shell
             \\.exit               Exit the shell
+            \\.version            Show version information
             \\.echo TEXT          Print literal text to output
             \\.print TEXT         Print literal text to output (alias for .echo)
             \\.show               Show current settings (mode, headers, timer, separator, nullvalue, output, bail)
@@ -5636,6 +5640,67 @@ test "handleDotCommand .help includes .cd" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".cd") != null);
+}
+
+test "handleDotCommand .version shows version info" {
+    const allocator = std.testing.allocator;
+    const path = "test_version.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, path, ".version", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &log_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Silica") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Zig") != null);
+}
+
+test "handleDotCommand .help includes .version" {
+    const allocator = std.testing.allocator;
+    const path = "test_help_version.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &last_rows_affected, &bail_on_error, &log_file, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".version") != null);
 }
 
 // Import wire_fuzz tests
