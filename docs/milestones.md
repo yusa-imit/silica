@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.33.0
-- **Latest available**: v1.33.0
+- **Current in silica**: v1.34.0
+- **Latest available**: v1.34.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -192,6 +192,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.31.0 | performance profiling & optimization | DONE | Render profiler, memory tracker, event loop profiler, widget metrics, profiling demo |
 | v1.32.0 | layout enhancements | DONE | Nested grids, aspect ratio constraints, min/max size propagation, auto-margin/padding, layout inspector |
 | v1.33.0 | specialized widgets | DONE | LogViewer, MetricsPanel, ConfigEditor, SplitPane, Breadcrumb, Tooltip (contextual help) |
+| v1.34.0 | terminal integration | DONE | OSC 52 clipboard API (3 selection types), terminal emulator detection (xterm/kitty/iTerm2), capability detection (truecolor/mouse/clipboard), paste bracketing enhancements |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
