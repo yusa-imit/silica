@@ -101,6 +101,7 @@ fn getTableHelp(db: *Database, table_name: []const u8) ?[]const u8 {
 
     // Query catalog for table metadata
     const table_info = db.catalog.getTable(table_name) catch return null;
+    defer table_info.deinit(db.allocator);
     const col_count = table_info.columns.len;
 
     // Show column names and types (up to 3 columns)
