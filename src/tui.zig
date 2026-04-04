@@ -91,6 +91,54 @@ fn getSqlKeywordHelp(keyword: []const u8) ?[]const u8 {
     return help_map.get(upper);
 }
 
+// Get table metadata tooltip (shows column info)
+// Returns a thread-local static buffer — valid until next call
+fn getTableHelp(db: *Database, table_name: []const u8) ?[]const u8 {
+    // Thread-local static buffer for tooltip text (avoid allocation)
+    const ThreadLocal = struct {
+        var buf: [512]u8 = undefined;
+    };
+
+    // Query catalog for table metadata
+    const table_info = db.catalog.getTable(table_name) catch return null;
+    const col_count = table_info.columns.len;
+
+    // Show column names and types (up to 3 columns)
+    var col_info_buf: [256]u8 = undefined;
+    var col_info_len: usize = 0;
+
+    const max_cols_to_show = @min(col_count, 3);
+    for (table_info.columns[0..max_cols_to_show], 0..) |col, i| {
+        const type_name = @tagName(col.column_type);
+        const col_text = if (i == 0)
+            std.fmt.bufPrint(col_info_buf[col_info_len..], "{s}: {s}", .{ col.name, type_name })
+        else
+            std.fmt.bufPrint(col_info_buf[col_info_len..], ", {s}: {s}", .{ col.name, type_name });
+
+        if (col_text) |text| {
+            col_info_len += text.len;
+        } else |_| break;
+    }
+
+    const col_info = col_info_buf[0..col_info_len];
+    const more_cols = if (col_count > 3) "..." else "";
+
+    // Format: "Table: <name> | <col_count> columns | <col1>: <type1>, <col2>: <type2>..."
+    const help_text = std.fmt.bufPrint(
+        &ThreadLocal.buf,
+        "Table: {s} | {d} column{s} | {s}{s}",
+        .{
+            table_name,
+            col_count,
+            if (col_count == 1) "" else "s",
+            col_info,
+            more_cols,
+        },
+    ) catch return null;
+
+    return help_text;
+}
+
 // ── Focus Pane ───────────────────────────────────────────────────────
 
 const Pane = enum { schema, results, input };
@@ -1010,7 +1058,7 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
             }
         }
 
-        // If this is the selected item, store its area and check for keyword help
+        // If this is the selected item, store its area and check for help text
         if (is_selected) {
             selected_item_area = tui.Rect{
                 .x = inner.x,
@@ -1018,13 +1066,21 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
                 .width = inner.width,
                 .height = 1,
             };
-            selected_keyword_help = getSqlKeywordHelp(item.text);
+            // Check for SQL keyword help first
+            if (getSqlKeywordHelp(item.text)) |kw_help| {
+                selected_keyword_help = kw_help;
+            } else if (item.description) |desc| {
+                // Check if this is a table name — show table stats
+                if (std.mem.eql(u8, desc, "table")) {
+                    selected_keyword_help = getTableHelp(app.db, item.text);
+                }
+            }
         }
 
         row += 1;
     }
 
-    // Render tooltip for selected SQL keyword
+    // Render tooltip for selected item
     if (selected_keyword_help) |help_text| {
         if (selected_item_area) |item_area| {
             var tooltip = tui.widgets.Tooltip.init(help_text)
@@ -1821,4 +1877,63 @@ test "getSqlKeywordHelp covers advanced SQL features" {
     try std.testing.expectEqualStrings("Collect table statistics for optimizer", getSqlKeywordHelp("ANALYZE").?);
     try std.testing.expectEqualStrings("Show query execution plan", getSqlKeywordHelp("EXPLAIN").?);
     try std.testing.expectEqualStrings("Reclaim storage and optimize database", getSqlKeywordHelp("VACUUM").?);
+}
+
+test "getTableHelp shows table metadata tooltip" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create in-memory database
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Create test table
+    _ = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+
+    // Get tooltip for the table
+    const help = getTableHelp(&db, "users");
+    try testing.expect(help != null);
+    const help_text = help.?;
+
+    // Verify tooltip contains expected information
+    try testing.expect(std.mem.indexOf(u8, help_text, "Table: users") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "3 columns") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "id: integer") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "name: text") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "age: integer") != null);
+}
+
+test "getTableHelp handles nonexistent tables" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Query nonexistent table should return null
+    const help = getTableHelp(&db, "nonexistent_table");
+    try testing.expect(help == null);
+}
+
+test "getTableHelp truncates long column lists" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Create table with more than 3 columns
+    _ = try db.execSQL("CREATE TABLE products (id INTEGER, name TEXT, price REAL, stock INTEGER, category TEXT)");
+
+    // Get tooltip
+    const help = getTableHelp(&db, "products");
+    try testing.expect(help != null);
+    const help_text = help.?;
+
+    // Should show "5 columns" and first 3 columns + "..."
+    try testing.expect(std.mem.indexOf(u8, help_text, "5 columns") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "...") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "id: integer") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "name: text") != null);
+    try testing.expect(std.mem.indexOf(u8, help_text, "price: real") != null);
 }
