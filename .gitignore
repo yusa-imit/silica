@@ -12,6 +12,9 @@ zig-out/
 *.db-shm
 :memory:
 
+# Test output files
+test_output.txt
+
 # IDE
 .vscode/
 .idea/
