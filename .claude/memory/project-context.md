@@ -9,7 +9,46 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 131 - FEATURE → CI Fix)
+### Last Session (Session 139 - FEATURE)
+- **Date**: 2026-04-05
+- **Mode**: FEATURE MODE
+- **Focus**: CLI enhancement — `.once FILENAME` command for one-time output redirection
+- **Outcome**: ✅ New SQLite-compatible command added, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
+  - **Dependency check**:
+    - sailor v1.34.0 ✅ (latest)
+    - zuda v2.0.0 ✅ (latest)
+  - **Work Completed**:
+    1. **`.once FILENAME` command**: One-time output redirection (auto-resets after single query)
+       - Redirects next query output to file, then automatically resets to stdout
+       - Similar to `.output` but only affects one query (no manual reset needed)
+       - Priority: `once_file` > `output_file` > `stdout`
+       - File is automatically closed and cleared after query execution
+    2. **Implementation details**:
+       - Added `once_file` state variable in REPL loop (`?std.fs.File`)
+       - Modified query execution to check `once_file` first, execute to it, then close/reset
+       - Updated `handleDotCommand()` signature (+1 parameter: `once_file`)
+       - Updated ALL 97 test call sites with new parameter (automated via sed)
+       - Updated `.show` to display once file status (pending/off)
+       - Updated `.help` with `.once` command documentation
+    3. **Test coverage**: Added 4 comprehensive tests
+       - `.once FILENAME` — verifies one-time redirection and auto-reset
+       - `.once` without filename — error handling (requires filename)
+       - `.show` includes once setting — verifies status display
+       - `.help` includes `.once` — verifies command in help text
+    4. **Use cases**:
+       - Quick one-off CSV exports: `.once data.csv` then SELECT query
+       - Temporary output redirection without manual reset
+       - Simplified scripting workflows (no need for `.output` + reset)
+  - **Files Changed**:
+    - `src/cli.zig`: +415 lines, -99 lines (.once command + 4 tests + signature updates)
+  - **Test Count**: 2999 tests (4 new tests added, all passing, 33 skipped)
+  - **Impact**: Convenient SQLite-compatible CLI enhancement for quick one-time output redirection
+- **Commits**: 8f327a5 (`.once` feature)
+
+### Previous Session (Session 131 - FEATURE → CI Fix)
 - **Date**: 2026-04-04
 - **Mode**: FEATURE MODE → switched to CI fix priority
 - **Focus**: Fix CI memory leak in TUI test
