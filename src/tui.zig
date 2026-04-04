@@ -1883,8 +1883,11 @@ test "getTableHelp shows table metadata tooltip" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    // Create in-memory database
-    var db = try Database.open(allocator, ":memory:", .{});
+    // Create unique database file to avoid state persistence across tests
+    const path = "test_table_help_users.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
     defer db.close();
 
     // Create test table
@@ -1919,7 +1922,11 @@ test "getTableHelp truncates long column lists" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var db = try Database.open(allocator, ":memory:", .{});
+    // Create unique database file to avoid state persistence across tests
+    const path = "test_table_help_products.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
     defer db.close();
 
     // Create table with more than 3 columns

@@ -686,16 +686,22 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
 
-            // Wait for reader to start
+            // Wait for reader to start its transaction
             std.Thread.sleep(10_000_000); // 10ms
 
-            // Insert new rows
+            // Begin transaction before inserting
+            try beginTx(&db, .read_committed);
+
+            // Insert new rows within transaction
             var i: i64 = 6;
             while (i <= 10) : (i += 1) {
                 const sql = try std.fmt.allocPrint(self.allocator, "INSERT INTO items VALUES ({d}, {d})", .{ i, i * 10 });
                 defer self.allocator.free(sql);
                 try execSql(&db, sql);
             }
+
+            // Commit after reader's first count, before second count
+            try commitTx(&db);
         }
     };
 
