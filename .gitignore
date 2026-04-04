@@ -27,3 +27,5 @@ Thumbs.db
 .claude/settings.local.json
 .claude/scratchpad.md
 .claude/session-counter
+*.bak
+*.bak2
