@@ -156,7 +156,7 @@ pub fn main() !void {
         return runServer(allocator, stdout, stderr, db_path, &arg_parser);
     }
 
-    const db_path = first_arg;
+    var db_path = first_arg;
 
     // Determine initial output mode from flags
     var mode: OutputMode = .table;
@@ -255,7 +255,31 @@ pub fn main() !void {
             const result = handleDotCommand(allocator, &db, db_path, trimmed, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, stdout, stderr);
             stdout.flush() catch {};
             stderr.flush() catch {};
-            if (result == .quit) break;
+            switch (result) {
+                .quit => break,
+                .reopen => |new_path| {
+                    defer allocator.free(new_path);
+                    // Close current database
+                    db.close();
+                    // Try to open new database
+                    db = Database.open(allocator, new_path, .{}) catch {
+                        printError(stderr, "Failed to open database. Reopening original database.");
+                        stderr.flush() catch {};
+                        // Reopen original database on failure
+                        db = Database.open(allocator, db_path, .{}) catch {
+                            printError(stderr, "Failed to reopen original database. Exiting.");
+                            stderr.flush() catch {};
+                            std.process.exit(1);
+                        };
+                        continue;
+                    };
+                    // Update db_path reference
+                    db_path = new_path;
+                    stdout.print("Opened database: {s}\n", .{db_path}) catch {};
+                    stdout.flush() catch {};
+                },
+                .ok => {},
+            }
             continue;
         }
 
@@ -2059,7 +2083,11 @@ fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const 
     stdout.print("Imported {d} rows from {s} into {s}\n", .{ rows_imported, csv_path, table_name }) catch {};
 }
 
-const DotCommandResult = enum { ok, quit };
+const DotCommandResult = union(enum) {
+    ok,
+    quit,
+    reopen: []const u8, // New database path to open
+};
 
 fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []const u8, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, csv_separator: *[]const u8, null_display: *[]const u8, output_file: *?std.fs.File, once_file: *?std.fs.File, last_rows_affected: *u64, bail_on_error: *bool, log_file: *?std.fs.File, show_stats: *bool, show_eqp: *bool, stdout: anytype, stderr: anytype) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
@@ -2109,6 +2137,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.import FILE TABLE  Import CSV data from file into table
             \\.read FILENAME      Read and execute SQL from file
             \\.cd DIRECTORY       Change the working directory
+            \\.open FILENAME      Close current database and open a new one
+            \\.open               Show current database path
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".headers")) {
@@ -2365,6 +2395,20 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
                 return .ok;
             };
             stdout.print("Changed directory to: {s}\n", .{rest}) catch {};
+        }
+    } else if (std.mem.startsWith(u8, cmd, ".open")) {
+        const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
+        if (rest.len == 0) {
+            // Show current database path
+            stdout.print("Current database: {s}\n", .{db_path}) catch {};
+        } else {
+            // Signal to reopen with new database path
+            // Allocate persistent memory for the path (will be freed by caller after reopening)
+            const new_path = allocator.dupe(u8, rest) catch {
+                printError(stderr, "Out of memory");
+                return .ok;
+            };
+            return .{ .reopen = new_path };
         }
     } else if (std.mem.startsWith(u8, cmd, ".nullvalue")) {
         const rest = std.mem.trimLeft(u8, cmd[10..], " \t");
@@ -6490,6 +6534,118 @@ test "handleDotCommand .cd DIRECTORY - change directory" {
     const original_cwd_z = allocator.dupeZ(u8, original_cwd) catch return error.SkipZigTest;
     defer allocator.free(original_cwd_z);
     std.posix.chdir(original_cwd_z) catch {};
+}
+
+test "handleDotCommand .open - show current database" {
+    const allocator = std.testing.allocator;
+    const path = "test_open_show.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".open", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Current database:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, path) != null);
+}
+
+test "handleDotCommand .open FILENAME - return reopen result" {
+    const allocator = std.testing.allocator;
+    const path = "test_open_original.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+
+    const new_db_path = "test_open_new.db";
+    defer std.fs.cwd().deleteFile(new_db_path) catch {};
+
+    const cmd = ".open " ++ new_db_path;
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+
+    // Verify we got a reopen result
+    try std.testing.expect(result == .reopen);
+
+    // Verify the new path is returned
+    switch (result) {
+        .reopen => |new_path| {
+            defer allocator.free(new_path);
+            try std.testing.expect(std.mem.eql(u8, new_path, new_db_path));
+        },
+        else => unreachable,
+    }
+}
+
+test "handleDotCommand .help includes .open" {
+    const allocator = std.testing.allocator;
+    const path = "test_help_open.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [8192]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".open") != null);
 }
 
 test "handleDotCommand .help includes .cd" {
