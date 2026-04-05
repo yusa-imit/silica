@@ -215,6 +215,8 @@ pub fn main() !void {
     var bail_on_error = false; // Default: continue on SQL errors (SQLite-compatible)
     var show_stats = false; // Default: don't show execution statistics
     var show_eqp = false; // Default: don't automatically explain query plans
+    var main_prompt: []const u8 = "silica> "; // Default main prompt
+    var continue_prompt: []const u8 = "   ...> "; // Default continuation prompt
 
     // Output redirection state
     var output_file: ?std.fs.File = null;
@@ -231,7 +233,7 @@ pub fn main() !void {
     defer if (log_file) |f| f.close();
 
     while (true) {
-        const prompt = if (is_continuation) "   ...> " else "silica> ";
+        const prompt = if (is_continuation) continue_prompt else main_prompt;
         stdout.writeAll(prompt) catch {};
         stdout.flush() catch {};
 
@@ -252,7 +254,7 @@ pub fn main() !void {
 
         // Handle dot-commands (only on first line, not continuation)
         if (!is_continuation and trimmed[0] == '.') {
-            const result = handleDotCommand(allocator, &db, db_path, trimmed, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, stdout, stderr);
+            const result = handleDotCommand(allocator, &db, db_path, trimmed, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, stdout, stderr);
             stdout.flush() catch {};
             stderr.flush() catch {};
             switch (result) {
@@ -2089,7 +2091,7 @@ const DotCommandResult = union(enum) {
     reopen: []const u8, // New database path to open
 };
 
-fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []const u8, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, csv_separator: *[]const u8, null_display: *[]const u8, output_file: *?std.fs.File, once_file: *?std.fs.File, last_rows_affected: *u64, bail_on_error: *bool, log_file: *?std.fs.File, show_stats: *bool, show_eqp: *bool, stdout: anytype, stderr: anytype) DotCommandResult {
+fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []const u8, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, csv_separator: *[]const u8, null_display: *[]const u8, output_file: *?std.fs.File, once_file: *?std.fs.File, last_rows_affected: *u64, bail_on_error: *bool, log_file: *?std.fs.File, show_stats: *bool, show_eqp: *bool, main_prompt: *[]const u8, continue_prompt: *[]const u8, stdout: anytype, stderr: anytype) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
@@ -2140,6 +2142,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.cd DIRECTORY       Change the working directory
             \\.open FILENAME      Close current database and open a new one
             \\.open               Show current database path
+            \\.prompt MAIN CONT   Replace the standard prompts
+            \\.prompt             Show current prompts
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".headers")) {
@@ -2473,6 +2477,30 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         }
         stdout.writeAll("         eqp: ") catch {};
         stdout.print("{s}\n", .{if (show_eqp.*) "on" else "off"}) catch {};
+        stdout.writeAll("      prompt: ") catch {};
+        stdout.print("\"{s}\" \"{s}\"\n", .{ main_prompt.*, continue_prompt.* }) catch {};
+    } else if (std.mem.startsWith(u8, cmd, ".prompt")) {
+        const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
+        if (rest.len == 0) {
+            // Show current prompts
+            stdout.print("Main: \"{s}\"\n", .{main_prompt.*}) catch {};
+            stdout.print("Continue: \"{s}\"\n", .{continue_prompt.*}) catch {};
+        } else {
+            // Parse MAIN and CONTINUE prompts
+            // Format: .prompt MAIN CONTINUE
+            // Both arguments are required
+            var iter = std.mem.splitScalar(u8, rest, ' ');
+            const main_text = iter.next();
+            const cont_text = iter.next();
+
+            if (main_text == null or cont_text == null) {
+                printError(stderr, "Usage: .prompt MAIN CONTINUE");
+            } else {
+                main_prompt.* = main_text.?;
+                continue_prompt.* = cont_text.?;
+                stdout.writeAll("Prompts updated\n") catch {};
+            }
+        }
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
     }
@@ -2750,7 +2778,9 @@ test "handleDotCommand help" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
@@ -2786,7 +2816,9 @@ test "handleDotCommand databases" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2824,7 +2856,9 @@ test "handleDotCommand databases - memory database" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -2857,7 +2891,9 @@ test "handleDotCommand quit" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".quit", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".quit", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
@@ -2887,7 +2923,9 @@ test "handleDotCommand unknown" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Unknown command") != null);
@@ -2917,7 +2955,9 @@ test "handleDotCommand mode set" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    _ = handleDotCommand(allocator, &db, path, ".mode csv", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    _ = handleDotCommand(allocator, &db, path, ".mode csv", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(OutputMode.csv, mode);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "csv") != null);
@@ -2947,7 +2987,9 @@ test "handleDotCommand mode show" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    _ = handleDotCommand(allocator, &db, path, ".mode", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    _ = handleDotCommand(allocator, &db, path, ".mode", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "json") != null);
 }
@@ -2976,7 +3018,9 @@ test "handleDotCommand mode invalid" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    _ = handleDotCommand(allocator, &db, path, ".mode foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    _ = handleDotCommand(allocator, &db, path, ".mode foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(OutputMode.table, mode); // unchanged
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Invalid mode") != null);
@@ -3010,7 +3054,9 @@ test "handleDotCommand tables" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".tables", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".tables", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "users") != null);
@@ -3045,7 +3091,9 @@ test "handleDotCommand schema - all tables" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3088,7 +3136,9 @@ test "handleDotCommand schema - specific table" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".schema users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".schema users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3130,7 +3180,9 @@ test "handleDotCommand schema - with composite primary key" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".schema user_roles", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".schema user_roles", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3163,7 +3215,9 @@ test "handleDotCommand schema - table not found" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".schema nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".schema nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -3195,7 +3249,9 @@ test "handleDotCommand schema - no tables" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -3231,7 +3287,9 @@ test "handleDotCommand indexes - named index" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".indexes users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".indexes users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "idx_email") != null);
@@ -3270,7 +3328,9 @@ test "handleDotCommand indexes - all tables" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     // Verify both indexes appear
@@ -3308,7 +3368,9 @@ test "handleDotCommand indexes - no indexes" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".indexes plain", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".indexes plain", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No indexes found") != null);
@@ -3340,7 +3402,9 @@ test "handleDotCommand indexes - table not found" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".indexes nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".indexes nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -3372,7 +3436,9 @@ test "handleDotCommand indexes - no tables" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -3411,7 +3477,9 @@ test "handleDotCommand dump - basic table" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3451,7 +3519,9 @@ test "handleDotCommand dump - empty database" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -3491,7 +3561,9 @@ test "handleDotCommand dump - with indexes" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3829,7 +3901,9 @@ test "handleDotCommand .read executes SQL from file" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".read test_script.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".read test_script.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -3880,7 +3954,9 @@ test "handleDotCommand .read handles file not found" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".read nonexistent.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".read nonexistent.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -3929,7 +4005,9 @@ test "handleDotCommand .read skips SQL comments" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".read test_comments.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".read test_comments.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -3965,7 +4043,9 @@ test "handleDotCommand .read requires filename" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".read", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".read", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -4000,11 +4080,13 @@ test "handleDotCommand .output to file" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     const output_path = "test_output_results.txt";
     defer std.fs.cwd().deleteFile(output_path) catch {};
 
-    const result = handleDotCommand(allocator, &db, path, ".output test_output_results.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".output test_output_results.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file != null);
 
@@ -4043,12 +4125,14 @@ test "handleDotCommand .output reset to stdout" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // First redirect to file
     const temp_path = "test_output_temp.txt";
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
-    _ = handleDotCommand(allocator, &db, path, ".output test_output_temp.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    _ = handleDotCommand(allocator, &db, path, ".output test_output_temp.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expect(output_file != null);
 
     // Reset fbs for next command
@@ -4056,7 +4140,7 @@ test "handleDotCommand .output reset to stdout" {
     w = fbs.writer();
 
     // Then reset to stdout
-    const result = handleDotCommand(allocator, &db, path, ".output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null);
 
@@ -4092,8 +4176,10 @@ test "handleDotCommand .output already stdout" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null);
 
@@ -4129,9 +4215,11 @@ test "handleDotCommand .output file creation error" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Try to open a file in a non-existent directory
-    const result = handleDotCommand(allocator, &db, path, ".output /nonexistent/path/file.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".output /nonexistent/path/file.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null); // Should remain null on error
 
@@ -4164,7 +4252,9 @@ test "handleDotCommand .output in help text" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".output") != null);
@@ -4198,8 +4288,10 @@ test "handleDotCommand .timer on" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".timer on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should be enabled now
 
@@ -4235,8 +4327,10 @@ test "handleDotCommand .timer off" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".timer off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_timer); // Should be disabled now
 
@@ -4272,8 +4366,10 @@ test "handleDotCommand .timer shows current setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".timer", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4308,8 +4404,10 @@ test "handleDotCommand .timer invalid argument" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".timer foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should remain unchanged
 
@@ -4345,7 +4443,9 @@ test "handleDotCommand .help includes .timer" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4380,8 +4480,10 @@ test "handleDotCommand .headers on" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".headers on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_headers); // Should be enabled now
 
@@ -4417,8 +4519,10 @@ test "handleDotCommand .headers off" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".headers off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_headers); // Should be disabled now
 
@@ -4454,8 +4558,10 @@ test "handleDotCommand .headers shows current setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".headers", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4490,8 +4596,10 @@ test "handleDotCommand .headers invalid argument" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".headers foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_headers); // Should remain unchanged
 
@@ -4527,7 +4635,9 @@ test "handleDotCommand .help includes .headers" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4562,8 +4672,10 @@ test "handleDotCommand .separator set custom separator" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqualStrings("|", csv_separator);
 
@@ -4599,8 +4711,10 @@ test "handleDotCommand .separator show current separator" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".separator", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".separator", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4639,9 +4753,11 @@ test "handleDotCommand .separator pipe then query with CSV output" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Set separator to pipe
-    _ = handleDotCommand(allocator, &db, path, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    _ = handleDotCommand(allocator, &db, path, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqualStrings("|", csv_separator);
 
     // Execute query with CSV output
@@ -4682,8 +4798,10 @@ test "handleDotCommand .help includes .separator" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4718,8 +4836,10 @@ test "handleDotCommand .nullvalue set custom string" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".nullvalue <empty>", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".nullvalue <empty>", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqualStrings("<empty>", null_display);
 
@@ -4756,8 +4876,10 @@ test "handleDotCommand .nullvalue show current string" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".nullvalue", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".nullvalue", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4797,9 +4919,11 @@ test "handleDotCommand .nullvalue with NULL values in query" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Set custom null display
-    _ = handleDotCommand(allocator, &db, path, ".nullvalue <empty>", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    _ = handleDotCommand(allocator, &db, path, ".nullvalue <empty>", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqualStrings("<empty>", null_display);
 
     // Execute query with NULL values
@@ -4839,8 +4963,10 @@ test "handleDotCommand .help includes .nullvalue" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4875,8 +5001,10 @@ test "handleDotCommand .echo prints literal text" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".echo Hello, World!", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".echo Hello, World!", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4911,8 +5039,10 @@ test "handleDotCommand .echo with no text" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".echo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".echo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4948,8 +5078,10 @@ test "handleDotCommand .help includes .echo" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4984,8 +5116,10 @@ test "handleDotCommand .print prints literal text" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".print SQLite-style output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".print SQLite-style output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5020,8 +5154,10 @@ test "handleDotCommand .print with no text" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".print", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".print", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5057,8 +5193,10 @@ test "handleDotCommand .help includes .print" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5093,8 +5231,10 @@ test "handleDotCommand .show displays all settings" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5136,8 +5276,10 @@ test "handleDotCommand .show with defaults" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5178,8 +5320,10 @@ test "handleDotCommand .help includes .show" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5224,9 +5368,11 @@ test "handleDotCommand .backup creates backup file" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     const cmd = ".backup test_backup_dest.db";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5276,8 +5422,10 @@ test "handleDotCommand .backup requires filename" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".backup", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".backup", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -5311,9 +5459,11 @@ test "handleDotCommand .backup prevents same file backup" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     const cmd = ".backup test_backup_same.db";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -5357,9 +5507,11 @@ test "handleDotCommand .backup handles existing file error" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     const cmd = ".backup test_backup_exists_dest.db";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -5391,8 +5543,10 @@ test "handleDotCommand .help includes .backup" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5433,11 +5587,13 @@ test "handleDotCommand .save creates file from :memory: database" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     var cmd_buf: [128]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
 
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5483,8 +5639,10 @@ test "handleDotCommand .save requires filename" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".save", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".save", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -5520,11 +5678,13 @@ test "handleDotCommand .save prevents overwriting existing file" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     var cmd_buf: [128]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
 
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -5565,11 +5725,13 @@ test "handleDotCommand .save works with file-based databases (uses backup)" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     var cmd_buf: [128]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
 
-    const result = handleDotCommand(allocator, &db, source_path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, source_path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     // Verify file was saved (should use backup mechanism)
@@ -5601,8 +5763,10 @@ test "handleDotCommand .help includes .save" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5645,8 +5809,10 @@ test "handleDotCommand .import imports CSV data" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import test_import.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".import test_import.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5700,8 +5866,10 @@ test "handleDotCommand .import with custom separator" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import test_import_pipe.csv products", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".import test_import_pipe.csv products", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5732,8 +5900,10 @@ test "handleDotCommand .import missing arguments" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".import", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const eoutput = efbs.getWritten();
@@ -5764,8 +5934,10 @@ test "handleDotCommand .import file not found" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import nonexistent.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".import nonexistent.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const eoutput = efbs.getWritten();
@@ -5796,8 +5968,10 @@ test "handleDotCommand .help includes .import" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5835,13 +6009,15 @@ test "handleDotCommand .changes shows rows affected by INSERT" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Execute INSERT and track rows_affected
     _ = execAndDisplay(allocator, &db, "INSERT INTO test (id) VALUES (1), (2), (3);", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5879,13 +6055,15 @@ test "handleDotCommand .changes shows rows affected by UPDATE" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Execute UPDATE and track rows_affected
     _ = execAndDisplay(allocator, &db, "UPDATE test SET value = 99 WHERE id <= 2;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5923,13 +6101,15 @@ test "handleDotCommand .changes shows rows affected by DELETE" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Execute DELETE and track rows_affected
     _ = execAndDisplay(allocator, &db, "DELETE FROM test WHERE id > 1;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5967,13 +6147,15 @@ test "handleDotCommand .changes shows 0 for SELECT" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Execute SELECT (doesn't affect rows)
     _ = execAndDisplay(allocator, &db, "SELECT * FROM test;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6004,8 +6186,10 @@ test "handleDotCommand .help includes .changes" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6037,8 +6221,10 @@ test "handleDotCommand .bail on" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".bail on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(bail_on_error == true);
 
@@ -6070,8 +6256,10 @@ test "handleDotCommand .bail off" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".bail off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(bail_on_error == false);
 
@@ -6103,8 +6291,10 @@ test "handleDotCommand .bail - show setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".bail", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6135,8 +6325,10 @@ test "handleDotCommand .bail invalid argument" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".bail foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -6167,8 +6359,10 @@ test "handleDotCommand .show includes bail" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6199,8 +6393,10 @@ test "handleDotCommand .help includes .bail" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6314,10 +6510,12 @@ test "handleDotCommand .log FILENAME - enable logging" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
     defer if (log_file) |f| f.close();
 
     const cmd = ".log test_query.log";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(log_file != null);
 
@@ -6350,8 +6548,10 @@ test "handleDotCommand .log off - disable logging" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".log off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".log off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(log_file == null);
 
@@ -6384,8 +6584,10 @@ test "handleDotCommand .log - show current status (off)" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6420,15 +6622,17 @@ test "handleDotCommand .log - show current status (on)" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
     defer if (log_file) |f| f.close();
 
     // Enable logging first
-    _ = handleDotCommand(allocator, &db, path, ".log test_status_on.log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    _ = handleDotCommand(allocator, &db, path, ".log test_status_on.log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expect(log_file != null);
 
     // Check status
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6460,8 +6664,10 @@ test "handleDotCommand .show - includes log setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6494,8 +6700,10 @@ test "handleDotCommand .help - includes .log" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6527,8 +6735,10 @@ test "handleDotCommand .cd - show current directory" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".cd", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".cd", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6571,9 +6781,11 @@ test "handleDotCommand .cd DIRECTORY - change directory" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     const cmd = ".cd " ++ temp_dir;
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6610,8 +6822,10 @@ test "handleDotCommand .open - show current database" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".open", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".open", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6644,12 +6858,14 @@ test "handleDotCommand .open FILENAME - return reopen result" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     const new_db_path = "test_open_new.db";
     defer std.fs.cwd().deleteFile(new_db_path) catch {};
 
     const cmd = ".open " ++ new_db_path;
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
 
     // Verify we got a reopen result
     try std.testing.expect(result == .reopen);
@@ -6689,8 +6905,10 @@ test "handleDotCommand .help includes .open" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6722,8 +6940,10 @@ test "handleDotCommand .help includes .cd" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6755,8 +6975,10 @@ test "handleDotCommand .version shows version info" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".version", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".version", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6789,8 +7011,10 @@ test "handleDotCommand .help includes .version" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6822,8 +7046,10 @@ test "handleDotCommand .stats on - enable stats" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".stats on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".stats on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_stats == true);
 
@@ -6856,8 +7082,10 @@ test "handleDotCommand .stats off - disable stats" {
     var log_file: ?std.fs.File = null;
     var show_stats = true;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".stats off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".stats off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_stats == false);
 
@@ -6890,8 +7118,10 @@ test "handleDotCommand .stats - show current stats setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".stats", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".stats", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6923,8 +7153,10 @@ test "handleDotCommand .show - includes stats setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = true;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6956,8 +7188,10 @@ test "handleDotCommand .help - includes .stats command" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6990,8 +7224,10 @@ test "handleDotCommand .eqp on - enable automatic explain" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".eqp on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".eqp on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_eqp == true);
 
@@ -7024,8 +7260,10 @@ test "handleDotCommand .eqp off - disable automatic explain" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = true;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".eqp off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".eqp off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_eqp == false);
 
@@ -7058,8 +7296,10 @@ test "handleDotCommand .eqp - show current eqp setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = true;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".eqp", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".eqp", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7091,12 +7331,192 @@ test "handleDotCommand .show - includes eqp setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = true;
     var show_eqp = true;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "eqp: on") != null);
+}
+
+test "handleDotCommand .prompt MAIN CONTINUE - set custom prompts" {
+    const allocator = std.testing.allocator;
+    const path = "test_prompt_set.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = false;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".prompt db> ...", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    try std.testing.expectEqualStrings("db>", main_prompt);
+    try std.testing.expectEqualStrings("...", continue_prompt);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Prompts updated") != null);
+}
+
+test "handleDotCommand .prompt - show current prompts" {
+    const allocator = std.testing.allocator;
+    const path = "test_prompt_show.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = false;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "custom> ";
+    var continue_prompt: []const u8 = ">>>";
+
+    const result = handleDotCommand(allocator, &db, path, ".prompt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Main: \"custom> \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Continue: \">>>\"") != null);
+}
+
+test "handleDotCommand .prompt - error on missing argument" {
+    const allocator = std.testing.allocator;
+    const path = "test_prompt_error.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = false;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".prompt only_one", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const error_output = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, error_output, "Usage: .prompt MAIN CONTINUE") != null);
+}
+
+test "handleDotCommand .show - includes prompt setting" {
+    const allocator = std.testing.allocator;
+    const path = "test_show_prompt.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = true;
+    var show_eqp = true;
+    var main_prompt: []const u8 = "my_db> ";
+    var continue_prompt: []const u8 = "...";
+
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "prompt: \"my_db> \" \"...\"") != null);
+}
+
+test "handleDotCommand .help - includes .prompt command" {
+    const allocator = std.testing.allocator;
+    const path = "test_help_prompt.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".prompt") != null);
 }
 
 test "handleDotCommand .help - includes .eqp command" {
@@ -7124,8 +7544,10 @@ test "handleDotCommand .help - includes .eqp command" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7170,10 +7592,12 @@ test "handleDotCommand .once - write next query to file" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
     // Set .once to redirect next query
     const cmd = ".once test_once_output.txt";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7243,8 +7667,10 @@ test "handleDotCommand .once - requires filename" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".once", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".once", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -7278,8 +7704,10 @@ test "handleDotCommand .show - includes once setting" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7312,8 +7740,10 @@ test "handleDotCommand .help - includes .once command" {
     var log_file: ?std.fs.File = null;
     var show_stats = false;
     var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
