@@ -1,5 +1,49 @@
 # Silica Project Memory
 
+## Session 151 — FEATURE MODE
+
+### Summary
+**Mode**: FEATURE MODE (session counter: 151)
+**Focus**: Dependency migration — sailor v1.35.0 → v1.36.0
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 151 (FEATURE mode)
+2. **CI status check**: ✅ GREEN (latest run: success at 2026-04-05T19:39:53Z)
+3. **Open issues check**: Issue #36 (sailor v1.36.0 migration) — HIGH PRIORITY per migration protocol
+4. **Sailor migration** (v1.35.0 → v1.36.0):
+   - Executed: `zig fetch --save https://github.com/yusa-imit/sailor/archive/refs/tags/v1.36.0.tar.gz`
+   - Updated `build.zig.zon` dependency URL and hash
+   - Verified build compatibility: `zig build` — SUCCESS
+   - Verified test suite: `zig build test` — PASS (exit code 0)
+   - **No breaking changes** (100% backward compatible)
+5. **New features available** (v1.36.0):
+   - Performance Monitoring: render_metrics, memory_metrics, event_metrics
+   - MetricsDashboard Widget: real-time performance visualization (3 layout modes)
+   - Performance regression tests: automatic performance degradation detection
+6. **Documentation update**:
+   - Updated `docs/milestones.md`: Current version v1.35.0 → v1.36.0
+   - Added v1.35.0 to version table (widget ecosystem expansion)
+   - Added v1.36.0 to version table (performance monitoring)
+7. **Issue closure**: #36 auto-closed after migration commit
+
+### Result
+- ✅ sailor v1.36.0 migration complete
+- ✅ All tests passing
+- ✅ Documentation updated
+- ✅ Pushed to remote
+
+### Commits
+- `244d3ea`: chore: migrate to sailor v1.36.0
+- `b0e9c14`: docs: update sailor version tracking to v1.36.0
+
+### Migration Protocol Compliance
+- Followed CLAUDE.md migration protocol: dependency updates prioritized over feature work
+- No local workarounds needed (100% backward compatible)
+- Test verification mandatory before commit
+- Issue filed by sailor maintainer, resolved in same session
+
+---
+
 ## Session 150 — STABILIZATION MODE
 
 ### Summary
