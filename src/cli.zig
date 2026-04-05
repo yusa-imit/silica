@@ -1018,6 +1018,80 @@ fn showDatabases(db: *Database, stdout: anytype) void {
     stdout.print("0    main             {s}\n", .{db.db_path}) catch {};
 }
 
+fn showDbInfo(db: *Database, db_path: []const u8, stdout: anytype, stderr: anytype) void {
+    const pager = db.pager;
+
+    // Get file size
+    const file_size = pager.file.getEndPos() catch |err| {
+        const msg = switch (err) {
+            else => "Failed to get file size.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+
+    // Calculate free pages by traversing freelist
+    var free_page_count: u32 = 0;
+    var freelist_current = pager.freelist_head;
+
+    // Allocate buffer for reading freelist pages
+    const page_buf = pager.allocPageBuf() catch {
+        printError(stderr, "Out of memory.");
+        return;
+    };
+    defer pager.freePageBuf(page_buf);
+
+    // Traverse freelist to count free pages (limit to avoid infinite loops)
+    const max_freelist_depth: u32 = 10000;
+    while (freelist_current != 0 and free_page_count < max_freelist_depth) {
+        free_page_count += 1;
+
+        // Read the free page to get next pointer
+        pager.readPage(freelist_current, page_buf) catch break;
+
+        // For free pages, the next free page ID is stored at offset PAGE_HEADER_SIZE
+        if (page_buf.len >= silica.page.PAGE_HEADER_SIZE + 4) {
+            freelist_current = std.mem.readInt(u32, page_buf[silica.page.PAGE_HEADER_SIZE..][0..4], .little);
+        } else {
+            break;
+        }
+
+        // Sanity check to avoid infinite loops
+        if (freelist_current >= pager.page_count) break;
+    }
+
+    // Display database information (SQLite-compatible format)
+    stdout.writeAll("database page size:  ") catch {};
+    stdout.print("{d}\n", .{pager.page_size}) catch {};
+
+    stdout.writeAll("write format:        ") catch {};
+    stdout.print("{d}\n", .{silica.page.FORMAT_VERSION}) catch {};
+
+    stdout.writeAll("read format:         ") catch {};
+    stdout.print("{d}\n", .{silica.page.FORMAT_VERSION}) catch {};
+
+    stdout.writeAll("number of pages:     ") catch {};
+    stdout.print("{d}\n", .{pager.page_count}) catch {};
+
+    stdout.writeAll("page size:           ") catch {};
+    stdout.print("{d}\n", .{pager.page_size}) catch {};
+
+    stdout.writeAll("file size:           ") catch {};
+    stdout.print("{d} bytes ({d} pages)\n", .{ file_size, pager.page_count }) catch {};
+
+    stdout.writeAll("freelist count:      ") catch {};
+    stdout.print("{d}\n", .{free_page_count}) catch {};
+
+    stdout.writeAll("schema version:      ") catch {};
+    stdout.print("{d}\n", .{pager.schema_version}) catch {};
+
+    stdout.writeAll("schema cookie:       ") catch {};
+    stdout.print("{d}\n", .{pager.schema_version}) catch {};
+
+    stdout.writeAll("database path:       ") catch {};
+    stdout.print("{s}\n", .{db_path}) catch {};
+}
+
 fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
     // Use catalog API to get table names directly
     var catalog = &db.catalog;
@@ -2131,6 +2205,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.nullvalue STRING   Set string to display for NULL values
             \\.nullvalue          Show current NULL display string
             \\.databases          List database connections
+            \\.dbinfo             Show database file statistics
             \\.tables             List all tables
             \\.indexes [TABLE]    List all indexes or indexes for a specific table
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
@@ -2325,6 +2400,8 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         }
     } else if (std.mem.eql(u8, cmd, ".databases")) {
         showDatabases(db, stdout);
+    } else if (std.mem.eql(u8, cmd, ".dbinfo")) {
+        showDbInfo(db, db_path, stdout, stderr);
     } else if (std.mem.eql(u8, cmd, ".tables")) {
         listTables(allocator, db, stdout, stderr);
     } else if (std.mem.startsWith(u8, cmd, ".indexes")) {
@@ -2787,6 +2864,7 @@ test "handleDotCommand help" {
     try std.testing.expect(std.mem.indexOf(u8, output, ".quit") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".mode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".databases") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".dbinfo") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".read") != null);
 }
 
@@ -2865,6 +2943,87 @@ test "handleDotCommand databases - memory database" {
     // Verify output shows :memory: database
     try std.testing.expect(std.mem.indexOf(u8, output, ":memory:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "main") != null);
+}
+
+test "handleDotCommand dbinfo" {
+    const allocator = std.testing.allocator;
+    const path = "test_dbinfo.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".dbinfo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify output contains database statistics
+    try std.testing.expect(std.mem.indexOf(u8, output, "database page size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "number of pages") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "page size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "file size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "freelist count") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "schema version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "database path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, path) != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "4096") != null); // Default page size
+}
+
+test "handleDotCommand dbinfo - memory database" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".dbinfo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+
+    // Verify output shows database info for :memory:
+    try std.testing.expect(std.mem.indexOf(u8, output, ":memory:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "database page size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "4096") != null);
 }
 
 test "handleDotCommand quit" {
