@@ -2219,6 +2219,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.open               Show current database path
             \\.prompt MAIN CONT   Replace the standard prompts
             \\.prompt             Show current prompts
+            \\.system CMD ARGS    Run CMD ARGS in a system shell
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".headers")) {
@@ -2576,6 +2577,71 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
                 main_prompt.* = main_text.?;
                 continue_prompt.* = cont_text.?;
                 stdout.writeAll("Prompts updated\n") catch {};
+            }
+        }
+    } else if (std.mem.startsWith(u8, cmd, ".system")) {
+        const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
+        if (rest.len == 0) {
+            printError(stderr, "Usage: .system CMD ARGS...");
+        } else {
+            // Execute shell command and capture output
+            var child = std.process.Child.init(&[_][]const u8{
+                "/bin/sh",
+                "-c",
+                rest,
+            }, allocator);
+
+            child.stdout_behavior = .Pipe;
+            child.stderr_behavior = .Pipe;
+
+            child.spawn() catch {
+                printError(stderr, "Failed to execute command");
+                return .ok;
+            };
+
+            // Read stdout
+            const child_stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+                _ = child.wait() catch {};
+                printError(stderr, "Failed to read command output");
+                return .ok;
+            };
+            defer allocator.free(child_stdout);
+
+            // Read stderr
+            const child_stderr = child.stderr.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+                _ = child.wait() catch {};
+                printError(stderr, "Failed to read command errors");
+                return .ok;
+            };
+            defer allocator.free(child_stderr);
+
+            // Wait for child to complete
+            const term = child.wait() catch {
+                printError(stderr, "Failed to wait for command");
+                return .ok;
+            };
+
+            // Write stdout
+            if (child_stdout.len > 0) {
+                stdout.writeAll(child_stdout) catch {};
+            }
+
+            // Write stderr
+            if (child_stderr.len > 0) {
+                stderr.writeAll(child_stderr) catch {};
+            }
+
+            // Show non-zero exit code
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) {
+                        stderr.print("Command exited with code {d}\n", .{code}) catch {};
+                    }
+                },
+                .Signal => |sig| {
+                    stderr.print("Command terminated by signal {d}\n", .{sig}) catch {};
+                },
+                else => {},
             }
         }
     } else {
@@ -7908,6 +7974,111 @@ test "handleDotCommand .help - includes .once command" {
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".once") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Write next query output to file") != null);
+}
+
+test "handleDotCommand .system - executes shell command" {
+    const allocator = std.testing.allocator;
+    const path = "test_system_cmd.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".system echo Hello", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Hello") != null);
+}
+
+test "handleDotCommand .system - missing command shows error" {
+    const allocator = std.testing.allocator;
+    const path = "test_system_missing.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".system", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const error_output = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, error_output, "Usage: .system CMD ARGS...") != null);
+}
+
+test "handleDotCommand .help - includes .system command" {
+    const allocator = std.testing.allocator;
+    const path = "test_help_system.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [8192]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".system") != null);
 }
 
 // Import wire_fuzz tests
