@@ -2682,7 +2682,7 @@ test "handleDotCommand help" {
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
-    var buf: [2048]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     var w = fbs.writer();
     var ebuf: [256]u8 = undefined;
