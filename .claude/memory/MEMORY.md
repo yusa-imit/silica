@@ -1,46 +1,50 @@
 # Silica Project Memory
 
-## Session 146 — FEATURE MODE (ANALYSIS ONLY)
+## Session 146 — FEATURE MODE
 
 ### Summary
 **Mode**: FEATURE MODE (session counter: 146)
-**Focus**: Project status analysis, potential enhancements evaluation
+**Focus**: CLI enhancement — `.log` status display
 
 ### Actions Completed
 1. **Session mode determination**: Counter incremented to 146 (FEATURE mode)
 2. **CI status check**: ✅ GREEN (latest run: success at 2026-04-05T09:40:20Z)
 3. **Open issues check**: Only issue #25 (GIN index hang — known limitation, non-blocking)
-4. **Test execution**: ✅ All tests passing (2866/2894 tests, 28 skipped)
+4. **Test execution**: ✅ All tests passing (exit code 0)
 5. **Dependency status**:
    - sailor v1.35.0 ✅ (latest)
    - zuda v2.0.0 ✅ (latest)
-6. **Enhancement analysis**:
-   - Evaluated potential CLI commands (`.width`, `.timeout`, `.integrity_check`)
-   - `.width` — requires sailor feature (per-column width support), filed as future enhancement
-   - `.timeout` — requires backend lock timeout support, deferred
-   - `.integrity_check` / PRAGMA — larger feature, requires parser/engine work
-7. **TODO audit**: All TODOs are feature TODOs for future work, no bugs
-
-### Analysis Result
-- Project is in **excellent maintenance state**
-- All 12 phases complete, v1.0.0 stable
-- Recent sessions (141-145) added valuable CLI enhancements
-- No critical bugs or issues
-- CI consistently green
-- Test coverage comprehensive
-
-### Decision
-No code changes this session — project is stable and healthy. Appropriate enhancements identified:
-1. **sailor feature request**: Per-column width support for `.width` command
-2. **Future PRAGMA implementation**: `PRAGMA integrity_check`, `PRAGMA optimize`
-3. **Lock timeout**: Backend support for `.timeout` command
+6. **`.log` command enhancement**:
+   - Added status display: `.log` without arguments now shows "log: on" or "log: off"
+   - Makes `.log` consistent with other commands (`.timer`, `.headers`, `.mode`, etc.)
+   - Updated test: renamed "missing filename error" → "show current status (off)"
+   - Added new test: "show current status (on)" — verifies status when logging is enabled
+   - Updated `.help` text to document new usage
+7. **Implementation details**:
+   - Modified line 2262-2269 in `handleDotCommand()` to show status instead of error
+   - Changed from `printError(stderr, "Usage...")` to status display logic
+   - Consistent UX: all setting commands now show current value when called without args
 
 ### Result
-- ✅ CI GREEN
+- ✅ CI GREEN (pre-push)
 - ✅ All tests passing
 - ✅ Dependencies up-to-date
-- ✅ Project health: EXCELLENT
-- ⏭️ No commits (analysis-only session)
+- ✅ New feature committed: `3051fc1`
+
+### Commits
+- `3051fc1`: feat(cli): add .log status display when called without arguments
+
+### Use Cases
+- `silica> .log` — check if logging is enabled (shows "log: on" or "log: off")
+- `silica> .log queries.log` — enable logging
+- `silica> .log` — verify logging is on
+- `silica> .log off` — disable logging
+- Useful for debugging and verifying log state without checking documentation
+
+### Impact
+- SQLite compatibility: Consistent behavior across all setting commands
+- Improved UX: Users can query any setting's current state
+- No breaking changes: existing `.log FILENAME` and `.log off` syntax unchanged
 
 ---
 
