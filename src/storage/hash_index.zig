@@ -617,6 +617,12 @@ test "hash index insert single key-value pair" {
     var idx = HashIndex.init(&pool, root_id);
 
     try idx.insert("name", "Alice");
+
+    // Verify the value was inserted
+    const val = try idx.get(allocator, "name");
+    try std.testing.expect(val != null);
+    try std.testing.expectEqualStrings("Alice", val.?);
+    allocator.free(val.?);
 }
 
 test "hash index get inserted value" {

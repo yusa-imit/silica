@@ -988,6 +988,18 @@ test "GIN insert single value with single key" {
 
     // Should succeed
     try gin.insert(&col_value, tuple_id);
+
+    // Verify the value was inserted by searching for it
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 42, .little);
+
+    var result = try gin.search(allocator, &query, 0);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqual(tuple_id.page_id, result.items[0].page_id);
+    try std.testing.expectEqual(tuple_id.tuple_offset, result.items[0].tuple_offset);
 }
 
 test "GIN insert single value with multiple keys" {
@@ -1016,6 +1028,17 @@ test "GIN insert single value with multiple keys" {
 
     // Should succeed
     try gin.insert(&col_value, tuple_id);
+
+    // Verify the value was inserted by searching for key 1
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+
+    var result = try gin.search(allocator, &query, 0);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqual(tuple_id.page_id, result.items[0].page_id);
 }
 
 test "GIN delete removes tuple from posting list" {
@@ -1102,6 +1125,16 @@ test "GIN insert common key in multiple rows" {
     // Both rows should succeed
     try gin.insert(&col_value1, tuple_id1);
     try gin.insert(&col_value2, tuple_id2);
+
+    // Verify both rows can be found by searching for common key 1
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+
+    var result = try gin.search(allocator, &query, 0);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
 }
 
 test "GIN posting list compaction after deletes" {
@@ -1184,6 +1217,17 @@ test "GIN handles array with many elements" {
     const tuple_id = ItemPointer{ .page_id = 500, .tuple_offset = 0 };
     // Should succeed
     try gin.insert(&col_value, tuple_id);
+
+    // Verify at least one of the keys can be found (e.g., key 0)
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 0, .little);
+
+    var result = try gin.search(allocator, &query, 0);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqual(tuple_id.page_id, result.items[0].page_id);
 }
 
 test "GIN posting tree split when exceeding inline threshold" {
@@ -1221,8 +1265,16 @@ test "GIN posting tree split when exceeding inline threshold" {
         try gin.insert(&col_value, tuple_id);
     }
 
-    // Verify the first insert succeeded (basic smoke test)
-    // Full posting tree verification deferred to future implementation
+    // Verify the entries were inserted by searching for the key
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+
+    var result = try gin.search(allocator, &query, 0);
+    defer result.deinit();
+
+    // Should find all 10 tuples
+    try std.testing.expectEqual(@as(usize, 10), result.items.len);
 }
 
 test "GIN search with contains strategy checks all keys" {
