@@ -1659,6 +1659,295 @@ fn backupDatabase(source_path: []const u8, dest_path: []const u8, stdout: anytyp
     stdout.print("Database backed up to: {s}\n", .{dest_path}) catch {};
 }
 
+/// Save database to a file (works with both file-based and :memory: databases)
+fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path: []const u8, dest_path: []const u8, stdout: anytype, stderr: anytype) void {
+    // Check if destination already exists
+    if (std.fs.cwd().access(dest_path, .{})) |_| {
+        printError(stderr, "Destination file already exists. Remove it first or choose a different name");
+        return;
+    } else |_| {}
+
+    // If source is a regular file (not :memory:), just use backup (file copy)
+    if (!std.mem.eql(u8, source_path, ":memory:")) {
+        backupDatabase(source_path, dest_path, stdout, stderr);
+        return;
+    }
+
+    // For :memory: databases, we need to dump and restore
+    // Create a new database at the destination
+    var dest_db = Database.open(allocator, dest_path, .{}) catch |err| {
+        const msg = switch (err) {
+            error.OutOfMemory => "Out of memory",
+            error.AccessDenied => "Access denied. Check file permissions",
+            error.NoSpaceLeft => "No space left on device",
+            else => "Failed to create destination database",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer dest_db.close();
+
+    // Get list of tables from source database
+    const table_names = source_db.catalog.listTables(allocator) catch |err| {
+        const msg = switch (err) {
+            error.OutOfMemory => "Out of memory",
+            else => "Failed to list tables",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer {
+        for (table_names) |name| allocator.free(name);
+        allocator.free(table_names);
+    }
+
+    if (table_names.len == 0) {
+        stdout.print("Database saved to: {s} (empty database)\n", .{dest_path}) catch {};
+        return;
+    }
+
+    // Sort table names alphabetically for consistent output
+    std.mem.sort([]const u8, table_names, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    // Begin transaction in destination database
+    _ = dest_db.exec("BEGIN TRANSACTION;") catch {
+        printError(stderr, "Failed to begin transaction");
+        return;
+    };
+
+    // For each table: get schema, create in dest, copy data
+    for (table_names) |table_name| {
+        // Get table schema from source
+        const table_info = source_db.catalog.getTable(table_name) catch |err| {
+            const msg = switch (err) {
+                error.OutOfMemory => "Out of memory",
+                else => "Failed to get table schema",
+            };
+            printError(stderr, msg);
+            _ = dest_db.exec("ROLLBACK;") catch {};
+            return;
+        };
+        defer table_info.deinit(source_db.allocator);
+
+        // Build CREATE TABLE statement
+        var create_sql: std.ArrayList(u8) = .{};
+        defer create_sql.deinit(allocator);
+
+        create_sql.writer(allocator).print("CREATE TABLE {s} (\n", .{table_name}) catch {
+            printError(stderr, "Out of memory");
+            _ = dest_db.exec("ROLLBACK;") catch {};
+            return;
+        };
+
+        // Check if there are table-level constraints
+        const has_table_constraints = table_info.table_constraints.len > 0;
+
+        // Add columns
+        for (table_info.columns, 0..) |col, i| {
+            create_sql.writer(allocator).writeAll("  ") catch {};
+            create_sql.writer(allocator).writeAll(col.name) catch {};
+            create_sql.writer(allocator).writeAll(" ") catch {};
+
+            // Column type
+            const type_name = switch (col.column_type) {
+                .integer => "INTEGER",
+                .real => "REAL",
+                .text => "TEXT",
+                .blob => "BLOB",
+                .boolean => "BOOLEAN",
+                .date => "DATE",
+                .time => "TIME",
+                .timestamp => "TIMESTAMP",
+                .interval => "INTERVAL",
+                .numeric => "NUMERIC",
+                .uuid => "UUID",
+                .array => "ARRAY",
+                .json => "JSON",
+                .jsonb => "JSONB",
+                .tsvector => "TSVECTOR",
+                .tsquery => "TSQUERY",
+                .untyped => "INTEGER", // default for untyped
+            };
+            create_sql.writer(allocator).writeAll(type_name) catch {};
+
+            // Add column constraints (only if not part of table-level constraint)
+            if (col.flags.primary_key and !has_table_constraints) {
+                create_sql.writer(allocator).writeAll(" PRIMARY KEY") catch {};
+            }
+            if (col.flags.not_null) {
+                create_sql.writer(allocator).writeAll(" NOT NULL") catch {};
+            }
+            if (col.flags.unique and !col.flags.primary_key) {
+                create_sql.writer(allocator).writeAll(" UNIQUE") catch {};
+            }
+            if (col.flags.autoincrement) {
+                create_sql.writer(allocator).writeAll(" AUTOINCREMENT") catch {};
+            }
+
+            // Comma for all but last column (unless there are table constraints)
+            const is_last_column = (i == table_info.columns.len - 1);
+            if (!is_last_column or has_table_constraints) {
+                create_sql.writer(allocator).writeAll(",\n") catch {};
+            }
+        }
+
+        // Add table-level constraints
+        for (table_info.table_constraints, 0..) |constraint, j| {
+            create_sql.writer(allocator).writeAll("  ") catch {};
+            switch (constraint) {
+                .primary_key => |cols| {
+                    create_sql.writer(allocator).writeAll("PRIMARY KEY (") catch {};
+                    for (cols, 0..) |col_name, k| {
+                        create_sql.writer(allocator).writeAll(col_name) catch {};
+                        if (k < cols.len - 1) {
+                            create_sql.writer(allocator).writeAll(", ") catch {};
+                        }
+                    }
+                    create_sql.writer(allocator).writeAll(")") catch {};
+                },
+                .unique => |cols| {
+                    create_sql.writer(allocator).writeAll("UNIQUE (") catch {};
+                    for (cols, 0..) |col_name, k| {
+                        create_sql.writer(allocator).writeAll(col_name) catch {};
+                        if (k < cols.len - 1) {
+                            create_sql.writer(allocator).writeAll(", ") catch {};
+                        }
+                    }
+                    create_sql.writer(allocator).writeAll(")") catch {};
+                },
+            }
+            if (j < table_info.table_constraints.len - 1) {
+                create_sql.writer(allocator).writeAll(",\n") catch {};
+            }
+        }
+
+        create_sql.writer(allocator).writeAll("\n);") catch {};
+
+        // Execute CREATE TABLE in destination
+        _ = dest_db.exec(create_sql.items) catch |err| {
+            stderr.print("Failed to create table {s}: {s}\n", .{ table_name, @errorName(err) }) catch {};
+            _ = dest_db.exec("ROLLBACK;") catch {};
+            return;
+        };
+
+        // Copy data: SELECT all rows from source, INSERT into dest
+        var select_sql_buf: [256]u8 = undefined;
+        const select_sql = std.fmt.bufPrint(&select_sql_buf, "SELECT * FROM {s};", .{table_name}) catch {
+            printError(stderr, "Table name too long");
+            _ = dest_db.exec("ROLLBACK;") catch {};
+            return;
+        };
+
+        var result = source_db.exec(select_sql) catch |err| {
+            stderr.print("Failed to read data from {s}: {s}\n", .{ table_name, @errorName(err) }) catch {};
+            _ = dest_db.exec("ROLLBACK;") catch {};
+            return;
+        };
+        defer result.close(allocator);
+
+        // Insert rows into destination
+        if (result.rows) |*rows| {
+            while (true) {
+                const maybe_row = rows.next() catch break;
+                if (maybe_row) |row| {
+                    defer {
+                        for (row.values) |v| v.free(allocator);
+                        allocator.free(row.values);
+                        allocator.free(row.columns);
+                    }
+
+                    // Build INSERT statement
+                    var insert_sql: std.ArrayList(u8) = .{};
+                    defer insert_sql.deinit(allocator);
+
+                    insert_sql.writer(allocator).print("INSERT INTO {s} VALUES (", .{table_name}) catch continue;
+
+                    for (row.values, 0..) |value, j| {
+                        switch (value) {
+                            .null_value => insert_sql.writer(allocator).writeAll("NULL") catch {},
+                            .integer => |v| insert_sql.writer(allocator).print("{}", .{v}) catch {},
+                            .real => |v| insert_sql.writer(allocator).print("{d}", .{v}) catch {},
+                            .text => |v| {
+                                insert_sql.writer(allocator).writeAll("'") catch {};
+                                for (v) |ch| {
+                                    if (ch == '\'') {
+                                        insert_sql.writer(allocator).writeAll("''") catch {};
+                                    } else {
+                                        insert_sql.writer(allocator).writeByte(ch) catch {};
+                                    }
+                                }
+                                insert_sql.writer(allocator).writeAll("'") catch {};
+                            },
+                            .blob => |v| {
+                                insert_sql.writer(allocator).writeAll("X'") catch {};
+                                for (v) |byte| {
+                                    insert_sql.writer(allocator).print("{X:0>2}", .{byte}) catch {};
+                                }
+                                insert_sql.writer(allocator).writeAll("'") catch {};
+                            },
+                            .boolean => |v| {
+                                const bool_str = if (v) "TRUE" else "FALSE";
+                                insert_sql.writer(allocator).writeAll(bool_str) catch {};
+                            },
+                            else => insert_sql.writer(allocator).writeAll("NULL") catch {},
+                        }
+
+                        if (j < row.values.len - 1) {
+                            insert_sql.writer(allocator).writeAll(", ") catch {};
+                        }
+                    }
+
+                    insert_sql.writer(allocator).writeAll(");") catch {};
+
+                    // Execute INSERT in destination
+                    _ = dest_db.exec(insert_sql.items) catch |err| {
+                        stderr.print("Failed to insert row into {s}: {s}\n", .{ table_name, @errorName(err) }) catch {};
+                        // Continue with next row instead of aborting
+                        continue;
+                    };
+                } else break;
+            }
+        }
+
+        // Copy indexes for this table
+        for (table_info.indexes) |idx| {
+            // Skip auto-generated indexes (PRIMARY KEY, UNIQUE)
+            if (idx.index_name.len == 0) continue;
+
+            var create_index_sql: std.ArrayList(u8) = .{};
+            defer create_index_sql.deinit(allocator);
+
+            create_index_sql.writer(allocator).writeAll("CREATE ") catch continue;
+            if (idx.is_unique) {
+                create_index_sql.writer(allocator).writeAll("UNIQUE ") catch continue;
+            }
+            create_index_sql.writer(allocator).print("INDEX {s} ON {s} ({s});", .{
+                idx.index_name,
+                table_name,
+                idx.column_name,
+            }) catch continue;
+
+            _ = dest_db.exec(create_index_sql.items) catch |err| {
+                stderr.print("Warning: Failed to create index {s}: {s}\n", .{ idx.index_name, @errorName(err) }) catch {};
+                // Continue even if index creation fails
+            };
+        }
+    }
+
+    // Commit transaction
+    _ = dest_db.exec("COMMIT;") catch {
+        printError(stderr, "Failed to commit transaction");
+        _ = dest_db.exec("ROLLBACK;") catch {};
+        return;
+    };
+
+    stdout.print("Database saved to: {s}\n", .{dest_path}) catch {};
+}
+
 fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const u8, table_name: []const u8, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
     // Read CSV file (max 100 MB)
     const max_size = 100 * 1024 * 1024;
@@ -1792,6 +2081,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
             \\.dump               Dump database as SQL text (CREATE TABLE + INSERT statements)
             \\.backup FILENAME    Create a backup copy of the database file
+            \\.save FILENAME      Save database to file (works with :memory: databases)
             \\.import FILE TABLE  Import CSV data from file into table
             \\.read FILENAME      Read and execute SQL from file
             \\.cd DIRECTORY       Change the working directory
@@ -1974,6 +2264,13 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             printError(stderr, "Usage: .backup FILENAME");
         } else {
             backupDatabase(db_path, rest, stdout, stderr);
+        }
+    } else if (std.mem.startsWith(u8, cmd, ".save")) {
+        const rest = std.mem.trimLeft(u8, cmd[5..], " \t");
+        if (rest.len == 0) {
+            printError(stderr, "Usage: .save FILENAME");
+        } else {
+            saveDatabase(allocator, db, db_path, rest, stdout, stderr);
         }
     } else if (std.mem.startsWith(u8, cmd, ".import")) {
         const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
@@ -4947,6 +5244,211 @@ test "handleDotCommand .help includes .backup" {
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".backup") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Create a backup copy of the database file") != null);
+}
+
+test "handleDotCommand .save creates file from :memory: database" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table and insert data
+    var result1 = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch return error.SkipZigTest;
+    defer result1.close(allocator);
+    var result2 = db.exec("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
+    defer result2.close(allocator);
+
+    const save_path = "test_save_memory.db";
+    defer std.fs.cwd().deleteFile(save_path) catch {};
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+
+    var cmd_buf: [128]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
+
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Database saved to") != null);
+
+    // Verify the saved file exists and contains correct data
+    var saved_db = Database.open(allocator, save_path, .{}) catch return error.SkipZigTest;
+    defer saved_db.close();
+
+    var verify_result = saved_db.exec("SELECT COUNT(*) FROM users;") catch return error.SkipZigTest;
+    defer verify_result.close(allocator);
+    if (try verify_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const count = row.values[0].integer;
+        try std.testing.expectEqual(@as(i64, 2), count);
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+test "handleDotCommand .save requires filename" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".save", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const err_output = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, err_output, "Usage: .save FILENAME") != null);
+}
+
+test "handleDotCommand .save prevents overwriting existing file" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    const save_path = "test_save_exists.db";
+    // Create a dummy file
+    std.fs.cwd().writeFile(.{ .sub_path = save_path, .data = "dummy" }) catch return error.SkipZigTest;
+    defer std.fs.cwd().deleteFile(save_path) catch {};
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+
+    var cmd_buf: [128]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
+
+    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const err_output = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, err_output, "already exists") != null);
+}
+
+test "handleDotCommand .save works with file-based databases (uses backup)" {
+    const allocator = std.testing.allocator;
+    const source_path = "test_save_source.db";
+    defer std.fs.cwd().deleteFile(source_path) catch {};
+    var db = Database.open(allocator, source_path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    // Create table and insert data
+    var result1 = db.exec("CREATE TABLE products (id INTEGER, name TEXT);") catch return error.SkipZigTest;
+    defer result1.close(allocator);
+    var result2 = db.exec("INSERT INTO products VALUES (1, 'Widget');") catch return error.SkipZigTest;
+    defer result2.close(allocator);
+
+    const save_path = "test_save_dest.db";
+    defer std.fs.cwd().deleteFile(save_path) catch {};
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+
+    var cmd_buf: [128]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
+
+    const result = handleDotCommand(allocator, &db, source_path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    // Verify file was saved (should use backup mechanism)
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "backed up to") != null or std.mem.indexOf(u8, output, "saved to") != null);
+}
+
+test "handleDotCommand .help includes .save" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".save") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Save database to file") != null);
 }
 
 test "handleDotCommand .import imports CSV data" {
