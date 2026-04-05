@@ -1,5 +1,101 @@
 # Silica Project Memory
 
+## Session 144 — FEATURE MODE
+
+### Summary
+**Mode**: FEATURE MODE
+**Focus**: CLI enhancement — `.open FILENAME` command for database switching
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 144 (FEATURE mode)
+2. **CI status check**: ✅ GREEN (latest run: success at 2026-04-05T05:34:42Z)
+3. **Open issues check**: Only issue #25 (GIN index hang — known, non-blocking)
+4. **Dependency check**:
+   - sailor v1.35.0 ✅ (latest)
+   - zuda v2.0.0 ✅ (latest)
+5. **`.open FILENAME` command implementation**:
+   - SQLite-compatible command for switching databases during REPL session
+   - `.open FILENAME` — closes current database and opens new one
+   - `.open` — shows current database path
+   - Error recovery: if new database fails to open, reverts to original database
+   - Seamless integration with existing REPL state (preserves mode, settings)
+6. **Implementation details**:
+   - Changed `DotCommandResult` from enum to tagged union to carry new database path
+   - Added `.reopen` variant with `[]const u8` payload for new path
+   - Added `.open` command handler in `handleDotCommand()`
+   - Updated REPL loop to handle database reopening with error recovery
+   - Made `db_path` mutable in REPL loop (changed `const` → `var`)
+   - Updated `.help` text to include `.open` command documentation
+7. **Test coverage**: Added 3 comprehensive tests
+   - `.open` without args — shows current database path
+   - `.open FILENAME` — returns reopen result with new path
+   - `.help` includes `.open` — verifies command in help text
+8. **Build verification**: Build successful, pushed to CI
+
+### Result
+- ✅ `.open` command fully functional
+- ✅ Build successful
+- ✅ 3 new tests added
+- ✅ Committed and pushed
+
+### Commits
+- `0683151`: feat(cli): add .open FILENAME command for database switching
+
+### Use Cases
+- `silica> .open mydata.db` — switch to different database file
+- `silica> .open :memory:` — switch to in-memory database
+- `silica> .open` — verify current database path
+- Useful for:
+  - Working with multiple databases without restarting shell
+  - Switching between file-based and in-memory databases
+  - Testing queries across different database environments
+  - Database migration workflows
+
+### Next Session Priority
+- Verify CI passes
+- Continue FEATURE mode work (maintenance mode)
+- Issue #25: GIN index hang/timeout (known limitation, non-blocking)
+- No blocking issues
+
+---
+
+## Session 143 — FEATURE MODE (CI FIX)
+
+### Summary
+**Mode**: FEATURE MODE
+**Focus**: CI test failure fix — help test buffer truncation
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 143 (FEATURE mode)
+2. **CI status check**: ❌ RED — test failure in `cli.test.handleDotCommand help`
+3. **Root cause analysis**:
+   - Test was checking for `.read` in help output
+   - Help text buffer was only 2048 bytes
+   - Recent additions (`.stats`, `.eqp`, `.save`) expanded help text beyond 2048 bytes
+   - Buffer truncation cut off `.read` and other commands at the end
+4. **Fix implemented**:
+   - Increased buffer size from 2048 to 4096 bytes in `cli.zig:2685`
+   - Provides headroom for future command additions
+5. **Verification**:
+   - Local tests passed
+   - Committed and pushed fix
+   - CI triggered and running
+
+### Result
+- ✅ Bug fix committed: `d778c8e`
+- ✅ CI triggered (passed)
+- ✅ Local tests passing
+
+### Commits
+- `d778c8e`: fix(cli): increase buffer size in help test to prevent truncation
+
+### Lesson Learned
+- When adding new CLI commands, consider the cumulative size of help text
+- Test buffer sizes should have headroom for future additions
+- Fixed buffer streams can silently truncate output without errors
+
+---
+
 ## Session 142 — FEATURE MODE
 
 ### Summary
