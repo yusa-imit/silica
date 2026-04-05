@@ -2125,6 +2125,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.once FILENAME      Write next query output to file (one-time only)
             \\.log FILENAME       Enable query logging to file (appends)
             \\.log off            Disable query logging
+            \\.log                Show current log setting
             \\.nullvalue STRING   Set string to display for NULL values
             \\.nullvalue          Show current NULL display string
             \\.databases          List database connections
@@ -2260,7 +2261,12 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
     } else if (std.mem.startsWith(u8, cmd, ".log")) {
         const rest = std.mem.trimLeft(u8, cmd[4..], " \t");
         if (rest.len == 0) {
-            printError(stderr, "Usage: .log FILENAME|off");
+            // Show current log status
+            if (log_file.* != null) {
+                stdout.writeAll("log: on\n") catch {};
+            } else {
+                stdout.writeAll("log: off\n") catch {};
+            }
         } else if (std.mem.eql(u8, rest, "off")) {
             // Turn logging off
             if (log_file.*) |f| {
@@ -6353,9 +6359,9 @@ test "handleDotCommand .log off - disable logging" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Logging is already off") != null);
 }
 
-test "handleDotCommand .log - missing filename error" {
+test "handleDotCommand .log - show current status (off)" {
     const allocator = std.testing.allocator;
-    const path = "test_log_error.db";
+    const path = "test_log_status.db";
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
     defer std.fs.cwd().deleteFile(path) catch {};
@@ -6382,8 +6388,51 @@ test "handleDotCommand .log - missing filename error" {
     const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
-    const err_output = efbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, err_output, "Usage: .log FILENAME|off") != null);
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "log: off") != null);
+}
+
+test "handleDotCommand .log - show current status (on)" {
+    const allocator = std.testing.allocator;
+    const path = "test_log_status_on.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const log_path = "test_status_on.log";
+    defer std.fs.cwd().deleteFile(log_path) catch {};
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    defer if (log_file) |f| f.close();
+
+    // Enable logging first
+    _ = handleDotCommand(allocator, &db, path, ".log test_status_on.log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    try std.testing.expect(log_file != null);
+
+    // Check status
+    fbs.reset();
+    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "log: on") != null);
 }
 
 test "handleDotCommand .show - includes log setting" {
