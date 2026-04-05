@@ -4,6 +4,34 @@ This directory contains example SQL scripts and code samples demonstrating Silic
 
 ## SQL Examples
 
+### `quickstart.sql` — Minimal Quick Start
+
+A minimal working example to get started quickly:
+- Basic table creation
+- Simple INSERT queries
+- SELECT with WHERE and ORDER BY
+- Perfect for first-time users
+
+**Run:**
+```bash
+silica quickstart.db < quickstart.sql
+```
+
+### `tutorial_simple.sql` — Core SQL Operations
+
+Covers essential SQL operations without complex joins:
+- Table creation with constraints
+- INSERT, UPDATE, DELETE
+- SELECT queries with filtering and sorting
+- Aggregate functions
+- Transactions
+- Basic indexes
+
+**Run:**
+```bash
+silica tutorial_simple.db < tutorial_simple.sql
+```
+
 ### `tutorial.sql` — Comprehensive SQL Tutorial
 
 A complete SQL tutorial covering:
@@ -21,25 +49,37 @@ A complete SQL tutorial covering:
 - Advanced features (CASE, string/date functions, COALESCE)
 - Views
 
-**Run the tutorial:**
-
+**Run:**
 ```bash
-# Method 1: Pipe the script
 silica tutorial.db < tutorial.sql
+```
 
-# Method 2: Interactive mode
-silica tutorial.db
-silica> .read tutorial.sql
+### `advanced_features.sql` — Production-Grade Features ✨ **NEW**
 
-# Method 3: Step through interactively
-silica tutorial.db
-silica> -- Copy-paste queries one at a time
+Showcases Silica's unique production capabilities:
+- **MVCC Transactions**: Snapshot isolation, REPEATABLE READ, SERIALIZABLE
+- **Window Functions**: ROW_NUMBER, RANK, LAG, LEAD, running totals with frames
+- **Recursive CTEs**: Organizational hierarchies, graph traversal
+- **JSON/JSONB**: Operators (->>, @>, ?), indexing with GIN
+- **Full-Text Search**: TSVECTOR, TSQUERY, ts_rank ranking
+- **Advanced Indexes**: Hash, GiST, GIN, CREATE INDEX CONCURRENTLY
+- **Materialized Views**: Pre-computed aggregations
+- **Set Operations**: UNION, INTERSECT, EXCEPT
+- **Comprehensive Constraints**: CHECK, UNIQUE, FOREIGN KEY with CASCADE
+- **Performance Analysis**: EXPLAIN, EXPLAIN ANALYZE with runtime stats
+
+**Run:**
+```bash
+silica advanced_demo.db < advanced_features.sql
+
+# Or interactively to see each feature:
+silica advanced_demo.db
+silica> .read advanced_features.sql
 ```
 
 **Clean up:**
-
 ```bash
-rm -f tutorial.db tutorial.db-wal tutorial.db-shm
+rm -f quickstart.db tutorial_simple.db tutorial.db advanced_demo.db *.db-wal *.db-shm
 ```
 
 ## Code Examples (Coming Soon)
