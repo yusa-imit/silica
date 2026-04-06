@@ -9,7 +9,47 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 139 - FEATURE)
+### Last Session (Session 162 - FEATURE)
+- **Date**: 2026-04-07
+- **Mode**: FEATURE MODE
+- **Focus**: Documentation update — CHANGELOG.md with sessions 94-161
+- **Outcome**: ✅ Comprehensive changelog update, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN before session
+  - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
+  - **Dependency check**:
+    - sailor v1.37.0 ✅ (latest)
+    - zuda v2.0.0 ✅ (latest)
+  - **Work Completed**:
+    1. **CHANGELOG.md update**: Documented sessions 94-161 (68 sessions)
+       - Dependency upgrades: sailor v1.25.0 → v1.37.0 (7 upgrade sessions)
+       - 26 CLI dot commands added (sessions 97-139)
+       - TUI enhancements: keyword tooltips, table metadata tooltips
+       - Bug fixes: TUI memory leak, MVCC visibility, PreparedStatement arena lifecycle
+       - Documentation: advanced features showcase, SQL tutorials
+       - Stabilization sessions: code quality audits, test coverage verification
+    2. **Categories organized**: Changed, Fixed, Added, Documentation, Testing & Quality
+    3. **Verification**: Build successful, all tests passing (2894 tests)
+  - **Files Changed**:
+    - `CHANGELOG.md`: +54 lines, -11 lines (comprehensive update for 68 sessions)
+  - **Impact**: Complete project history from sessions 66-161 now documented for future reference
+- **Commits**: 7a925f0 (CHANGELOG update)
+
+### Previous Session (Session 161 - FEATURE)
+- **Date**: 2026-04-06
+- **Mode**: FEATURE MODE
+- **Focus**: Dependency migration — sailor v1.36.0 → v1.37.0
+- **Outcome**: ✅ sailor v1.37.0 migration complete, all tests passing
+- **Commits**: fd36e19 (sailor v1.37.0)
+
+### Previous Session (Session 160 - STABILIZATION)
+- **Date**: 2026-04-06
+- **Mode**: STABILIZATION MODE
+- **Focus**: Code quality improvements - catch unreachable documentation
+- **Outcome**: ✅ SAFETY comments added to auth.zig
+- **Commits**: 99fbfa4 (SAFETY comments)
+
+### Previous Session (Session 139 - FEATURE)
 - **Date**: 2026-04-05
 - **Mode**: FEATURE MODE
 - **Focus**: CLI enhancement — `.once FILENAME` command for one-time output redirection
