@@ -228,34 +228,77 @@ See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for details:
 ## [Unreleased]
 
 ### Changed
-- Upgraded sailor from v1.25.0 → v1.27.0 (98% API documentation coverage, 5 new examples)
-- Session 93 (2026-03-31): Dependency maintenance
+- Upgraded sailor: v1.25.0 → v1.37.0 (through sessions 93, 95, 97, 113, 123, 151, 161)
+  - v1.37.0: v2.0.0 API bridge release, widget lifecycle standardization, method chaining enhancements
+  - v1.36.0: Performance monitoring (render/memory/event metrics), MetricsDashboard widget
+  - v1.35.0: Widget ecosystem expansion (Autocomplete, DropDown, FileTree, LogView, Spinner)
+  - v1.29.0-v1.34.0: Documentation improvements, bug fixes, API refinements
+- Upgraded zuda to v2.0.0 (session 27+, v1.15.0 integrated)
 
 ### Fixed
+- Session 160 (2026-04-06): Documented all `catch unreachable` uses in auth.zig with SAFETY comments
+- Session 131 (2026-04-04): TUI memory leak in getTableHelp() (catalog resource cleanup)
 - Session 90: GIN index readEntryKey bug (offset → index correction)
 - Session 86: Parser fuzz test optimization (reduced iteration counts for faster execution)
 - Session 83: EXPLAIN ANALYZE header format fix
 - Session 82: EXPLAIN ANALYZE runtime statistics collection
 - Session 78: ROLLBACK visibility bug (auto-commit MVCC filtering)
 - Session 75: AVG aggregate type mismatch, LIMIT 0 bug, conformance tests re-enabled
+- Session 70: Conformance test isolation issues (shared :memory: → unique temp files)
 - Session 68: Non-repeatable read test race condition (atomic synchronization)
-- Session 67: PreparedStatement memory leaks and double-free issues
-- Session 66: PreparedStatement arena lifecycle architectural refactor
+- Session 67-66: PreparedStatement memory leaks, double-free, arena lifecycle refactor
 
-### Added
-- Session 84: Correlation coefficient calculation in ANALYZE statistics
+### Added — CLI Enhancements (Sessions 97-139)
+
+**26 SQLite-Compatible Dot Commands:**
+- Session 139: `.once FILENAME` — One-time output redirection (auto-resets after single query)
+- Session 124: `.import FILE TABLE` — CSV import into table
+- Session 119: `.changes` — Show rows affected by last DML statement
+- Session 116: `.show` — Display all current settings at once
+- Session 114: `.echo TEXT` / `.print TEXT` — Literal text output
+- Session 112: `.nullvalue STRING` — Custom NULL display string
+- Session 109: `.output FILENAME` — Redirect query results to file
+- Session 108: `.headers on|off` — Toggle column headers
+- Session 107: `.timer on|off` — Toggle query execution timing
+- Session 106: `.read FILENAME` — Execute SQL scripts from files
+- Session 104: `.databases` — List database connections
+- Session 102: `.dump` — Export database as SQL text (CREATE + INSERT statements)
+- Session 101: `.indexes [TABLE]` — List indexes
+- Session 99: `.schema [TABLE]` — Show CREATE TABLE statements
+- Session 97: `.tables` — List all tables
+- Additional commands: `.bail`, `.cd`, `.clear`, `.dbinfo`, `.backup`, `.save`, `.open`, `.log`, `.stats`, `.eqp`, `.separator`, `.prompt`, `.system`/`.shell`
+
+**Autocomplete Enhancements:**
+- Session 81: Added 50 SQL keywords (DDL, functions, triggers, data types, window functions)
+- Session 77: Added 24 SQL keywords (CTEs, window functions, RBAC)
+
+**TUI Enhancements:**
+- Session 129: Table metadata tooltips in autocomplete (column count, types, names)
+- Session 128: SQL keyword tooltips (66 keywords with syntax descriptions)
+
+**Other Enhancements:**
+- Session 84: Correlation coefficient calculation in ANALYZE statistics (Spearman's rank)
 - Session 79: Parameter substitution in PostgreSQL wire protocol Execute handler
-- Session 77: 24 additional SQL keywords to CLI autocomplete
 - Session 74: max_rows parameter in PostgreSQL Execute handler
-- Session 73: Pattern-aware LIKE selectivity estimation
+- Session 73: Pattern-aware LIKE selectivity estimation (prefix/suffix/exact patterns)
 - Session 72: CLI version string updated to v1.0.0
 - Session 69: Documentation cleanup and status verification
-- Sessions 27+: zuda integration for deadlock detection (DFS cycle detection)
 
 ### Documentation
+- Session 152 (2026-04-05): Advanced features showcase (`examples/advanced_features.sql`, 438 lines)
+  - MVCC transactions, window functions, recursive CTEs, JSON/JSONB, full-text search, advanced indexes, materialized views
+- Session 126 (2026-04-04): SQL tutorial examples (`examples/quickstart.sql`, `examples/tutorial.sql`)
+- Session 94 (2026-04-01): CHANGELOG updated with sessions 66-93
 - Session 92: GIN architectural issues documented (page layout conflict)
 - Session 69: Updated project-context.md, milestones.md with current status
-- Sessions 68-93: Continuous memory updates tracking progress
+- Sessions 68-161: Continuous memory updates tracking progress
+
+### Testing & Quality (Stabilization Sessions)
+- Session 160 (2026-04-06): Code quality audit — documented `catch unreachable` safety invariants
+- Session 155 (2026-04-06): Test quality audit — verified comprehensive coverage, no meaningless tests
+- Session 120 (2026-04-03): Cross-compilation verification (6 targets), dependency check
+- Session 95 (2026-04-01): Sailor upgrade, test verification (2866/2894 passing)
+- Session 80 (2026-03-30): Added 6 auto-commit MVCC visibility regression tests
 
 ### Known Issues
 - **Issue #25**: GIN index tests hang/timeout due to architectural page layout issues (tests disabled, enhancement planned)
