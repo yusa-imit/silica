@@ -223,6 +223,7 @@ pub const BTree = struct {
             // Set right_child to the new (right) page
             setRightChild(frame.data, split.new_page_id);
             // Insert the promoted key with left_child = old root
+            // SAFETY: New root is empty, inserting first cell always succeeds
             insertInternalCell(frame.data, page_size, 0, 0, self.root_page_id, split.promoted_key) catch unreachable;
 
             self.pool.unpinPage(new_root_id, true);
@@ -1044,11 +1045,13 @@ pub const BTree = struct {
         initLeafPage(frame.data, page_size, page_id);
 
         // Write left half into old page
+        // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (0..split_point) |i| {
             insertLeafCell(frame.data, page_size, @intCast(i), @intCast(i), cells[i].key, cells[i].value) catch unreachable;
         }
 
         // Write right half into new page
+        // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (split_point..total) |i| {
             const j: u16 = @intCast(i - split_point);
             insertLeafCell(new_frame.data, page_size, j, j, cells[i].key, cells[i].value) catch unreachable;
@@ -1125,12 +1128,14 @@ pub const BTree = struct {
         initInternalPage(frame.data, page_size, page_id);
 
         // Write left half
+        // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (0..split_point) |i| {
             insertInternalCell(frame.data, page_size, @intCast(i), @intCast(i), cells[i].left_child, cells[i].key) catch unreachable;
         }
         setRightChild(frame.data, old_right_child);
 
         // Write right half (skip split_point — it's promoted)
+        // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for ((split_point + 1)..total) |i| {
             const j: u16 = @intCast(i - split_point - 1);
             insertInternalCell(new_frame.data, page_size, j, j, cells[i].left_child, cells[i].key) catch unreachable;
