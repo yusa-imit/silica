@@ -2175,12 +2175,16 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         stdout.writeAll("Dependencies:\n") catch {};
         stdout.writeAll("  sailor v1.36.0\n") catch {};
         stdout.writeAll("  zuda v2.0.0\n") catch {};
+    } else if (std.mem.eql(u8, cmd, ".clear")) {
+        // Clear screen using ANSI escape codes: ESC[2J (clear) + ESC[H (home cursor)
+        stdout.writeAll("\x1b[2J\x1b[H") catch {};
     } else if (std.mem.eql(u8, cmd, ".help")) {
         stdout.writeAll(
             \\.help               Show this help
             \\.quit               Exit the shell
             \\.exit               Exit the shell
             \\.version            Show version information
+            \\.clear              Clear the screen
             \\.echo TEXT          Print literal text to output
             \\.print TEXT         Print literal text to output (alias for .echo)
             \\.show               Show current settings (mode, headers, timer, stats, separator, nullvalue, output, bail, eqp)
@@ -3129,6 +3133,39 @@ test "handleDotCommand quit" {
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
+}
+
+test "handleDotCommand clear" {
+    const allocator = std.testing.allocator;
+    const path = ":memory:";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+    const result = handleDotCommand(allocator, &db, path, ".clear", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+    const output = fbs.getWritten();
+    // Verify ANSI clear screen escape sequence
+    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[2J\x1b[H") != null);
 }
 
 test "handleDotCommand unknown" {
@@ -5318,6 +5355,44 @@ test "handleDotCommand .help includes .echo" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".echo") != null);
+}
+
+test "handleDotCommand .help includes .clear" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_help_clear.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = Database.open(allocator, path, .{}) catch unreachable;
+    defer db.close();
+
+    var out_buf: [8192]u8 = undefined;
+    var err_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out_buf);
+    var ebs = std.io.fixedBufferStream(&err_buf);
+    var w = fbs.writer();
+    var ew = ebs.writer();
+
+    var mode = OutputMode.table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".clear") != null);
 }
 
 test "handleDotCommand .print prints literal text" {
