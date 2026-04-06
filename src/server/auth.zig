@@ -109,6 +109,7 @@ pub fn hashPasswordMd5(
         hasher.update(username);
         var digest: [16]u8 = undefined;
         hasher.final(&digest);
+        // SAFETY: 16-byte MD5 digest formats as 32 hex chars, inner_hash is 32 bytes
         _ = std.fmt.bufPrint(&inner_hash, "{x}", .{digest}) catch unreachable;
     }
 
@@ -119,6 +120,7 @@ pub fn hashPasswordMd5(
         hasher.update(&salt);
         var digest: [16]u8 = undefined;
         hasher.final(&digest);
+        // SAFETY: 16-byte MD5 digest formats as 32 hex chars, outer_hash is 32 bytes
         _ = std.fmt.bufPrint(&outer_hash, "{x}", .{digest}) catch unreachable;
     }
 
@@ -155,6 +157,7 @@ pub fn storePasswordMd5(
     hasher.update(username);
     var digest: [16]u8 = undefined;
     hasher.final(&digest);
+    // SAFETY: 16-byte MD5 digest formats as 32 hex chars, hash is 32 bytes
     _ = std.fmt.bufPrint(&hash, "{x}", .{digest}) catch unreachable;
 
     const result = try allocator.alloc(u8, 3 + 32);
