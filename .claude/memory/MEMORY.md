@@ -1,5 +1,56 @@
 # Silica Project Memory
 
+## Session 157 — FEATURE MODE
+
+### Summary
+**Mode**: FEATURE MODE
+**Focus**: CLI enhancement — `.clear` command for terminal screen clearing
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 157 (FEATURE mode)
+2. **CI status check**: ✅ GREEN (latest run: success at 2026-04-06T07:37:54Z)
+3. **Open issues check**: Only issue #25 (GIN index hang — known, non-blocking)
+4. **`.clear` command implementation**:
+   - Added new dot command to clear terminal screen
+   - Uses ANSI escape codes: `\x1b[2J\x1b[H` (clear screen + home cursor)
+   - Zero dependencies - works on any ANSI-compatible terminal
+   - Common REPL feature for better user experience
+5. **Implementation details**:
+   - Added `.clear` handler in `handleDotCommand()` (line 2178-2180)
+   - Added to help text between `.version` and `.echo`
+   - Uses ANSI escape sequence (ESC[2J clear + ESC[H home)
+   - No state management needed - simple one-line output
+6. **Test coverage**: Added 2 comprehensive tests
+   - Test verifies ANSI escape codes are sent to stdout
+   - Test verifies `.clear` appears in `.help` output
+7. **Manual verification**:
+   - `silica> .clear` → clears screen (verified with xxd)
+   - `silica> .help` → shows `.clear` command
+   - Build successful, ANSI codes confirmed in output
+
+### Result
+- ✅ `.clear` command fully functional
+- ✅ Build successful
+- ✅ Manual testing passed
+- ✅ Committed and pushed
+
+### Commits
+- `b1e4ef9`: feat(cli): add .clear command for terminal screen clearing
+
+### Use Cases
+- `silica> .clear` — clear cluttered terminal screen
+- Useful for:
+  - Removing sensitive query output from view
+  - Starting fresh during development/debugging
+  - Improving readability during long interactive sessions
+  - Common REPL workflow (similar to PostgreSQL psql `\! clear`, MySQL `\! cls`)
+
+### Next Session Priority
+- Continue maintenance mode
+- Monitor CI for regressions
+
+---
+
 ## Session 156 — FEATURE MODE
 
 ### Summary
