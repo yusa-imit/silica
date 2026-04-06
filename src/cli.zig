@@ -2220,6 +2220,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
             \\.prompt MAIN CONT   Replace the standard prompts
             \\.prompt             Show current prompts
             \\.system CMD ARGS    Run CMD ARGS in a system shell
+            \\.shell CMD ARGS     Run CMD ARGS in a system shell (alias for .system)
             \\
         ) catch {};
     } else if (std.mem.startsWith(u8, cmd, ".headers")) {
@@ -2579,10 +2580,13 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
                 stdout.writeAll("Prompts updated\n") catch {};
             }
         }
-    } else if (std.mem.startsWith(u8, cmd, ".system")) {
-        const rest = std.mem.trimLeft(u8, cmd[7..], " \t");
+    } else if (std.mem.startsWith(u8, cmd, ".system") or std.mem.startsWith(u8, cmd, ".shell")) {
+        // .shell is SQLite-compatible alias for .system
+        const offset: usize = if (std.mem.startsWith(u8, cmd, ".system")) 7 else 6;
+        const rest = std.mem.trimLeft(u8, cmd[offset..], " \t");
         if (rest.len == 0) {
-            printError(stderr, "Usage: .system CMD ARGS...");
+            const usage = if (offset == 7) "Usage: .system CMD ARGS..." else "Usage: .shell CMD ARGS...";
+            printError(stderr, usage);
         } else {
             // Execute shell command and capture output
             var child = std.process.Child.init(&[_][]const u8{
@@ -8079,6 +8083,111 @@ test "handleDotCommand .help - includes .system command" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".system") != null);
+}
+
+test "handleDotCommand .shell - executes shell command (SQLite alias)" {
+    const allocator = std.testing.allocator;
+    const path = "test_shell_cmd.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".shell echo World", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "World") != null);
+}
+
+test "handleDotCommand .shell - missing command shows error" {
+    const allocator = std.testing.allocator;
+    const path = "test_shell_missing.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".shell", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const error_output = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, error_output, "Usage: .shell CMD ARGS...") != null);
+}
+
+test "handleDotCommand .help - includes .shell command" {
+    const allocator = std.testing.allocator;
+    const path = "test_help_shell.db";
+    var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
+    defer db.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var buf: [8192]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+    var ew = efbs.writer();
+    var mode: OutputMode = .table;
+    var show_timer = true;
+    var show_headers = true;
+    var csv_separator: []const u8 = ",";
+    var null_display: []const u8 = "NULL";
+    var output_file: ?std.fs.File = null;
+    var once_file: ?std.fs.File = null;
+    var last_rows_affected: u64 = 0;
+    var bail_on_error = false;
+    var log_file: ?std.fs.File = null;
+    var show_stats = false;
+    var show_eqp = false;
+    var main_prompt: []const u8 = "silica> ";
+    var continue_prompt: []const u8 = "   ...> ";
+
+    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    try std.testing.expectEqual(DotCommandResult.ok, result);
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".shell") != null);
 }
 
 // Import wire_fuzz tests
