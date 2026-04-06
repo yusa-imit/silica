@@ -2172,6 +2172,9 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
     } else if (std.mem.eql(u8, cmd, ".version")) {
         stdout.print("Silica v{s}\n", .{version}) catch {};
         stdout.print("Zig {s}\n", .{@import("builtin").zig_version_string}) catch {};
+        stdout.writeAll("Dependencies:\n") catch {};
+        stdout.writeAll("  sailor v1.36.0\n") catch {};
+        stdout.writeAll("  zuda v2.0.0\n") catch {};
     } else if (std.mem.eql(u8, cmd, ".help")) {
         stdout.writeAll(
             \\.help               Show this help
@@ -7213,6 +7216,9 @@ test "handleDotCommand .version shows version info" {
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Silica") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Dependencies:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "sailor v1.36.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "zuda v2.0.0") != null);
 }
 
 test "handleDotCommand .help includes .version" {
