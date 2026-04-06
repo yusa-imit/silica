@@ -195,6 +195,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.34.0 | terminal integration | DONE | OSC 52 clipboard API (3 selection types), terminal emulator detection (xterm/kitty/iTerm2), capability detection (truecolor/mouse/clipboard), paste bracketing enhancements |
 | v1.35.0 | widget ecosystem expansion | DONE | Card/Badge/Avatar/Skeleton/Accordion widgets, accessibility improvements (ARIA roles), responsive utilities (media queries, device detection) |
 | v1.36.0 | performance monitoring | DONE | Performance Monitoring & Real-Time Metrics (render_metrics, memory_metrics, event_metrics), MetricsDashboard widget (3 layout modes), performance regression tests |
+| v1.37.0 | v2.0.0 API bridge | DONE | Deprecation warning system for v2.0.0 migration, Buffer.set() method (setChar → set), Style inference helpers (withForeground/Background/Colors), Widget lifecycle standardization (consistent init/deinit), migration guide (docs/v1-to-v2-migration.md) |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)

@@ -819,7 +819,7 @@ fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .schema;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
 
-    const block = tui.widgets.Block.init()
+    const block = (tui.widgets.Block{})
         .withBorderStyle(border_style)
         .withTitle("Schema", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
@@ -875,7 +875,7 @@ fn renderResultsTable(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .results;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
 
-    const block = tui.widgets.Block.init()
+    const block = (tui.widgets.Block{})
         .withBorderStyle(border_style)
         .withTitle("Results", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
@@ -919,7 +919,7 @@ fn renderSQLInput(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .input;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
 
-    const block = tui.widgets.Block.init()
+    const block = (tui.widgets.Block{})
         .withBorderStyle(border_style)
         .withTitle("SQL", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
@@ -1004,7 +1004,7 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
     };
 
     // Draw border
-    const block = tui.widgets.Block.init()
+    const block = (tui.widgets.Block{})
         .withTitle("Completions", .top_left)
         .withBorderStyle(.{ .fg = .cyan });
     block.render(buf, popup_area);
