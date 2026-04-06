@@ -1,5 +1,59 @@
 # Silica Project Memory
 
+## Session 153 — FEATURE MODE
+
+### Summary
+**Mode**: FEATURE MODE
+**Focus**: CLI enhancement — `.shell` command as SQLite-compatible alias for `.system`
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 153 (FEATURE mode)
+2. **CI status check**: ✅ GREEN (latest run: success at 2026-04-05T23:36:57Z)
+3. **Open issues check**: Only issue #25 (GIN index hang — known, non-blocking)
+4. **SQLite command comparison**: Analyzed SQLite's 60+ dot commands to identify useful additions
+   - Silica has 31 implemented commands (comprehensive coverage)
+   - Identified `.shell` as trivial, high-value enhancement for SQLite compatibility
+5. **`.shell CMD ARGS` implementation**:
+   - SQLite-compatible alias for `.system` (both commands supported in SQLite CLI)
+   - Shares same code path with `.system` (unified handler)
+   - Dynamic usage message (shows `.system` or `.shell` depending on which was used)
+   - Command offset detection: 7 for `.system`, 6 for `.shell`
+   - Updated `.help` text with `.shell` documentation
+6. **Test coverage**: Added 3 comprehensive tests
+   - `.shell` executes shell command (verifies stdout capture)
+   - Missing command argument validation (verifies usage message)
+   - `.help` includes `.shell` command (verifies documentation)
+7. **Manual verification**:
+   - `silica> .shell echo Testing` → works correctly
+   - `.help` shows both `.system` and `.shell` with descriptions
+   - All tests passing (2897 tests, 28 skipped)
+
+### Result
+- ✅ `.shell` command fully functional
+- ✅ Build successful
+- ✅ Manual testing passed
+- ✅ Committed and pushed
+
+### Commits
+- `ca88713`: feat(cli): add .shell command as SQLite-compatible alias for .system
+
+### SQLite Compatibility Status
+Silica now has 32 dot commands (up from 31):
+- ✅ All core commands implemented (backup, bail, cd, changes, databases, dbinfo, dump, echo, eqp, help, headers, import, indexes, log, mode, nullvalue, once, open, output, print, prompt, quit/exit, read, save, schema, separator, shell, show, stats, system, tables, timer)
+- Still missing (low priority or SQLite-specific):
+  - `.width` — requires sailor.fmt.Table per-column width API
+  - `.timeout` — requires engine-level lock timeout
+  - `.trace` — similar to existing `.log` command
+  - Advanced/niche (`.archive`, `.expert`, `.lint`, `.intck`, `.recover`)
+  - SQLite-specific (`.dbconfig`, `.filectrl`, `.limit`, `.vfsinfo`)
+
+### Next Session Priority
+- Continue maintenance mode
+- Monitor CI for regressions
+- Issue #25: GIN index hang (known limitation, architectural fix needed)
+
+---
+
 ## Session 151 — FEATURE MODE
 
 ### Summary
