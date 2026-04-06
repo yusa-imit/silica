@@ -1,5 +1,49 @@
 # Silica Project Memory
 
+## Session 156 — FEATURE MODE
+
+### Summary
+**Mode**: FEATURE MODE
+**Focus**: CLI enhancement — `.version` command dependency information
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 156 (FEATURE mode)
+2. **CI status check**: ✅ GREEN (latest run: success at 2026-04-06T05:39:15Z)
+3. **Open issues check**: Only issue #25 (GIN index hang — known, non-blocking)
+4. **`.version` command enhancement**:
+   - Added dependency version display (sailor v1.36.0, zuda v2.0.0)
+   - Output now shows: Silica version, Zig version, Dependencies section
+   - Updated test to verify dependency information is present
+   - Provides useful information for debugging and support tickets
+5. **Implementation details**:
+   - Enhanced `.version` command in cli.zig (lines 2172-2177)
+   - Added "Dependencies:" header and two dependency lines
+   - Updated test (line 7216-7221) with 3 new assertions
+   - Manual testing verified correct output format
+
+### Result
+- ✅ `.version` command now shows complete version information
+- ✅ Build successful
+- ✅ Manual testing passed
+- ✅ Committed and pushed
+
+### Commits
+- `2a4e419`: feat(cli): enhance .version command to show dependency versions
+
+### Use Cases
+- `silica> .version` — shows Silica v1.0.0, Zig 0.15.2, sailor v1.36.0, zuda v2.0.0
+- Useful for:
+  - Bug reports (complete version information)
+  - Support tickets (dependency versions)
+  - Debugging compatibility issues
+  - Verifying dependency migrations
+
+### Next Session Priority
+- Continue maintenance mode
+- Monitor CI for regressions
+
+---
+
 ## Session 154 — FEATURE MODE
 
 ### Summary
