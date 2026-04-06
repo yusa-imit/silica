@@ -9,11 +9,11 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 162 - FEATURE)
+### Last Session (Session 163 - FEATURE)
 - **Date**: 2026-04-07
 - **Mode**: FEATURE MODE
-- **Focus**: Documentation update — CHANGELOG.md with sessions 94-161
-- **Outcome**: ✅ Comprehensive changelog update, all tests passing
+- **Focus**: CLI version string update for sailor v1.37.0
+- **Outcome**: ✅ Version string updated, all tests passing
 - **Details**:
   - **CI Status**: ✅ GREEN before session
   - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
@@ -21,18 +21,21 @@
     - sailor v1.37.0 ✅ (latest)
     - zuda v2.0.0 ✅ (latest)
   - **Work Completed**:
-    1. **CHANGELOG.md update**: Documented sessions 94-161 (68 sessions)
-       - Dependency upgrades: sailor v1.25.0 → v1.37.0 (7 upgrade sessions)
-       - 26 CLI dot commands added (sessions 97-139)
-       - TUI enhancements: keyword tooltips, table metadata tooltips
-       - Bug fixes: TUI memory leak, MVCC visibility, PreparedStatement arena lifecycle
-       - Documentation: advanced features showcase, SQL tutorials
-       - Stabilization sessions: code quality audits, test coverage verification
-    2. **Categories organized**: Changed, Fixed, Added, Documentation, Testing & Quality
-    3. **Verification**: Build successful, all tests passing (2894 tests)
+    1. **Version string update**: Updated `.version` command output to reflect sailor v1.37.0
+       - Changed hardcoded "sailor v1.36.0" → "sailor v1.37.0" in CLI output
+       - Updated test expectation to match new version (line 7295)
+       - Reflects Session 161 migration to sailor v1.37.0
+    2. **Test verification**: All 2894+ tests passing (34 skipped)
   - **Files Changed**:
-    - `CHANGELOG.md`: +54 lines, -11 lines (comprehensive update for 68 sessions)
-  - **Impact**: Complete project history from sessions 66-161 now documented for future reference
+    - `src/cli.zig`: 2 lines (version output + test expectation)
+  - **Impact**: CLI now displays accurate dependency version information
+- **Commits**: 3d1e2e2 (version string update)
+
+### Previous Session (Session 162 - FEATURE)
+- **Date**: 2026-04-07
+- **Mode**: FEATURE MODE
+- **Focus**: Documentation update — CHANGELOG.md with sessions 94-161
+- **Outcome**: ✅ Comprehensive changelog update, all tests passing
 - **Commits**: 7a925f0 (CHANGELOG update)
 
 ### Previous Session (Session 161 - FEATURE)
