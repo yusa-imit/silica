@@ -9,11 +9,11 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 166 - FEATURE)
+### Last Session (Session 167 - FEATURE)
 - **Date**: 2026-04-07
 - **Mode**: FEATURE MODE
-- **Focus**: CLI version string update for sailor v1.38.0
-- **Outcome**: ✅ Version string updated, all tests passing
+- **Focus**: Documentation update — milestones.md accuracy
+- **Outcome**: ✅ Documentation synchronized with current state
 - **Details**:
   - **CI Status**: ✅ GREEN (all checks passing)
   - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
@@ -21,14 +21,23 @@
     - sailor v1.38.0 ✅ (latest, released 2026-04-07)
     - zuda v2.0.0 ✅ (latest, released 2026-03-26)
   - **Work Completed**:
-    1. **CLI version display update**: Updated `.version` command output
-       - Changed sailor v1.37.0 → v1.38.0 in output string
-       - Updated corresponding test expectation
-       - Follows Session 165 migration to sailor v1.38.0
-    2. **Test verification**: All tests passing (exit code 0)
-  - **Test Status**: All tests passing
-  - **Project State**: Maintenance mode — incremental improvements
-  - **Impact**: CLI version display now accurately reflects current dependencies
+    1. **Test count update**: Updated milestones.md from 2894 → 3228 tests
+       - Actual count from `grep -r "^test " src/` = 3228 test definitions
+       - Reflects test growth from sessions 95-167
+       - All tests passing with 28 skipped (GIN index tests, MVCC limitations)
+    2. **Sailor version update**: Updated milestones.md from v1.36.0 → v1.38.0
+       - Reflects Session 165 migration to sailor v1.38.0
+       - Dependency tracking table now accurate
+  - **Test Status**: 3228 tests (all passing, 28 skipped)
+  - **Project State**: Maintenance mode — documentation accuracy
+  - **Impact**: Milestones.md now reflects actual project state (test count, dependencies)
+- **Commits**: 9dedfd8 (documentation update)
+
+### Previous Session (Session 166 - FEATURE)
+- **Date**: 2026-04-07
+- **Mode**: FEATURE MODE
+- **Focus**: CLI version string update for sailor v1.38.0
+- **Outcome**: ✅ Version string updated, all tests passing
 - **Commits**: b293526 (CLI version string update)
 
 ### Previous Session (Session 164 - FEATURE)
