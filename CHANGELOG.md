@@ -5,6 +5,30 @@ All notable changes to Silica will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Community Documentation** (Session 168)
+  - CONTRIBUTING.md: Comprehensive contribution guidelines (fork, branch, commit, PR process, coding standards, testing, best practices)
+  - SECURITY.md: Security policy, responsible disclosure process, severity classification, security best practices
+- **CLI Enhancements**
+  - `.clear` command for terminal screen clearing (Session 157)
+  - `.version` command now shows dependency versions (sailor, zuda) for better diagnostics (Session 156)
+
+### Changed
+- **Dependency Updates**
+  - Migrated sailor from v1.36.0 → v1.37.0 → v1.38.0 (Sessions 161, 165-166)
+    - v1.37.0: v2.0.0 API bridge release (Block widget lifecycle standardization, deprecation warnings)
+    - v1.38.0: v2.0.0 migration tooling (automated transformation, deprecation audit, Buffer API changes)
+  - Updated CLI version string to reflect sailor v1.37.0 and v1.38.0 in `.version` output (Sessions 163, 166)
+- **Code Quality**
+  - Added SAFETY comments for `catch unreachable` uses in auth.zig (Session 160)
+  - All production code now documents safety invariants for unreachable assertions
+
+### Documentation
+- Updated `docs/milestones.md` with accurate test count (3228 tests) and sailor v1.38.0 status (Session 167)
+- Updated CHANGELOG with sessions 94-161 changes (Session 162)
+
 ## [1.0.0] - 2026-03-25
 
 ### 🎉 Production Ready — All 12 Phases Complete
