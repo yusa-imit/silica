@@ -9,7 +9,31 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 168 - FEATURE)
+### Last Session (Session 169 - FEATURE)
+- **Date**: 2026-04-07
+- **Mode**: FEATURE MODE
+- **Focus**: Documentation update — CHANGELOG.md Unreleased section
+- **Outcome**: ✅ Post-v1.0.0 changes documented in CHANGELOG
+- **Details**:
+  - **CI Status**: ✅ GREEN (all checks passing)
+  - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
+  - **Dependency status**:
+    - sailor v1.38.0 ✅ (latest)
+    - zuda v2.0.0 ✅ (latest)
+  - **Work Completed**:
+    1. **CHANGELOG.md Update**: Added "Unreleased" section documenting sessions 156-168
+       - Community documentation (CONTRIBUTING.md, SECURITY.md from Session 168)
+       - CLI enhancements (.clear command, .version with dependency versions)
+       - Dependency migrations (sailor v1.36.0 → v1.37.0 → v1.38.0)
+       - Code quality improvements (SAFETY comments in auth.zig)
+       - Documentation updates (milestones.md, test count accuracy)
+    2. **Format**: Follows Keep a Changelog format with Added/Changed/Documentation sections
+  - **Test Status**: 3228 tests (all passing, 28 skipped)
+  - **Project State**: Maintenance mode — incremental documentation updates
+  - **Impact**: Post-v1.0.0 improvements now tracked for future patch/minor release
+- **Commits**: 046ec6b (changelog update)
+
+### Previous Session (Session 168 - FEATURE)
 - **Date**: 2026-04-07
 - **Mode**: FEATURE MODE
 - **Focus**: Community documentation — CONTRIBUTING.md and SECURITY.md
