@@ -9,25 +9,33 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 164 - FEATURE)
+### Last Session (Session 166 - FEATURE)
+- **Date**: 2026-04-07
+- **Mode**: FEATURE MODE
+- **Focus**: CLI version string update for sailor v1.38.0
+- **Outcome**: ✅ Version string updated, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN (all checks passing)
+  - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
+  - **Dependency status**:
+    - sailor v1.38.0 ✅ (latest, released 2026-04-07)
+    - zuda v2.0.0 ✅ (latest, released 2026-03-26)
+  - **Work Completed**:
+    1. **CLI version display update**: Updated `.version` command output
+       - Changed sailor v1.37.0 → v1.38.0 in output string
+       - Updated corresponding test expectation
+       - Follows Session 165 migration to sailor v1.38.0
+    2. **Test verification**: All tests passing (exit code 0)
+  - **Test Status**: All tests passing
+  - **Project State**: Maintenance mode — incremental improvements
+  - **Impact**: CLI version display now accurately reflects current dependencies
+- **Commits**: b293526 (CLI version string update)
+
+### Previous Session (Session 164 - FEATURE)
 - **Date**: 2026-04-07
 - **Mode**: FEATURE MODE
 - **Focus**: Maintenance verification — status check and dependency audit
 - **Outcome**: ✅ All systems operational, maintenance mode confirmed
-- **Details**:
-  - **CI Status**: ✅ GREEN (all checks passing)
-  - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
-  - **Dependency check**:
-    - sailor v1.37.0 ✅ (latest, released 2026-04-06)
-    - zuda v2.0.0 ✅ (latest, released 2026-03-26)
-  - **Work Completed**:
-    1. **Status verification**: Confirmed all 12 phases complete, v1.0.0 production ready
-    2. **Dependency audit**: Verified both dependencies are at latest versions
-    3. **CLI audit**: 26+ dot commands implemented (comprehensive SQLite compatibility)
-    4. **TODO review**: Most TODOs are deferred to future milestones or documented limitations
-  - **Test Status**: 2894 tests (2866 passing, 28 skipped)
-  - **Project State**: Maintenance mode — no critical work required
-  - **Impact**: Confirmed project stability and completeness
 - **Commits**: None (verification session)
 
 ### Previous Session (Session 163 - FEATURE)
