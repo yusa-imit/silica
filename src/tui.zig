@@ -819,9 +819,11 @@ fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .schema;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
 
-    const block = (tui.widgets.Block{})
+    const block = (tui.widgets.Block{
+        .title = "Schema",
+        .title_position = .top_left,
+    })
         .withBorderStyle(border_style)
-        .withTitle("Schema", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
 
     block.render(buf, area);
@@ -858,14 +860,14 @@ fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         // Clear the row first
         var cx: u16 = 0;
         while (cx < inner.width) : (cx += 1) {
-            buf.setChar(inner.x + cx, inner.y + row, ' ', if (is_selected) item_style else .{});
+            buf.set(inner.x + cx, inner.y + row, tui.Cell.init(' ', if (is_selected) item_style else .{}));
         }
 
         // Render the item text
         var x: u16 = 0;
         for (item) |c| {
             if (x >= inner.width) break;
-            buf.setChar(inner.x + x, inner.y + row, c, item_style);
+            buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, item_style));
             x += 1;
         }
     }
@@ -875,9 +877,11 @@ fn renderResultsTable(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .results;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
 
-    const block = (tui.widgets.Block{})
+    const block = (tui.widgets.Block{
+        .title = "Results",
+        .title_position = .top_left,
+    })
         .withBorderStyle(border_style)
-        .withTitle("Results", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
 
     if (app.result_columns.items.len == 0) {
@@ -919,9 +923,11 @@ fn renderSQLInput(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const is_focused = app.focus == .input;
     const border_style: tui.Style = if (is_focused) .{ .fg = .cyan, .bold = true } else .{};
 
-    const block = (tui.widgets.Block{})
+    const block = (tui.widgets.Block{
+        .title = "SQL",
+        .title_position = .top_left,
+    })
         .withBorderStyle(border_style)
-        .withTitle("SQL", .top_left)
         .withTitleStyle(if (is_focused) tui.Style{ .fg = .cyan, .bold = true } else .{});
 
     block.render(buf, area);
@@ -937,7 +943,7 @@ fn renderSQLInput(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     var x = inner.x;
     for (display_text) |c| {
         if (x >= inner.x + inner.width) break;
-        buf.setChar(x, inner.y, c, display_style);
+        buf.set(x, inner.y, tui.Cell.init(c, display_style));
         x += 1;
     }
 
@@ -949,11 +955,11 @@ fn renderSQLInput(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
                 app.input_text.items[app.input_cursor]
             else
                 ' ';
-            buf.setChar(cx, inner.y, cursor_char, .{ .reverse = true });
+            buf.set(cx, inner.y, tui.Cell.init(cursor_char, .{ .reverse = true }));
             break :blk cx;
         } else if (is_focused) {
             // Empty input — cursor on first cell
-            buf.setChar(inner.x, inner.y, ' ', .{ .reverse = true });
+            buf.set(inner.x, inner.y, tui.Cell.init(' ', .{ .reverse = true }));
             break :blk inner.x;
         }
         break :blk 0;
@@ -1004,8 +1010,10 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
     };
 
     // Draw border
-    const block = (tui.widgets.Block{})
-        .withTitle("Completions", .top_left)
+    const block = (tui.widgets.Block{
+        .title = "Completions",
+        .title_position = .top_left,
+    })
         .withBorderStyle(.{ .fg = .cyan });
     block.render(buf, popup_area);
     const inner = block.inner(popup_area);
@@ -1035,14 +1043,14 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
         // Clear the row
         var cx: u16 = 0;
         while (cx < inner.width) : (cx += 1) {
-            buf.setChar(inner.x + cx, inner.y + row, ' ', if (is_selected) item_style else .{});
+            buf.set(inner.x + cx, inner.y + row, tui.Cell.init(' ', if (is_selected) item_style else .{}));
         }
 
         // Render item text
         var x: u16 = 0;
         for (item.text) |c| {
             if (x >= inner.width) break;
-            buf.setChar(inner.x + x, inner.y + row, c, item_style);
+            buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, item_style));
             x += 1;
         }
 
@@ -1053,7 +1061,7 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
                 x += 3;
                 for (desc) |c| {
                     if (x >= inner.width) break;
-                    buf.setChar(inner.x + x, inner.y + row, c, .{ .fg = .bright_black });
+                    buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, .{ .fg = .bright_black }));
                     x += 1;
                 }
             }
@@ -1107,7 +1115,7 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     // Fill the entire bar with background
     var fill_x = area.x;
     while (fill_x < area.x + area.width) : (fill_x += 1) {
-        buf.setChar(fill_x, area.y, ' ', bar_style);
+        buf.set(fill_x, area.y, tui.Cell.init(' ', bar_style));
     }
 
     // Left: [PANE] db_path | N table(s)
@@ -1121,13 +1129,13 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const pane_style = tui.Style{ .fg = .black, .bg = .cyan, .bold = true };
     for (pane_name) |c| {
         if (x >= area.x + area.width) break;
-        buf.setChar(x, area.y, c, pane_style);
+        buf.set(x, area.y, tui.Cell.init(c, pane_style));
         x += 1;
     }
 
     for (app.status_left) |c| {
         if (x >= area.x + area.width) break;
-        buf.setChar(x, area.y, c, bar_style);
+        buf.set(x, area.y, tui.Cell.init(c, bar_style));
         x += 1;
     }
 
@@ -1140,7 +1148,7 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         var rx = right_start;
         for (app.status_right) |c| {
             if (rx >= area.x + area.width) break;
-            buf.setChar(rx, area.y, c, bar_style);
+            buf.set(rx, area.y, tui.Cell.init(c, bar_style));
             rx += 1;
         }
     }
@@ -1154,7 +1162,7 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     var cx = center_start;
     for (center_text) |c| {
         if (cx >= area.x + area.width) break;
-        buf.setChar(cx, area.y, c, bar_style);
+        buf.set(cx, area.y, tui.Cell.init(c, bar_style));
         cx += 1;
     }
 }
@@ -1630,7 +1638,7 @@ test "renderUI does not crash with empty state" {
     var buf = try tui.Buffer.init(allocator, 80, 24);
     defer buf.deinit();
 
-    const area = tui.Rect.new(0, 0, 80, 24);
+    const area = tui.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
     try renderUI(&app, &buf, area);
 
     // Check that something was rendered (borders at least)
@@ -1670,7 +1678,7 @@ test "renderUI with populated data" {
     var buf = try tui.Buffer.init(allocator, 80, 24);
     defer buf.deinit();
 
-    const area = tui.Rect.new(0, 0, 80, 24);
+    const area = tui.Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
     try renderUI(&app, &buf, area);
 
     // Verify blocks have borders

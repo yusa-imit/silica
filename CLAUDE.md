@@ -549,8 +549,8 @@ gh issue list --state open --label bug --limit 5
 
 ## Sailor Migration
 
-- **Current in silica**: v1.37.0
-- **Latest available**: v1.37.0
+- **Current in silica**: v1.38.0
+- **Latest available**: v1.38.0
 - **Repo**: https://github.com/yusa-imit/sailor
 - **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for full version status table.
 
