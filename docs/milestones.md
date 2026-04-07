@@ -4,7 +4,7 @@
 
 - **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
 - **Current development**: All milestones complete, maintenance mode
-- **Tests**: 2894 tests (2866 passing, 0 failing, 28 skipped)
+- **Tests**: 3228 tests (all passing, 28 skipped)
 - **Branch**: `main`
 - **CI Status**: ✅ GREEN (all tests passing)
 - **zuda migrations**: Deadlock Detection ✅ DONE (v2.0.0); LRU Cache & B+Tree — NOT MIGRATING per architect decision
@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.36.0
-- **Latest available**: v1.36.0
+- **Current in silica**: v1.38.0
+- **Latest available**: v1.38.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
