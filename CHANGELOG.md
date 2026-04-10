@@ -17,9 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Dependency Updates**
-  - Migrated sailor from v1.36.0 → v1.37.0 → v1.38.0 (Sessions 161, 165-166)
+  - Migrated sailor from v1.36.0 → v1.37.0 → v1.38.0 → v1.38.1 (Sessions 161, 165-166, 170)
     - v1.37.0: v2.0.0 API bridge release (Block widget lifecycle standardization, deprecation warnings)
     - v1.38.0: v2.0.0 migration tooling (automated transformation, deprecation audit, Buffer API changes)
+    - v1.38.1: Migration script fixes and test coverage improvements (patch release, backward compatible)
   - Updated CLI version string to reflect sailor v1.37.0 and v1.38.0 in `.version` output (Sessions 163, 166)
 - **Code Quality**
   - Added SAFETY comments for `catch unreachable` uses in auth.zig (Session 160)
