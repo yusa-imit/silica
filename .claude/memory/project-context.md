@@ -9,7 +9,28 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 169 - FEATURE)
+### Last Session (Session 173 - FEATURE)
+- **Date**: 2026-04-11
+- **Mode**: FEATURE MODE
+- **Focus**: CLI version string update — sailor v1.38.1
+- **Outcome**: ✅ Version display synchronized with current dependencies
+- **Details**:
+  - **CI Status**: ✅ GREEN (all checks passing)
+  - **Open Issues**: 1 (#25: GIN index hang — known, non-blocking)
+  - **Dependency status**:
+    - sailor v1.38.1 ✅ (latest)
+    - zuda v2.0.0 ✅ (latest)
+  - **Work Completed**:
+    1. **CLI Version Update**: Updated `.version` command to display correct sailor version
+       - Changed hardcoded "sailor v1.38.0" → "sailor v1.38.1"
+       - Updated corresponding test expectation in cli.zig:7295
+    2. **Testing**: All 3228 tests passing (28 skipped)
+  - **Test Status**: 3228 tests (all passing, 28 skipped)
+  - **Project State**: Maintenance mode — keeping documentation in sync with dependencies
+  - **Impact**: `.version` command now accurately reflects current dependency versions
+- **Commits**: a45a252 (version string update)
+
+### Previous Session (Session 169 - FEATURE)
 - **Date**: 2026-04-07
 - **Mode**: FEATURE MODE
 - **Focus**: Documentation update — CHANGELOG.md Unreleased section
