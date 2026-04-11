@@ -1492,7 +1492,12 @@ test "ReplicationMonitor: rapid threshold crossing" {
         fn callback(alert: LagAlert, user_data: ?*anyopaque) void {
             const ctx: *@This() = @ptrCast(@alignCast(user_data.?));
             if (std.mem.eql(u8, alert.lag_type, "write")) {
-                ctx.severities.append(ctx.allocator_ctx, alert.severity) catch unreachable;
+                // SAFETY: Using std.testing.allocator in tests. If allocation fails, the allocator
+                // will detect the failure and fail the test. The callback signature doesn't allow
+                // returning errors, so we panic on allocation failure.
+                ctx.severities.append(ctx.allocator_ctx, alert.severity) catch |err| {
+                    std.debug.panic("Alert callback allocation failed: {}", .{err});
+                };
             }
         }
     };
