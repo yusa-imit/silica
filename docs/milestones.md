@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v1.38.0
-- **Latest available**: v1.38.0
+- **Current in silica**: v2.0.0
+- **Latest available**: v2.0.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -198,6 +198,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.37.0 | v2.0.0 API bridge | DONE | Deprecation warning system for v2.0.0 migration, Buffer.set() method (setChar → set), Style inference helpers (withForeground/Background/Colors), Widget lifecycle standardization (consistent init/deinit), migration guide (docs/v1-to-v2-migration.md) |
 | v1.38.0 | v2.0.0 migration tooling | DONE | Migration script for automated code transformation, deprecation audit tooling, consumer dry-run testing, new deprecation warnings (Rect.new() → struct literal, Block.withTitle() → .title/.title_position, Buffer.setChar() → Buffer.set()) |
 | v1.38.1 | bug fix & test coverage | DONE | Migration script diff exit code handling, TextArea/Tree widget tests (~100+ tests) |
+| v2.0.0 | major release — API simplification | DONE | Removed Buffer.setChar() (use Buffer.set()), removed Rect.new() (use struct literal), Block.withTitle() no longer deprecated, automated migration script, 3345+ tests |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
