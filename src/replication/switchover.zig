@@ -145,11 +145,16 @@ pub const SwitchoverCoordinator = struct {
         self.start_time = std.time.microTimestamp();
         self.end_time = 0;
 
-        // Update IDs
+        // Update IDs — allocate new strings first, then swap to avoid leaks on error
+        const new_old_id = try self.allocator.dupe(u8, old_primary_id);
+        errdefer self.allocator.free(new_old_id);
+        const new_new_id = try self.allocator.dupe(u8, new_primary_id);
+
+        // Both allocations succeeded — now safe to free old strings
         self.allocator.free(self.old_primary_id);
         self.allocator.free(self.new_primary_id);
-        self.old_primary_id = try self.allocator.dupe(u8, old_primary_id);
-        self.new_primary_id = try self.allocator.dupe(u8, new_primary_id);
+        self.old_primary_id = new_old_id;
+        self.new_primary_id = new_new_id;
 
         errdefer {
             self.state = .failed;
