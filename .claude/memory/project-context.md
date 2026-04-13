@@ -9,25 +9,34 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 179 - FEATURE)
-- **Date**: 2026-04-12
+### Last Session (Session 184 - FEATURE)
+- **Date**: 2026-04-14
 - **Mode**: FEATURE MODE
-- **Focus**: Maintenance status check — all systems operational
-- **Outcome**: ✅ Project verified healthy, no action required
+- **Focus**: Bug fix — memory leak in switchover coordinator
+- **Outcome**: ✅ Critical memory leak fixed in performSwitchover error path
 - **Details**:
-  - **CI Status**: ✅ GREEN (latest run: success at 2026-04-12T03:06:16Z)
+  - **CI Status**: ✅ GREEN (latest run: success at 2026-04-13T09:06:31Z)
   - **Open Issues**: 1 (#25: GIN index hang — known architectural limitation, non-blocking)
   - **Dependency status**:
-    - sailor v1.38.1 ✅ (latest available)
+    - sailor v2.0.0 ✅ (latest available)
     - zuda v2.0.0 ✅ (latest available)
     - No pending migrations
+  - **Bug Fixed**: Memory leak in `performSwitchover()` error path
+    - **Root cause**: Old IDs freed before allocating new ones; if second allocation failed, first allocation leaked
+    - **Fix**: Allocate both new strings first with errdefer, then free old strings only after both succeed
+    - **File**: src/replication/switchover.zig (lines 148-157)
+    - **Test**: zig test src/replication/switchover.zig — 23/24 passing (1 skipped)
   - **Build verification**: ✅ Clean build, zero warnings
-  - **Test verification**: ✅ All tests passing (exit code 0)
-  - **Code quality**: ✅ No compiler warnings, no new TODOs requiring immediate action
-  - **Documentation status**: ✅ All docs up-to-date (README, CHANGELOG, milestones.md, CLAUDE.md)
-  - **Project State**: Maintenance mode — monitoring for issues, dependencies current
-  - **Impact**: Confirmed project remains in healthy production state
-- **Commits**: None (verification session)
+  - **Project State**: Maintenance mode — bug fixes and stability improvements
+  - **Impact**: Eliminated memory leak in replication switchover coordinator
+- **Commits**: fef8251 (memory leak fix)
+
+### Previous Session (Session 183 - FEATURE)
+- **Date**: 2026-04-13
+- **Mode**: FEATURE MODE
+- **Focus**: Maintenance check — project health verification
+- **Outcome**: ✅ Project health verified — all systems green
+- **Commits**: 9f104fc (session memory update)
 
 ### Previous Session (Session 178 - FEATURE)
 - **Date**: 2026-04-12
