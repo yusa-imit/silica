@@ -208,7 +208,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### zuda Library
 
-- **Current**: v2.0.0 (integrated)
+- **Current**: v2.0.1 (integrated)
+- **Latest available**: v2.0.1
 - **Repo**: https://github.com/yusa-imit/zuda
 - **Migration Status**: 1/3 completed — Deadlock Detection ✅ DONE
 

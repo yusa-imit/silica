@@ -575,10 +575,11 @@ gh issue list --state open --label bug --limit 5
 
 ## zuda Migration
 
-- **Current**: Not yet integrated — **partially READY** (zuda v1.15.0 available)
+- **Current in silica**: v2.0.1
+- **Latest available**: v2.0.1
 - **Repository**: https://github.com/yusa-imit/zuda
 - **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for targets and status.
-- **Compatibility layers**: `zuda.compat.silica_btree` — drop-in BTree wrapper (API-compatible)
+- **Migration Status**: 1/3 completed — Deadlock Detection ✅ DONE, Buffer Pool & B+Tree NOT MIGRATING per architect review
 
 ### Migration Targets & Readiness
 

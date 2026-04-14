@@ -2174,7 +2174,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         stdout.print("Zig {s}\n", .{@import("builtin").zig_version_string}) catch {};
         stdout.writeAll("Dependencies:\n") catch {};
         stdout.writeAll("  sailor v2.0.0\n") catch {};
-        stdout.writeAll("  zuda v2.0.0\n") catch {};
+        stdout.writeAll("  zuda v2.0.1\n") catch {};
     } else if (std.mem.eql(u8, cmd, ".clear")) {
         // Clear screen using ANSI escape codes: ESC[2J (clear) + ESC[H (home cursor)
         stdout.writeAll("\x1b[2J\x1b[H") catch {};
@@ -7293,7 +7293,7 @@ test "handleDotCommand .version shows version info" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Dependencies:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "sailor v2.0.0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "zuda v2.0.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "zuda v2.0.1") != null);
 }
 
 test "handleDotCommand .help includes .version" {
