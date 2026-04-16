@@ -650,6 +650,11 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         }
     }
 
+    // Synchronization flags to ensure proper ordering
+    var reader_tx_started = std.atomic.Value(bool).init(false);
+    var reader_first_count_done = std.atomic.Value(bool).init(false);
+    var writer_committed = std.atomic.Value(bool).init(false);
+
     // Reader task
     const ReaderTask = struct {
         db_path: []const u8,
@@ -657,18 +662,25 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         allocator: std.mem.Allocator,
         count1: *i64,
         count2: *i64,
+        tx_started: *std.atomic.Value(bool),
+        first_count_done: *std.atomic.Value(bool),
+        writer_committed: *std.atomic.Value(bool),
 
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
 
             try beginTx(&db, self.isolation);
+            self.tx_started.store(true, .seq_cst);
 
             // First count
             self.count1.* = try execSqlGetInt(&db, "SELECT COUNT(*) FROM items");
+            self.first_count_done.store(true, .seq_cst);
 
-            // Wait for writer to insert
-            std.Thread.sleep(50_000_000); // 50ms
+            // Wait for writer to commit
+            while (!self.writer_committed.load(.seq_cst)) {
+                std.Thread.yield() catch {};
+            }
 
             // Second count (should be same under REPEATABLE READ)
             self.count2.* = try execSqlGetInt(&db, "SELECT COUNT(*) FROM items");
@@ -681,13 +693,21 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
     const WriterTask = struct {
         db_path: []const u8,
         allocator: std.mem.Allocator,
+        tx_started: *std.atomic.Value(bool),
+        first_count_done: *std.atomic.Value(bool),
+        writer_committed: *std.atomic.Value(bool),
 
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
 
-            // Wait for reader to start its transaction
-            std.Thread.sleep(10_000_000); // 10ms
+            // Wait for reader to start transaction and complete first count
+            while (!self.tx_started.load(.seq_cst)) {
+                std.Thread.yield() catch {};
+            }
+            while (!self.first_count_done.load(.seq_cst)) {
+                std.Thread.yield() catch {};
+            }
 
             // Begin transaction before inserting
             try beginTx(&db, .read_committed);
@@ -702,6 +722,7 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
 
             // Commit after reader's first count, before second count
             try commitTx(&db);
+            self.writer_committed.store(true, .seq_cst);
         }
     };
 
@@ -713,10 +734,16 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         .allocator = allocator,
         .count1 = &count1,
         .count2 = &count2,
+        .tx_started = &reader_tx_started,
+        .first_count_done = &reader_first_count_done,
+        .writer_committed = &writer_committed,
     };
     var writer_task = WriterTask{
         .db_path = db_path,
         .allocator = allocator,
+        .tx_started = &reader_tx_started,
+        .first_count_done = &reader_first_count_done,
+        .writer_committed = &writer_committed,
     };
 
     const reader_thread = try std.Thread.spawn(.{}, ReaderTask.run, .{&reader_task});
