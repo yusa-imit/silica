@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `.clear` command for terminal screen clearing (Session 157)
   - `.version` command now shows dependency versions (sailor, zuda) for better diagnostics (Session 156)
 
+### Fixed
+- **Test Stability** (Session 194)
+  - Eliminated race condition in `jepsen_test.zig` phantom read test
+  - Replaced sleep-based timing with atomic synchronization flags for deterministic test execution
+  - Guarantees correct happens-before relationships: reader starts → first count → writer commits → second count
+
 ### Changed
 - **Dependency Updates**
   - Migrated sailor from v1.36.0 → v1.37.0 → v1.38.0 → v1.38.1 → v2.0.0 (Sessions 161, 165-166, 170, 181)
