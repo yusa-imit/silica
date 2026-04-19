@@ -9,27 +9,47 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 204 - FEATURE)
+### Last Session (Session 206 - FEATURE)
+- **Date**: 2026-04-20
+- **Mode**: FEATURE MODE
+- **Focus**: Documentation maintenance — CHANGELOG update
+- **Outcome**: ✅ Documentation synchronized with recent sessions
+- **Details**:
+  - **CI Status**: ✅ GREEN (latest run: success at 2026-04-19T09:08:36Z)
+  - **Open Issues**: 1 (#25: GIN index hang — known architectural limitation, non-blocking)
+  - **Dependency status**:
+    - sailor v2.1.0 ✅ (latest available)
+    - zuda v2.0.1 ✅ (latest available)
+    - No pending migrations
+  - **Work Completed**:
+    1. **CHANGELOG update**: Added Session 205 memory leak fix and Session 204 sailor v2.1.0 migration
+       - Documented jepsen test error handling improvements
+       - Documented sailor performance improvements (+33-38% buffer operations)
+       - Maintained changelog quality and completeness
+    2. **Health verification**: Build, tests, CI all green
+  - **Project State**: Maintenance mode — documentation and monitoring
+  - **Project Metrics**: 55 source files, 3228 tests, zero compiler warnings
+- **Commits**: docs(changelog): add Sessions 204-205 updates
+
+### Previous Session (Session 205 - STABILIZATION)
+- **Date**: 2026-04-19
+- **Mode**: STABILIZATION MODE
+- **Focus**: Bug fix — memory leak in jepsen test error handling
+- **Outcome**: ✅ Memory leak fixed, comprehensive error handling implemented
+- **Details**:
+  - Root cause: Test threads exited early on TransactionError/ExecutionError without calling db.close()
+  - Solution: Treat TransactionError and ExecutionError as retryable (like SerializationFailure)
+  - Applied to all jepsen test tasks: TransferTask, IncrementTask, DoctorTask
+- **Commits**: 8fe9c61 (fix jepsen error handling)
+
+### Previous Session (Session 204 - FEATURE)
 - **Date**: 2026-04-19
 - **Mode**: FEATURE MODE
 - **Focus**: Dependency migration — sailor v2.1.0 upgrade
 - **Outcome**: ✅ Drop-in upgrade completed, all tests passing
 - **Details**:
-  - **CI Status**: ✅ GREEN (latest run: success at 2026-04-18T21:02:49Z)
-  - **Open Issues**: 1 (#25: GIN index hang — known architectural limitation, non-blocking)
-  - **Dependency status**:
-    - sailor v2.1.0 ✅ (latest available, upgraded from v2.0.0)
-    - zuda v2.0.1 ✅ (latest available)
-    - No pending migrations
-  - **Work Completed**:
-    1. **sailor v2.1.0 migration**: Upgraded from v2.0.0 → v2.1.0 (issue #40)
-       - Performance optimizations: Buffer operations +33-38% faster
-       - API ergonomics: Rect.fromSize(), constraint/color constructors
-       - Zero breaking changes (backward compatible)
-       - All tests passing (3228 tests, 28 skipped)
-    2. **Issue closure**: Closed #40 with migration confirmation
-  - **Project State**: Maintenance mode — dependency updates and monitoring
-  - **Impact**: TUI performance improved automatically via sailor buffer optimizations
+  - sailor v2.1.0: Performance optimizations (+33-38% buffer ops), API ergonomics, zero breaking changes
+  - Issue #40 closed with migration confirmation
 - **Commits**: 1cfca0a (sailor v2.1.0 migration)
 
 ### Previous Session (Session 203 - FEATURE)

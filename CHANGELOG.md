@@ -16,21 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `.version` command now shows dependency versions (sailor, zuda) for better diagnostics (Session 156)
 
 ### Fixed
-- **Test Stability** (Session 194)
-  - Eliminated race condition in `jepsen_test.zig` phantom read test
-  - Replaced sleep-based timing with atomic synchronization flags for deterministic test execution
-  - Guarantees correct happens-before relationships: reader starts → first count → writer commits → second count
+- **Test Stability & Memory Safety** (Sessions 194, 205)
+  - Session 205: Fixed memory leak in jepsen tests when TransactionError/ExecutionError occurs
+    - Root cause: Test threads exited early without calling db.close() on transaction state errors
+    - Solution: Treat TransactionError and ExecutionError as retryable (like SerializationFailure)
+    - Applies to all jepsen test cases: bank transfer, lost update, write skew
+  - Session 194: Eliminated race condition in `jepsen_test.zig` phantom read test
+    - Replaced sleep-based timing with atomic synchronization flags for deterministic test execution
+    - Guarantees correct happens-before relationships: reader starts → first count → writer commits → second count
 
 ### Changed
 - **Dependency Updates**
-  - Migrated sailor from v1.36.0 → v1.37.0 → v1.38.0 → v1.38.1 → v2.0.0 (Sessions 161, 165-166, 170, 181)
+  - Migrated sailor from v1.36.0 → v1.37.0 → v1.38.0 → v1.38.1 → v2.0.0 → v2.1.0 (Sessions 161, 165-166, 170, 181, 204)
     - v1.37.0: v2.0.0 API bridge release (Block widget lifecycle standardization, deprecation warnings)
     - v1.38.0: v2.0.0 migration tooling (automated transformation, deprecation audit, Buffer API changes)
     - v1.38.1: Migration script fixes and test coverage improvements (patch release, backward compatible)
     - v2.0.0: Major release with API simplifications (Buffer.setChar/Rect.new removed, Block.withTitle stabilized) — silica unaffected (no breaking API usage)
+    - v2.1.0: Performance & ergonomics polish (buffer operations +33-38% faster, new API conveniences) — zero breaking changes
   - Migrated zuda from v2.0.0 → v2.0.1 (Session 186)
     - v2.0.1: Patch release with bug fixes and test improvements (backward compatible)
-  - Updated CLI version string to reflect sailor v1.37.0, v1.38.0, v1.38.1, v2.0.0, and zuda v2.0.1 in `.version` output (Sessions 163, 166, 173, 181, 186)
+  - Updated CLI version string to reflect sailor v1.37.0, v1.38.0, v1.38.1, v2.0.0, v2.1.0, and zuda v2.0.1 in `.version` output (Sessions 163, 166, 173, 181, 186, 204)
 - **Code Quality**
   - Added SAFETY comments for `catch unreachable` uses in auth.zig (Session 160)
   - All production code now documents safety invariants for unreachable assertions
