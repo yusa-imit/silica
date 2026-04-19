@@ -165,7 +165,8 @@ const TransferTask = struct {
 
                 const balance = execSqlGetInt(&db, balance_sql) catch |err| {
                     rollbackTx(&db) catch {};
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -194,7 +195,8 @@ const TransferTask = struct {
 
                 execSql(&db, debit_sql) catch |err| {
                     rollbackTx(&db) catch {};
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -203,7 +205,8 @@ const TransferTask = struct {
 
                 execSql(&db, credit_sql) catch |err| {
                     rollbackTx(&db) catch {};
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -211,7 +214,8 @@ const TransferTask = struct {
                 };
 
                 commitTx(&db) catch |err| {
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -332,7 +336,8 @@ const IncrementTask = struct {
                 // Read current counter value
                 const current = execSqlGetInt(&db, "SELECT value FROM counter WHERE id = 1") catch |err| {
                     rollbackTx(&db) catch {};
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -353,7 +358,8 @@ const IncrementTask = struct {
 
                 execSql(&db, sql) catch |err| {
                     rollbackTx(&db) catch {};
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -361,7 +367,8 @@ const IncrementTask = struct {
                 };
 
                 commitTx(&db) catch |err| {
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -480,7 +487,8 @@ const DoctorTask = struct {
             // Check how many doctors are on-call
             const on_call_count = execSqlGetInt(&db, "SELECT COUNT(*) FROM doctors WHERE on_call = 1") catch |err| {
                 rollbackTx(&db) catch {};
-                if (err == error.SerializationFailure) {
+                // Retry on serialization failures or transaction state errors
+                if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                     std.Thread.sleep(1_000_000);
                     continue;
                 }
@@ -501,7 +509,8 @@ const DoctorTask = struct {
 
                 execSql(&db, sql) catch |err| {
                     rollbackTx(&db) catch {};
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -509,7 +518,8 @@ const DoctorTask = struct {
                 };
 
                 commitTx(&db) catch |err| {
-                    if (err == error.SerializationFailure) {
+                    // Retry on serialization failures or transaction state errors
+                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
