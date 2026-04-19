@@ -9,7 +9,37 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 202 - FEATURE)
+### Last Session (Session 204 - FEATURE)
+- **Date**: 2026-04-19
+- **Mode**: FEATURE MODE
+- **Focus**: Dependency migration — sailor v2.1.0 upgrade
+- **Outcome**: ✅ Drop-in upgrade completed, all tests passing
+- **Details**:
+  - **CI Status**: ✅ GREEN (latest run: success at 2026-04-18T21:02:49Z)
+  - **Open Issues**: 1 (#25: GIN index hang — known architectural limitation, non-blocking)
+  - **Dependency status**:
+    - sailor v2.1.0 ✅ (latest available, upgraded from v2.0.0)
+    - zuda v2.0.1 ✅ (latest available)
+    - No pending migrations
+  - **Work Completed**:
+    1. **sailor v2.1.0 migration**: Upgraded from v2.0.0 → v2.1.0 (issue #40)
+       - Performance optimizations: Buffer operations +33-38% faster
+       - API ergonomics: Rect.fromSize(), constraint/color constructors
+       - Zero breaking changes (backward compatible)
+       - All tests passing (3228 tests, 28 skipped)
+    2. **Issue closure**: Closed #40 with migration confirmation
+  - **Project State**: Maintenance mode — dependency updates and monitoring
+  - **Impact**: TUI performance improved automatically via sailor buffer optimizations
+- **Commits**: 1cfca0a (sailor v2.1.0 migration)
+
+### Previous Session (Session 203 - FEATURE)
+- **Date**: 2026-04-19
+- **Mode**: FEATURE MODE
+- **Focus**: Maintenance check — project health verification
+- **Outcome**: ✅ Project health verified — all systems green
+- **Commits**: chore: update session memory for Session 203 (FEATURE MODE)
+
+### Previous Session (Session 202 - FEATURE)
 - **Date**: 2026-04-19
 - **Mode**: FEATURE MODE
 - **Focus**: Maintenance check — project health verification
@@ -18,7 +48,7 @@
   - **CI Status**: ✅ GREEN (latest run: success at 2026-04-18T09:12:21Z)
   - **Open Issues**: 1 (#25: GIN index hang — known architectural limitation, non-blocking)
   - **Dependency status**:
-    - sailor v2.0.0 ✅ (latest available)
+    - sailor v2.0.0 ✅ (latest available at the time)
     - zuda v2.0.1 ✅ (latest available)
     - No pending migrations
   - **Project review**:
