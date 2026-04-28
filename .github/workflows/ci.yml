@@ -50,7 +50,8 @@ jobs:
         run: zig build
 
       - name: Run Tests
-        run: zig build test
+        run: timeout 600 zig build test  # 10 minute timeout for GIN index hang (issue #25)
+        continue-on-error: false
 
       - name: Run Benchmarks
         run: zig build bench
