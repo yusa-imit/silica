@@ -34,16 +34,17 @@ jobs:
           fi
           echo "${PWD}/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
 
-      - name: Cache Zig Build
-        uses: actions/cache@v4
-        with:
-          path: |
-            .zig-cache
-            zig-out
-          key: zig-build-${{ hashFiles('build.zig', 'build.zig.zon') }}-${{ github.sha }}
-          restore-keys: |
-            zig-build-${{ hashFiles('build.zig', 'build.zig.zon') }}-
-            zig-build-
+      # Temporarily disabled build cache to debug runner crashes
+      # - name: Cache Zig Build
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: |
+      #       .zig-cache
+      #       zig-out
+      #     key: zig-build-${{ hashFiles('build.zig', 'build.zig.zon') }}-${{ github.sha }}
+      #     restore-keys: |
+      #       zig-build-${{ hashFiles('build.zig', 'build.zig.zon') }}-
+      #       zig-build-
 
       - name: Build
         run: zig build
