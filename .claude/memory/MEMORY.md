@@ -1,5 +1,46 @@
 # Silica Project Memory
 
+## Session 241 — FEATURE MODE
+
+### Summary
+**Mode**: FEATURE MODE (Session 241)
+**Focus**: Dependency update — zuda v2.0.2 migration
+
+### Actions Completed
+1. **Session mode determination**: Counter incremented to 241 (FEATURE mode)
+2. **CI status check**: ✅ GREEN — Latest run succeeded at 2026-05-01T09:08:31Z
+3. **Open issues check**: Only issue #25 (GIN index hang — known limitation, non-blocking)
+4. **Dependency check**:
+   - sailor v2.4.0 ✅ (latest available)
+   - zuda v2.0.2 available (upgrade from v2.0.1)
+   - Migrated to zuda v2.0.2 successfully
+5. **Build verification**: ✅ Build successful after migration (zero warnings)
+6. **Test verification**: ✅ All tests passing after migration (exit code 0)
+
+### Result
+- ✅ zuda dependency updated to v2.0.2
+- ✅ Build and tests successful after migration
+- ✅ No breaking changes
+
+### Commits
+- `acc49fd`: chore: migrate to zuda v2.0.2
+
+### Project Status
+- **v1.0.0 released** — All 12 phases complete, production ready
+- **Maintenance mode** — dependency updates and stability monitoring
+- **Test suite**: 3228 tests (all passing)
+- **No critical bugs** — Issue #25 is known architectural limitation (non-blocking)
+- **CI**: ✅ GREEN (100% pass rate)
+- **Dependencies**: sailor v2.4.0, zuda v2.0.2
+
+### Next Session Priority
+- Continue maintenance mode (FEATURE MODE expected at Session 242)
+- Next STABILIZATION MODE at Session 245
+- Monitor for new sailor/zuda releases
+- Address user-reported issues if any
+
+---
+
 ## Session 239 — FEATURE MODE
 
 ### Summary
