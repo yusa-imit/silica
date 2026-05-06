@@ -469,3 +469,50 @@
 - `.name = .@"silica"` is NOT needed for simple identifiers — use `.name = .silica`
 
 <!-- Add new debugging notes above this line -->
+
+---
+
+### GIN Index Page Layout Issue (Issue #25) — **OPEN**
+
+**Summary**: GIN index tests hang/timeout due to architectural flaw in page layout — key data is never written to pages.
+
+- **Symptom**: All 28 GIN tests hang or timeout (reported in issue #25)
+- **Root Cause Investigation** (Session 258):
+  - `insertNewEntry()` (gin_index.zig:580-613) writes:
+    1. Entry header with key_size and posting_info ✅
+    2. Posting data at end of page ✅
+    3. Offset pointer to posting data ✅
+    4. **Key data — NEVER WRITTEN** ❌
+  - `readEntryKey()` expects keys at page end but they don't exist
+  - Page layout intends: `[headers...][offset_ptrs...] ... [keys←][postings←]`
+  - Actual layout: `[headers...][offset_ptrs...] ... [postings←]` (keys missing)
+
+- **Attempted Fix** (Session 258, reverted):
+  - Changed header from 6 bytes to 14 bytes: `[key_size u16][posting_info u32][key_offset u32][posting_offset u32]`
+  - Embedded offsets in each entry header instead of separate arrays
+  - Updated `insertNewEntry()`, `readEntryKey()`, `readInlinePostingList()`, `appendToPostingList()`
+  - **Outcome**: Tests still hang — infinite loop somewhere in search path
+  
+- **Design Challenges**:
+  - Variable-length keys AND posting lists both grow from page end
+  - Offset pointer arrays change size as entries are added
+  - Calculating free space requires iterating all entries (potential O(n²) or loop)
+  - Current implementation likely has off-by-one or logic error causing infinite loops
+
+- **Recommendations**:
+  - **Option 1**: Use fixed-size slots (simpler, wastes space)
+  - **Option 2**: Implement proper free space map with compaction (complex, efficient)
+  - **Option 3**: Store keys inline in headers (limited key size)
+  - Requires dedicated debugging session with incremental testing
+  - Add explicit bounds checks and loop iteration limits
+
+- **Current Status**:
+  - GIN module disabled in `src/main.zig` (line 18-22)
+  - 28 tests skipped
+  - Project stable without GIN
+  - Issue #25 remains open
+
+- **Files Involved**:
+  - `src/storage/gin_index.zig` — main implementation
+  - `src/main.zig` — GIN import disabled
+

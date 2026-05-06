@@ -9,7 +9,33 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 257 - FEATURE)
+### Last Session (Session 258 - FEATURE)
+- **Date**: 2026-05-07
+- **Mode**: FEATURE MODE
+- **Focus**: Attempted fix for issue #25 (GIN index architectural flaw)
+- **Outcome**: ❌ Fix reverted — tests still hang, requires deeper redesign
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing (GIN disabled)
+  - **Open Issues**: 1 (#25: GIN index page layout — architectural issue confirmed)
+  - **GIN Fix Attempt**:
+    - Changed page layout: embedded offsets in entry headers (14 bytes vs 6 bytes)
+    - New header: `[key_size u16][posting_info u32][key_offset u32][posting_offset u32]`
+    - Updated 4 functions: `insertNewEntry()`, `readEntryKey()`, `readInlinePostingList()`, `appendToPostingList()`
+    - Fixed test signatures: removed allocator param, changed var→const, fixed .items refs
+    - **Result**: Compilation succeeded but tests still hang (infinite loop in search path)
+  - **Root Cause Analysis**:
+    - Variable-length keys AND postings both grow from page end
+    - Offset management complexity causes logic errors
+    - Likely off-by-one or infinite loop in offset calculations
+  - **Recommendation**: Comprehensive redesign required (fixed slots OR proper FSM)
+  - **Action**: Changes reverted, GIN remains disabled, documented in debugging.md
+  - **Build verification**: ✅ Build successful (zero warnings)
+  - **Test verification**: ✅ All non-GIN tests passing (3228 tests, 28 GIN skipped)
+- **Project State**: Maintenance mode — issue #25 requires future architectural work
+- **Impact**: No regression, project remains stable
+- **Commits**: chore: update session memory for Session 258 (FEATURE MODE)
+
+### Previous Session (Session 257 - FEATURE)
 - **Date**: 2026-05-06
 - **Mode**: FEATURE MODE
 - **Focus**: Maintenance check — project health verification
