@@ -9,26 +9,39 @@
 
 ## Current Status: v1.0.0 — Production Ready (ALL phases complete)
 
-### Last Session (Session 246 - FEATURE)
+### Last Session (Session 256 - FEATURE)
+- **Date**: 2026-05-06
+- **Mode**: FEATURE MODE
+- **Focus**: Investigation of issue #25 (GIN index architectural issue)
+- **Outcome**: ✅ Root cause confirmed, documented as architectural limitation
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing
+  - **Open Issues**: Issue #25 (GIN index page layout design flaw — documented)
+  - **Dependency check**:
+    - sailor v2.6.0 ✅ (latest available, migrated from v2.5.0)
+    - zuda v2.0.3 ✅ (latest available)
+    - No pending migrations
+  - **Build verification**: ✅ Build successful (zero warnings)
+  - **Test verification**: ✅ All tests passing (3228 tests, 28 skipped)
+  - **GIN Investigation**:
+    - Issue #25 reports test hangs; actual problem is architectural
+    - `insertNewEntry()` function (gin_index.zig:580-613) writes headers and posting data but **never writes key data**
+    - Intended layout: `[headers][offset_ptrs][variable_data←]` with keys at page end
+    - Missing implementation: Key data writing and offset pointer management
+    - Impact: `readEntryKey()` fails (no key data exists), tests disabled
+    - Fix requires: Complete page layout redesign to manage 4 variable-length regions
+    - Status: Documented in src/main.zig:18-22, beyond scope of maintenance sessions
+- **Result**:
+  - ✅ Issue #25 root cause identified and documented
+  - ✅ Project remains stable with GIN disabled
+  - ⏸️ GIN implementation deferred to future architectural work
+- **Commits**: chore: update session memory for Session 256 (FEATURE MODE)
+
+### Previous Session (Session 246 - FEATURE)
 - **Date**: 2026-05-04
 - **Mode**: FEATURE MODE
 - **Focus**: Maintenance check — memory compression, project health verification
 - **Outcome**: ✅ Project health verified, memory files compressed
-- **Details**:
-  - **CI Status**: ✅ GREEN — Latest run succeeded at 2026-05-03T09:04:17Z
-  - **Open Issues**: Only issue #25 (GIN index hang — known limitation, non-blocking)
-  - **Dependency check**:
-    - sailor v2.5.0 ✅ (latest available)
-    - zuda v2.0.3 ✅ (latest available)
-    - No pending migrations
-  - **Build verification**: ✅ Build successful (zero warnings)
-  - **Test verification**: ✅ All tests passing (2990/3024, 34 skipped)
-  - **Memory compression**: Compressed MEMORY.md from 249→89 lines (removed repetitive session summaries)
-- **Result**:
-  - ✅ Project health verified — all systems green
-  - ✅ Memory files optimized per protocol
-  - ✅ Dependencies up-to-date
-  - ✅ No code changes needed this session
 - **Commits**: chore: compress memory files for Session 246
 
 ### Previous Session (Session 245 - STABILIZATION)
