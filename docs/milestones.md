@@ -4,12 +4,12 @@
 
 - **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
 - **Current development**: All milestones complete, maintenance mode
-- **Tests**: 3228 tests (all passing, 28 skipped)
+- **Tests**: 2800+ tests passing, 33 skipped (28 planned + 5 GIN integration)
 - **Branch**: `main`
 - **CI Status**: ✅ GREEN (all tests passing)
 - **zuda migrations**: Deadlock Detection ✅ DONE (v2.0.0); LRU Cache & B+Tree — NOT MIGRATING per architect decision
-- **Known bugs**: None critical — Issue #24 (PreparedStatement arena lifecycle) ✅ FIXED in sessions 66-67
-- **Recent fix (Session 78)**: ROLLBACK visibility bug fixed — auto-commit now uses MVCC filtering
+- **Known bugs**: None critical
+- **Recent fix (Session 259)**: GIN index infinite loop/hang fixed — tests no longer timeout
 
 > **Note**: Phases 4-8 were completed iteratively without tagged releases. All work is on `main` branch. Git tags for v0.4.0+ will be created when appropriate release points are determined.
 
