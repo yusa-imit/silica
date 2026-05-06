@@ -43,6 +43,7 @@ const PageType = page_mod.PageType;
 const GIN_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // page_type + entry_count + reserved
 const GIN_ENTRY_HEADER_SIZE: u32 = 2 + 4; // key_size(u16) + posting_info(u32)
 const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128; // Bytes before switching to posting tree
+const MAX_INLINE_TUPLES: u32 = 1000; // Sanity limit to prevent infinite loops on corrupted data
 
 /// ItemPointer — (page_id, tuple_offset) uniquely identifying a row.
 pub const ItemPointer = struct {
@@ -440,6 +441,11 @@ pub const GIN = struct {
             return try self.allocator.alloc(ItemPointer, 0);
         }
 
+        // Sanity check: prevent infinite loops on corrupted data
+        if (tuple_count > MAX_INLINE_TUPLES) {
+            return error.InvalidKey;
+        }
+
         // Allocate result list
         const list = try self.allocator.alloc(ItemPointer, tuple_count);
         errdefer self.allocator.free(list);
@@ -494,6 +500,11 @@ pub const GIN = struct {
 
         if (current_count == 0) {
             return error.InvalidPostingList; // Should not append to empty list
+        }
+
+        // Sanity check: prevent infinite loops on corrupted data
+        if (current_count > MAX_INLINE_TUPLES) {
+            return error.InvalidKey;
         }
 
         // Check if this would exceed inline threshold
@@ -590,7 +601,8 @@ pub const GIN = struct {
 
         // Calculate where to write offset pointer and data
         // Layout: [headers...][offset_ptrs...][variable data area grows from end]
-        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+        // Offset pointers come AFTER all headers, so we need to account for the new header we just wrote
+        const data_offset_ptr = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
 
         // Allocate posting data from end of page
         // Use fixed 128-byte blocks per entry (matching INLINE_POSTING_LIST_MAX_SIZE)
@@ -607,6 +619,20 @@ pub const GIN = struct {
 
         // Write offset pointer to posting data
         std.mem.writeInt(u32, page[data_offset_ptr..][0..4], @intCast(posting_data_offset), .little);
+
+        // Write the key data (keys grow from after the offset pointers)
+        const keys_base_offset = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
+        var key_offset = keys_base_offset;
+        // Skip past previous keys
+        for (0..entry_count) |i| {
+            const prev_key_size = readKeySize(page, i);
+            key_offset += prev_key_size;
+        }
+        // Write this key
+        if (key_offset + key.len > posting_data_offset) {
+            return error.PageFull;
+        }
+        @memcpy(page[key_offset..][0..key.len], key);
 
         // Update entry count
         writeEntryCount(page, entry_count + 1);
@@ -994,12 +1020,12 @@ test "GIN insert single value with single key" {
     std.mem.writeInt(u32, query[0..4], 1, .little);
     std.mem.writeInt(u32, query[4..8], 42, .little);
 
-    var result = try gin.search(allocator, &query, 0);
-    defer result.deinit();
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
 
-    try std.testing.expectEqual(@as(usize, 1), result.items.len);
-    try std.testing.expectEqual(tuple_id.page_id, result.items[0].page_id);
-    try std.testing.expectEqual(tuple_id.tuple_offset, result.items[0].tuple_offset);
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tuple_id.page_id, result[0].page_id);
+    try std.testing.expectEqual(tuple_id.tuple_offset, result[0].tuple_offset);
 }
 
 test "GIN insert single value with multiple keys" {
@@ -1034,11 +1060,11 @@ test "GIN insert single value with multiple keys" {
     std.mem.writeInt(u32, query[0..4], 1, .little);
     std.mem.writeInt(u32, query[4..8], 1, .little);
 
-    var result = try gin.search(allocator, &query, 0);
-    defer result.deinit();
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
 
-    try std.testing.expectEqual(@as(usize, 1), result.items.len);
-    try std.testing.expectEqual(tuple_id.page_id, result.items[0].page_id);
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tuple_id.page_id, result[0].page_id);
 }
 
 test "GIN delete removes tuple from posting list" {
@@ -1131,10 +1157,10 @@ test "GIN insert common key in multiple rows" {
     std.mem.writeInt(u32, query[0..4], 1, .little);
     std.mem.writeInt(u32, query[4..8], 1, .little);
 
-    var result = try gin.search(allocator, &query, 0);
-    defer result.deinit();
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
 
-    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    try std.testing.expectEqual(@as(usize, 2), result.len);
 }
 
 test "GIN posting list compaction after deletes" {
@@ -1223,11 +1249,11 @@ test "GIN handles array with many elements" {
     std.mem.writeInt(u32, query[0..4], 1, .little);
     std.mem.writeInt(u32, query[4..8], 0, .little);
 
-    var result = try gin.search(allocator, &query, 0);
-    defer result.deinit();
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
 
-    try std.testing.expectEqual(@as(usize, 1), result.items.len);
-    try std.testing.expectEqual(tuple_id.page_id, result.items[0].page_id);
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tuple_id.page_id, result[0].page_id);
 }
 
 test "GIN posting tree split when exceeding inline threshold" {
@@ -1270,11 +1296,11 @@ test "GIN posting tree split when exceeding inline threshold" {
     std.mem.writeInt(u32, query[0..4], 1, .little);
     std.mem.writeInt(u32, query[4..8], 1, .little);
 
-    var result = try gin.search(allocator, &query, 0);
-    defer result.deinit();
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
 
     // Should find all 10 tuples
-    try std.testing.expectEqual(@as(usize, 10), result.items.len);
+    try std.testing.expectEqual(@as(usize, 10), result.len);
 }
 
 test "GIN search with contains strategy checks all keys" {
