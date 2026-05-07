@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.0.0
-- **Latest available**: v2.0.0
+- **Current in silica**: v2.7.0
+- **Latest available**: v2.7.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -199,6 +199,13 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v1.38.0 | v2.0.0 migration tooling | DONE | Migration script for automated code transformation, deprecation audit tooling, consumer dry-run testing, new deprecation warnings (Rect.new() → struct literal, Block.withTitle() → .title/.title_position, Buffer.setChar() → Buffer.set()) |
 | v1.38.1 | bug fix & test coverage | DONE | Migration script diff exit code handling, TextArea/Tree widget tests (~100+ tests) |
 | v2.0.0 | major release — API simplification | DONE | Removed Buffer.setChar() (use Buffer.set()), removed Rect.new() (use struct literal), Block.withTitle() no longer deprecated, automated migration script, 3345+ tests |
+| v2.1.0 | Optimized Grid Widget (v2 API) | DONE | Grid widget with row/column spanning, custom cell renderers, CSV/TSV/Markdown export, sorting, pagination; API uses direct struct instantiation |
+| v2.2.0 | Panic-Free Text Measurement (v2 API) | DONE | Panic-free Unicode width calculations, graceful fallback for invalid input, comprehensive test coverage (100+ tests) |
+| v2.3.0 | RenderBudget & Performance Monitoring | DONE | RenderBudget for incremental rendering, MetricsDashboard widget, performance regression tests, adaptive framerate control |
+| v2.4.0 | Window Composition Helpers | DONE | Stack (z-index layering), Padding (uniform/directional), Centered (horizontal/vertical/both), Aligned (flex-style positioning) |
+| v2.5.0 | Core Stability & Graceful Degradation | DONE | 100% panic-free rendering pipeline, graceful degradation for invalid input, enhanced error propagation, comprehensive boundary condition tests |
+| v2.6.0 | Input Enhancements & Usability | DONE | ScrollView widget (keyboard/mouse), Autocomplete widget (fuzzy matching, keyboard nav), clipboard copy (OSC 52), input masking improvements, focus management |
+| v2.7.0 | Event System & Async Integration | DONE | EventBus (pub/sub), Command Pattern, AsyncTaskRunner, debouncing/throttling, cancelable operations, comprehensive async tests |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
