@@ -12,9 +12,9 @@
 //!   defer db.close();
 //!   var result = try db.exec("SELECT * FROM users");
 // TEMPORARILY DISABLED: Test suite hangs (Session 265 - STABILIZATION)
-// One of the 400+ tests hangs indefinitely. Further investigation needed.
-// TODO: Binary search through tests to identify specific hanging test
-const ENABLE_TESTS = false;
+// Tests re-enabled after fixing the hanging zzz_cleanup_global_registry test.
+// That test caused deadlocks due to race conditions with the global registry.
+const ENABLE_TESTS = true;
 
 // TEMPORARILY DISABLED: PreparedStatement arena lifecycle bug (double-free + memory leak)
 // Root cause: PreparedStatement caches plan in arena, but execute() passes arena to
@@ -20822,11 +20822,14 @@ test "prepared stmt: rebind after execution" {
     try testing.expectEqualStrings("Second", row2.values[1].text);
 }
 
-// IMPORTANT: This test must run LAST to cleanup the global TM registry.
-// The global registry persists across all tests to maintain transaction ID
-// monotonicity (required for MVCC correctness). We clean it up here to
-// prevent memory leak reports from testing.allocator.
-test "zzz_cleanup_global_registry" {
-    cleanupGlobalTmRegistry();
-}
+// NOTE: We previously had a "zzz_cleanup_global_registry" test here that called
+// cleanupGlobalTmRegistry() to prevent memory leak warnings. This test caused
+// deadlocks because:
+// 1. Zig test runner doesn't guarantee execution order (despite "zzz_" prefix)
+// 2. Cleanup could run while other tests are still using the registry
+// 3. Race conditions between deinit() and concurrent acquire()/release() calls
+//
+// The "memory leaks" this tried to fix are expected test artifacts (see debugging.md)
+// and don't represent production bugs. The global registry is designed to persist
+// for the lifetime of the process to maintain transaction ID monotonicity.
 
