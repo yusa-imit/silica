@@ -32,9 +32,9 @@ pub const planner = @import("sql/planner.zig");
 pub const optimizer = @import("sql/optimizer.zig");
 pub const executor = @import("sql/executor.zig");
 pub const engine = @import("sql/engine.zig");
-pub const stats = @import("sql/stats.zig");
-pub const selectivity = @import("sql/selectivity.zig");
-pub const cost = @import("sql/cost.zig");
+// pub const stats = @import("sql/stats.zig");
+// pub const selectivity = @import("sql/selectivity.zig");
+// pub const cost = @import("sql/cost.zig");
 // Fixed: Tests now use unique DB paths instead of shared :memory: (Session 58)
 pub const conformance_test = @import("sql/conformance_test.zig");
 
