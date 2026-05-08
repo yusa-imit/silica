@@ -4,6 +4,35 @@
 
 ## Known Issues
 
+### Test Suite Hang (Issue #46, Session 267) — **FIXED**
+
+**Summary**: Test suite hung indefinitely in engine.zig due to the `zzz_cleanup_global_registry` test causing deadlocks.
+
+- **Symptom**: `zig build test` hung forever when engine.zig tests were enabled
+  - Test suite could not complete
+  - Blocked all development and CI/CD
+  - ~400 engine integration tests were temporarily disabled
+- **Root Cause**: The `zzz_cleanup_global_registry` test caused race conditions
+  - Test name started with `zzz_` to try to run last, but Zig doesn't guarantee test order
+  - Cleanup could execute while other tests were still using the global TM registry
+  - Two mutexes created deadlock potential:
+    1. `registry_mutex` (protects initialization flag)
+    2. `global_tm_registry.mutex` (protects internal map)
+  - `SharedTmRegistry.deinit()` didn't lock its own mutex, causing race with concurrent `acquire()`/`release()` calls
+- **Timeline**:
+  1. Test thread A: Holds `global_tm_registry.mutex` from `acquire()` call
+  2. Test thread B: Runs `zzz_cleanup_global_registry` → locks `registry_mutex` → calls `deinit()` → needs `global_tm_registry.mutex` → **DEADLOCK**
+- **Fix (Session 267, commit 69f61d3)**:
+  - Removed the `zzz_cleanup_global_registry` test entirely
+  - The "memory leaks" it tried to fix are expected test artifacts (see below), not production bugs
+  - Re-enabled engine.zig tests (`ENABLE_TESTS = true`)
+  - Added explanatory comment in engine.zig:20825-20835
+- **Result**:
+  - All 2800+ tests now pass without hanging ✅
+  - Test suite completes in ~60 seconds
+  - No production impact — only test infrastructure change
+- **Lesson**: Don't try to clean up global state in tests unless you have guaranteed execution order
+
 ### Auto-Commit MVCC Visibility Bug (Session 78) — **FIXED**
 
 **Summary**: After ROLLBACK, auto-commit SELECT queries saw aborted data because MVCC visibility filtering was skipped.
