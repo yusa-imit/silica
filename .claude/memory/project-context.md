@@ -5,11 +5,34 @@
 - **Language**: Zig 0.15.x (stable)
 - **Inspired by**: SQLite (simplicity, embeddability, single-file format)
 - **Author**: Yusa
-- **Status**: ✅ **v1.0.0 RELEASED** — All 12 phases complete, production ready
+- **Status**: ✅ **v1.0.1 RELEASED** — All 12 phases complete, production ready
 
-## Current Status: v1.0.0 — Production Ready (ALL phases complete)
+## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 268 - FEATURE)
+### Last Session (Session 269 - FEATURE)
+- **Date**: 2026-05-09
+- **Mode**: FEATURE MODE
+- **Focus**: Patch release v1.0.1 — bug fixes and dependency updates
+- **Outcome**: ✅ Release successful — v1.0.1 published
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing
+  - **Open Issues**: 0
+  - **Dependencies**: Both at latest versions (sailor v2.7.0, zuda v2.0.4)
+  - **Release Notes**: v1.0.1 includes:
+    - Critical bug fix: Test suite hang resolved (commit 69f61d3)
+    - GIN index infinite loop fix (commit 30d0c0e)
+    - Dependency upgrades: sailor v2.7.0, zuda v2.0.4
+    - Improved error handling in replication components
+  - **Build Status**: ✅ Zero warnings, clean build
+  - **Test Status**: 2800+ tests passing, 33 skipped
+  - **Commits**:
+    - 60074af: chore: bump version to v1.0.1
+    - Tagged v1.0.1, pushed to GitHub
+  - **GitHub Release**: https://github.com/yusa-imit/silica/releases/tag/v1.0.1
+- **Project State**: Maintenance mode — patch release addressing post-v1.0.0 fixes
+- **Impact**: Users can now upgrade to v1.0.1 with important bug fixes
+
+### Previous Session (Session 268 - FEATURE)
 - **Date**: 2026-05-09
 - **Mode**: FEATURE MODE
 - **Focus**: Maintenance health check and project stability verification

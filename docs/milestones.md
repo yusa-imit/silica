@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- **Latest tagged release**: v1.0.0 (All 12 phases complete — Production Ready)
+- **Latest tagged release**: v1.0.1 (All 12 phases complete — Production Ready + Bug Fixes)
 - **Current development**: All milestones complete, maintenance mode
 - **Tests**: 2800+ tests passing, 33 skipped (28 planned + 5 GIN integration)
 - **Branch**: `main`
