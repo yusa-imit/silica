@@ -9,7 +9,25 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 273 - FEATURE)
+### Last Session (Session 274 - FEATURE)
+- **Date**: 2026-05-11
+- **Mode**: FEATURE MODE
+- **Focus**: Code cleanup — re-enable stats/selectivity/cost modules
+- **Outcome**: ✅ Modules re-enabled — test coverage expanded
+- **Details**:
+  - **Task**: Re-enabled previously disabled stats/selectivity/cost modules
+  - **Root Cause**: Modules were disabled due to bug #1 (DuplicateKey), which was resolved in v0.4.0
+  - **Changes**: Uncommented 3 module imports in src/main.zig
+  - **Impact**: Exposed 100+ additional tests across statistics, selectivity estimation, and cost modeling
+  - **Test Status**: All 2800+ tests passing (expanded coverage)
+  - **CI Status**: ✅ GREEN
+  - **Build Status**: Clean build, zero warnings
+  - **Commits**: f4d8e58 — refactor: re-enable stats/selectivity/cost modules
+  - **Dependencies**: sailor v2.8.0, zuda v2.0.4 (both at latest)
+- **Project State**: Maintenance mode — code quality improvement
+- **Impact**: Query optimizer now has full access to statistics modules
+
+### Previous Session (Session 273 - FEATURE)
 - **Date**: 2026-05-10
 - **Mode**: FEATURE MODE
 - **Focus**: Documentation maintenance — update KNOWN_ISSUES.md
