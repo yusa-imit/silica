@@ -1183,3 +1183,197 @@ test "GIN ItemPointer encoding round-trip" {
     try std.testing.expectEqual(item.page_id, decoded.page_id);
     try std.testing.expectEqual(item.tuple_offset, decoded.tuple_offset);
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Error Path Tests
+// ────────────────────────────────────────────────────────────────────
+
+test "GIN readPostingList returns TreeEmpty for posting tree" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_tree_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Manually create a page with a posting tree reference (high bit set)
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Add an entry with posting_info indicating posting tree (bit 31 set)
+    writeEntryCount(root_frame.data, 1);
+
+    // Write key_size at entry header offset
+    const key_size_offset = GIN_HEADER_SIZE;
+    std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
+
+    // Write posting_info with high bit set (posting tree)
+    const posting_info_offset = GIN_HEADER_SIZE + 2;
+    const posting_tree_info: u32 = 0x80000001; // High bit set = posting tree
+    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], posting_tree_info, .little);
+
+    // Write a key at the end
+    const key_offset = gin.calculateKeysBaseOffset(root_frame.data);
+    std.mem.writeInt(u32, root_frame.data[key_offset..][0..4], 42, .little);
+
+    root_frame.markDirty();
+    pool.unpinPage(root_id, true);
+
+    // Try to read this posting list - should return TreeEmpty error
+    const result = gin.readPostingList(root_frame.data, 0);
+    try std.testing.expectError(error.TreeEmpty, result);
+}
+
+test "GIN appendToPostingList returns PostingListFull when exceeding limit" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_list_full.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Create an entry with 100 tuples (at the limit)
+    writeEntryCount(root_frame.data, 1);
+
+    // Write key_size and posting_info
+    const key_size_offset = GIN_HEADER_SIZE;
+    std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
+    const posting_info_offset = GIN_HEADER_SIZE + 2;
+    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], 100, .little); // 100 tuples
+
+    // Set up data offset
+    const entry_count = readEntryCount(root_frame.data);
+    const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+    const data_start: u32 = @intCast(pager.page_size - 100);
+    std.mem.writeInt(u32, root_frame.data[data_offset_ptr..][0..4], data_start, .little);
+
+    // Write first tuple ID
+    std.mem.writeInt(u64, root_frame.data[data_start..][0..8], 1, .little);
+
+    const tuple_id = ItemPointer{ .page_id = 1, .tuple_offset = 101 };
+    const result = gin.appendToPostingList(root_frame.data, 0, tuple_id);
+    try std.testing.expectError(error.PostingListFull, result);
+}
+
+test "GIN appendToPostingList returns InvalidPostingList for empty list" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_invalid_posting.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Create an entry with 0 tuples
+    writeEntryCount(root_frame.data, 1);
+
+    // Write key_size and posting_info
+    const key_size_offset = GIN_HEADER_SIZE;
+    std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
+    const posting_info_offset = GIN_HEADER_SIZE + 2;
+    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], 0, .little); // 0 tuples
+
+    const tuple_id = ItemPointer{ .page_id = 1, .tuple_offset = 1 };
+    const result = gin.appendToPostingList(root_frame.data, 0, tuple_id);
+    try std.testing.expectError(error.InvalidPostingList, result);
+}
+
+test "GIN appendToPostingList returns PostingListNotSorted when new_tid <= last_tid" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_not_sorted.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Create an entry with 1 tuple
+    writeEntryCount(root_frame.data, 1);
+
+    // Write key_size and posting_info
+    const key_size_offset = GIN_HEADER_SIZE;
+    std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
+    const posting_info_offset = GIN_HEADER_SIZE + 2;
+    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], 1, .little); // 1 tuple
+
+    // Set up data offset
+    const entry_count = readEntryCount(root_frame.data);
+    const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+    const data_start: u32 = @intCast(pager.page_size - 100);
+    std.mem.writeInt(u32, root_frame.data[data_offset_ptr..][0..4], data_start, .little);
+
+    // Write first tuple ID with high value
+    const first_tid = ItemPointer{ .page_id = 100, .tuple_offset = 50 };
+    std.mem.writeInt(u64, root_frame.data[data_start..][0..8], first_tid.toU64(), .little);
+
+    // Try to append a tuple with lower or equal ID
+    const new_tid = ItemPointer{ .page_id = 50, .tuple_offset = 25 }; // Lower than first
+    const result = gin.appendToPostingList(root_frame.data, 0, new_tid);
+    try std.testing.expectError(error.PostingListNotSorted, result);
+}
+
+test "GIN readInlinePostingList handles corrupted tuple_count gracefully" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_corrupt_count.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Create an entry with excessive tuple count (> MAX_INLINE_TUPLES)
+    writeEntryCount(root_frame.data, 1);
+
+    // Write key_size and posting_info
+    const key_size_offset = GIN_HEADER_SIZE;
+    std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
+    const posting_info_offset = GIN_HEADER_SIZE + 2;
+    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], MAX_INLINE_TUPLES + 1, .little);
+
+    const result = gin.readInlinePostingList(root_frame.data, 0);
+    try std.testing.expectError(error.InvalidKey, result);
+}
