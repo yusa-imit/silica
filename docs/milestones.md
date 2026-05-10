@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.7.0
-- **Latest available**: v2.7.0
+- **Current in silica**: v2.8.0
+- **Latest available**: v2.8.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -206,6 +206,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.5.0 | Core Stability & Graceful Degradation | DONE | 100% panic-free rendering pipeline, graceful degradation for invalid input, enhanced error propagation, comprehensive boundary condition tests |
 | v2.6.0 | Input Enhancements & Usability | DONE | ScrollView widget (keyboard/mouse), Autocomplete widget (fuzzy matching, keyboard nav), clipboard copy (OSC 52), input masking improvements, focus management |
 | v2.7.0 | Event System & Async Integration | DONE | EventBus (pub/sub), Command Pattern, AsyncTaskRunner, debouncing/throttling, cancelable operations, comprehensive async tests |
+| v2.8.0 | Cross-Platform Enhancements | DONE | Windows ConPTY integration, legacy console fallback, Linux/macOS platform-specific optimizations, comptime platform detection, zero runtime cost |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
