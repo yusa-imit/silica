@@ -9,7 +9,23 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 272 - FEATURE)
+### Last Session (Session 273 - FEATURE)
+- **Date**: 2026-05-10
+- **Mode**: FEATURE MODE
+- **Focus**: Documentation maintenance — update KNOWN_ISSUES.md
+- **Outcome**: ✅ Documentation updated — outdated issue tracking removed
+- **Details**:
+  - **Task**: Updated KNOWN_ISSUES.md to reflect current project state
+  - **Findings**: Issues #1 and #20 were marked as active but were actually resolved in v0.4.0 and v0.7.0 respectively
+  - **Changes**: Moved resolved issues to "Resolved Issues" section, documented deferred enhancements (GIN index, crash tests)
+  - **Test Status**: All 2800+ tests passing
+  - **CI Status**: ✅ GREEN
+  - **Commits**: 0368ec7 — docs: update KNOWN_ISSUES.md
+  - **Dependencies**: sailor v2.8.0, zuda v2.0.4 (both at latest)
+- **Project State**: Maintenance mode — documentation up-to-date, no critical issues
+- **Impact**: Users now have accurate information about known issues
+
+### Previous Session (Session 272 - FEATURE)
 - **Date**: 2026-05-10
 - **Mode**: FEATURE MODE
 - **Focus**: Dependency migration — sailor v2.8.0
@@ -18,7 +34,7 @@
   - **Migration**: sailor v2.7.0 → v2.8.0 (issue #47)
   - **New Features**: Cross-platform enhancements (Windows ConPTY, Linux/macOS optimizations)
   - **Test Status**: All 2800+ tests passing
-  - **CI Status**: ✅ GREEN (expected after push)
+  - **CI Status**: ✅ GREEN
   - **Commits**: b4b26ab — sailor v2.8.0 migration
   - **Issue Closed**: #47
 - **Project State**: Maintenance mode — dependency up-to-date
