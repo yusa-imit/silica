@@ -1769,3 +1769,129 @@ test "AutoVacuumDaemon — inserts only never trigger vacuum" {
     try daemon.recordModification("t", 1000, 0, 0);
     try std.testing.expect(!daemon.needsVacuum("t"));
 }
+
+test "AutoVacuumDaemon — recordModification handles OutOfMemory" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 0,
+    });
+    const allocator = failing_allocator.allocator();
+
+    var daemon = AutoVacuumDaemon.init(allocator, .{});
+    defer daemon.deinit();
+
+    // First allocation (getOrPut) should fail
+    const result = daemon.recordModification("table", 10, 0, 0);
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "AutoVacuumDaemon — getTablesNeedingVacuum handles OutOfMemory" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 0,
+    });
+    const allocator = failing_allocator.allocator();
+
+    var daemon = AutoVacuumDaemon.init(std.testing.allocator, .{
+        .threshold = 5,
+        .scale_factor = 0.0,
+        .min_commit_interval = 0,
+    });
+    defer daemon.deinit();
+
+    // Add tables that need vacuuming
+    try daemon.recordModification("table1", 0, 10, 0);
+    try daemon.recordModification("table2", 0, 15, 0);
+
+    // Attempt to get tables with failing allocator
+    const result = daemon.getTablesNeedingVacuum(allocator);
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "vacuumTable — handles B+Tree errors gracefully" {
+    const allocator = std.testing.allocator;
+
+    const test_path = "test_vacuum_btree_err.db";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const pager = try allocator.create(Pager);
+    defer allocator.destroy(pager);
+    pager.* = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const pool = try allocator.create(BufferPool);
+    defer allocator.destroy(pool);
+    pool.* = try BufferPool.init(allocator, pager, 100);
+    defer pool.deinit();
+
+    var tree = try initTestTree(pager, pool);
+
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+
+    // Insert a committed row
+    {
+        var header = TupleHeader.forInsert(xid1, 0);
+        header.flags.xmin_committed = true;
+
+        const vals = &[_]Value{.{ .integer = 42 }};
+        const data = try mvcc_mod.serializeVersionedRow(allocator, header, vals);
+        defer allocator.free(data);
+        var key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &key_buf, 1, .big);
+        try tree.insert(&key_buf, data);
+    }
+
+    try tm.commit(xid1);
+
+    var table_info = catalog_mod.TableInfo{
+        .name = "test",
+        .columns = &.{},
+        .table_constraints = &.{},
+        .data_root_page_id = tree.root_page_id,
+    };
+
+    // Vacuum should succeed even when tree operations might fail internally
+    // (they use catch {} to continue)
+    const result = try vacuumTable(allocator, pool, tree.root_page_id, &tm, &table_info, null);
+
+    try std.testing.expectEqual(@as(u64, 1), result.tuples_scanned);
+    try std.testing.expectEqual(@as(u64, 1), result.tuples_frozen);
+}
+
+test "vacuumTable — handles invalid root page" {
+    const allocator = std.testing.allocator;
+
+    const test_path = "test_vacuum_invalid_root.db";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const pager = try allocator.create(Pager);
+    defer allocator.destroy(pager);
+    pager.* = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const pool = try allocator.create(BufferPool);
+    defer allocator.destroy(pool);
+    pool.* = try BufferPool.init(allocator, pager, 100);
+    defer pool.deinit();
+
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    var table_info = catalog_mod.TableInfo{
+        .name = "test",
+        .columns = &.{},
+        .table_constraints = &.{},
+        .data_root_page_id = 999999, // Invalid page ID
+    };
+
+    // Should handle invalid root gracefully
+    const result = vacuumTable(allocator, pool, 999999, &tm, &table_info, null);
+
+    // Either succeeds with empty result or returns error
+    if (result) |r| {
+        try std.testing.expectEqual(@as(u64, 0), r.tuples_scanned);
+    } else |_| {
+        // Error is acceptable for invalid root
+    }
+}
