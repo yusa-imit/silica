@@ -42,6 +42,7 @@ pub const Error = error{
     DuplicateKey,
     KeyNotFound,
     PageFull,
+    ValueTooLarge,
 };
 
 // ── API ────────────────────────────────────────────────────────────────
@@ -1272,4 +1273,36 @@ test "hash index single key with multiple colliding keys nearby" {
     try std.testing.expect(val_middle != null);
     try std.testing.expectEqualStrings("y10", val_middle.?);
     allocator.free(val_middle.?);
+}
+
+test "hash index ValueTooLarge error on insert exceeding 100-page limit" {
+    const allocator = std.testing.allocator;
+    const path = "test_hash_value_too_large.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+
+    var pool = try BufferPool.init(allocator, &pager, 200);
+    defer pool.deinit();
+
+    var idx = HashIndex.init(&pool, root_id);
+
+    // Calculate value size that exceeds 100 pages
+    // max_value_per_page = 4096 - 16 (PAGE_HEADER_SIZE) - 4 (next_page_id) = 4076
+    // 100 pages = 407,600 bytes
+    // We need value.len > 407,600 to trigger error.ValueTooLarge
+    const huge_value_size = 408_000; // Exceeds 100-page limit
+    var huge_value = try allocator.alloc(u8, huge_value_size);
+    defer allocator.free(huge_value);
+
+    // Fill with pattern data
+    for (0..huge_value_size) |i| {
+        huge_value[i] = @intCast(i % 256);
+    }
+
+    // Attempt to insert — should return error.ValueTooLarge
+    try std.testing.expectError(error.ValueTooLarge, idx.insert("huge_key", huge_value));
 }
