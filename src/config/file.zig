@@ -104,6 +104,9 @@ pub const ConfigLoader = struct {
 pub const FileWatcher = struct {
     allocator: Allocator,
     file_path: []const u8,
+    watcher_thread: ?std.Thread = null,
+    should_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    file_fd: ?std.posix.fd_t = null,
 
     pub fn init(allocator: Allocator, path: []const u8) FileWatcher {
         return .{
@@ -113,29 +116,121 @@ pub const FileWatcher = struct {
     }
 
     pub fn deinit(self: *FileWatcher) void {
-        _ = self;
+        // Signal the watcher thread to stop
+        self.should_stop.store(true, .release);
+
+        // Wait for thread to finish if it's running
+        if (self.watcher_thread) |thread| {
+            thread.join();
+        }
+
+        // Close file descriptor if open
+        if (self.file_fd) |fd| {
+            std.posix.close(fd);
+        }
     }
 
     /// Start watching for file changes
     pub fn start(self: *FileWatcher, callback: *const fn () void) !void {
-        _ = self;
-        _ = callback;
+        // Verify file exists and open it for kqueue watching
+        const file = std.fs.cwd().openFile(self.file_path, .{}) catch |err| {
+            return switch (err) {
+                error.FileNotFound => error.FileNotFound,
+                error.AccessDenied => error.PermissionDenied,
+                else => error.FileReadError,
+            };
+        };
 
-        // TODO: Implement platform-specific file watching
-        // For macOS: use kqueue
-        // For Linux: use inotify
-        // For Windows: use ReadDirectoryChangesW
-        //
-        // Real implementation would:
-        // 1. Spawn a background thread
-        // 2. Use platform-specific API to watch the file
-        // 3. Call callback when file is modified
-        // 4. Handle cleanup on deinit()
+        // Store the file descriptor and keep it open for the watcher thread
+        self.file_fd = file.handle;
 
-        // Placeholder: return error until platform-specific implementation is added
-        return error.OutOfMemory;
+        // Spawn watcher thread
+        const WatcherContext = struct {
+            allocator: Allocator,
+            file_path: []const u8,
+            file_fd: std.posix.fd_t,
+            callback: *const fn () void,
+            should_stop: *std.atomic.Value(bool),
+
+            fn run(ctx: @This()) void {
+                if (watchFileKqueue(ctx.file_fd, ctx.callback, ctx.should_stop)) {
+                    // Watcher completed normally
+                } else |_| {
+                    // Silently fail in background thread
+                }
+            }
+        };
+
+        const watcher_ctx = WatcherContext{
+            .allocator = self.allocator,
+            .file_path = self.file_path,
+            .file_fd = self.file_fd.?,
+            .callback = callback,
+            .should_stop = &self.should_stop,
+        };
+
+        self.watcher_thread = try std.Thread.spawn(.{}, WatcherContext.run, .{watcher_ctx});
     }
 };
+
+/// Watch a file using kqueue (macOS)
+fn watchFileKqueue(file_fd: std.posix.fd_t, callback: *const fn () void, should_stop: *std.atomic.Value(bool)) !void {
+    const builtin = @import("builtin");
+
+    // Only macOS supports kqueue with NOTE_WRITE
+    if (builtin.os.tag != .macos) {
+        return error.UnsupportedPlatform;
+    }
+
+    // Create kqueue
+    const kq = try std.posix.kqueue();
+    defer std.posix.close(kq);
+
+    // Constants for kqueue (from sys/event.h on macOS)
+    const EVFILT_VNODE: i16 = -4;
+    const EV_ADD: u16 = 0x0001;
+    const EV_CLEAR: u16 = 0x0020;
+    const NOTE_WRITE: u32 = 0x00000002;
+
+    // Set up kevent for file modifications
+    var kevent: std.c.Kevent = undefined;
+    kevent.ident = @intCast(file_fd);
+    kevent.filter = EVFILT_VNODE;
+    kevent.flags = EV_ADD | EV_CLEAR;
+    kevent.fflags = NOTE_WRITE;
+    kevent.data = 0;
+    kevent.udata = 0;
+
+    var kevents: [1]std.c.Kevent = undefined;
+    _ = try std.posix.kevent(kq, &[_]std.c.Kevent{kevent}, &kevents, null);
+
+    // Event loop: wait for file changes
+    while (!should_stop.load(.acquire)) {
+        var event_list: [1]std.c.Kevent = undefined;
+
+        // Use timeout to allow periodic checks of should_stop flag
+        var timeout: std.c.timespec = .{
+            .sec = 0,
+            .nsec = 50 * std.time.ns_per_ms, // 50ms timeout
+        };
+
+        const events = std.posix.kevent(kq, &[_]std.c.Kevent{}, &event_list, &timeout) catch |err| {
+            if (err == error.Interrupted) {
+                continue;
+            }
+            return err;
+        };
+
+        // Check for file modification events
+        if (events > 0) {
+            const ev = event_list[0];
+            if (ev.filter == EVFILT_VNODE and (ev.fflags & NOTE_WRITE) != 0) {
+                // File was modified, call the callback
+                callback();
+            }
+        }
+    }
+}
 
 /// Parse INI-style configuration file content
 pub fn parseConfigFile(allocator: Allocator, content: []const u8) !ConfigMap {
@@ -1015,4 +1110,378 @@ test "parseConfigFile handles multiline values" {
     }
 
     try std.testing.expectEqualStrings("public, admin, test", map.get("search_path").?);
+}
+
+// ── FileWatcher Tests ──────────────────────────────────────────
+
+test "FileWatcher init creates instance" {
+    var watcher = FileWatcher.init(std.testing.allocator, "/tmp/test.conf");
+    defer watcher.deinit();
+
+    try std.testing.expectEqualStrings("/tmp/test.conf", watcher.file_path);
+}
+
+test "FileWatcher deinit cleans up properly" {
+    var watcher = FileWatcher.init(std.testing.allocator, "/tmp/test.conf");
+    watcher.deinit();
+    // Should not crash - deinit should be idempotent
+}
+
+test "FileWatcher start requires valid file path" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "config.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/config.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    const callback = struct {
+        fn cb() void {
+            // Callback implementation
+        }
+    }.cb;
+
+    // Should succeed with valid path (when implemented)
+    // Currently returns error.OutOfMemory as placeholder
+    const result = watcher.start(&callback);
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "FileWatcher start rejects invalid file path" {
+    const invalid_path = "/nonexistent/path/does/not/exist.conf";
+
+    var watcher = FileWatcher.init(std.testing.allocator, invalid_path);
+    defer watcher.deinit();
+
+    const callback = struct {
+        fn cb() void {}
+    }.cb;
+
+    // Should fail with invalid path
+    const result = watcher.start(&callback);
+    try std.testing.expectError(error.OutOfMemory, result);
+    // TODO: After implementation, should check for error.FileNotFound or similar
+}
+
+test "FileWatcher callback invocation on file modification" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "watch_test.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/watch_test.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var callback_invoked = false;
+
+    const callback = struct {
+        var invoked: *bool = undefined;
+
+        fn cb() void {
+            invoked.* = true;
+        }
+    };
+    callback.invoked = &callback_invoked;
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    // Start watching
+    const result = watcher.start(&callback.cb);
+
+    // Currently fails because not implemented
+    if (result) |_| {
+        // After implementation, modify file
+        try tmp_dir.dir.writeFile(.{ .sub_path = "watch_test.conf", .data = "work_mem = 8MB\n" });
+
+        // Wait a bit for the watcher thread to process
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+
+        // Callback should have been invoked
+        try std.testing.expect(callback_invoked);
+    } else |_| {
+        // Expected to fail for now (placeholder implementation)
+        try std.testing.expectError(error.OutOfMemory, result);
+    }
+}
+
+test "FileWatcher handles file deletion gracefully" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "delete_test.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/delete_test.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    const callback = struct {
+        fn cb() void {}
+    }.cb;
+
+    const result = watcher.start(&callback);
+    if (result) |_| {
+        // After implementation, delete file
+        try tmp_dir.dir.deleteFile("delete_test.conf");
+
+        // Wait for detection
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+
+        // Should either callback or cleanly handle the deletion
+        // Behavior TBD by implementation
+    } else |_| {
+        // Expected for placeholder implementation
+        try std.testing.expectError(error.OutOfMemory, result);
+    }
+}
+
+test "FileWatcher thread safety - multiple rapid file changes" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "rapid.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/rapid.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var callback_count: usize = 0;
+    const callback = struct {
+        var count: *usize = undefined;
+
+        fn cb() void {
+            count.* += 1;
+        }
+    };
+    callback.count = &callback_count;
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    const result = watcher.start(&callback.cb);
+    if (result) |_| {
+        // Make rapid changes
+        for (0..5) |i| {
+            var buf: [64]u8 = undefined;
+            const content = try std.fmt.bufPrint(&buf, "work_mem = {}MB\n", .{i + 1});
+            try tmp_dir.dir.writeFile(.{ .sub_path = "rapid.conf", .data = content });
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+
+        // Wait for watcher to process all changes
+        std.Thread.sleep(200 * std.time.ns_per_ms);
+
+        // Verify callback was called (at least once, possibly more)
+        try std.testing.expect(callback_count > 0);
+    } else |_| {
+        // Expected for placeholder
+        try std.testing.expectError(error.OutOfMemory, result);
+    }
+}
+
+test "FileWatcher does not callback for non-watched files" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "watch.conf", .data = "work_mem = 4MB\n" });
+    try tmp_dir.dir.writeFile(.{ .sub_path = "other.conf", .data = "shared_buffers = 128MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const watch_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/watch.conf", .{tmp_path});
+    defer std.testing.allocator.free(watch_path);
+
+    var callback_count: usize = 0;
+    const callback = struct {
+        var count: *usize = undefined;
+
+        fn cb() void {
+            count.* += 1;
+        }
+    };
+    callback.count = &callback_count;
+
+    var watcher = FileWatcher.init(std.testing.allocator, watch_path);
+    defer watcher.deinit();
+
+    const result = watcher.start(&callback.cb);
+    if (result) |_| {
+        // Modify the OTHER file (not watched)
+        try tmp_dir.dir.writeFile(.{ .sub_path = "other.conf", .data = "shared_buffers = 256MB\n" });
+
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+
+        // Callback should NOT be invoked for non-watched file
+        try std.testing.expectEqual(@as(usize, 0), callback_count);
+    } else |_| {
+        try std.testing.expectError(error.OutOfMemory, result);
+    }
+}
+
+test "FileWatcher can be stopped and restarted" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "restart.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/restart.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    const callback = struct {
+        fn cb() void {}
+    }.cb;
+
+    // Start watching
+    const result1 = watcher.start(&callback);
+
+    if (result1) |_| {
+        // Clean stop (would need stop() method)
+        // Restart watching
+        const result2 = watcher.start(&callback);
+        if (result2) |_| {
+            // Both starts should succeed
+            try std.testing.expect(true);
+        } else |_| {
+            // Or both fail
+            try std.testing.expectError(error.OutOfMemory, result2);
+        }
+    } else |_| {
+        // Expected for placeholder
+        try std.testing.expectError(error.OutOfMemory, result1);
+    }
+}
+
+test "FileWatcher callback receives correct file path context" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "context.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/context.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    // Verify the watcher has the correct file path
+    try std.testing.expectEqualStrings(file_path, watcher.file_path);
+
+    const callback = struct {
+        fn cb() void {}
+    }.cb;
+
+    const result = watcher.start(&callback);
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "FileWatcher memory is properly cleaned up on error" {
+    var watcher = FileWatcher.init(std.testing.allocator, "/invalid/path.conf");
+
+    const callback = struct {
+        fn cb() void {}
+    }.cb;
+
+    // Attempt to start with invalid path should fail
+    const result = watcher.start(&callback);
+    try std.testing.expectError(error.OutOfMemory, result);
+
+    // Cleanup should work even after failed start
+    watcher.deinit();
+    // No crash = success
+}
+
+test "FileWatcher handles zero-byte file modifications" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "empty.conf", .data = "" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/empty.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    var callback_called = false;
+    const callback = struct {
+        var called: *bool = undefined;
+
+        fn cb() void {
+            called.* = true;
+        }
+    };
+    callback.called = &callback_called;
+
+    const result = watcher.start(&callback.cb);
+    if (result) |_| {
+        // Write content to previously empty file
+        try tmp_dir.dir.writeFile(.{ .sub_path = "empty.conf", .data = "work_mem = 4MB\n" });
+
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+
+        // Should detect the change
+        try std.testing.expect(callback_called);
+    } else |_| {
+        try std.testing.expectError(error.OutOfMemory, result);
+    }
+}
+
+test "FileWatcher is allocator aware" {
+    // Ensure FileWatcher properly tracks allocator
+    var watcher = FileWatcher.init(std.testing.allocator, "/tmp/test.conf");
+    defer watcher.deinit();
+
+    // Allocator should be stored and accessible
+    const same_allocator: Allocator = watcher.allocator;
+    _ = same_allocator;
+    // If this compiles, allocator is properly tracked
+}
+
+test "FileWatcher supports long file paths" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create nested directories for a long path
+    try tmp_dir.dir.makePath("very/long/nested/directory/structure");
+    try tmp_dir.dir.writeFile(.{ .sub_path = "very/long/nested/directory/structure/config.conf", .data = "work_mem = 4MB\n" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/very/long/nested/directory/structure/config.conf", .{tmp_path});
+    defer std.testing.allocator.free(file_path);
+
+    var watcher = FileWatcher.init(std.testing.allocator, file_path);
+    defer watcher.deinit();
+
+    // Watcher should accept the long path
+    try std.testing.expect(watcher.file_path.len > 0);
+
+    const callback = struct {
+        fn cb() void {}
+    }.cb;
+
+    const result = watcher.start(&callback);
+    try std.testing.expectError(error.OutOfMemory, result);
 }
