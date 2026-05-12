@@ -9,7 +9,30 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 280 - STABILIZATION)
+### Last Session (Session 282 - FEATURE)
+- **Date**: 2026-05-13
+- **Mode**: FEATURE MODE (Session 282)
+- **Focus**: Test expectation cleanup for FileWatcher implementation
+- **Outcome**: ✅ Test expectations updated to match FileWatcher implementation
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing on main
+  - **Open Issues**: 0
+  - **Task**: Found uncommitted test expectation updates from FileWatcher implementation
+  - **Analysis**: 4 FileWatcher tests had placeholder `error.OutOfMemory` expectations from initial test-first development
+  - **Changes Made**:
+    - Updated "FileWatcher start requires valid file path" — valid path now succeeds (was: expectError(OutOfMemory))
+    - Updated "FileWatcher start rejects invalid file path" — returns FileNotFound (was: expectError(OutOfMemory))
+    - Updated "FileWatcher memory is properly cleaned up on error" — returns FileNotFound (was: expectError(OutOfMemory))
+    - Updated "FileWatcher supports long file paths" — valid path succeeds (was: expectError(OutOfMemory))
+  - **Test Status**: All tests passing, zero failures
+  - **Build Status**: Clean build, zero warnings
+  - **Commits**:
+    - fb2ffc7 — test: update FileWatcher test expectations to match implementation
+  - **Dependencies**: sailor v2.9.0, zuda v2.0.4 (both at latest)
+- **Project State**: Maintenance mode — test cleanup following macOS kqueue FileWatcher implementation
+- **Impact**: Tests now accurately reflect FileWatcher implementation behavior instead of placeholder expectations
+
+### Previous Session (Session 280 - STABILIZATION)
 - **Date**: 2026-05-12
 - **Mode**: STABILIZATION MODE (Session 280 — every 5th session)
 - **Focus**: CI stabilization, dependency migration, test coverage audit & error path tests
