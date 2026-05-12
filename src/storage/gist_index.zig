@@ -841,3 +841,97 @@ test "Int4RangeOpClass penalty computation is monotonic" {
 
     try std.testing.expect(p1 <= p2);
 }
+
+test "GiST: InvalidPredicate error on short predicate in consistent" {
+    const allocator = std.testing.allocator;
+
+    // Predicate too short for Int4Range (needs 8 bytes)
+    var short_pred: [4]u8 = undefined;
+    @memset(&short_pred, 0);
+
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 10, .little);
+    std.mem.writeInt(u32, query[4..8], 20, .little);
+
+    // Should return InvalidPredicate error
+    const result = Int4RangeOpClass.consistent(allocator, &short_pred, &query, 0);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
+
+test "GiST: InvalidPredicate error on invalid strategy in consistent" {
+    const allocator = std.testing.allocator;
+
+    var entry_pred: [8]u8 = undefined;
+    std.mem.writeInt(u32, entry_pred[0..4], 10, .little);
+    std.mem.writeInt(u32, entry_pred[4..8], 20, .little);
+
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 15, .little);
+    std.mem.writeInt(u32, query[4..8], 25, .little);
+
+    // Strategy 99 is not 0 (contains) or 1 (overlaps)
+    const result = Int4RangeOpClass.consistent(allocator, &entry_pred, &query, 99);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
+
+test "GiST: InvalidPredicate error in union with empty entries" {
+    const allocator = std.testing.allocator;
+
+    // Union on empty entry list should fail
+    const empty_entries: [0][]const u8 = undefined;
+    const result = Int4RangeOpClass.union_fn(allocator, &empty_entries);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
+
+test "GiST: InvalidPredicate error in picksplit with single entry" {
+    const allocator = std.testing.allocator;
+
+    var pred1: [8]u8 = undefined;
+    std.mem.writeInt(u32, pred1[0..4], 10, .little);
+    std.mem.writeInt(u32, pred1[4..8], 20, .little);
+
+    // Picksplit requires at least 2 entries to split
+    const entries = [_][]const u8{&pred1};
+    const result = Int4RangeOpClass.picksplit(allocator, &entries);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
+
+test "GiST: ConsistentFailed on truncated query predicate in consistent" {
+    const allocator = std.testing.allocator;
+
+    var entry_pred: [8]u8 = undefined;
+    std.mem.writeInt(u32, entry_pred[0..4], 10, .little);
+    std.mem.writeInt(u32, entry_pred[4..8], 20, .little);
+
+    var short_query: [4]u8 = undefined;
+    // Query too short — consistent function validates both predicate lengths
+    const result = Int4RangeOpClass.consistent(allocator, &entry_pred, &short_query, 0);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
+
+test "GiST: InvalidPredicate error in penalty with short predicates" {
+    const allocator = std.testing.allocator;
+
+    var short_current: [4]u8 = undefined;
+    var new_pred: [8]u8 = undefined;
+    std.mem.writeInt(u32, new_pred[0..4], 10, .little);
+    std.mem.writeInt(u32, new_pred[4..8], 20, .little);
+
+    // Penalty function validates predicate sizes
+    const result = Int4RangeOpClass.penalty(allocator, &short_current, &new_pred);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
+
+test "GiST: InvalidPredicate error in same with mismatched lengths" {
+    const allocator = std.testing.allocator;
+
+    var pred_a: [8]u8 = undefined;
+    std.mem.writeInt(u32, pred_a[0..4], 10, .little);
+    std.mem.writeInt(u32, pred_a[4..8], 20, .little);
+
+    var pred_b: [4]u8 = undefined;
+
+    // Same function requires both predicates to be 8 bytes for Int4Range
+    const result = Int4RangeOpClass.same(allocator, &pred_a, &pred_b);
+    try std.testing.expectError(error.InvalidPredicate, result);
+}
