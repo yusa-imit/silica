@@ -1147,10 +1147,8 @@ test "FileWatcher start requires valid file path" {
         }
     }.cb;
 
-    // Should succeed with valid path (when implemented)
-    // Currently returns error.OutOfMemory as placeholder
-    const result = watcher.start(&callback);
-    try std.testing.expectError(error.OutOfMemory, result);
+    // Should succeed with valid path
+    try watcher.start(&callback);
 }
 
 test "FileWatcher start rejects invalid file path" {
@@ -1163,10 +1161,8 @@ test "FileWatcher start rejects invalid file path" {
         fn cb() void {}
     }.cb;
 
-    // Should fail with invalid path
-    const result = watcher.start(&callback);
-    try std.testing.expectError(error.OutOfMemory, result);
-    // TODO: After implementation, should check for error.FileNotFound or similar
+    // Should fail with FileNotFound for non-existent path
+    try std.testing.expectError(error.FileNotFound, watcher.start(&callback));
 }
 
 test "FileWatcher callback invocation on file modification" {
@@ -1401,9 +1397,8 @@ test "FileWatcher memory is properly cleaned up on error" {
         fn cb() void {}
     }.cb;
 
-    // Attempt to start with invalid path should fail
-    const result = watcher.start(&callback);
-    try std.testing.expectError(error.OutOfMemory, result);
+    // Attempt to start with invalid path should fail with FileNotFound
+    try std.testing.expectError(error.FileNotFound, watcher.start(&callback));
 
     // Cleanup should work even after failed start
     watcher.deinit();
@@ -1482,10 +1477,8 @@ test "FileWatcher supports long file paths" {
         fn cb() void {}
     }.cb;
 
-    const result = watcher.start(&callback);
-    try std.testing.expectError(error.OutOfMemory, result);
-    // NOTE FOR test-writer: This test creates a valid file with a long path.
-    // Implementation succeeds (returns void). Update to: remove expectError, just call start(&callback) or expect it to succeed.
+    // Should succeed with valid long path
+    try watcher.start(&callback);
 }
 
 // NOTE FOR test-writer: 4 tests have incorrect expectations and need updating:
