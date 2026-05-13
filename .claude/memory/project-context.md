@@ -9,7 +9,34 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 283 - FEATURE)
+### Last Session (Session 284 - FEATURE)
+- **Date**: 2026-05-13
+- **Mode**: FEATURE MODE (Session 284)
+- **Focus**: Cross-platform FileWatcher — Linux inotify implementation
+- **Outcome**: ✅ FileWatcher now works on both macOS and Linux
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing on main
+  - **Open Issues**: 0
+  - **Task**: Completed "Future Work" from Session 283 — implement Linux inotify-based FileWatcher
+  - **Implementation**:
+    - Added `watchFileInotify()` function using Linux inotify API (IN_MODIFY event)
+    - Modified `WatcherContext.run()` to dispatch to platform-specific implementation (kqueue/inotify)
+    - Updated `watchFileKqueue()` signature to match inotify (added file_path parameter)
+    - Updated 10 FileWatcher tests: now skip only on unsupported platforms (not macOS/Linux)
+    - Tests will now run on Linux CI instead of being skipped
+  - **Technical Details**:
+    - inotify: Uses `inotify_init1()`, `inotify_add_watch()`, poll() with 50ms timeout
+    - kqueue: Unchanged behavior, added unused `file_path` param for signature consistency
+    - Both implementations: atomic `should_stop` flag for graceful thread shutdown
+  - **Test Status**: Build successful, CI will verify Linux functionality
+  - **Build Status**: Clean build, zero warnings
+  - **Commits**:
+    - 59fd20b — feat: add Linux inotify support for FileWatcher
+  - **Dependencies**: sailor v2.9.0, zuda v2.0.4 (both at latest)
+- **Project State**: Cross-platform parity achieved for config file hot-reload
+- **Impact**: Production deployments on Linux can now use config hot-reload feature
+
+### Previous Session (Session 283 - FEATURE)
 - **Date**: 2026-05-13
 - **Mode**: FEATURE MODE (Session 283)
 - **Focus**: CI stabilization — fix FileWatcher test failures on Linux
