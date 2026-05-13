@@ -945,22 +945,29 @@ test "FileWatcher detects file changes" {
     var watcher = FileWatcher.init(std.testing.allocator, file_path);
     defer watcher.deinit();
 
+    var callback_invoked = false;
     const callback = struct {
+        var invoked: *bool = undefined;
         fn cb() void {
-            // This will be called when file changes
+            invoked.* = true;
         }
-    }.cb;
+    };
+    callback.invoked = &callback_invoked;
 
-    // Note: This test placeholder expects OutOfMemory but implementation is complete on macOS.
-    // Test needs updating to verify actual file watching behavior.
-    const result = watcher.start(&callback);
-    try std.testing.expectError(error.OutOfMemory, result);
+    // Start watching - should succeed on macOS and Linux
+    try watcher.start(&callback.cb);
+
+    // Give the watcher thread time to start
+    std.Thread.sleep(50 * std.time.ns_per_ms);
 
     // Modify file to trigger change detection
     try tmp_dir.dir.writeFile(.{ .sub_path = "watch.conf", .data = "work_mem = 8MB\n" });
 
-    // In the real implementation, callback should be invoked
-    // TODO: Add callback invocation verification after implementation
+    // Wait for watcher thread to detect the change
+    std.Thread.sleep(200 * std.time.ns_per_ms);
+
+    // Callback should have been invoked
+    try std.testing.expect(callback_invoked);
 }
 
 test "hot-reload preserves unchanged parameters" {
@@ -1278,23 +1285,20 @@ test "FileWatcher callback invocation on file modification" {
     var watcher = FileWatcher.init(std.testing.allocator, file_path);
     defer watcher.deinit();
 
-    // Start watching
-    const result = watcher.start(&callback.cb);
+    // Start watching - should succeed on macOS and Linux
+    try watcher.start(&callback.cb);
 
-    // Currently fails because not implemented
-    if (result) |_| {
-        // After implementation, modify file
-        try tmp_dir.dir.writeFile(.{ .sub_path = "watch_test.conf", .data = "work_mem = 8MB\n" });
+    // Give the watcher thread time to start
+    std.Thread.sleep(50 * std.time.ns_per_ms);
 
-        // Wait a bit for the watcher thread to process
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+    // Modify file to trigger change detection
+    try tmp_dir.dir.writeFile(.{ .sub_path = "watch_test.conf", .data = "work_mem = 8MB\n" });
 
-        // Callback should have been invoked
-        try std.testing.expect(callback_invoked);
-    } else |_| {
-        // Expected to fail for now (placeholder implementation)
-        try std.testing.expectError(error.OutOfMemory, result);
-    }
+    // Wait for watcher thread to detect the change
+    std.Thread.sleep(200 * std.time.ns_per_ms);
+
+    // Callback should have been invoked
+    try std.testing.expect(callback_invoked);
 }
 
 test "FileWatcher handles file deletion gracefully" {
@@ -1489,8 +1493,8 @@ test "FileWatcher callback receives correct file path context" {
         fn cb() void {}
     }.cb;
 
-    const result = watcher.start(&callback);
-    try std.testing.expectError(error.OutOfMemory, result);
+    // Start should succeed on macOS and Linux
+    try watcher.start(&callback);
 }
 
 test "FileWatcher memory is properly cleaned up on error" {
@@ -1535,18 +1539,20 @@ test "FileWatcher handles zero-byte file modifications" {
     };
     callback.called = &callback_called;
 
-    const result = watcher.start(&callback.cb);
-    if (result) |_| {
-        // Write content to previously empty file
-        try tmp_dir.dir.writeFile(.{ .sub_path = "empty.conf", .data = "work_mem = 4MB\n" });
+    // Start watching - should succeed on macOS and Linux
+    try watcher.start(&callback.cb);
 
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+    // Give the watcher thread time to start
+    std.Thread.sleep(50 * std.time.ns_per_ms);
 
-        // Should detect the change
-        try std.testing.expect(callback_called);
-    } else |_| {
-        try std.testing.expectError(error.OutOfMemory, result);
-    }
+    // Write content to previously empty file
+    try tmp_dir.dir.writeFile(.{ .sub_path = "empty.conf", .data = "work_mem = 4MB\n" });
+
+    // Wait for watcher thread to detect the change
+    std.Thread.sleep(200 * std.time.ns_per_ms);
+
+    // Should detect the change
+    try std.testing.expect(callback_called);
 }
 
 test "FileWatcher is allocator aware" {
