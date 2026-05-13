@@ -152,8 +152,18 @@ pub const FileWatcher = struct {
             callback: *const fn () void,
             should_stop: *std.atomic.Value(bool),
 
-            fn run(ctx: @This()) void {
-                if (watchFileKqueue(ctx.file_fd, ctx.callback, ctx.should_stop)) {
+        fn run(ctx: @This()) void {
+                const builtin = @import("builtin");
+                const watch_fn = switch (builtin.os.tag) {
+                    .macos => watchFileKqueue,
+                    .linux => watchFileInotify,
+                    else => {
+                        // Platform not supported, silently fail
+                        return;
+                    },
+                };
+
+                if (watch_fn(ctx.file_fd, ctx.file_path, ctx.callback, ctx.should_stop)) {
                     // Watcher completed normally
                 } else |_| {
                     // Silently fail in background thread
@@ -174,7 +184,8 @@ pub const FileWatcher = struct {
 };
 
 /// Watch a file using kqueue (macOS)
-fn watchFileKqueue(file_fd: std.posix.fd_t, callback: *const fn () void, should_stop: *std.atomic.Value(bool)) !void {
+fn watchFileKqueue(file_fd: std.posix.fd_t, file_path: []const u8, callback: *const fn () void, should_stop: *std.atomic.Value(bool)) !void {
+    _ = file_path; // Unused on macOS (kqueue uses file descriptor)
     const builtin = @import("builtin");
 
     // Only macOS supports kqueue with NOTE_WRITE
@@ -227,6 +238,72 @@ fn watchFileKqueue(file_fd: std.posix.fd_t, callback: *const fn () void, should_
             if (ev.filter == EVFILT_VNODE and (ev.fflags & NOTE_WRITE) != 0) {
                 // File was modified, call the callback
                 callback();
+            }
+        }
+    }
+}
+
+/// Watch a file using inotify (Linux)
+fn watchFileInotify(file_fd: std.posix.fd_t, file_path: []const u8, callback: *const fn () void, should_stop: *std.atomic.Value(bool)) !void {
+    _ = file_fd; // Unused on Linux (inotify uses file path)
+    const builtin = @import("builtin");
+
+    // Only Linux supports inotify
+    if (builtin.os.tag != .linux) {
+        return error.UnsupportedPlatform;
+    }
+
+    // Initialize inotify
+    const inotify_fd = try std.posix.inotify_init1(std.os.linux.IN.CLOEXEC);
+    defer std.posix.close(inotify_fd);
+
+    // Add watch for file modifications (IN_MODIFY event)
+    const IN_MODIFY: u32 = 0x00000002;
+    const watch_fd = try std.posix.inotify_add_watch(inotify_fd, file_path, IN_MODIFY);
+    defer std.posix.inotify_rm_watch(inotify_fd, watch_fd);
+
+    // Event loop: wait for file changes
+    while (!should_stop.load(.acquire)) {
+        // Set up poll for inotify fd with timeout
+        var poll_fds: [1]std.posix.pollfd = .{
+            .{
+                .fd = inotify_fd,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            },
+        };
+
+        // Poll with 50ms timeout to allow periodic checks of should_stop flag
+        const ready = std.posix.poll(&poll_fds, 50) catch |err| {
+            if (err == error.Interrupted) {
+                continue;
+            }
+            return err;
+        };
+
+        if (ready > 0 and (poll_fds[0].revents & std.posix.POLL.IN) != 0) {
+            // Read inotify events
+            var event_buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
+            const bytes_read = std.posix.read(inotify_fd, &event_buf) catch |err| {
+                if (err == error.WouldBlock) {
+                    continue;
+                }
+                return err;
+            };
+
+            // Process events
+            var offset: usize = 0;
+            while (offset < bytes_read) {
+                const event = @as(*const std.os.linux.inotify_event, @ptrCast(@alignCast(&event_buf[offset])));
+
+                // Check if it's a modify event
+                if ((event.mask & IN_MODIFY) != 0) {
+                    // File was modified, call the callback
+                    callback();
+                }
+
+                // Move to next event (event header + name length)
+                offset += @sizeOf(std.os.linux.inotify_event) + event.len;
             }
         }
     }
@@ -852,7 +929,8 @@ test "FileWatcher init and deinit" {
 
 test "FileWatcher detects file changes" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    // Skip on unsupported platforms (not macOS or Linux)
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1133,7 +1211,7 @@ test "FileWatcher deinit cleans up properly" {
 
 test "FileWatcher start requires valid file path" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1174,7 +1252,7 @@ test "FileWatcher start rejects invalid file path" {
 
 test "FileWatcher callback invocation on file modification" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1221,7 +1299,7 @@ test "FileWatcher callback invocation on file modification" {
 
 test "FileWatcher handles file deletion gracefully" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1258,7 +1336,7 @@ test "FileWatcher handles file deletion gracefully" {
 
 test "FileWatcher thread safety - multiple rapid file changes" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1306,7 +1384,7 @@ test "FileWatcher thread safety - multiple rapid file changes" {
 
 test "FileWatcher does not callback for non-watched files" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1348,7 +1426,7 @@ test "FileWatcher does not callback for non-watched files" {
 
 test "FileWatcher can be stopped and restarted" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1389,7 +1467,7 @@ test "FileWatcher can be stopped and restarted" {
 
 test "FileWatcher callback receives correct file path context" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1432,7 +1510,7 @@ test "FileWatcher memory is properly cleaned up on error" {
 
 test "FileWatcher handles zero-byte file modifications" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1484,7 +1562,7 @@ test "FileWatcher is allocator aware" {
 
 test "FileWatcher supports long file paths" {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
