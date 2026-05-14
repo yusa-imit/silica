@@ -9,7 +9,51 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 290 - STABILIZATION)
+### Last Session (Session 291 - FEATURE)
+- **Date**: 2026-05-15
+- **Mode**: FEATURE MODE (Session 291)
+- **Focus**: GIN index diagnostic instrumentation — Phase 1 of redesign roadmap
+- **Outcome**: ✅ Added comprehensive diagnostic logging to support GIN architectural redesign
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing on main
+  - **Open Issues**: 0
+  - **Task**: Implement diagnostic logging per docs/GIN_INDEX_REDESIGN.md Step 1-3
+  - **Additions**:
+    1. **debugDumpEntryTree()** public function (line ~327):
+       - Walks entry tree and prints all keys + posting info
+       - Shows inline vs posting tree format
+       - Enables manual inspection of entry tree state
+    2. **insertKey() instrumentation** (line ~356):
+       - Logs key insertion with tuple_id
+       - Shows current entry count before/after
+       - Indicates whether key exists (append) or is new (insert)
+    3. **lookupPostingList() instrumentation** (line ~400):
+       - Shows search key and entry count
+       - Logs each entry comparison result
+       - Reports match found or not found
+    4. **search() instrumentation** (line ~265):
+       - Logs query value size and strategy
+       - Shows extracted query keys count
+       - Reports per-key lookup results (tuple count)
+    5. **Posting list round-trip test** (line ~986):
+       - Tests encode/decode with 4 tuple IDs
+       - Verifies varint delta encoding correctness
+       - Uses insertNewEntry + appendToPostingList
+  - **Implementation Notes**:
+    - Used `key.len` instead of hex formatting (Zig 0.15 compat)
+    - All debug prints go to stderr for easy filtering
+    - Test remains skipped (will be enabled with diagnostics in stabilization session)
+  - **Commits**:
+    - c24f262 — feat(gin): add comprehensive diagnostic logging for index debugging
+  - **Dependencies**: sailor v2.10.0, zuda v2.0.4
+- **Project State**: GIN diagnostic instrumentation complete — ready for Phase 2 (run tests with logging, analyze output)
+- **Next Priority**:
+  - Next stabilization session (295): Run GIN tests with diagnostics, analyze output, document root cause
+  - Phase 2: Fix posting list encoding if needed (fixed u64 vs varint)
+  - Phase 3: Add unit tests for each GIN function
+  - Phase 4: Re-enable skipped tests one-by-one
+
+### Previous Session (Session 290 - STABILIZATION)
 - **Date**: 2026-05-14
 - **Mode**: STABILIZATION MODE (Session 290)
 - **Focus**: CI failure recovery — GIN index test stabilization
