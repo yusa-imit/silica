@@ -262,6 +262,9 @@ pub const GIN = struct {
             self.allocator.free(query_keys);
         }
 
+        std.debug.print("[GIN Search] Query value ({d} bytes), strategy: {d}\n", .{ query_value.len, strategy });
+        std.debug.print("[GIN Search] Extracted {d} query keys\n", .{query_keys.len});
+
         // Lookup posting list for each query key
         var posting_lists = try self.allocator.alloc([]ItemPointer, query_keys.len);
         defer {
@@ -270,7 +273,9 @@ pub const GIN = struct {
         }
 
         for (query_keys, 0..) |key, i| {
+            std.debug.print("[GIN Search] Looking up key {d} ({d} bytes)\n", .{ i, key.len });
             posting_lists[i] = try self.lookupPostingList(key);
+            std.debug.print("[GIN Search] Found {d} tuples for key {d}\n", .{ posting_lists[i].len, i });
         }
 
         // Call opclass.consistent to filter results
@@ -317,14 +322,44 @@ pub const GIN = struct {
         return try result.toOwnedSlice(self.allocator);
     }
 
+    // ── Diagnostic Functions (for GIN Redesign) ────────────────────────
+
+    /// Debug: Dump all entries in the entry tree (for diagnostic purposes).
+    /// This walks the entry tree and prints all keys + posting info.
+    pub fn debugDumpEntryTree(self: *GIN) !void {
+        const root_frame = try self.fetchOrInitRootPage();
+        defer self.pool.unpinPage(self.root_page_id, false);
+
+        const entry_count = readEntryCount(root_frame.data);
+        std.debug.print("[GIN Debug] Entry tree dump — {d} entries\n", .{entry_count});
+
+        for (0..entry_count) |i| {
+            const entry_key = try self.readEntryKey(root_frame.data, i);
+            defer self.allocator.free(entry_key);
+
+            const posting_info = readPostingInfo(root_frame.data, i);
+            const is_tree = (posting_info & 0x80000000) != 0;
+            const value = posting_info & 0x7FFFFFFF;
+
+            if (is_tree) {
+                std.debug.print("[GIN Debug]   Entry {d}: key ({d} bytes), posting_tree_root={d}\n", .{ i, entry_key.len, value });
+            } else {
+                std.debug.print("[GIN Debug]   Entry {d}: key ({d} bytes), inline_posting_info=0x{x}\n", .{ i, entry_key.len, posting_info });
+            }
+        }
+    }
+
     // ── Internal Operations ────────────────────────────────────────────
 
     /// Insert a single key into the entry tree with associated tuple_id.
     fn insertKey(self: *GIN, key: []const u8, tuple_id: ItemPointer) !void {
+        std.debug.print("[GIN Insert] key ({d} bytes), tuple_id=({d},{d})\n", .{ key.len, tuple_id.page_id, tuple_id.tuple_offset });
+
         const root_frame = try self.fetchOrInitRootPage();
         defer self.pool.unpinPage(self.root_page_id, true);
 
         const entry_count = readEntryCount(root_frame.data);
+        std.debug.print("[GIN Insert] Current entry_count: {d}\n", .{entry_count});
 
         // Search for existing entry
         for (0..entry_count) |i| {
@@ -334,6 +369,7 @@ pub const GIN = struct {
             const cmp = try self.opclass.compare(self.allocator, entry_key, key);
             if (cmp == 0) {
                 // Key exists — append to posting list
+                std.debug.print("[GIN Insert] Key exists at entry {d}, appending to posting list\n", .{i});
                 try self.appendToPostingList(root_frame.data, i, tuple_id);
                 root_frame.markDirty();
                 return;
@@ -341,8 +377,10 @@ pub const GIN = struct {
         }
 
         // Key doesn't exist — insert new entry
+        std.debug.print("[GIN Insert] Key not found, inserting new entry\n", .{});
         try self.insertNewEntry(root_frame.data, key, tuple_id);
         root_frame.markDirty();
+        std.debug.print("[GIN Insert] Insert complete, new entry_count: {d}\n", .{readEntryCount(root_frame.data)});
     }
 
     /// Delete a tuple_id from a key's posting list.
@@ -375,20 +413,29 @@ pub const GIN = struct {
         defer self.pool.unpinPage(self.root_page_id, false);
 
         const entry_count = readEntryCount(root_frame.data);
+        std.debug.print("[GIN Lookup] Searching for key ({d} bytes) in {d} entries\n", .{ key.len, entry_count });
 
         // Search for entry
         for (0..entry_count) |i| {
             const entry_key = try self.readEntryKey(root_frame.data, i);
             defer self.allocator.free(entry_key);
 
+            std.debug.print("[GIN Lookup]   Entry {d}: key ({d} bytes)\n", .{ i, entry_key.len });
+
             const cmp = try self.opclass.compare(self.allocator, entry_key, key);
+            std.debug.print("[GIN Lookup]   Compare result: {d}\n", .{cmp});
+
             if (cmp == 0) {
                 // Key found — return posting list
-                return try self.readPostingList(root_frame.data, i);
+                std.debug.print("[GIN Lookup] Key matched at entry {d}\n", .{i});
+                const posting_list = try self.readPostingList(root_frame.data, i);
+                std.debug.print("[GIN Lookup] Read {d} tuples from posting list\n", .{posting_list.len});
+                return posting_list;
             }
         }
 
         // Key not found — return empty list
+        std.debug.print("[GIN Lookup] Key not found, returning empty list\n", .{});
         return try self.allocator.alloc(ItemPointer, 0);
     }
 
@@ -934,6 +981,65 @@ test "GIN calculateMaxEntries scales with page size" {
     const small = calculateMaxEntries(512);
     const large = calculateMaxEntries(4096);
     try std.testing.expect(large > small);
+}
+
+test "GIN posting list encode/decode round-trip" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_posting_roundtrip.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Create a test entry with posting list
+    writeEntryCount(root_frame.data, 1);
+
+    // Original tuple IDs to encode
+    const test_tids = [_]ItemPointer{
+        .{ .page_id = 1, .tuple_offset = 0 },
+        .{ .page_id = 1, .tuple_offset = 5 },
+        .{ .page_id = 2, .tuple_offset = 3 },
+        .{ .page_id = 5, .tuple_offset = 10 },
+    };
+
+    // Insert the first tuple via insertNewEntry to set up the structure
+    const key = "test";
+    try gin.insertNewEntry(root_frame.data, key, test_tids[0]);
+
+    // Verify initial count
+    const posting_info_after_first = readPostingInfo(root_frame.data, 0);
+    const count_after_first = posting_info_after_first & 0x7FFFFFFF;
+    try std.testing.expectEqual(@as(u32, 1), count_after_first);
+
+    // Append remaining tuples
+    for (test_tids[1..]) |tid| {
+        try gin.appendToPostingList(root_frame.data, 0, tid);
+    }
+
+    // Verify final count
+    const posting_info_final = readPostingInfo(root_frame.data, 0);
+    const count_final = posting_info_final & 0x7FFFFFFF;
+    try std.testing.expectEqual(@as(u32, test_tids.len), count_final);
+
+    // Decode and verify
+    const decoded = try gin.readPostingList(root_frame.data, 0);
+    defer allocator.free(decoded);
+
+    try std.testing.expectEqual(test_tids.len, decoded.len);
+    for (test_tids, 0..) |expected, i| {
+        try std.testing.expectEqual(expected.page_id, decoded[i].page_id);
+        try std.testing.expectEqual(expected.tuple_offset, decoded[i].tuple_offset);
+    }
 }
 
 test "GIN calculateMaxEntries handles minimum page size" {
