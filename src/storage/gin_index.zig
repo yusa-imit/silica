@@ -412,11 +412,13 @@ pub const GIN = struct {
         return key;
     }
 
-    /// Calculate offset where keys start (grows backwards from page end).
+    /// Calculate offset where keys start.
+    /// Layout: [GIN_HEADER][entry_headers...][offset_ptrs...][keys...][posting_data←]
     fn calculateKeysBaseOffset(self: *GIN, page: []u8) usize {
         _ = self;
         const entry_count = readEntryCount(page);
-        return GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+        // Keys start AFTER headers AND offset pointers
+        return GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
     }
 
     /// Read posting list for entry at given index.
@@ -601,8 +603,9 @@ pub const GIN = struct {
 
         // Calculate where to write offset pointer and data
         // Layout: [headers...][offset_ptrs...][variable data area grows from end]
-        // Offset pointers come AFTER all headers, so we need to account for the new header we just wrote
-        const data_offset_ptr = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+        // Offset pointers: positioned at index `entry_count` (0-based, so current entry before count increment)
+        // FIX: Use `entry_count` not `entry_count + 1` — we're writing the pointer for the CURRENT entry
+        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
 
         // Allocate posting data from end of page
         // Use fixed 128-byte blocks per entry (matching INLINE_POSTING_LIST_MAX_SIZE)
@@ -620,8 +623,9 @@ pub const GIN = struct {
         // Write offset pointer to posting data
         std.mem.writeInt(u32, page[data_offset_ptr..][0..4], @intCast(posting_data_offset), .little);
 
-        // Write the key data (keys grow from after the offset pointers)
-        const keys_base_offset = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
+        // Write the key data (keys start after headers AND offset pointers)
+        // After adding this entry: (entry_count + 1) headers and (entry_count + 1) offset pointers
+        const keys_base_offset = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + ((entry_count + 1) * 4);
         var key_offset = keys_base_offset;
         // Skip past previous keys
         for (0..entry_count) |i| {
@@ -991,13 +995,80 @@ test "GIN isInlinePostingList detects posting tree flag" {
 // ────────────────────────────────────────────────────────────────────
 
 test "GIN insert single value with single key" {
-    // TODO: fix search returning empty results - GIN needs architectural redesign
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_gin_insert_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Array with single element: [1, 42]
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little);
+    std.mem.writeInt(u32, col_value[4..8], 42, .little);
+
+    const tuple_id = ItemPointer{ .page_id = 100, .tuple_offset = 5 };
+
+    // Should succeed
+    try gin.insert(&col_value, tuple_id);
+
+    // Verify the value was inserted by searching for it
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 42, .little);
+
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tuple_id.page_id, result[0].page_id);
+    try std.testing.expectEqual(tuple_id.tuple_offset, result[0].tuple_offset);
 }
 
 test "GIN insert single value with multiple keys" {
-    // TODO: GIN architectural issues - needs redesign
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_gin_insert_multi_key.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pager, root_id, opclass);
+
+    // Array [3, 1, 2, 3]
+    var col_value: [16]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 3, .little);
+    std.mem.writeInt(u32, col_value[4..8], 1, .little);
+    std.mem.writeInt(u32, col_value[8..12], 2, .little);
+    std.mem.writeInt(u32, col_value[12..16], 3, .little);
+
+    const tuple_id = ItemPointer{ .page_id = 200, .tuple_offset = 10 };
+
+    // Should succeed
+    try gin.insert(&col_value, tuple_id);
+
+    // Verify the value was inserted by searching for key 1
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tuple_id.page_id, result[0].page_id);
 }
 
 test "GIN delete removes tuple from posting list" {
