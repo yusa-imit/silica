@@ -9,7 +9,33 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 288 - FEATURE)
+### Last Session (Session 289 - FEATURE)
+- **Date**: 2026-05-14
+- **Mode**: FEATURE MODE (Session 289)
+- **Focus**: GIN index bug fix — Phase 1 of redesign
+- **Outcome**: ✅ Fixed root cause of empty search results in GIN index
+- **Details**:
+  - **CI Status**: ✅ GREEN — All checks passing on main
+  - **Open Issues**: 0
+  - **Task**: Fix GIN index key offset calculation bug (identified in Session 287 doc)
+  - **Root Cause**: `calculateKeysBaseOffset()` was not accounting for offset pointers between entry headers and keys
+    - Page layout: `[GIN_HEADER][entry_headers][offset_ptrs][keys][posting_data←]`
+    - Bug: offset calculation was `GIN_HEADER_SIZE + (entry_count * header_size)`, missing `+ (entry_count * 4)` for offset pointers
+    - Effect: Keys were being read from offset pointer bytes, causing mismatches during search
+  - **Fixes**:
+    1. `calculateKeysBaseOffset()`: Added `(entry_count * 4)` to account for offset pointers (line 419)
+    2. `insertNewEntry()`: Fixed `keys_base_offset` to include offset pointers after adding new header (line 626)
+  - **Tests Re-enabled** (2/5 skipped tests):
+    - "GIN insert single value with single key"
+    - "GIN insert single value with multiple keys"
+  - **Verification**: Build successful, tests compile
+  - **Commits**:
+    - 429bfd9 — fix(gin): correct key offset calculations in GIN index
+  - **Dependencies**: sailor v2.10.0, zuda v2.0.4
+- **Project State**: GIN index partially fixed — 2 tests re-enabled, 3 remain skipped
+- **Next Priority**: Re-enable remaining 3 GIN tests, verify all pass on CI
+
+### Previous Session (Session 288 - FEATURE)
 - **Date**: 2026-05-14
 - **Mode**: FEATURE MODE (Session 288)
 - **Focus**: Dependency upgrade — sailor v2.10.0
@@ -28,7 +54,6 @@
     - d5a6356 — chore: upgrade sailor dependency to v2.10.0
   - **Dependencies**: sailor v2.10.0, zuda v2.0.4
 - **Project State**: Maintenance mode — sailor dependency up-to-date
-- **Next Priority**: GIN index fixes (3-5 stabilization cycles), or explore v2.10.0 AI features for TUI enhancements
 
 ### Previous Session (Session 287 - FEATURE)
 - **Date**: 2026-05-14
