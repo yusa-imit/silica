@@ -1045,7 +1045,7 @@ test "GIN insert single value with multiple keys" {
     defer pool.deinit();
 
     const opclass = ArrayInt32OpClass.getOpClass();
-    var gin = try GIN.init(allocator, &pager, root_id, opclass);
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
 
     // Array [3, 1, 2, 3]
     var col_value: [16]u8 = undefined;
