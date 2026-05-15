@@ -650,9 +650,10 @@ pub const GIN = struct {
 
         // Calculate where to write offset pointer and data
         // Layout: [headers...][offset_ptrs...][variable data area grows from end]
-        // Offset pointers: positioned at index `entry_count` (0-based, so current entry before count increment)
-        // FIX: Use `entry_count` not `entry_count + 1` — we're writing the pointer for the CURRENT entry
-        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+        // Offset pointers come AFTER all headers (including the one we just wrote)
+        // After writing entry N: we have (N+1) headers, so offset pointers start at GIN_HEADER_SIZE + (N+1) * GIN_ENTRY_HEADER_SIZE
+        // The pointer for entry N is at offset: headers_end + N * 4
+        const data_offset_ptr = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
 
         // Allocate posting data from end of page
         // Use fixed 128-byte blocks per entry (matching INLINE_POSTING_LIST_MAX_SIZE)
