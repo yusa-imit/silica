@@ -1002,7 +1002,7 @@ test "GIN posting list encode/decode round-trip" {
     defer pool.unpinPage(root_id, true);
 
     // Create a test entry with posting list
-    writeEntryCount(root_frame.data, 1);
+    writeEntryCount(root_frame.data, 0);
 
     // Original tuple IDs to encode
     const test_tids = [_]ItemPointer{
