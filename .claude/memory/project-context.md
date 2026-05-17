@@ -9,15 +9,35 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 295 - STABILIZATION)
+### Last Session (Session 296 - FEATURE MODE)
 - **Date**: 2026-05-17
-- **Mode**: STABILIZATION MODE (Session 295)
-- **Focus**: Test quality improvement — error path coverage for FSM module
-- **Outcome**: ✅ Added 7 comprehensive error/stress tests to FSM, addressing gap in error path coverage
+- **Mode**: FEATURE MODE (Session 296)
+- **Focus**: CI fix — handled PageHeader.deserialize compilation error
+- **Outcome**: ✅ Fixed CI compilation failure, migrated to sailor v2.10.1
 - **Details**:
-  - **CI Status**: ✅ GREEN on main (latest run succeeded), new commit pushed for verification
-  - **Open Issues**: 0
-  - **Task**: Review test quality across storage modules, identify and fix weak tests
+  - **CI Status**: ❌ RED → ✅ Fixing (in_progress) — fsm.zig compilation error
+  - **Issue**: fsm.zig test called non-existent pager.fetchPage() and pager.unpinPage()
+  - **Root Cause**: Test used BufferPool API on Pager object; needed Pager API (readPage/writePage)
+  - **Solution**:
+    1. Fixed fsm.zig test to use correct Pager API (allocPageBuf, writePage, freePageBuf)
+    2. Changed PageHeader.deserialize() to return !PageHeader (error union) to handle corrupted data
+    3. Updated 42+ call sites across 8 files to propagate errors with `try`
+  - **Files Modified**:
+    - src/storage/page.zig: Changed deserialize signature + readPage
+    - src/storage/fsm.zig: Fixed test API usage
+    - src/storage/buffer_pool.zig: Updated getHeader() return type
+    - src/storage/btree.zig: 37 call sites updated
+    - src/storage/overflow.zig: 2 call sites
+    - src/tx/wal.zig, vacuum.zig, wal_fuzz.zig: Updated call sites
+  - **Commits**:
+    - a5aebf7 — fix: handle invalid page types in PageHeader.deserialize
+    - 22b30e5 — chore: migrate to sailor v2.10.1 (patch)
+  - **Issues Closed**: #51 (sailor v2.10.1 migration)
+  - **Observations**:
+    - PageHeader.deserialize now properly handles invalid enum values (0xFF from corrupted pages)
+    - Returns error.InvalidPageType instead of panic on @enumFromInt
+    - Test suite can now verify error handling for corrupted data
+    - sailor v2.10.1 is test-only patch with zero API changes
   - **Analysis Results**:
     - Scanned all storage modules for test coverage
     - FSM had 21 tests but 0 error checking (gap identified)
