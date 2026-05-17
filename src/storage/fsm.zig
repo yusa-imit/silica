@@ -278,7 +278,7 @@ pub const FreeSpaceMap = struct {
 
         var current_page = fsm_head;
         while (current_page != 0) {
-            if (current_page >= pager.page_count) break;
+            if (current_page >= pager.page_count) return error.InvalidFormat;
 
             try pager.readPage(current_page, buf);
 
@@ -789,8 +789,9 @@ test "FSM update massive number of pages for memory stress" {
     defer fsm.deinit();
 
     // Insert many pages to stress test the hash map
+    // Use (i % 4000) + 20 to avoid category 0 (which removes entries)
     for (0..10000) |i| {
-        try fsm.update(@intCast(i), @intCast((i % 4000) + 1));
+        try fsm.update(@intCast(i), @intCast((i % 4000) + 20));
     }
 
     try std.testing.expectEqual(@as(u32, 10000), fsm.trackedPages());
