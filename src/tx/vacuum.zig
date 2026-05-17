@@ -328,7 +328,7 @@ fn updateFsmForTree(pool: *BufferPool, tree: *BTree, fsm: *FreeSpaceMap) !void {
     while (true) {
         const frame = try pool.fetchPage(page_id);
         defer pool.unpinPage(page_id, false);
-        const header = page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
+        const header = try page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
 
         if (header.page_type == .leaf) {
             break;
@@ -348,7 +348,7 @@ fn updateFsmForTree(pool: *BufferPool, tree: *BTree, fsm: *FreeSpaceMap) !void {
     while (page_id != 0) {
         const frame = try pool.fetchPage(page_id);
         defer pool.unpinPage(page_id, false);
-        const header = page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
+        const header = try page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
 
         if (header.page_type != .leaf) break;
 

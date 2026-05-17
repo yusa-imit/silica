@@ -745,7 +745,7 @@ test "Wal checkpoint writes to main DB" {
     try testing.expectEqualStrings(marker, read_buf[PAGE_HEADER_SIZE..][0..marker.len]);
 
     // Verify cell_count survived
-    const restored_hdr = PageHeader.deserialize(read_buf[0..PAGE_HEADER_SIZE]);
+    const restored_hdr = try PageHeader.deserialize(read_buf[0..PAGE_HEADER_SIZE]);
     try testing.expectEqual(@as(u16, 7), restored_hdr.cell_count);
 
     pager.deinit();

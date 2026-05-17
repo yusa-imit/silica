@@ -174,7 +174,7 @@ pub fn readOverflowValue(
         defer pool.unpinPage(current_page, false);
 
         // Verify page type
-        const hdr = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const hdr = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         if (hdr.page_type != .overflow) {
             return OverflowError.CorruptOverflowChain;
         }
@@ -213,7 +213,7 @@ pub fn freeOverflowChain(
 
     while (current_page != 0) {
         const frame = try pool.fetchPage(current_page);
-        const hdr = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const hdr = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
         if (hdr.page_type != .overflow) {
             pool.unpinPage(current_page, false);

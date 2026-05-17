@@ -41,8 +41,8 @@ pub const BufferFrame = struct {
     }
 
     /// Get the page header from this frame's data.
-    pub fn getHeader(self: *const BufferFrame) PageHeader {
-        return PageHeader.deserialize(self.data[0..PAGE_HEADER_SIZE]);
+    pub fn getHeader(self: *const BufferFrame) !PageHeader {
+        return try PageHeader.deserialize(self.data[0..PAGE_HEADER_SIZE]);
     }
 };
 
@@ -297,7 +297,7 @@ test "BufferPool basic fetch and unpin" {
     try std.testing.expect(!frame.is_dirty);
 
     // Verify data came through
-    const fhdr = frame.getHeader();
+    const fhdr = try frame.getHeader();
     try std.testing.expectEqual(@as(u16, 42), fhdr.cell_count);
 
     // Unpin
@@ -531,7 +531,7 @@ test "BufferPool fetchNewPage" {
     const raw = try pager.allocPageBuf();
     defer pager.freePageBuf(raw);
     try pager.readPage(pid, raw);
-    const rhdr = PageHeader.deserialize(raw[0..PAGE_HEADER_SIZE]);
+    const rhdr = try PageHeader.deserialize(raw[0..PAGE_HEADER_SIZE]);
     try std.testing.expectEqual(page_mod.PageType.leaf, rhdr.page_type);
 }
 

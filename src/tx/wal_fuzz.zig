@@ -1050,7 +1050,7 @@ test "fuzz: WAL repeated page_id in same transaction (later frame wins)" {
         try std.testing.expect(found);
 
         // Verify it's the last version by checking cell_count in header
-        const restored_hdr = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+        const restored_hdr = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
         const expected_cell_count = last_seed % 100;
         try std.testing.expectEqual(@as(u16, @intCast(expected_cell_count)), restored_hdr.cell_count);
 

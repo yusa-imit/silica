@@ -282,7 +282,7 @@ pub const FreeSpaceMap = struct {
 
             try pager.readPage(current_page, buf);
 
-            const hdr = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+            const hdr = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
             if (hdr.page_type != .fsm) break;
 
             const entry_count = std.mem.readInt(u32, buf[PAGE_HEADER_SIZE..][0..4], .little);
@@ -748,11 +748,12 @@ test "FSM loadFromDisk with corrupted data" {
 
     // Allocate a page and write garbage
     const page_id = try pager.allocPage();
-    const frame = try pager.fetchPage(page_id);
-    defer pager.unpinPage(page_id);
+    const buf = try pager.allocPageBuf();
+    defer pager.freePageBuf(buf);
 
     // Write invalid magic number
-    @memset(frame.data, 0xFF);
+    @memset(buf, 0xFF);
+    try pager.writePage(page_id, buf);
 
     var fsm = FreeSpaceMap.init(allocator, 4096);
     defer fsm.deinit();

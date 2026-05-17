@@ -186,7 +186,7 @@ pub const BTree = struct {
             const frame = try self.pool.fetchPage(page_id);
             defer self.pool.unpinPage(page_id, false);
 
-            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+            const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
             switch (header.page_type) {
                 .internal => {
@@ -265,7 +265,7 @@ pub const BTree = struct {
     /// Recursive insert. Returns split info if the node was split.
     fn insertIntoNode(self: *BTree, page_id: u32, key: []const u8, value: []const u8) InsertError!InsertResult {
         const frame = try self.pool.fetchPage(page_id);
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
         switch (header.page_type) {
             .leaf => {
@@ -283,7 +283,7 @@ pub const BTree = struct {
 
     fn insertIntoLeaf(self: *BTree, frame: *BufferFrame, page_id: u32, key: []const u8, value: []const u8) InsertError!InsertResult {
         const page_size = self.pager.page_size;
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const cell_count = header.cell_count;
 
         // Find insertion position via binary search
@@ -316,7 +316,7 @@ pub const BTree = struct {
 
     fn insertIntoInternal(self: *BTree, frame: *BufferFrame, page_id: u32, key: []const u8, value: []const u8) InsertError!InsertResult {
         const page_size = self.pager.page_size;
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const cell_count = header.cell_count;
 
         // Find which child to descend into
@@ -330,7 +330,7 @@ pub const BTree = struct {
             defer self.pager.allocator.free(split.promoted_key);
             // Child was split — insert promoted key into this internal node
             const re_frame = try self.pool.fetchPage(page_id);
-            const re_header = PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
+            const re_header = try PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
             const re_count = re_header.cell_count;
 
             const insert_pos = internalSearchPosition(re_frame.data, page_size, re_count, split.promoted_key);
@@ -367,7 +367,7 @@ pub const BTree = struct {
         // Check if root needs shrinking: internal root with 0 cells means
         // it has only the right_child pointer — make that child the new root.
         const frame = try self.pool.fetchPage(self.root_page_id);
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         if (header.page_type == .internal and header.cell_count == 0) {
             const new_root = getRightChild(frame.data);
             self.pool.unpinPage(self.root_page_id, false);
@@ -386,7 +386,7 @@ pub const BTree = struct {
 
     fn deleteFromNode(self: *BTree, page_id: u32, key: []const u8) anyerror!DeleteResult {
         const frame = try self.pool.fetchPage(page_id);
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
         switch (header.page_type) {
             .leaf => {
@@ -404,7 +404,7 @@ pub const BTree = struct {
                     try overflow_mod.freeOverflowChain(self.pool, self.pager, overflow_page);
                     // Re-fetch page after overflow free
                     const re_frame = try self.pool.fetchPage(page_id);
-                    const re_header = PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
+                    const re_header = try PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
                     deleteLeafCell(re_frame.data, self.pager.page_size, re_header.cell_count, pos.index);
                     const new_count = re_header.cell_count - 1;
                     const underflow = isLeafUnderflow(re_frame.data, self.pager.page_size, new_count);
@@ -429,7 +429,7 @@ pub const BTree = struct {
 
     fn deleteFromInternal(self: *BTree, frame: *BufferFrame, page_id: u32, key: []const u8) anyerror!DeleteResult {
         const page_size = self.pager.page_size;
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const cell_count = header.cell_count;
 
         // Find which child to descend into and remember the child index
@@ -448,7 +448,7 @@ pub const BTree = struct {
 
         // Re-check if this internal node itself is underflowing
         const re_frame = try self.pool.fetchPage(page_id);
-        const re_header = PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
+        const re_header = try PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
         const internal_underflow = isInternalUnderflow(re_frame.data, page_size, re_header.cell_count);
         self.pool.unpinPage(page_id, false);
 
@@ -488,7 +488,7 @@ pub const BTree = struct {
 
         // Re-fetch parent to get current state
         const parent_frame = try self.pool.fetchPage(parent_page_id);
-        const parent_header = PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
+        const parent_header = try PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
         const parent_count = parent_header.cell_count;
 
         if (parent_count == 0) {
@@ -499,7 +499,7 @@ pub const BTree = struct {
 
         // Determine the child's page type
         const child_frame = try self.pool.fetchPage(child_page_id);
-        const child_header = PageHeader.deserialize(child_frame.data[0..PAGE_HEADER_SIZE]);
+        const child_header = try PageHeader.deserialize(child_frame.data[0..PAGE_HEADER_SIZE]);
         const child_type = child_header.page_type;
         self.pool.unpinPage(child_page_id, false);
 
@@ -623,11 +623,11 @@ pub const BTree = struct {
         const page_size = self.pager.page_size;
 
         const left_frame = try self.pool.fetchPage(left_id);
-        const left_header = PageHeader.deserialize(left_frame.data[0..PAGE_HEADER_SIZE]);
+        const left_header = try PageHeader.deserialize(left_frame.data[0..PAGE_HEADER_SIZE]);
         const left_count = left_header.cell_count;
 
         const right_frame = try self.pool.fetchPage(right_id);
-        const right_header = PageHeader.deserialize(right_frame.data[0..PAGE_HEADER_SIZE]);
+        const right_header = try PageHeader.deserialize(right_frame.data[0..PAGE_HEADER_SIZE]);
         const right_count = right_header.cell_count;
 
         // Calculate total data size needed
@@ -642,7 +642,7 @@ pub const BTree = struct {
         }
 
         // Cannot merge — redistribute cells between the two leaves
-        self.redistributeLeaves(left_frame, right_frame, left_id, right_id, left_count, right_count, parent_page_id, sep_index);
+        try self.redistributeLeaves(left_frame, right_frame, left_id, right_id, left_count, right_count, parent_page_id, sep_index);
         return true;
     }
 
@@ -725,7 +725,7 @@ pub const BTree = struct {
 
         // Remove separator from parent and update child pointer
         const parent_frame = try self.pool.fetchPage(parent_page_id);
-        const parent_header = PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
+        const parent_header = try PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
 
         // Delete separator at sep_index. After deletion, the child that was to the right
         // of the separator (right_id) is gone, so we need to ensure left_id stays in position.
@@ -763,7 +763,7 @@ pub const BTree = struct {
         right_count: u16,
         parent_page_id: u32,
         sep_index: u16,
-    ) void {
+    ) anyerror!void {
         const page_size = self.pager.page_size;
         const total: u32 = @as(u32, left_count) + @as(u32, right_count);
 
@@ -838,7 +838,7 @@ pub const BTree = struct {
 
         // Update parent's separator key
         const parent_frame = self.pool.fetchPage(parent_page_id) catch return;
-        const parent_header = PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
+        const parent_header = try PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
 
         // Replace the separator: delete old + insert new at same position
         const old_cell = readInternalCell(parent_frame.data, page_size, sep_index);
@@ -865,11 +865,11 @@ pub const BTree = struct {
         const page_size = self.pager.page_size;
 
         const left_frame = try self.pool.fetchPage(left_id);
-        const left_header = PageHeader.deserialize(left_frame.data[0..PAGE_HEADER_SIZE]);
+        const left_header = try PageHeader.deserialize(left_frame.data[0..PAGE_HEADER_SIZE]);
         const left_count = left_header.cell_count;
 
         const right_frame = try self.pool.fetchPage(right_id);
-        const right_header = PageHeader.deserialize(right_frame.data[0..PAGE_HEADER_SIZE]);
+        const right_header = try PageHeader.deserialize(right_frame.data[0..PAGE_HEADER_SIZE]);
         const right_count = right_header.cell_count;
 
         // Read separator key from parent
@@ -980,7 +980,7 @@ pub const BTree = struct {
 
         // Remove separator from parent
         const parent_frame = try self.pool.fetchPage(parent_page_id);
-        const parent_header = PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
+        const parent_header = try PageHeader.deserialize(parent_frame.data[0..PAGE_HEADER_SIZE]);
 
         deleteInternalCell(parent_frame.data, page_size, parent_header.cell_count, sep_index);
 
@@ -1001,7 +1001,7 @@ pub const BTree = struct {
 
     fn splitLeaf(self: *BTree, frame: *BufferFrame, page_id: u32, insert_pos: u16, key: []const u8, value: []const u8) InsertError!SplitInfo {
         const page_size = self.pager.page_size;
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const old_count = header.cell_count;
 
         // Save old page data — cell refs point into frame.data which we'll reinit
@@ -1087,7 +1087,7 @@ pub const BTree = struct {
     fn splitInternal(self: *BTree, frame: *BufferFrame, page_id: u32, insert_pos: u16, left_child: u32, right_child: u32, key: []const u8) InsertError!SplitInfo {
         _ = right_child; // already applied via updateChildPointer before this call
         const page_size = self.pager.page_size;
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const old_count = header.cell_count;
 
         // Save page data — cell key refs point into frame.data
@@ -1204,7 +1204,7 @@ pub const Cursor = struct {
         while (true) {
             const frame = try self.tree.pool.fetchPage(page_id);
             defer self.tree.pool.unpinPage(page_id, false);
-            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+            const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
             if (header.page_type == .leaf) {
                 self.page_id = page_id;
@@ -1234,7 +1234,7 @@ pub const Cursor = struct {
         while (true) {
             const frame = try self.tree.pool.fetchPage(page_id);
             defer self.tree.pool.unpinPage(page_id, false);
-            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+            const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
             if (header.page_type == .leaf) {
                 self.page_id = page_id;
@@ -1260,7 +1260,7 @@ pub const Cursor = struct {
         while (true) {
             const frame = try self.tree.pool.fetchPage(page_id);
             defer self.tree.pool.unpinPage(page_id, false);
-            const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+            const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
             if (header.page_type == .leaf) {
                 const pos = leafSearchPosition(frame.data, page_size, header.cell_count, key);
@@ -1275,7 +1275,7 @@ pub const Cursor = struct {
                     if (next_id != 0) {
                         const next_frame = try self.tree.pool.fetchPage(next_id);
                         defer self.tree.pool.unpinPage(next_id, false);
-                        const next_header = PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
+                        const next_header = try PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
                         self.page_id = next_id;
                         self.cell_index = 0;
                         self.cell_count = next_header.cell_count;
@@ -1320,7 +1320,7 @@ pub const Cursor = struct {
             if (next_id != 0) {
                 const next_frame = try self.tree.pool.fetchPage(next_id);
                 defer self.tree.pool.unpinPage(next_id, false);
-                const next_header = PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
+                const next_header = try PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
                 self.page_id = next_id;
                 self.cell_index = 0;
                 self.cell_count = next_header.cell_count;
@@ -1361,7 +1361,7 @@ pub const Cursor = struct {
             if (prev_id != 0) {
                 const prev_frame = try self.tree.pool.fetchPage(prev_id);
                 defer self.tree.pool.unpinPage(prev_id, false);
-                const prev_header = PageHeader.deserialize(prev_frame.data[0..PAGE_HEADER_SIZE]);
+                const prev_header = try PageHeader.deserialize(prev_frame.data[0..PAGE_HEADER_SIZE]);
                 self.page_id = prev_id;
                 self.cell_count = prev_header.cell_count;
                 self.cell_index = if (prev_header.cell_count > 0) prev_header.cell_count - 1 else 0;
@@ -1852,14 +1852,14 @@ test "leaf page init and basic cell operations" {
     var buf: [4096]u8 = undefined;
     initLeafPage(&buf, 4096, 5);
 
-    const header = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+    const header = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
     try std.testing.expectEqual(PageType.leaf, header.page_type);
     try std.testing.expectEqual(@as(u32, 5), header.page_id);
     try std.testing.expectEqual(@as(u16, 0), header.cell_count);
 
     // Insert a key-value pair
     try insertLeafCell(&buf, 4096, 0, 0, "hello", "world");
-    const h2 = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+    const h2 = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
     try std.testing.expectEqual(@as(u16, 1), h2.cell_count);
 
     const cell = readLeafCell(&buf, 4096, 0);
@@ -1947,7 +1947,7 @@ test "leaf page delete cell" {
     // Delete "banana" at position 1
     deleteLeafCell(&buf, 4096, 3, 1);
 
-    const h = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+    const h = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
     try std.testing.expectEqual(@as(u16, 2), h.cell_count);
 
     const c0 = readLeafCell(&buf, 4096, 0);
@@ -1973,7 +1973,7 @@ test "internal page init and cell operations" {
     var buf: [4096]u8 = undefined;
     initInternalPage(&buf, 4096, 10);
 
-    const header = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+    const header = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
     try std.testing.expectEqual(PageType.internal, header.page_type);
     try std.testing.expectEqual(@as(u32, 10), header.page_id);
     try std.testing.expectEqual(@as(u16, 0), header.cell_count);
@@ -1983,7 +1983,7 @@ test "internal page init and cell operations" {
 
     // Insert a cell: left_child=5, key="middle"
     try insertInternalCell(&buf, 4096, 0, 0, 5, "middle");
-    const h2 = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+    const h2 = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
     try std.testing.expectEqual(@as(u16, 1), h2.cell_count);
 
     const cell = readInternalCell(&buf, 4096, 0);
@@ -2398,7 +2398,7 @@ test "BTree leaf sibling chain after splits" {
         const frame = try pool.fetchPage(page_id);
         defer pool.unpinPage(page_id, false);
 
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         if (header.page_type == .leaf) {
             break;
         } else if (header.page_type == .internal) {
@@ -2429,7 +2429,7 @@ test "BTree leaf sibling chain after splits" {
         const frame = try pool.fetchPage(current_page_id);
         defer pool.unpinPage(current_page_id, false);
 
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         try std.testing.expect(header.page_type == .leaf);
 
         // Collect keys from this leaf
@@ -3017,7 +3017,7 @@ test "BTree leaf sibling chain intact after merges" {
         const frame = try pool.fetchPage(page_id);
         defer pool.unpinPage(page_id, false);
 
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         if (header.page_type == .leaf) break;
         if (header.page_type == .internal) {
             if (header.cell_count == 0) {
@@ -3040,7 +3040,7 @@ test "BTree leaf sibling chain intact after merges" {
     while (current_id != 0) {
         const frame = try pool.fetchPage(current_id);
         defer pool.unpinPage(current_id, false);
-        const header = PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
         for (0..header.cell_count) |j| {
             const cell = readLeafCell(frame.data, pager.page_size, @intCast(j));

@@ -69,10 +69,14 @@ pub const PageHeader = struct {
         std.mem.writeInt(u32, buf[12..16], self.checksum_value, .little);
     }
 
-    pub fn deserialize(buf: []const u8) PageHeader {
+    pub fn deserialize(buf: []const u8) !PageHeader {
         std.debug.assert(buf.len >= PAGE_HEADER_SIZE);
+        const page_type_raw = buf[0];
+        const page_type = std.meta.intToEnum(PageType, page_type_raw) catch {
+            return error.InvalidPageType;
+        };
         return .{
-            .page_type = @enumFromInt(buf[0]),
+            .page_type = page_type,
             .flags = buf[1],
             .cell_count = std.mem.readInt(u16, buf[2..4], .little),
             .page_id = std.mem.readInt(u32, buf[4..8], .little),
@@ -222,7 +226,7 @@ pub const Pager = struct {
         if (page_id == HEADER_PAGE_ID) return;
 
         // Verify checksum: computed over content after the page header
-        const header = PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
+        const header = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
         const content = buf[PAGE_HEADER_SIZE..self.page_size];
         if (!checksum.verify(content, header.checksum_value)) {
             return error.ChecksumMismatch;
@@ -375,7 +379,7 @@ test "PageHeader serialize/deserialize roundtrip" {
     var buf: [PAGE_HEADER_SIZE]u8 = undefined;
     header.serialize(&buf);
 
-    const restored = PageHeader.deserialize(&buf);
+    const restored = try PageHeader.deserialize(&buf);
     try std.testing.expectEqual(header.page_type, restored.page_type);
     try std.testing.expectEqual(header.flags, restored.flags);
     try std.testing.expectEqual(header.cell_count, restored.cell_count);
