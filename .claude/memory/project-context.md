@@ -9,7 +9,32 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 296 - FEATURE MODE)
+### Last Session (Session 297 - FEATURE MODE)
+- **Date**: 2026-05-18
+- **Mode**: FEATURE MODE (Session 297)
+- **Focus**: CI fix — FSM test failures
+- **Outcome**: ✅ Fixed 2 failing FSM tests, CI restored to green
+- **Details**:
+  - **CI Status**: ❌ RED → ✅ GREEN (2 FSM tests fixed)
+  - **Failures**:
+    1. `storage.fsm.test.FSM loadFromDisk with page beyond file bounds`
+    2. `storage.fsm.test.FSM update massive number of pages for memory stress`
+  - **Root Causes**:
+    1. loadFromDisk silently broke on out-of-bounds page_id instead of returning error
+    2. Memory stress test used (i % 4000) + 1, causing category 0 entries (which get removed)
+  - **Solutions**:
+    1. Changed `if (current_page >= pager.page_count) break;` to `return error.InvalidFormat;`
+    2. Changed test to use `(i % 4000) + 20` to avoid category 0 (free_bytes < 16 → category 0)
+  - **Technical Details**:
+    - FSM.bytesToCategory() uses formula: (free_bytes * 255) / max_usable
+    - For page_size=4096, max_usable=4072, threshold is ~16 bytes for category 1
+    - Category 0 means full page, triggers entry removal to save memory (FSM.update line 82-83)
+  - **Files Modified**: src/storage/fsm.zig (2 lines changed)
+  - **Commit**: 9e5d345 — fix(fsm): handle page bounds correctly and avoid category 0 in stress test
+  - **Tests**: 2836/2871 passed, 33 skipped, 0 failed (CI green)
+- **Project State**: All tests passing, CI green, v1.0.1 stable
+
+### Previous Session (Session 296 - FEATURE MODE)
 - **Date**: 2026-05-17
 - **Mode**: FEATURE MODE (Session 296)
 - **Focus**: CI fix — handled PageHeader.deserialize compilation error
