@@ -272,13 +272,14 @@ pub const FreeSpaceMap = struct {
     /// Load FSM entries from disk pages starting at `fsm_head`.
     pub fn loadFromDisk(self: *FreeSpaceMap, pager: *page_mod.Pager, fsm_head: u32) !void {
         if (fsm_head == 0) return;
+        if (fsm_head >= pager.page_count) return; // Invalid head → no-op
 
         var buf = try pager.allocPageBuf();
         defer pager.freePageBuf(buf);
 
         var current_page = fsm_head;
         while (current_page != 0) {
-            if (current_page >= pager.page_count) return error.InvalidFormat;
+            if (current_page >= pager.page_count) return; // Invalid chain → stop gracefully
 
             try pager.readPage(current_page, buf);
 
