@@ -780,9 +780,9 @@ test "FSM loadFromDisk with page beyond file bounds" {
     var pager = try page_mod.Pager.init(std.testing.allocator, path, .{});
     defer pager.deinit();
 
-    // Try to load from a page ID that doesn't exist (way beyond bounds)
-    const result = fsm.loadFromDisk(&pager, 99999);
-    try std.testing.expect(std.meta.isError(result));
+    // Page beyond bounds → no-op (graceful handling of corrupt metadata)
+    try fsm.loadFromDisk(&pager, 99999);
+    try std.testing.expectEqual(@as(u32, 0), fsm.trackedPages());
 }
 
 test "FSM update massive number of pages for memory stress" {
