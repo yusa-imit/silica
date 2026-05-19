@@ -153,7 +153,10 @@ pub fn search(self: *GinIndex, query_keys: []const []const u8) ![]const ItemPoin
 **Option C (Incremental Redesign)** is recommended:
 
 1. **Immediate**: Add diagnostic logging to existing code (Step 1-3 above)
-2. **Phase 1**: Replace varint delta encoding with fixed `u64` tuple IDs
+2. **Phase 1**: ✅ **COMPLETE** (Session 302) — Replace varint delta encoding with fixed `u64` tuple IDs
+   - Commit: 3659a1f
+   - Format changed from `[tid0 u64][delta1 varint][delta2 varint]...` to `[tid0 u64][tid1 u64][tid2 u64]...`
+   - MAX_INLINE_TUPLES reduced from 1000 to 16 (128 bytes / 8 bytes per tuple)
 3. **Phase 2**: Write unit tests for each GIN function (currently only integration tests exist)
 4. **Phase 3**: Re-enable skipped tests one-by-one, fixing issues as they arise
 5. **Phase 4**: Optimize posting list with varint deltas (optional, for v1.1)
