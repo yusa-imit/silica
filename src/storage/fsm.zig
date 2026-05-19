@@ -759,15 +759,9 @@ test "FSM loadFromDisk with corrupted data" {
     var fsm = FreeSpaceMap.init(allocator, 4096);
     defer fsm.deinit();
 
-    // Loading should fail or return gracefully
+    // Loading corrupted data with invalid page type (0xFF) should return InvalidPageType
     const result = fsm.loadFromDisk(&pager, page_id);
-    // The implementation might return error or handle gracefully
-    // Check that it doesn't crash
-    _ = result catch |err| {
-        // Expected error path
-        try std.testing.expect(err == error.InvalidFormat or err == error.CorruptData or true);
-        return;
-    };
+    try std.testing.expectError(error.InvalidPageType, result);
 }
 
 test "FSM loadFromDisk with page beyond file bounds" {
