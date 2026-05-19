@@ -17,8 +17,9 @@
 //! Page layout for entry tree leaf:
 //!   [PageHeader 16B][entry_count u16][reserved 2B][entry_0_key_size u16][entry_0_posting_info u32]...[keys←]
 //!   posting_info encoding:
-//!     If high bit = 0: inline posting list (lower 31 bits = first tuple_id, followed by varint-encoded deltas)
+//!     If high bit = 0: inline posting list (lower 31 bits = tuple_count, posting data = fixed u64 tuple IDs)
 //!     If high bit = 1: posting tree root page (lower 31 bits = page_id)
+//!   Phase 1 simplification: posting lists use fixed u64 tuple IDs (not varint deltas) for correctness
 //!
 //! NOT IMPLEMENTED (deferred):
 //!   - Pending list optimization (fast bulk insert)
@@ -42,8 +43,8 @@ const PageType = page_mod.PageType;
 
 const GIN_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // page_type + entry_count + reserved
 const GIN_ENTRY_HEADER_SIZE: u32 = 2 + 4; // key_size(u16) + posting_info(u32)
-const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128; // Bytes before switching to posting tree
-const MAX_INLINE_TUPLES: u32 = 1000; // Sanity limit to prevent infinite loops on corrupted data
+const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128; // Bytes before switching to posting tree (128 bytes = 16 u64 tuple IDs)
+const MAX_INLINE_TUPLES: u32 = 16; // With fixed u64 encoding: 128 bytes / 8 bytes per tuple = 16 tuples max
 
 /// ItemPointer — (page_id, tuple_offset) uniquely identifying a row.
 pub const ItemPointer = struct {
@@ -499,9 +500,9 @@ pub const GIN = struct {
         const list = try self.allocator.alloc(ItemPointer, tuple_count);
         errdefer self.allocator.free(list);
 
-        // Posting list data is stored in variable-length area at end of page
+        // Posting list data is stored in fixed-size blocks at end of page
         // Format: [offset_to_data u32] stored after entry headers, then actual data
-        // Data layout: [first_tid u64][delta1 varint][delta2 varint]...
+        // Data layout (Phase 1): [tid0 u64][tid1 u64][tid2 u64]... (fixed u64, no varint deltas)
 
         // Calculate offset to posting data pointer
         const entry_count = readEntryCount(page);
@@ -520,23 +521,17 @@ pub const GIN = struct {
             return list;
         }
 
-        // Read first tuple ID (absolute value)
-        const first_tid = std.mem.readInt(u64, page[data_offset..][0..8], .little);
-        list[0] = ItemPointer.fromU64(first_tid);
-
-        // Read delta-encoded remaining tuple IDs
-        var offset: usize = data_offset + 8;
-        for (1..tuple_count) |i| {
-            const delta_result = varint.decode(page[offset..]) catch {
-                // Corrupted data or not written yet
+        // Phase 1 simplification: Read fixed u64 tuple IDs (no varint deltas)
+        // Format: [tid0 u64][tid1 u64][tid2 u64]...
+        for (0..tuple_count) |i| {
+            const tid_offset = data_offset + (i * 8);
+            if (tid_offset + 8 > page.len) {
+                // Not enough space or corrupted data
                 @memset(std.mem.sliceAsBytes(list[i..]), 0);
                 break;
-            };
-            const prev_tid = list[i - 1].toU64();
-            list[i] = ItemPointer.fromU64(prev_tid + delta_result.value);
-            offset += delta_result.bytes_read;
-
-            if (offset >= page.len) break;
+            }
+            const tid = std.mem.readInt(u64, page[tid_offset..][0..8], .little);
+            list[i] = ItemPointer.fromU64(tid);
         }
 
         return list;
@@ -573,52 +568,19 @@ pub const GIN = struct {
             return error.InvalidOffset;
         }
 
+        // Phase 1 simplification: append fixed u64 tuple ID (no varint deltas)
         const new_tid = tuple_id.toU64();
 
-        // Read last tuple ID to compute delta
-        const last_tid = blk: {
-            const first_tid = std.mem.readInt(u64, page[data_offset..][0..8], .little);
-            if (current_count == 1) break :blk first_tid;
-
-            // Scan through deltas to find last
-            var offset: usize = data_offset + 8;
-            var tid = first_tid;
-            for (1..current_count) |_| {
-                const result = varint.decode(page[offset..]) catch break :blk tid;
-                tid += result.value;
-                offset += result.bytes_read;
-                if (offset >= page.len) break;
-            }
-            break :blk tid;
-        };
-
-        // Compute delta and encode
-        if (new_tid <= last_tid) {
-            return error.PostingListNotSorted;
-        }
-        const delta = new_tid - last_tid;
-
-        var varint_buf: [10]u8 = undefined;
-        const varint_len = try varint.encode(delta, &varint_buf);
-
-        // Find append position (after last varint)
-        const append_pos = blk: {
-            var offset: usize = data_offset + 8;
-            for (1..current_count) |_| {
-                const result = varint.decode(page[offset..]) catch break :blk offset;
-                offset += result.bytes_read;
-                if (offset >= page.len) break;
-            }
-            break :blk offset;
-        };
+        // Calculate append position (after current_count tuple IDs)
+        const append_pos = data_offset + (current_count * 8);
 
         // Check space availability
-        if (append_pos + varint_len > page.len) {
+        if (append_pos + 8 > page.len) {
             return error.PageFull;
         }
 
-        // Write delta
-        @memcpy(page[append_pos..][0..varint_len], varint_buf[0..varint_len]);
+        // Write new tuple ID
+        std.mem.writeInt(u64, page[append_pos..][0..8], new_tid, .little);
 
         // Update posting_info count
         const new_count = current_count + 1;
@@ -664,7 +626,8 @@ pub const GIN = struct {
             return error.PageFull;
         }
 
-        // Write first tuple ID (absolute value) at start of allocated block
+        // Write first tuple ID (absolute value, fixed u64) at start of allocated block
+        // Phase 1 simplification: use fixed u64 instead of varint deltas for correctness
         const tid = tuple_id.toU64();
         std.mem.writeInt(u64, page[posting_data_offset..][0..8], tid, .little);
 
