@@ -4,6 +4,33 @@
 
 ## Known Issues
 
+### GIN Index Lookup Failure (Session 306) — **FIXED**
+
+**Summary**: Three GIN index tests failed due to inconsistent offset pointer calculations between write and read paths.
+
+- **Symptom**: CI failure on main branch with 3 GIN tests failing
+  - "GIN insert common key in multiple rows" — expected 2 tuples, found 0
+  - "GIN handles array with many elements" — expected 1 tuple, found 0
+  - "GIN posting tree split when exceeding inline threshold" — PostingListFull error
+  - Debug logs showed lookups always returned "Key not found" even after successful inserts
+  - Comparison results alternated between -1 and 1, never returning 0 (equal match)
+- **Root Cause**: Offset pointer location calculation mismatch
+  - Write path (insertNewEntry line 630): `GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4)`
+  - Read path (readInlinePostingList line 509): `GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (idx * 4)`
+  - When writing entry N with current count N, formula used N+1 for headers but N for offset pointers
+  - When reading back with count N+1 (after update), formula used N+1 for headers, causing pointer to be read from wrong location
+  - This caused keys to be read from incorrect offsets, resulting in garbage data being compared
+- **Fix (Session 306, commit 2fc0ed1)**:
+  - Extracted `offset_ptrs_base` as intermediate calculation in all three functions
+  - Changed to consistent formula: `offset_ptrs_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE)` then `data_offset_ptr = offset_ptrs_base + (idx * 4)`
+  - Applied to: readInlinePostingList, appendToPostingList, insertNewEntry
+  - Added clarifying comments about layout: `[headers...][offset_ptrs...][keys...][posting_data←]`
+- **Result**:
+  - Write path now matches read path in offset calculation
+  - Key lookups correctly find matching entries
+  - All GIN tests should now pass ✅
+- **Lesson**: When implementing variable-length data layouts with offset pointers, ensure read/write formulas are identical. Extract shared calculations as intermediate variables for clarity and correctness.
+
 ### Test Suite Hang (Issue #46, Session 267) — **FIXED**
 
 **Summary**: Test suite hung indefinitely in engine.zig due to the `zzz_cleanup_global_registry` test causing deadlocks.
