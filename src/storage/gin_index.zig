@@ -1070,6 +1070,216 @@ test "GIN isInlinePostingList detects posting tree flag" {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// Posting List Unit Tests (Phase 2 — GIN Index Redesign)
+// ────────────────────────────────────────────────────────────────────
+
+test "ItemPointer toU64 and fromU64 round-trip" {
+    const original = ItemPointer{ .page_id = 12345, .tuple_offset = 678 };
+    const encoded = original.toU64();
+    const decoded = ItemPointer.fromU64(encoded);
+
+    try std.testing.expectEqual(original.page_id, decoded.page_id);
+    try std.testing.expectEqual(original.tuple_offset, decoded.tuple_offset);
+}
+
+test "ItemPointer toU64 handles max values" {
+    const max_item = ItemPointer{ .page_id = 0xFFFFFFFF, .tuple_offset = 0xFFFF };
+    const encoded = max_item.toU64();
+    const decoded = ItemPointer.fromU64(encoded);
+
+    try std.testing.expectEqual(max_item.page_id, decoded.page_id);
+    try std.testing.expectEqual(max_item.tuple_offset, decoded.tuple_offset);
+}
+
+test "ItemPointer toU64 handles zero values" {
+    const zero_item = ItemPointer{ .page_id = 0, .tuple_offset = 0 };
+    const encoded = zero_item.toU64();
+    const decoded = ItemPointer.fromU64(encoded);
+
+    try std.testing.expectEqual(@as(u32, 0), decoded.page_id);
+    try std.testing.expectEqual(@as(u16, 0), decoded.tuple_offset);
+    try std.testing.expectEqual(@as(u64, 0), encoded);
+}
+
+test "appendToPostingList enforces sortedness" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_sortedness.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Insert first entry
+    const key = "test";
+    const tid1 = ItemPointer{ .page_id = 1, .tuple_offset = 0 };
+    try gin.insertNewEntry(root_frame.data, key, tid1);
+
+    // Append larger tuple ID (should succeed)
+    const tid2 = ItemPointer{ .page_id = 1, .tuple_offset = 5 };
+    try gin.appendToPostingList(root_frame.data, 0, tid2);
+
+    // Try to append smaller tuple ID (should fail)
+    const tid3 = ItemPointer{ .page_id = 1, .tuple_offset = 3 };
+    const result = gin.appendToPostingList(root_frame.data, 0, tid3);
+    try std.testing.expectError(error.PostingListNotSorted, result);
+}
+
+test "appendToPostingList respects MAX_INLINE_TUPLES capacity" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_capacity.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Insert first entry
+    const key = "test";
+    const tid1 = ItemPointer{ .page_id = 1, .tuple_offset = 0 };
+    try gin.insertNewEntry(root_frame.data, key, tid1);
+
+    // Append tuples up to MAX_INLINE_TUPLES - 1 (15 more since we have 1 already)
+    for (1..MAX_INLINE_TUPLES) |i| {
+        const tid = ItemPointer{ .page_id = 1, .tuple_offset = @intCast(i) };
+        try gin.appendToPostingList(root_frame.data, 0, tid);
+    }
+
+    // Verify count is at capacity
+    const posting_info = readPostingInfo(root_frame.data, 0);
+    const count = posting_info & 0x7FFFFFFF;
+    try std.testing.expectEqual(MAX_INLINE_TUPLES, count);
+
+    // Try to append one more (should fail with PostingListFull)
+    const tid_overflow = ItemPointer{ .page_id = 1, .tuple_offset = MAX_INLINE_TUPLES };
+    const result = gin.appendToPostingList(root_frame.data, 0, tid_overflow);
+    try std.testing.expectError(error.PostingListFull, result);
+}
+
+test "readInlinePostingList handles empty posting list" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_empty_read.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Set up an entry with posting_info = 0 (count = 0)
+    writeEntryCount(root_frame.data, 1);
+    const info_offset = GIN_HEADER_SIZE + (0 * GIN_ENTRY_HEADER_SIZE) + 2;
+    std.mem.writeInt(u32, root_frame.data[info_offset..][0..4], 0, .little);
+
+    // Read should return empty list
+    const list = try gin.readInlinePostingList(root_frame.data, 0);
+    defer allocator.free(list);
+
+    try std.testing.expectEqual(@as(usize, 0), list.len);
+}
+
+test "readInlinePostingList rejects corrupted tuple count" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_corrupted_count.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Set up an entry with unrealistic tuple count (> MAX_INLINE_TUPLES)
+    writeEntryCount(root_frame.data, 1);
+    const info_offset = GIN_HEADER_SIZE + (0 * GIN_ENTRY_HEADER_SIZE) + 2;
+    const bad_count = MAX_INLINE_TUPLES + 100;
+    std.mem.writeInt(u32, root_frame.data[info_offset..][0..4], bad_count, .little);
+
+    // Read should return InvalidKey error
+    const result = gin.readInlinePostingList(root_frame.data, 0);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "insertNewEntry creates valid posting list structure" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_insert_structure.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, true);
+
+    // Insert entry
+    const key = "testkey";
+    const tid = ItemPointer{ .page_id = 42, .tuple_offset = 13 };
+    try gin.insertNewEntry(root_frame.data, key, tid);
+
+    // Verify entry count
+    const entry_count = readEntryCount(root_frame.data);
+    try std.testing.expectEqual(@as(u16, 1), entry_count);
+
+    // Verify key size
+    const key_size = readKeySize(root_frame.data, 0);
+    try std.testing.expectEqual(@as(u16, key.len), key_size);
+
+    // Verify posting_info (inline, count = 1)
+    const posting_info = readPostingInfo(root_frame.data, 0);
+    try std.testing.expect(isInlinePostingList(posting_info));
+    const count = posting_info & 0x7FFFFFFF;
+    try std.testing.expectEqual(@as(u32, 1), count);
+
+    // Read back the posting list and verify tuple ID
+    const list = try gin.readInlinePostingList(root_frame.data, 0);
+    defer allocator.free(list);
+
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    try std.testing.expectEqual(tid.page_id, list[0].page_id);
+    try std.testing.expectEqual(tid.tuple_offset, list[0].tuple_offset);
+}
+
+// ────────────────────────────────────────────────────────────────────
 // CRUD Operations Tests (~8 tests)
 // ────────────────────────────────────────────────────────────────────
 

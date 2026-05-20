@@ -157,17 +157,26 @@ pub fn search(self: *GinIndex, query_keys: []const []const u8) ![]const ItemPoin
    - Commit: 3659a1f
    - Format changed from `[tid0 u64][delta1 varint][delta2 varint]...` to `[tid0 u64][tid1 u64][tid2 u64]...`
    - MAX_INLINE_TUPLES reduced from 1000 to 16 (128 bytes / 8 bytes per tuple)
-3. **Phase 2**: Write unit tests for each GIN function (currently only integration tests exist)
+3. **Phase 2**: ✅ **COMPLETE** (Session 304) — Write unit tests for each GIN function
+   - Added 8 comprehensive unit tests for posting list operations
+   - Tests cover: ItemPointer serialization, sortedness enforcement, capacity limits, error handling
+   - All tests target low-level functions: `insertNewEntry()`, `appendToPostingList()`, `readInlinePostingList()`
+   - Tests use explicit page setup to verify byte-level correctness
 4. **Phase 3**: Re-enable skipped tests one-by-one, fixing issues as they arise
 5. **Phase 4**: Optimize posting list with varint deltas (optional, for v1.1)
 
 ## Testing Strategy
 
-### Unit Tests (Missing)
-- `encodePostingList` / `decodePostingList`
-- `findEntry` in entry tree
-- `insertEntry` with key collisions
-- `deleteEntry` with posting list compaction
+### Unit Tests (Phase 2 Complete — 8 tests added)
+- ✅ `ItemPointer.toU64()` / `fromU64()` round-trip (3 tests: normal, max, zero)
+- ✅ `insertNewEntry()` with valid posting list structure verification
+- ✅ `appendToPostingList()` sortedness enforcement
+- ✅ `appendToPostingList()` capacity limit (MAX_INLINE_TUPLES = 16)
+- ✅ `readInlinePostingList()` empty list handling
+- ✅ `readInlinePostingList()` corrupted tuple count rejection
+- Future: `findEntry` in entry tree
+- Future: `insertEntry` with key collisions
+- Future: `deleteEntry` with posting list compaction
 
 ### Integration Tests (Existing but Failing)
 - Single-key insert + search
