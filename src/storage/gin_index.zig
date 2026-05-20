@@ -505,8 +505,10 @@ pub const GIN = struct {
         // Data layout (Phase 1): [tid0 u64][tid1 u64][tid2 u64]... (fixed u64, no varint deltas)
 
         // Calculate offset to posting data pointer
+        // Offset pointers are stored AFTER ALL entry headers
         const entry_count = readEntryCount(page);
-        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (idx * 4);
+        const offset_ptrs_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+        const data_offset_ptr = offset_ptrs_base + (idx * 4);
 
         if (data_offset_ptr + 4 > page.len) {
             // No data stored yet (skeletal implementation)
@@ -557,7 +559,8 @@ pub const GIN = struct {
         }
 
         const entry_count = readEntryCount(page);
-        const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (idx * 4);
+        const offset_ptrs_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+        const data_offset_ptr = offset_ptrs_base + (idx * 4);
 
         if (data_offset_ptr + 4 > page.len) {
             return error.InvalidOffset;
@@ -620,11 +623,12 @@ pub const GIN = struct {
         std.mem.writeInt(u32, page[header_offset + 2..][0..4], posting_info, .little);
 
         // Calculate where to write offset pointer and data
-        // Layout: [headers...][offset_ptrs...][variable data area grows from end]
+        // Layout: [headers...][offset_ptrs...][keys...][posting_data←]
         // Offset pointers come AFTER all headers (including the one we just wrote)
         // After writing entry N: we have (N+1) headers, so offset pointers start at GIN_HEADER_SIZE + (N+1) * GIN_ENTRY_HEADER_SIZE
-        // The pointer for entry N is at offset: headers_end + N * 4
-        const data_offset_ptr = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+        // The pointer for entry N is at offset: offset_ptrs_base + N * 4
+        const offset_ptrs_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
+        const data_offset_ptr = offset_ptrs_base + (entry_count * 4);
 
         // Allocate posting data from end of page
         // Use fixed 128-byte blocks per entry (matching INLINE_POSTING_LIST_MAX_SIZE)
