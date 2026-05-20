@@ -1414,8 +1414,54 @@ test "GIN search returns matching tuple ids" {
 }
 
 test "GIN insert common key in multiple rows" {
-    // TODO: GIN architectural issues - needs redesign
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_gin_common_key.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Row 1: ARRAY[1, 42]
+    var col_value1: [12]u8 = undefined;
+    std.mem.writeInt(u32, col_value1[0..4], 2, .little); // array length = 2
+    std.mem.writeInt(u32, col_value1[4..8], 1, .little); // element 0 = 1
+    std.mem.writeInt(u32, col_value1[8..12], 42, .little); // element 1 = 42
+
+    // Row 2: ARRAY[1, 99]
+    var col_value2: [12]u8 = undefined;
+    std.mem.writeInt(u32, col_value2[0..4], 2, .little); // array length = 2
+    std.mem.writeInt(u32, col_value2[4..8], 1, .little); // element 0 = 1 (common key)
+    std.mem.writeInt(u32, col_value2[8..12], 99, .little); // element 1 = 99
+
+    const tuple_id1 = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    const tuple_id2 = ItemPointer{ .page_id = 100, .tuple_offset = 1 };
+
+    // Both rows should succeed
+    try gin.insert(&col_value1, tuple_id1);
+    try gin.insert(&col_value2, tuple_id2);
+
+    // Verify: search for key=1 should return both tuple IDs
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little); // search for array with 1 element
+    std.mem.writeInt(u32, query[4..8], 1, .little); // element = 1
+
+    const result = try gin.search(&query, 0); // strategy 0 = contains
+    defer allocator.free(result);
+
+    // Both tuples should match since both have key=1
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    // Results should be sorted by tuple ID (page_id, tuple_offset)
+    try std.testing.expectEqual(tuple_id1.page_id, result[0].page_id);
+    try std.testing.expectEqual(tuple_id1.tuple_offset, result[0].tuple_offset);
+    try std.testing.expectEqual(tuple_id2.page_id, result[1].page_id);
+    try std.testing.expectEqual(tuple_id2.tuple_offset, result[1].tuple_offset);
 }
 
 test "GIN posting list compaction after deletes" {
@@ -1474,13 +1520,84 @@ test "GIN search handles empty result set" {
 // ────────────────────────────────────────────────────────────────────
 
 test "GIN handles array with many elements" {
-    // TODO: GIN architectural issues - needs redesign
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_gin_many_elements.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Create array with 10 elements: [0, 100, 200, ..., 900]
+    var col_value: [44]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 10, .little); // array length = 10
+    for (0..10) |i| {
+        std.mem.writeInt(u32, col_value[4 + i * 4 ..][0..4], @as(u32, @intCast(i * 100)), .little);
+    }
+
+    const tuple_id = ItemPointer{ .page_id = 500, .tuple_offset = 0 };
+
+    // Should succeed — GIN extracts 10 keys and inserts them into the entry tree
+    try gin.insert(&col_value, tuple_id);
+
+    // Verify: search for key=200 should find the tuple
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little); // query array length = 1
+    std.mem.writeInt(u32, query[4..8], 200, .little); // search for key = 200
+
+    const result = try gin.search(&query, 0); // strategy 0 = contains
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tuple_id.page_id, result[0].page_id);
+    try std.testing.expectEqual(tuple_id.tuple_offset, result[0].tuple_offset);
 }
 
 test "GIN posting tree split when exceeding inline threshold" {
-    // TODO: GIN architectural issues - needs redesign
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_gin_posting_tree_split.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert same key many times to trigger posting tree split
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little); // array length = 1
+    std.mem.writeInt(u32, col_value[4..8], 42, .little); // key = 42
+
+    // Insert MAX_INLINE_TUPLES + 1 tuples with the same key to trigger posting tree creation
+    // MAX_INLINE_TUPLES = 16 (defined in GIN constants)
+    for (0..17) |i| {
+        const tuple_id = ItemPointer{ .page_id = @intCast(i + 1), .tuple_offset = 0 };
+        try gin.insert(&col_value, tuple_id);
+    }
+
+    // Verify: search for key=42 should return all 17 tuples
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little); // query array length = 1
+    std.mem.writeInt(u32, query[4..8], 42, .little); // search for key = 42
+
+    const result = try gin.search(&query, 0); // strategy 0 = contains
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 17), result.len);
+    // Verify first and last tuple IDs (should be sorted)
+    try std.testing.expectEqual(@as(u32, 1), result[0].page_id);
+    try std.testing.expectEqual(@as(u32, 17), result[16].page_id);
 }
 
 test "GIN search with contains strategy checks all keys" {
