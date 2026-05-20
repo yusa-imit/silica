@@ -552,7 +552,7 @@ pub const GIN = struct {
         }
 
         // Check if this would exceed inline threshold
-        if (current_count >= 100) {
+        if (current_count >= MAX_INLINE_TUPLES) {
             return error.PostingListFull;
         }
 
@@ -570,6 +570,15 @@ pub const GIN = struct {
 
         // Phase 1 simplification: append fixed u64 tuple ID (no varint deltas)
         const new_tid = tuple_id.toU64();
+
+        // Verify sortedness: new TID must be > last TID
+        if (current_count > 0) {
+            const last_tid_pos = data_offset + ((current_count - 1) * 8);
+            const last_tid = std.mem.readInt(u64, page[last_tid_pos..][0..8], .little);
+            if (new_tid <= last_tid) {
+                return error.PostingListNotSorted;
+            }
+        }
 
         // Calculate append position (after current_count tuple IDs)
         const append_pos = data_offset + (current_count * 8);
@@ -1392,22 +1401,22 @@ test "GIN appendToPostingList returns PostingListFull when exceeding limit" {
     const root_frame = try gin.fetchOrInitRootPage();
     defer pool.unpinPage(root_id, true);
 
-    // Create an entry with 100 tuples (at the limit)
+    // Create an entry with MAX_INLINE_TUPLES (at the limit)
     writeEntryCount(root_frame.data, 1);
 
     // Write key_size and posting_info
     const key_size_offset = GIN_HEADER_SIZE;
     std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
     const posting_info_offset = GIN_HEADER_SIZE + 2;
-    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], 100, .little); // 100 tuples
+    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], MAX_INLINE_TUPLES, .little);
 
     // Set up data offset
     const entry_count = readEntryCount(root_frame.data);
     const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
-    const data_start: u32 = @intCast(pager.page_size - 100);
+    const data_start: u32 = @intCast(pager.page_size - (MAX_INLINE_TUPLES * 8));
     std.mem.writeInt(u32, root_frame.data[data_offset_ptr..][0..4], data_start, .little);
 
-    // Write first tuple ID
+    // Write first tuple ID (need at least one for sortedness check)
     std.mem.writeInt(u64, root_frame.data[data_start..][0..8], 1, .little);
 
     const tuple_id = ItemPointer{ .page_id = 1, .tuple_offset = 101 };
