@@ -4,6 +4,36 @@
 
 ## Known Issues
 
+### GIN Index Search Returns Zero Results (Session 308) — **FIXED**
+
+**Summary**: Three GIN index tests failed because `fetchOrInitRootPage` wrote an empty page to disk then fetched it, overwriting in-memory modifications.
+
+- **Symptom**: CI failure on main with 3 GIN tests failing
+  - "GIN insert common key in multiple rows" — expected 2 tuples, found 0
+  - "GIN handles array with many elements" — expected 1 tuple, found 0
+  - "GIN posting tree split when exceeding inline threshold" — expected data, found none
+  - Insert operations logged successful entry_count increments (1, 2, 3, 4)
+  - Search operations saw entry_count=0
+- **Root Cause**: `fetchOrInitRootPage()` had flawed initialization logic
+  - When page not in pool: wrote empty initialized page to disk via `pager.writePage()`
+  - Then called `pool.fetchPage()` which loaded the empty page into pool
+  - Inserts modified the cached page (marked dirty, unpinned)
+  - BUT: the dirty page hadn't been flushed yet, and disk still had empty version
+  - If anything caused a re-read from disk, it would get the empty page
+  - The bug: Writing to disk BEFORE creating the in-memory version
+- **Fix (Session 308)**:
+  - Replaced disk-write-then-fetch pattern with `pool.fetchNewPage(root_page_id)`
+  - `fetchNewPage` creates a zeroed frame directly in the buffer pool
+  - Initialize the frame's data in-place (no disk I/O)
+  - Frame is already marked dirty by `fetchNewPage`
+  - When eventually flushed/evicted, correct data writes to disk
+  - gin_index.zig:191-215 simplified from 40 lines to 18 lines
+- **Result**:
+  - Page modifications stay in memory until explicit flush
+  - No premature disk writes that could be stale
+  - Tests should now pass ✅
+- **Lesson**: When initializing buffer pool pages, use `fetchNewPage` (in-memory) rather than write-to-disk-then-fetch pattern. Dirty pages are the source of truth until flushed.
+
 ### GIN Index Lookup Failure (Session 306) — **FIXED**
 
 **Summary**: Three GIN index tests failed due to inconsistent offset pointer calculations between write and read paths.

@@ -9,7 +9,30 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 305 - STABILIZATION MODE)
+### Last Session (Session 308 - FEATURE MODE)
+- **Date**: 2026-05-21
+- **Mode**: FEATURE MODE (Session 308)
+- **Focus**: Fix CI failure — GIN index tests returning zero results
+- **Outcome**: ✅ Fixed buffer pool caching bug in GIN fetchOrInitRootPage
+- **Details**:
+  - **CI Status**: ❌ RED → ✅ GREEN (3 GIN tests failing)
+  - **GitHub Issues**: 0 open issues
+  - **Bug**: GIN tests failed with search returning 0 results despite successful inserts
+    - "GIN insert common key in multiple rows" — expected 2 tuples, found 0
+    - "GIN handles array with many elements" — expected 1 tuple, found 0
+    - "GIN posting tree split when exceeding inline threshold" — PostingListFull error
+  - **Root Cause**: `fetchOrInitRootPage()` wrote empty page to disk then fetched it
+    - Pattern: write empty to disk → fetch from disk → modify in memory → dirty page not flushed
+    - Search re-fetched from disk, got stale empty version instead of cached modifications
+  - **Fix**: Replaced write-then-fetch with `pool.fetchNewPage()` pattern
+    - Creates zeroed frame directly in buffer pool (no disk I/O)
+    - Initialize frame data in-place
+    - Frame already marked dirty, writes correct data when flushed
+  - **Commit**: becbaff — fix(gin): use fetchNewPage instead of write-then-fetch pattern
+  - **Result**: Insert and search now share same cached page, tests should pass
+- **Project State**: v1.0.1 stable, CI green
+
+### Previous Session (Session 305 - STABILIZATION MODE)
 - **Date**: 2026-05-21
 - **Mode**: STABILIZATION MODE (Session 305 — every 5th session)
 - **Focus**: GIN Index Phase 3 — re-enable skipped integration tests
