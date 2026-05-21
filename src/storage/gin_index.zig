@@ -194,10 +194,8 @@ pub const GIN = struct {
             return try self.pool.fetchPage(self.root_page_id);
         }
 
-        // Page not in pool - initialize on disk first
-        const buf = try self.pool.pager.allocPageBuf();
-        defer self.pool.pager.freePageBuf(buf);
-        @memset(buf, 0);
+        // Page not in pool - use fetchNewPage to create it directly in the pool
+        const frame = try self.pool.fetchNewPage(self.root_page_id);
 
         // Initialize page header
         const header = PageHeader{
@@ -207,19 +205,13 @@ pub const GIN = struct {
             .free_offset = @intCast(self.pool.pager.page_size),
             .checksum_value = 0,
         };
-        header.serialize(buf[0..PAGE_HEADER_SIZE]);
+        header.serialize(frame.data[0..PAGE_HEADER_SIZE]);
 
         // Initialize entry count
-        writeEntryCount(buf, 0);
+        writeEntryCount(frame.data, 0);
 
-        // Write to disk if page exists in file
-        self.pool.pager.writePage(self.root_page_id, buf) catch |err| {
-            // If page doesn't exist on disk yet, that's okay - we'll create it
-            if (err != error.PageOutOfBounds) return err;
-        };
-
-        // Now fetch it (will create new page if needed)
-        return try self.pool.fetchPage(self.root_page_id);
+        // Page is already marked dirty by fetchNewPage
+        return frame;
     }
 
     /// Insert a column value (extracts keys and inserts into entry tree).
