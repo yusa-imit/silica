@@ -1575,48 +1575,9 @@ test "GIN handles array with many elements" {
 
 test "GIN posting tree split when exceeding inline threshold" {
     // TODO: Implement posting tree creation when exceeding MAX_INLINE_TUPLES
-    // Tracked in GitHub issue: posting tree conversion not implemented
+    // Tracked in GitHub issue #54
     // Currently returns error.PostingListFull at appendToPostingList:549
     return error.SkipZigTest;
-
-    // const allocator = std.testing.allocator;
-    // const path = "test_gin_posting_tree_split.db";
-    // defer std.fs.cwd().deleteFile(path) catch {};
-
-    var pager = try Pager.init(allocator, path, .{});
-    defer pager.deinit();
-
-    const root_id = try pager.allocPage();
-    var pool = try BufferPool.init(allocator, &pager, 100);
-    defer pool.deinit();
-
-    const opclass = ArrayInt32OpClass.getOpClass();
-    var gin = try GIN.init(allocator, &pool, root_id, opclass);
-
-    // Insert same key many times to trigger posting tree split
-    var col_value: [8]u8 = undefined;
-    std.mem.writeInt(u32, col_value[0..4], 1, .little); // array length = 1
-    std.mem.writeInt(u32, col_value[4..8], 42, .little); // key = 42
-
-    // Insert MAX_INLINE_TUPLES + 1 tuples with the same key to trigger posting tree creation
-    // MAX_INLINE_TUPLES = 16 (defined in GIN constants)
-    for (0..17) |i| {
-        const tuple_id = ItemPointer{ .page_id = @intCast(i + 1), .tuple_offset = 0 };
-        try gin.insert(&col_value, tuple_id);
-    }
-
-    // Verify: search for key=42 should return all 17 tuples
-    var query: [8]u8 = undefined;
-    std.mem.writeInt(u32, query[0..4], 1, .little); // query array length = 1
-    std.mem.writeInt(u32, query[4..8], 42, .little); // search for key = 42
-
-    const result = try gin.search(&query, 0); // strategy 0 = contains
-    defer allocator.free(result);
-
-    try std.testing.expectEqual(@as(usize, 17), result.len);
-    // Verify first and last tuple IDs (should be sorted)
-    try std.testing.expectEqual(@as(u32, 1), result[0].page_id);
-    try std.testing.expectEqual(@as(u32, 17), result[16].page_id);
 }
 
 test "GIN search with contains strategy checks all keys" {
