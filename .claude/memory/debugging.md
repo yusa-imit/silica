@@ -4,6 +4,41 @@
 
 ## Known Issues
 
+### GIN Index Key Corruption During Insert (Session 311) — **FIXED**
+
+**Summary**: GIN index insertions corrupted existing keys due to incorrect operation order when shifting data.
+
+- **Symptom**: CI failure with "GIN handles array with many elements" test
+  - Test inserted array [0, 100, 200, ..., 900] with tuple_id=(500,0)
+  - Search for key=200 returned 0 tuples (expected 1)
+  - Debug logs showed garbage key values: 260046848, 243269632, etc.
+  - Compare operations saw corrupted data instead of actual keys
+- **Root Cause**: Operation order bug in `insertNewEntry`
+  - When inserting entry N, we need to make room for new header (6 bytes) and offset pointer (4 bytes)
+  - Total shift: 10 bytes
+  - Layout: `[headers][offset_ptrs][keys][...][posting_data]`
+  - OLD CODE order:
+    1. Shift offset pointers by 6 bytes (from old_ptrs_base to new_ptrs_base)
+    2. Shift keys by 10 bytes (from old_keys_base to new_keys_base)
+  - THE BUG: When entry_count=1:
+    - Keys are at offset 42
+    - New offset pointers need to go to offset 44
+    - Shifting pointers FIRST writes to offsets 44-47
+    - This OVERWRITES key data at offsets 44-45!
+    - Then when we shift keys, the data is already corrupted
+- **Fix (Session 311, commits 42e662e, 81782a9)**:
+  - Change operation order:
+    1. Shift keys FIRST (by 10 bytes) — moves them far enough to be safe
+    2. THEN shift offset pointers (by 6 bytes) — no longer overlaps with keys
+    3. Write new header/pointer/key
+  - Added detailed comments explaining the overlap issue
+  - Verified with CI debug logs showing correct key values
+- **Result**:
+  - Keys read back correctly during lookups
+  - Compare operations see actual values (0, 100, 200, ...) instead of garbage
+  - GIN index tests pass ✅
+- **Lesson**: When shifting multiple overlapping regions, always move the furthest destination first to avoid corrupting data that hasn't been moved yet.
+
 ### GIN Index Search Returns Zero Results (Session 308) — **FIXED**
 
 **Summary**: Three GIN index tests failed because `fetchOrInitRootPage` wrote an empty page to disk then fetched it, overwriting in-memory modifications.
