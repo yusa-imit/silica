@@ -9,28 +9,36 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 308 - FEATURE MODE)
+### Last Session (Session 314 - FEATURE MODE)
+- **Date**: 2026-05-23
+- **Mode**: FEATURE MODE (Session 314)
+- **Focus**: Documentation update — clarify GIN posting tree limitation
+- **Outcome**: ✅ Updated KNOWN_ISSUES.md with GIN posting tree details
+- **Details**:
+  - **CI Status**: ✅ GREEN (CI passing on main)
+  - **GitHub Issues**: 1 open issue (#54 — GIN posting tree conversion)
+  - **Work Done**:
+    - Committed Session 311 GIN fix documentation to debugging.md (commit a33fcf5)
+    - Attempted to complete posting tree implementation (issue #54) but reverted due to complexity
+    - Updated docs/KNOWN_ISSUES.md to explicitly document GIN posting tree limitation (commit d4aa535)
+      - Clarified 16 tuple ID limit per key (inline posting list)
+      - Explained PostingListFull error when exceeding limit
+      - Added workaround (use B+Tree index for high-cardinality columns)
+      - Linked to GitHub issue #54
+  - **Commits**:
+    - a33fcf5 — docs: document GIN index key corruption fix (Session 311)
+    - d4aa535 — docs: clarify GIN posting tree limitation in KNOWN_ISSUES.md
+  - **Lessons**:
+    - WIP posting tree implementation was too complex to complete in one session
+    - Need dedicated TDD approach: write failing test first, then implement incrementally
+    - Documentation improvements are valid contributions when feature work is blocked
+- **Project State**: v1.0.1 stable, CI green, maintenance mode
+
+### Session 308 (FEATURE MODE)
 - **Date**: 2026-05-21
-- **Mode**: FEATURE MODE (Session 308)
 - **Focus**: Fix CI failure — GIN index tests returning zero results
 - **Outcome**: ✅ Fixed buffer pool caching bug in GIN fetchOrInitRootPage
-- **Details**:
-  - **CI Status**: ❌ RED → ✅ GREEN (3 GIN tests failing)
-  - **GitHub Issues**: 0 open issues
-  - **Bug**: GIN tests failed with search returning 0 results despite successful inserts
-    - "GIN insert common key in multiple rows" — expected 2 tuples, found 0
-    - "GIN handles array with many elements" — expected 1 tuple, found 0
-    - "GIN posting tree split when exceeding inline threshold" — PostingListFull error
-  - **Root Cause**: `fetchOrInitRootPage()` wrote empty page to disk then fetched it
-    - Pattern: write empty to disk → fetch from disk → modify in memory → dirty page not flushed
-    - Search re-fetched from disk, got stale empty version instead of cached modifications
-  - **Fix**: Replaced write-then-fetch with `pool.fetchNewPage()` pattern
-    - Creates zeroed frame directly in buffer pool (no disk I/O)
-    - Initialize frame data in-place
-    - Frame already marked dirty, writes correct data when flushed
-  - **Commit**: becbaff — fix(gin): use fetchNewPage instead of write-then-fetch pattern
-  - **Result**: Insert and search now share same cached page, tests should pass
-- **Project State**: v1.0.1 stable, CI green
+- **Commit**: becbaff — fix(gin): use fetchNewPage instead of write-then-fetch pattern
 
 ### Previous Session (Session 305 - STABILIZATION MODE)
 - **Date**: 2026-05-21
