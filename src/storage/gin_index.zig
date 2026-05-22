@@ -608,6 +608,24 @@ pub const GIN = struct {
     fn insertNewEntry(_: *GIN, page: []u8, key: []const u8, tuple_id: ItemPointer) !void {
         const entry_count = readEntryCount(page);
 
+        // CRITICAL: Before writing the new header, we must shift existing offset pointers.
+        // When we add a new header, the offset pointers region moves by GIN_ENTRY_HEADER_SIZE bytes.
+        // Old offset pointers: [GIN_HEADER + entry_count * 6][ptr0][ptr1]...[ptrN-1]
+        // New offset pointers: [GIN_HEADER + (entry_count+1) * 6][ptr0][ptr1]...[ptrN-1][ptrN]
+        if (entry_count > 0) {
+            const old_ptrs_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+            const new_ptrs_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
+            const ptrs_size = entry_count * 4; // Each pointer is 4 bytes
+
+            // Move existing offset pointers from old_ptrs_base to new_ptrs_base
+            // Move from high to low to avoid overlap
+            var i: usize = ptrs_size;
+            while (i > 0) {
+                i -= 1;
+                page[new_ptrs_base + i] = page[old_ptrs_base + i];
+            }
+        }
+
         // Write entry header: [key_size u16][posting_info u32]
         const header_offset = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
         std.mem.writeInt(u16, page[header_offset..][0..2], @intCast(key.len), .little);
