@@ -608,17 +608,45 @@ pub const GIN = struct {
     fn insertNewEntry(_: *GIN, page: []u8, key: []const u8, tuple_id: ItemPointer) !void {
         const entry_count = readEntryCount(page);
 
-        // CRITICAL: Before writing the new header, we must shift existing offset pointers.
-        // When we add a new header, the offset pointers region moves by GIN_ENTRY_HEADER_SIZE bytes.
-        // Old offset pointers: [GIN_HEADER + entry_count * 6][ptr0][ptr1]...[ptrN-1]
-        // New offset pointers: [GIN_HEADER + (entry_count+1) * 6][ptr0][ptr1]...[ptrN-1][ptrN]
+        // CRITICAL ORDER OF OPERATIONS:
+        // When adding entry N, we need to make room for:
+        // - 1 new header (6 bytes)
+        // - 1 new offset pointer (4 bytes)
+        // - 1 new key (variable length)
+        //
+        // The problem: offset pointers and keys can overlap during the shift!
+        // Solution: Move keys FIRST (furthest from their final position), then offset pointers.
+        //
+        // Layout before: [headers(N*6)][ptrs(N*4)][keys][...free...][posting_data]
+        // Layout after:  [headers((N+1)*6)][ptrs((N+1)*4)][keys][...free...][posting_data]
+
+        // Step 1: Shift keys first (by 10 bytes: 6 for header + 4 for pointer)
+        const old_keys_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+        const new_keys_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + ((entry_count + 1) * 4);
+        const keys_shift = new_keys_base - old_keys_base; // = 10
+
+        var existing_keys_size: u32 = 0;
+        for (0..entry_count) |i| {
+            existing_keys_size += readKeySize(page, i);
+        }
+
+        if (entry_count > 0 and keys_shift > 0) {
+            // Move keys from high to low to avoid overlap
+            var i: usize = existing_keys_size;
+            while (i > 0) {
+                i -= 1;
+                page[old_keys_base + keys_shift + i] = page[old_keys_base + i];
+            }
+        }
+
+        // Step 2: Shift offset pointers (by 6 bytes: size of one header)
+        // Now that keys are moved, offset pointers can safely shift without corrupting keys
         if (entry_count > 0) {
             const old_ptrs_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
             const new_ptrs_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
-            const ptrs_size = entry_count * 4; // Each pointer is 4 bytes
+            const ptrs_size = entry_count * 4;
 
-            // Move existing offset pointers from old_ptrs_base to new_ptrs_base
-            // Move from high to low to avoid overlap
+            // Move offset pointers from high to low
             var i: usize = ptrs_size;
             while (i > 0) {
                 i -= 1;
@@ -626,24 +654,16 @@ pub const GIN = struct {
             }
         }
 
-        // Write entry header: [key_size u16][posting_info u32]
+        // Step 3: Write new entry header
         const header_offset = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
         std.mem.writeInt(u16, page[header_offset..][0..2], @intCast(key.len), .little);
-
-        // posting_info: inline list with 1 item (high bit 0, lower 31 bits = count)
-        const posting_info: u32 = 1;
+        const posting_info: u32 = 1; // inline list with 1 item
         std.mem.writeInt(u32, page[header_offset + 2..][0..4], posting_info, .little);
 
-        // Calculate where to write offset pointer and data
-        // Layout: [headers...][offset_ptrs...][keys...][posting_data←]
-        // Offset pointers come AFTER all headers (including the one we just wrote)
-        // After writing entry N: we have (N+1) headers, so offset pointers start at GIN_HEADER_SIZE + (N+1) * GIN_ENTRY_HEADER_SIZE
-        // The pointer for entry N is at offset: offset_ptrs_base + N * 4
+        // Step 4: Write new offset pointer
         const offset_ptrs_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
         const data_offset_ptr = offset_ptrs_base + (entry_count * 4);
 
-        // Allocate posting data from end of page
-        // Use fixed 128-byte blocks per entry (matching INLINE_POSTING_LIST_MAX_SIZE)
         const block_size: u32 = 128;
         const posting_data_offset = page.len - ((entry_count + 1) * block_size);
 
@@ -651,48 +671,20 @@ pub const GIN = struct {
             return error.PageFull;
         }
 
-        // Write first tuple ID (absolute value, fixed u64) at start of allocated block
-        // Phase 1 simplification: use fixed u64 instead of varint deltas for correctness
+        std.mem.writeInt(u32, page[data_offset_ptr..][0..4], @intCast(posting_data_offset), .little);
+
+        // Step 5: Write posting data
         const tid = tuple_id.toU64();
         std.mem.writeInt(u64, page[posting_data_offset..][0..8], tid, .little);
 
-        // Write offset pointer to posting data
-        std.mem.writeInt(u32, page[data_offset_ptr..][0..4], @intCast(posting_data_offset), .little);
-
-        // Write the key data
-        // CRITICAL: Keys' base offset changes as headers grow, so we must move existing keys first!
-        // Current keys are at: GIN_HEADER_SIZE + (entry_count * 6) + (entry_count * 4)
-        // After insert, they'll be at: GIN_HEADER_SIZE + ((entry_count+1) * 6) + ((entry_count+1) * 4)
-        // Difference: 6 + 4 = 10 bytes shift
-
-        const old_keys_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
-        const new_keys_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + ((entry_count + 1) * 4);
-        const shift = new_keys_base - old_keys_base;
-
-        // Calculate total size of existing keys
-        var existing_keys_size: u32 = 0;
-        for (0..entry_count) |i| {
-            existing_keys_size += readKeySize(page, i);
-        }
-
-        // Move existing keys if needed (shift them right by 'shift' bytes)
-        if (entry_count > 0 and shift > 0) {
-            // Move from high to low to avoid overlap
-            var i: usize = existing_keys_size;
-            while (i > 0) {
-                i -= 1;
-                page[old_keys_base + shift + i] = page[old_keys_base + i];
-            }
-        }
-
-        // Now write the new key at the end of the (shifted) keys region
+        // Step 6: Write new key (at end of shifted keys region)
         const key_offset = new_keys_base + existing_keys_size;
         if (key_offset + key.len > posting_data_offset) {
             return error.PageFull;
         }
         @memcpy(page[key_offset..][0..key.len], key);
 
-        // Update entry count
+        // Step 7: Update entry count
         writeEntryCount(page, entry_count + 1);
     }
 };
