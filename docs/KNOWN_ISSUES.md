@@ -57,23 +57,30 @@ All SERIALIZABLE isolation tests now pass, including:
 
 ## Deferred Enhancements (Non-Blocking)
 
-### GIN Index Architectural Improvements
+### GIN Index Posting Tree Conversion (GitHub #54)
 
-**Status**: Low priority enhancement
+**Status**: Enhancement (non-blocking)
 **Severity**: Low
-**Affects**: GIN index search performance
+**Affects**: GIN indexes with high-cardinality keys (>16 rows per key)
 
 #### Description
-GIN (Generalized Inverted Index) search currently returns empty results in some edge cases. This is documented with TODO comments in `src/storage/gin_index.zig`.
+GIN indexes currently use inline posting lists (up to 16 tuple IDs per key). When a key appears in more than 16 rows, `appendToPostingList` returns `error.PostingListFull`. The posting tree conversion feature (migrating inline lists to B+Tree structure) is not yet implemented.
+
+See issue: https://github.com/yusa-imit/silica/issues/54
 
 #### Impact
-- GIN index creation works correctly
-- Basic GIN queries function
-- Some advanced search patterns may not return optimal results
-- 5 tests are skipped pending architectural redesign
+- GIN indexes work correctly for keys appearing in ≤16 rows
+- Keys appearing in >16 rows cannot be inserted (PostingListFull error)
+- This limits GIN index usage for high-cardinality scenarios
+- Workaround: Use regular B+Tree index for such columns
+
+#### Implementation Status
+- Posting tree page layout is defined in `src/storage/gin_index.zig:17-22`
+- Stub functions exist for `convertToPostingTree`, `readPostingTree`, `appendToPostingTree`
+- 1 test is skipped pending implementation
 
 #### Next Steps
-GIN index improvements are deferred to future releases. The current implementation is functional for common use cases.
+Posting tree conversion will be implemented in a future release. The current implementation is functional for low-to-medium cardinality use cases (e.g., array elements, full-text search tokens).
 
 ---
 
