@@ -108,6 +108,7 @@ pub const ArrayInt32OpClass = struct {
         if (a.len < 4 or b.len < 4) return error.InvalidKey;
         const a_val = std.mem.readInt(u32, a[0..4], .little);
         const b_val = std.mem.readInt(u32, b[0..4], .little);
+        std.debug.print("[GIN Compare] a_val={d}, b_val={d}\n", .{ a_val, b_val });
         if (a_val < b_val) return -1;
         if (a_val > b_val) return 1;
         return 0;
@@ -346,7 +347,8 @@ pub const GIN = struct {
 
     /// Insert a single key into the entry tree with associated tuple_id.
     fn insertKey(self: *GIN, key: []const u8, tuple_id: ItemPointer) !void {
-        std.debug.print("[GIN Insert] key ({d} bytes), tuple_id=({d},{d})\n", .{ key.len, tuple_id.page_id, tuple_id.tuple_offset });
+        const key_val = if (key.len >= 4) std.mem.readInt(u32, key[0..4], .little) else 0;
+        std.debug.print("[GIN Insert] key ({d} bytes) value={d}, tuple_id=({d},{d})\n", .{ key.len, key_val, tuple_id.page_id, tuple_id.tuple_offset });
 
         const root_frame = try self.fetchOrInitRootPage();
         defer self.pool.unpinPage(self.root_page_id, true);
