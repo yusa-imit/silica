@@ -57,30 +57,27 @@ All SERIALIZABLE isolation tests now pass, including:
 
 ## Deferred Enhancements (Non-Blocking)
 
-### GIN Index Posting Tree Conversion (GitHub #54)
+### GIN Index Posting Tree — Single-Page Limit (GitHub #54 — Partially Resolved)
 
-**Status**: Enhancement (non-blocking)
+**Status**: Partially resolved (basic posting tree implemented)
 **Severity**: Low
-**Affects**: GIN indexes with high-cardinality keys (>16 rows per key)
+**Affects**: GIN indexes with very high-cardinality keys (>509 rows per key on 4096-byte pages)
 
 #### Description
-GIN indexes currently use inline posting lists (up to 16 tuple IDs per key). When a key appears in more than 16 rows, `appendToPostingList` returns `error.PostingListFull`. The posting tree conversion feature (migrating inline lists to B+Tree structure) is not yet implemented.
+GIN indexes now support posting trees for keys appearing in >16 rows (up to ~509 rows per 4096-byte page). The posting tree is a flat sorted array of u64 tuple IDs stored on a single page. When the posting tree page fills up, `error.PageFull` is returned.
 
-See issue: https://github.com/yusa-imit/silica/issues/54
+#### Remaining Limitation
+- Single-page posting tree only — does not support multi-page (B+Tree) posting trees
+- Max ~509 tuples per posting tree on 4096-byte pages (`(page_size - 20) / 8`)
+- Workaround for >509 occurrences: Use regular B+Tree index
 
-#### Impact
-- GIN indexes work correctly for keys appearing in ≤16 rows
-- Keys appearing in >16 rows cannot be inserted (PostingListFull error)
-- This limits GIN index usage for high-cardinality scenarios
-- Workaround: Use regular B+Tree index for such columns
-
-#### Implementation Status
-- Posting tree page layout is defined in `src/storage/gin_index.zig:17-22`
-- Stub functions exist for `convertToPostingTree`, `readPostingTree`, `appendToPostingTree`
-- 1 test is skipped pending implementation
+#### Current Behavior (as of Session 316)
+- Keys appearing in ≤16 rows: inline posting list (fast, in entry page)
+- Keys appearing in 17–509 rows: posting tree page (single sorted page)
+- Keys appearing in >509 rows: `error.PageFull` on insert
 
 #### Next Steps
-Posting tree conversion will be implemented in a future release. The current implementation is functional for low-to-medium cardinality use cases (e.g., array elements, full-text search tokens).
+Multi-page posting trees will be implemented in a future release for very high-cardinality scenarios.
 
 ---
 

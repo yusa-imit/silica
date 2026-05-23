@@ -45,6 +45,7 @@ const GIN_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // page_type + entry_count + 
 const GIN_ENTRY_HEADER_SIZE: u32 = 2 + 4; // key_size(u16) + posting_info(u32)
 const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128; // Bytes before switching to posting tree (128 bytes = 16 u64 tuple IDs)
 const MAX_INLINE_TUPLES: u32 = 16; // With fixed u64 encoding: 128 bytes / 8 bytes per tuple = 16 tuples max
+const POSTING_TREE_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // PageHeader(16) + tuple_count(u32=4)
 
 /// ItemPointer — (page_id, tuple_offset) uniquely identifying a row.
 pub const ItemPointer = struct {
@@ -468,11 +469,10 @@ pub const GIN = struct {
         const posting_info = readPostingInfo(page, idx);
 
         if (isInlinePostingList(posting_info)) {
-            // Inline posting list
             return try self.readInlinePostingList(page, idx);
         } else {
-            // Posting tree (not implemented yet)
-            return error.TreeEmpty;
+            const tree_page_id = posting_info & 0x7FFFFFFF;
+            return try self.readPostingTree(tree_page_id);
         }
     }
 
@@ -534,8 +534,16 @@ pub const GIN = struct {
     }
 
     /// Append tuple_id to posting list at given entry index.
-    fn appendToPostingList(_: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
+    fn appendToPostingList(self: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
         const posting_info = readPostingInfo(page, idx);
+
+        // Dispatch to posting tree if already converted
+        if (!isInlinePostingList(posting_info)) {
+            const tree_page_id = posting_info & 0x7FFFFFFF;
+            try self.appendToPostingTree(tree_page_id, tuple_id);
+            return;
+        }
+
         const current_count = posting_info & 0x7FFFFFFF;
 
         if (current_count == 0) {
@@ -547,9 +555,10 @@ pub const GIN = struct {
             return error.InvalidKey;
         }
 
-        // Check if this would exceed inline threshold
+        // Inline list full — convert to posting tree
         if (current_count >= MAX_INLINE_TUPLES) {
-            return error.PostingListFull;
+            try self.convertInlineToTree(page, idx, tuple_id);
+            return;
         }
 
         const entry_count = readEntryCount(page);
@@ -593,6 +602,117 @@ pub const GIN = struct {
         const new_posting_info = new_count; // Keep high bit 0 for inline
         const info_offset = GIN_HEADER_SIZE + (idx * GIN_ENTRY_HEADER_SIZE) + 2;
         std.mem.writeInt(u32, page[info_offset..][0..4], new_posting_info, .little);
+    }
+
+    /// Read all tuple IDs from a posting tree page.
+    fn readPostingTree(self: *GIN, tree_page_id: u32) ![]ItemPointer {
+        const tree_frame = try self.pool.fetchPage(tree_page_id);
+        defer self.pool.unpinPage(tree_page_id, false);
+
+        const count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+        const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
+        if (count > max_count) return error.InvalidKey;
+
+        const list = try self.allocator.alloc(ItemPointer, count);
+        errdefer self.allocator.free(list);
+
+        for (0..count) |i| {
+            const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+            const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
+            list[i] = ItemPointer.fromU64(tid);
+        }
+
+        return list;
+    }
+
+    /// Convert the inline posting list for entry `idx` to a posting tree, inserting `new_tuple_id`.
+    fn convertInlineToTree(self: *GIN, entry_page: []u8, idx: usize, new_tuple_id: ItemPointer) !void {
+        const inline_tuples = try self.readInlinePostingList(entry_page, idx);
+        defer self.allocator.free(inline_tuples);
+
+        const total_count = inline_tuples.len + 1;
+        const data_needed = POSTING_TREE_HEADER_SIZE + (total_count * 8);
+        if (data_needed > self.pool.pager.page_size) return error.PageFull;
+
+        const tree_page_id = try self.pool.pager.allocPage();
+        const tree_frame = try self.pool.fetchNewPage(tree_page_id);
+        defer self.pool.unpinPage(tree_page_id, true);
+
+        // Initialize posting tree page header
+        const header = PageHeader{
+            .page_type = .leaf,
+            .page_id = tree_page_id,
+            .cell_count = 0,
+            .free_offset = @intCast(self.pool.pager.page_size),
+            .checksum_value = 0,
+        };
+        header.serialize(tree_frame.data[0..PAGE_HEADER_SIZE]);
+
+        // Merge inline tuples and new tuple into sorted order
+        const new_tid = new_tuple_id.toU64();
+        var pos: u32 = POSTING_TREE_HEADER_SIZE;
+        var new_inserted = false;
+
+        for (inline_tuples) |item| {
+            const tid_val = item.toU64();
+            if (!new_inserted and new_tid < tid_val) {
+                std.mem.writeInt(u64, tree_frame.data[pos..][0..8], new_tid, .little);
+                pos += 8;
+                new_inserted = true;
+            }
+            std.mem.writeInt(u64, tree_frame.data[pos..][0..8], tid_val, .little);
+            pos += 8;
+        }
+        if (!new_inserted) {
+            std.mem.writeInt(u64, tree_frame.data[pos..][0..8], new_tid, .little);
+        }
+
+        std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(total_count), .little);
+
+        // Update entry's posting_info: set high bit, lower 31 bits = tree_page_id
+        const new_posting_info: u32 = 0x80000000 | @as(u32, @intCast(tree_page_id));
+        const info_offset = GIN_HEADER_SIZE + (idx * GIN_ENTRY_HEADER_SIZE) + 2;
+        std.mem.writeInt(u32, entry_page[info_offset..][0..4], new_posting_info, .little);
+    }
+
+    /// Append a new tuple_id to an existing posting tree page in sorted order.
+    fn appendToPostingTree(self: *GIN, tree_page_id: u32, new_tuple_id: ItemPointer) !void {
+        const tree_frame = try self.pool.fetchPage(tree_page_id);
+        defer self.pool.unpinPage(tree_page_id, true);
+
+        const current_count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+        const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
+        if (current_count >= max_count) return error.PageFull;
+
+        const new_tid = new_tuple_id.toU64();
+
+        // Find insert position (linear scan, list is sorted)
+        var insert_pos: usize = current_count;
+        for (0..current_count) |i| {
+            const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+            const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
+            if (new_tid == tid) return; // Duplicate — already indexed
+            if (new_tid < tid) {
+                insert_pos = i;
+                break;
+            }
+        }
+
+        // Shift elements right to make room
+        var i: usize = current_count;
+        while (i > insert_pos) {
+            i -= 1;
+            const src_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+            const dst_offset = src_offset + 8;
+            const val = std.mem.readInt(u64, tree_frame.data[src_offset..][0..8], .little);
+            std.mem.writeInt(u64, tree_frame.data[dst_offset..][0..8], val, .little);
+        }
+
+        const insert_offset = POSTING_TREE_HEADER_SIZE + (insert_pos * 8);
+        std.mem.writeInt(u64, tree_frame.data[insert_offset..][0..8], new_tid, .little);
+        std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(current_count + 1), .little);
+
+        tree_frame.markDirty();
     }
 
     /// Remove tuple_id from posting list at given entry index.
@@ -1160,7 +1280,7 @@ test "appendToPostingList enforces sortedness" {
     try std.testing.expectError(error.PostingListNotSorted, result);
 }
 
-test "appendToPostingList respects MAX_INLINE_TUPLES capacity" {
+test "appendToPostingList converts to posting tree at MAX_INLINE_TUPLES capacity" {
     const allocator = std.testing.allocator;
     const path = "test_gin_capacity.db";
     defer std.fs.cwd().deleteFile(path) catch {};
@@ -1189,15 +1309,18 @@ test "appendToPostingList respects MAX_INLINE_TUPLES capacity" {
         try gin.appendToPostingList(root_frame.data, 0, tid);
     }
 
-    // Verify count is at capacity
-    const posting_info = readPostingInfo(root_frame.data, 0);
-    const count = posting_info & 0x7FFFFFFF;
-    try std.testing.expectEqual(MAX_INLINE_TUPLES, count);
+    // Verify count is at capacity (inline list = 16 tuples)
+    const posting_info_before = readPostingInfo(root_frame.data, 0);
+    try std.testing.expectEqual(@as(u32, MAX_INLINE_TUPLES), posting_info_before & 0x7FFFFFFF);
+    try std.testing.expect(isInlinePostingList(posting_info_before));
 
-    // Try to append one more (should fail with PostingListFull)
+    // Append one more — should trigger conversion to posting tree (not an error)
     const tid_overflow = ItemPointer{ .page_id = 1, .tuple_offset = MAX_INLINE_TUPLES };
-    const result = gin.appendToPostingList(root_frame.data, 0, tid_overflow);
-    try std.testing.expectError(error.PostingListFull, result);
+    try gin.appendToPostingList(root_frame.data, 0, tid_overflow);
+
+    // Verify posting_info now has high bit set (tree reference)
+    const posting_info_after = readPostingInfo(root_frame.data, 0);
+    try std.testing.expect(!isInlinePostingList(posting_info_after));
 }
 
 test "readInlinePostingList handles empty posting list" {
@@ -1310,7 +1433,6 @@ test "insertNewEntry creates valid posting list structure" {
 // ────────────────────────────────────────────────────────────────────
 
 test "GIN insert single value with single key" {
-    if (true) return error.SkipZigTest; // TODO: GIN search returns empty - architectural issues (docs/GIN_INDEX_REDESIGN.md)
     const allocator = std.testing.allocator;
     const path = "test_gin_insert_single.db";
     defer std.fs.cwd().deleteFile(path) catch {};
@@ -1349,7 +1471,6 @@ test "GIN insert single value with single key" {
 }
 
 test "GIN insert single value with multiple keys" {
-    if (true) return error.SkipZigTest; // TODO: PageFull during insert - architectural issues (docs/GIN_INDEX_REDESIGN.md)
     const allocator = std.testing.allocator;
     const path = "test_gin_insert_multi_key.db";
     defer std.fs.cwd().deleteFile(path) catch {};
@@ -1586,10 +1707,47 @@ test "GIN handles array with many elements" {
 }
 
 test "GIN posting tree split when exceeding inline threshold" {
-    // TODO: Implement posting tree creation when exceeding MAX_INLINE_TUPLES
-    // Tracked in GitHub issue #54
-    // Currently returns error.PostingListFull at appendToPostingList:549
-    return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_gin_posting_tree_split.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert the SAME key (42) with 17 different ItemPointers
+    // First 16 insertions go to inline list
+    // 17th insertion should trigger conversion to posting tree
+    for (1..18) |i| {
+        var col_value: [8]u8 = undefined;
+        std.mem.writeInt(u32, col_value[0..4], 1, .little); // array length = 1
+        std.mem.writeInt(u32, col_value[4..8], 42, .little); // key = 42
+        const tid = ItemPointer{ .page_id = @intCast(i), .tuple_offset = 0 };
+        try gin.insert(&col_value, tid);
+    }
+
+    // After 17 inserts, search should return all 17 tuple_ids
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little); // query array length = 1
+    std.mem.writeInt(u32, query[4..8], 42, .little); // search for key = 42
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 17), result.len);
+
+    // Verify posting_info has high bit set (bit 31 = 1, indicating tree)
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, false);
+
+    const info_offset = GIN_HEADER_SIZE + (0 * GIN_ENTRY_HEADER_SIZE) + 2;
+    const posting_info = std.mem.readInt(u32, root_frame.data[info_offset..][0..4], .little);
+    try std.testing.expect((posting_info & 0x80000000) != 0);
 }
 
 test "GIN search with contains strategy checks all keys" {
@@ -1659,9 +1817,9 @@ test "GIN ItemPointer encoding round-trip" {
 // Error Path Tests
 // ────────────────────────────────────────────────────────────────────
 
-test "GIN readPostingList returns TreeEmpty for posting tree" {
+test "GIN readPostingList reads from posting tree" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_tree_empty.db";
+    const path = "test_gin_tree_read.db";
     defer std.fs.cwd().deleteFile(path) catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -1674,20 +1832,37 @@ test "GIN readPostingList returns TreeEmpty for posting tree" {
     const opclass = ArrayInt32OpClass.getOpClass();
     var gin = try GIN.init(allocator, &pool, root_id, opclass);
 
-    // Manually create a page with a posting tree reference (high bit set)
+    // Allocate a second page for the posting tree
+    const tree_page_id = try pager.allocPage();
+    const tree_frame = try pool.fetchNewPage(tree_page_id);
+
+    // Initialize tree page: count at PAGE_HEADER_SIZE(16), tuples at POSTING_TREE_HEADER_SIZE(20)
+    std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], 2, .little); // count = 2
+
+    // Write tuple 0: page_id=10, tuple_offset=1
+    const tuple0 = ItemPointer{ .page_id = 10, .tuple_offset = 1 };
+    std.mem.writeInt(u64, tree_frame.data[POSTING_TREE_HEADER_SIZE..][0..8], tuple0.toU64(), .little);
+
+    // Write tuple 1: page_id=20, tuple_offset=2
+    const tuple1 = ItemPointer{ .page_id = 20, .tuple_offset = 2 };
+    std.mem.writeInt(u64, tree_frame.data[POSTING_TREE_HEADER_SIZE + 8..][0..8], tuple1.toU64(), .little);
+
+    tree_frame.markDirty();
+    pool.unpinPage(tree_page_id, true);
+
+    // Now set up root page with entry pointing to tree page
     const root_frame = try gin.fetchOrInitRootPage();
     defer pool.unpinPage(root_id, true);
 
-    // Add an entry with posting_info indicating posting tree (bit 31 set)
     writeEntryCount(root_frame.data, 1);
 
-    // Write key_size at entry header offset
+    // Write key_size
     const key_size_offset = GIN_HEADER_SIZE;
     std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
 
-    // Write posting_info with high bit set (posting tree)
+    // Write posting_info with high bit set and tree_page_id
     const posting_info_offset = GIN_HEADER_SIZE + 2;
-    const posting_tree_info: u32 = 0x80000001; // High bit set = posting tree
+    const posting_tree_info: u32 = 0x80000000 | tree_page_id;
     std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], posting_tree_info, .little);
 
     // Write a key at the end
@@ -1695,16 +1870,21 @@ test "GIN readPostingList returns TreeEmpty for posting tree" {
     std.mem.writeInt(u32, root_frame.data[key_offset..][0..4], 42, .little);
 
     root_frame.markDirty();
-    pool.unpinPage(root_id, true);
 
-    // Try to read this posting list - should return TreeEmpty error
-    const result = gin.readPostingList(root_frame.data, 0);
-    try std.testing.expectError(error.TreeEmpty, result);
+    // Try to read this posting list - should successfully return tuples from tree
+    const result = try gin.readPostingList(root_frame.data, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqual(@as(u32, 10), result[0].page_id);
+    try std.testing.expectEqual(@as(u16, 1), result[0].tuple_offset);
+    try std.testing.expectEqual(@as(u32, 20), result[1].page_id);
+    try std.testing.expectEqual(@as(u16, 2), result[1].tuple_offset);
 }
 
-test "GIN appendToPostingList returns PostingListFull when exceeding limit" {
+test "GIN appendToPostingList converts to posting tree when inline list is full" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_list_full.db";
+    const path = "test_gin_convert_to_tree.db";
     defer std.fs.cwd().deleteFile(path) catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -1720,27 +1900,37 @@ test "GIN appendToPostingList returns PostingListFull when exceeding limit" {
     const root_frame = try gin.fetchOrInitRootPage();
     defer pool.unpinPage(root_id, true);
 
-    // Create an entry with MAX_INLINE_TUPLES (at the limit)
+    // Create an entry with MAX_INLINE_TUPLES (16 sorted tuples, page_id=1..16)
     writeEntryCount(root_frame.data, 1);
 
-    // Write key_size and posting_info
+    // Write key_size
     const key_size_offset = GIN_HEADER_SIZE;
     std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
+
+    // Write posting_info with count = MAX_INLINE_TUPLES
     const posting_info_offset = GIN_HEADER_SIZE + 2;
     std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], MAX_INLINE_TUPLES, .little);
 
-    // Set up data offset
+    // Set up data offset and write all 16 tuples
     const entry_count = readEntryCount(root_frame.data);
     const data_offset_ptr = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
-    const data_start: u32 = @intCast(pager.page_size - (MAX_INLINE_TUPLES * 8));
+    const data_start: u32 = @intCast(pager.page_size - (128)); // 128 = 16*8
     std.mem.writeInt(u32, root_frame.data[data_offset_ptr..][0..4], data_start, .little);
 
-    // Write first tuple ID (need at least one for sortedness check)
-    std.mem.writeInt(u64, root_frame.data[data_start..][0..8], 1, .little);
+    // Write all 16 sorted tuples (page_id=1..16, tuple_offset=0)
+    for (0..MAX_INLINE_TUPLES) |i| {
+        const tid = ItemPointer{ .page_id = @intCast(i + 1), .tuple_offset = 0 };
+        const tid_offset = data_start + (i * 8);
+        std.mem.writeInt(u64, root_frame.data[tid_offset..][0..8], tid.toU64(), .little);
+    }
 
-    const tuple_id = ItemPointer{ .page_id = 1, .tuple_offset = 101 };
-    const result = gin.appendToPostingList(root_frame.data, 0, tuple_id);
-    try std.testing.expectError(error.PostingListFull, result);
+    // Now append one more tuple (17th) - should succeed and convert to tree
+    const new_tuple = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.appendToPostingList(root_frame.data, 0, new_tuple);
+
+    // Verify high bit is now set in posting_info (indicating tree)
+    const new_posting_info = std.mem.readInt(u32, root_frame.data[posting_info_offset..][0..4], .little);
+    try std.testing.expect((new_posting_info & 0x80000000) != 0);
 }
 
 test "GIN appendToPostingList returns InvalidPostingList for empty list" {
