@@ -9,30 +9,35 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 314 - FEATURE MODE)
+### Last Session (Session 315 - STABILIZATION MODE)
 - **Date**: 2026-05-23
-- **Mode**: FEATURE MODE (Session 314)
-- **Focus**: Documentation update — clarify GIN posting tree limitation
-- **Outcome**: ✅ Updated KNOWN_ISSUES.md with GIN posting tree details
+- **Mode**: STABILIZATION MODE (Session 315 — every 5th session)
+- **Focus**: Test quality audit — fix meaningless/missing assertions
+- **Outcome**: ✅ Improved 2 weak tests in src/config/file.zig
 - **Details**:
   - **CI Status**: ✅ GREEN (CI passing on main)
-  - **GitHub Issues**: 1 open issue (#54 — GIN posting tree conversion)
+  - **GitHub Issues**: 1 open issue (#54 — GIN posting tree enhancement, not blocking)
   - **Work Done**:
-    - Committed Session 311 GIN fix documentation to debugging.md (commit a33fcf5)
-    - Attempted to complete posting tree implementation (issue #54) but reverted due to complexity
-    - Updated docs/KNOWN_ISSUES.md to explicitly document GIN posting tree limitation (commit d4aa535)
-      - Clarified 16 tuple ID limit per key (inline posting list)
-      - Explained PostingListFull error when exceeding limit
-      - Added workaround (use B+Tree index for high-cardinality columns)
-      - Linked to GitHub issue #54
-  - **Commits**:
-    - a33fcf5 — docs: document GIN index key corruption fix (Session 311)
-    - d4aa535 — docs: clarify GIN posting tree limitation in KNOWN_ISSUES.md
+    - Audited test suite for quality issues (no assertions, trivial assertions, etc.)
+    - Fixed "FileWatcher can be stopped and restarted" test:
+      - Replaced meaningless `expect(true)` with actual callback validation
+      - Now verifies watcher can be stopped and restarted with new callbacks invoked
+    - Fixed "hot-reload skips restart-required parameters" test:
+      - Added assertions to verify current behavior (both params update on reload)
+      - Documented expected future behavior when hot-reload filtering is implemented
+      - Added validation of `isReloadable()` helper function
+  - **Commit**: 5924b0b — test(config): improve test quality in file.zig
   - **Lessons**:
-    - WIP posting tree implementation was too complex to complete in one session
-    - Need dedicated TDD approach: write failing test first, then implement incrementally
-    - Documentation improvements are valid contributions when feature work is blocked
-- **Project State**: v1.0.1 stable, CI green, maintenance mode
+    - STABILIZATION mode is effective for finding weak tests via pattern matching
+    - Tests without assertions or with `expect(true)` are red flags
+    - Documenting expected vs. actual behavior in tests is valuable for future work
+- **Project State**: v1.0.1 stable, CI green, test quality improved
+
+### Session 314 (FEATURE MODE)
+- **Date**: 2026-05-23
+- **Focus**: Documentation update — clarify GIN posting tree limitation
+- **Outcome**: ✅ Updated KNOWN_ISSUES.md with GIN posting tree details
+- **Commits**: a33fcf5, d4aa535
 
 ### Session 308 (FEATURE MODE)
 - **Date**: 2026-05-21
