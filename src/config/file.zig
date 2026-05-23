@@ -213,7 +213,10 @@ fn watchFileKqueue(file_fd: std.posix.fd_t, file_path: []const u8, callback: *co
     kevent.udata = 0;
 
     var kevents: [1]std.c.Kevent = undefined;
-    _ = try std.posix.kevent(kq, &[_]std.c.Kevent{kevent}, &kevents, null);
+    // Use zero timeout so kevent returns immediately after registering the event.
+    // null would block indefinitely waiting for the first file modification.
+    var zero_timeout: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = try std.posix.kevent(kq, &[_]std.c.Kevent{kevent}, &kevents, &zero_timeout);
 
     // Event loop: wait for file changes
     while (!should_stop.load(.acquire)) {
