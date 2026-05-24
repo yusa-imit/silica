@@ -45,7 +45,8 @@ const GIN_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // page_type + entry_count + 
 const GIN_ENTRY_HEADER_SIZE: u32 = 2 + 4; // key_size(u16) + posting_info(u32)
 const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128; // Bytes before switching to posting tree (128 bytes = 16 u64 tuple IDs)
 const MAX_INLINE_TUPLES: u32 = 16; // With fixed u64 encoding: 128 bytes / 8 bytes per tuple = 16 tuples max
-const POSTING_TREE_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // PageHeader(16) + tuple_count(u32=4)
+const POSTING_TREE_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 8; // PageHeader(16) + tuple_count(u32=4) + next_page_id(u32=4)
+const POSTING_TREE_NEXT_PAGE_OFFSET: u32 = PAGE_HEADER_SIZE + 4; // next_page_id field: 0 = no next page
 
 /// ItemPointer — (page_id, tuple_offset) uniquely identifying a row.
 pub const ItemPointer = struct {
@@ -604,25 +605,38 @@ pub const GIN = struct {
         std.mem.writeInt(u32, page[info_offset..][0..4], new_posting_info, .little);
     }
 
-    /// Read all tuple IDs from a posting tree page.
+    /// Read all tuple IDs from a posting tree chain (follows next_page_id links).
     fn readPostingTree(self: *GIN, tree_page_id: u32) ![]ItemPointer {
-        const tree_frame = try self.pool.fetchPage(tree_page_id);
-        defer self.pool.unpinPage(tree_page_id, false);
+        var all_tuples = std.ArrayList(ItemPointer){};
+        errdefer all_tuples.deinit(self.allocator);
 
-        const count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
-        const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
-        if (count > max_count) return error.InvalidKey;
-
-        const list = try self.allocator.alloc(ItemPointer, count);
-        errdefer self.allocator.free(list);
-
-        for (0..count) |i| {
-            const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
-            const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
-            list[i] = ItemPointer.fromU64(tid);
+        var current_page_id = tree_page_id;
+        while (current_page_id != 0) {
+            const tree_frame = try self.pool.fetchPage(current_page_id);
+            const count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+            const next_page = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
+            const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
+            if (count > max_count) {
+                self.pool.unpinPage(current_page_id, false);
+                return error.InvalidKey;
+            }
+            for (0..count) |i| {
+                const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+                const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
+                try all_tuples.append(self.allocator, ItemPointer.fromU64(tid));
+            }
+            self.pool.unpinPage(current_page_id, false);
+            current_page_id = next_page;
         }
 
-        return list;
+        const result = try all_tuples.toOwnedSlice(self.allocator);
+        // Sort by u64 value for deterministic, globally-sorted output
+        std.mem.sort(ItemPointer, result, {}, struct {
+            fn lessThan(_: void, a: ItemPointer, b: ItemPointer) bool {
+                return a.toU64() < b.toU64();
+            }
+        }.lessThan);
+        return result;
     }
 
     /// Convert the inline posting list for entry `idx` to a posting tree, inserting `new_tuple_id`.
@@ -647,6 +661,7 @@ pub const GIN = struct {
             .checksum_value = 0,
         };
         header.serialize(tree_frame.data[0..PAGE_HEADER_SIZE]);
+        std.mem.writeInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], 0, .little);
 
         // Merge inline tuples and new tuple into sorted order
         const new_tid = new_tuple_id.toU64();
@@ -675,44 +690,80 @@ pub const GIN = struct {
         std.mem.writeInt(u32, entry_page[info_offset..][0..4], new_posting_info, .little);
     }
 
-    /// Append a new tuple_id to an existing posting tree page in sorted order.
-    fn appendToPostingTree(self: *GIN, tree_page_id: u32, new_tuple_id: ItemPointer) !void {
-        const tree_frame = try self.pool.fetchPage(tree_page_id);
-        defer self.pool.unpinPage(tree_page_id, true);
+    /// Append a new tuple_id to a posting tree chain in sorted order.
+    /// When the current page is full, follows next_page_id links or allocates a new page.
+    fn appendToPostingTree(self: *GIN, root_tree_page_id: u32, new_tuple_id: ItemPointer) !void {
+        var current_page_id = root_tree_page_id;
 
-        const current_count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
-        const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
-        if (current_count >= max_count) return error.PageFull;
+        while (true) {
+            const tree_frame = try self.pool.fetchPage(current_page_id);
+            const current_count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+            const next_page_id = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
+            const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
 
-        const new_tid = new_tuple_id.toU64();
-
-        // Find insert position (linear scan, list is sorted)
-        var insert_pos: usize = current_count;
-        for (0..current_count) |i| {
-            const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
-            const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
-            if (new_tid == tid) return; // Duplicate — already indexed
-            if (new_tid < tid) {
-                insert_pos = i;
-                break;
+            if (current_count < max_count) {
+                // Space available: insert in sorted order within this page
+                const new_tid = new_tuple_id.toU64();
+                var insert_pos: usize = current_count;
+                for (0..current_count) |i| {
+                    const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+                    const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
+                    if (new_tid == tid) {
+                        self.pool.unpinPage(current_page_id, false);
+                        return; // Duplicate — already indexed
+                    }
+                    if (new_tid < tid) {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+                // Shift elements right to make room
+                var i: usize = current_count;
+                while (i > insert_pos) {
+                    i -= 1;
+                    const src_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+                    const dst_offset = src_offset + 8;
+                    const val = std.mem.readInt(u64, tree_frame.data[src_offset..][0..8], .little);
+                    std.mem.writeInt(u64, tree_frame.data[dst_offset..][0..8], val, .little);
+                }
+                const insert_offset = POSTING_TREE_HEADER_SIZE + (insert_pos * 8);
+                std.mem.writeInt(u64, tree_frame.data[insert_offset..][0..8], new_tuple_id.toU64(), .little);
+                std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(current_count + 1), .little);
+                tree_frame.markDirty();
+                self.pool.unpinPage(current_page_id, true);
+                return;
             }
+
+            if (next_page_id != 0) {
+                // This page is full — follow the chain
+                self.pool.unpinPage(current_page_id, false);
+                current_page_id = next_page_id;
+                continue;
+            }
+
+            // This is the last page and it's full — allocate a new linked page
+            const new_page_id = try self.pool.pager.allocPage();
+            const new_frame = try self.pool.fetchNewPage(new_page_id);
+            const new_header = PageHeader{
+                .page_type = .leaf,
+                .page_id = new_page_id,
+                .cell_count = 0,
+                .free_offset = @intCast(self.pool.pager.page_size),
+                .checksum_value = 0,
+            };
+            new_header.serialize(new_frame.data[0..PAGE_HEADER_SIZE]);
+            std.mem.writeInt(u32, new_frame.data[PAGE_HEADER_SIZE..][0..4], 1, .little); // count = 1
+            std.mem.writeInt(u32, new_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], 0, .little); // no next
+            std.mem.writeInt(u64, new_frame.data[POSTING_TREE_HEADER_SIZE..][0..8], new_tuple_id.toU64(), .little);
+            new_frame.markDirty();
+            self.pool.unpinPage(new_page_id, true);
+
+            // Link current page to new page
+            std.mem.writeInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], @intCast(new_page_id), .little);
+            tree_frame.markDirty();
+            self.pool.unpinPage(current_page_id, true);
+            return;
         }
-
-        // Shift elements right to make room
-        var i: usize = current_count;
-        while (i > insert_pos) {
-            i -= 1;
-            const src_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
-            const dst_offset = src_offset + 8;
-            const val = std.mem.readInt(u64, tree_frame.data[src_offset..][0..8], .little);
-            std.mem.writeInt(u64, tree_frame.data[dst_offset..][0..8], val, .little);
-        }
-
-        const insert_offset = POSTING_TREE_HEADER_SIZE + (insert_pos * 8);
-        std.mem.writeInt(u64, tree_frame.data[insert_offset..][0..8], new_tid, .little);
-        std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(current_count + 1), .little);
-
-        tree_frame.markDirty();
     }
 
     /// Remove tuple_id from posting list at given entry index.
@@ -2037,4 +2088,72 @@ test "GIN readInlinePostingList handles corrupted tuple_count gracefully" {
 
     const result = gin.readInlinePostingList(root_frame.data, 0);
     try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "GIN posting tree chains multiple pages for very high-cardinality keys" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_multi_page_posting.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Use 512-byte pages to keep posting tree page capacity small
+    // With new 24-byte header: (512 - 24) / 8 = 61 tuples per page
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert the SAME key (99) with 80 different ItemPointers
+    // This should exceed the single posting tree page capacity
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little); // count = 1
+    std.mem.writeInt(u32, col_value[4..8], 99, .little); // key = 99
+
+    // Insert 16 tuples inline (stays in root page inline posting list)
+    for (0..16) |i| {
+        const tid = ItemPointer{ .page_id = @intCast(i + 1), .tuple_offset = 0 };
+        try gin.insert(&col_value, tid);
+    }
+
+    // 17th insert triggers conversion to posting tree
+    const tid17 = ItemPointer{ .page_id = 17, .tuple_offset = 0 };
+    try gin.insert(&col_value, tid17);
+
+    // Continue inserting up to 80 tuples total
+    // Expected to overflow a single posting tree page (61 tuples max with 24-byte header)
+    for (18..81) |i| {
+        const tid = ItemPointer{ .page_id = @intCast(i), .tuple_offset = 0 };
+        try gin.insert(&col_value, tid);
+    }
+
+    // Search for key 99 and verify all 80 tuples are returned
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], 99, .little);
+
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
+
+    // Verify we got all 80 results
+    try std.testing.expectEqual(@as(usize, 80), result.len);
+
+    // Verify all page IDs from 1 to 80 are present in the result
+    // Create a sorted result to verify completeness
+    var seen = try allocator.alloc(bool, 81);
+    defer allocator.free(seen);
+    @memset(seen, false);
+
+    for (result) |item| {
+        if (item.page_id >= 1 and item.page_id <= 80) {
+            seen[item.page_id] = true;
+        }
+    }
+
+    for (1..81) |page_id| {
+        try std.testing.expect(seen[page_id]);
+    }
 }
