@@ -986,127 +986,144 @@ pub const Database = struct {
         };
     }
 
-    /// Count parameter placeholders (?) in an AST.
-    fn countParameters(stmt: *const ast_mod.Stmt) usize {
-        return switch (stmt.*) {
-            .select => |s| countParamsInSelect(&s),
-            .insert => |i| countParamsInInsert(&i),
-            .update => |u| countParamsInUpdate(&u),
-            .delete => |d| countParamsInDelete(&d),
-            else => 0,
-        };
+    /// Helper to merge two optional max indices.
+    fn mergeMaxIndex(a: ?u32, b: ?u32) ?u32 {
+        if (a == null) return b;
+        if (b == null) return a;
+        return @max(a.?, b.?);
     }
 
-    fn countParamsInSelect(select: *const ast_mod.SelectStmt) usize {
-        var count: usize = 0;
-        // Count in WHERE clause
+    /// Count parameter placeholders (?, $N) in an AST using max index approach.
+    fn countParameters(stmt: *const ast_mod.Stmt) usize {
+        const max_idx = switch (stmt.*) {
+            .select => |s| maxParamInSelect(&s),
+            .insert => |i| maxParamInInsert(&i),
+            .update => |u| maxParamInUpdate(&u),
+            .delete => |d| maxParamInDelete(&d),
+            else => null,
+        } orelse return 0;
+        return @as(usize, max_idx) + 1;
+    }
+
+    fn maxParamInSelect(select: *const ast_mod.SelectStmt) ?u32 {
+        var max: ?u32 = null;
+        // Max in WHERE clause
         if (select.where) |where| {
-            count += countParamsInExpr(where);
+            max = mergeMaxIndex(max, maxParamInExpr(where));
         }
-        // Count in projections
+        // Max in projections
         for (select.columns) |col| {
             switch (col) {
-                .expr => |e| count += countParamsInExpr(e.value),
+                .expr => |e| max = mergeMaxIndex(max, maxParamInExpr(e.value)),
                 else => {},
             }
         }
-        // Count in ORDER BY
+        // Max in ORDER BY
         for (select.order_by) |order| {
-            count += countParamsInExpr(order.expr);
+            max = mergeMaxIndex(max, maxParamInExpr(order.expr));
         }
-        // Count in HAVING
+        // Max in HAVING
         if (select.having) |having| {
-            count += countParamsInExpr(having);
+            max = mergeMaxIndex(max, maxParamInExpr(having));
         }
-        // Count in JOINs
+        // Max in JOINs
         for (select.joins) |join| {
             if (join.on_condition) |on| {
-                count += countParamsInExpr(on);
+                max = mergeMaxIndex(max, maxParamInExpr(on));
             }
         }
-        return count;
+        return max;
     }
 
-    fn countParamsInInsert(insert: *const ast_mod.InsertStmt) usize {
-        var count: usize = 0;
+    fn maxParamInInsert(insert: *const ast_mod.InsertStmt) ?u32 {
+        var max: ?u32 = null;
         for (insert.values) |row| {
             for (row) |val| {
-                count += countParamsInExpr(val);
+                max = mergeMaxIndex(max, maxParamInExpr(val));
             }
         }
-        return count;
+        return max;
     }
 
-    fn countParamsInUpdate(update: *const ast_mod.UpdateStmt) usize {
-        var count: usize = 0;
+    fn maxParamInUpdate(update: *const ast_mod.UpdateStmt) ?u32 {
+        var max: ?u32 = null;
         for (update.assignments) |assign| {
-            count += countParamsInExpr(assign.value);
+            max = mergeMaxIndex(max, maxParamInExpr(assign.value));
         }
         if (update.where) |where| {
-            count += countParamsInExpr(where);
+            max = mergeMaxIndex(max, maxParamInExpr(where));
         }
-        return count;
+        return max;
     }
 
-    fn countParamsInDelete(delete: *const ast_mod.DeleteStmt) usize {
-        var count: usize = 0;
+    fn maxParamInDelete(delete: *const ast_mod.DeleteStmt) ?u32 {
+        var max: ?u32 = null;
         if (delete.where) |where| {
-            count += countParamsInExpr(where);
+            max = mergeMaxIndex(max, maxParamInExpr(where));
         }
-        return count;
+        return max;
     }
 
-    fn countParamsInExpr(expr: *const ast_mod.Expr) usize {
+    fn maxParamInExpr(expr: *const ast_mod.Expr) ?u32 {
         return switch (expr.*) {
-            .bind_parameter => 1,
-            .binary_op => |b| countParamsInExpr(b.left) + countParamsInExpr(b.right),
-            .unary_op => |u| countParamsInExpr(u.operand),
+            .bind_parameter => |idx| idx,
+            .binary_op => |b| mergeMaxIndex(maxParamInExpr(b.left), maxParamInExpr(b.right)),
+            .unary_op => |u| maxParamInExpr(u.operand),
             .function_call => |f| blk: {
-                var count: usize = 0;
-                for (f.args) |arg| count += countParamsInExpr(arg);
-                break :blk count;
+                var max: ?u32 = null;
+                for (f.args) |arg| max = mergeMaxIndex(max, maxParamInExpr(arg));
+                break :blk max;
             },
             .case_expr => |c| blk: {
-                var count: usize = 0;
-                if (c.operand) |v| count += countParamsInExpr(v);
+                var max: ?u32 = null;
+                if (c.operand) |v| max = mergeMaxIndex(max, maxParamInExpr(v));
                 for (c.when_clauses) |when| {
-                    count += countParamsInExpr(when.condition);
-                    count += countParamsInExpr(when.result);
+                    max = mergeMaxIndex(max, maxParamInExpr(when.condition));
+                    max = mergeMaxIndex(max, maxParamInExpr(when.result));
                 }
-                if (c.else_expr) |e| count += countParamsInExpr(e);
-                break :blk count;
+                if (c.else_expr) |e| max = mergeMaxIndex(max, maxParamInExpr(e));
+                break :blk max;
             },
             .in_list => |i| blk: {
-                var count: usize = countParamsInExpr(i.expr);
-                for (i.list) |v| count += countParamsInExpr(v);
-                break :blk count;
+                var max: ?u32 = maxParamInExpr(i.expr);
+                for (i.list) |v| max = mergeMaxIndex(max, maxParamInExpr(v));
+                break :blk max;
             },
-            .between => |b| countParamsInExpr(b.expr) + countParamsInExpr(b.low) + countParamsInExpr(b.high),
-            .cast => |c| countParamsInExpr(c.expr),
-            .is_null => |i| countParamsInExpr(i.expr),
-            .like => |l| countParamsInExpr(l.expr) + countParamsInExpr(l.pattern),
-            .paren => |p| countParamsInExpr(p),
-            .array_subscript => |a| countParamsInExpr(a.array) + countParamsInExpr(a.index),
-            .any => |a| countParamsInExpr(a.expr) + countParamsInExpr(a.array),
-            .all => |a| countParamsInExpr(a.expr) + countParamsInExpr(a.array),
+            .between => |b| mergeMaxIndex(
+                mergeMaxIndex(maxParamInExpr(b.expr), maxParamInExpr(b.low)),
+                maxParamInExpr(b.high),
+            ),
+            .cast => |c| maxParamInExpr(c.expr),
+            .is_null => |i| maxParamInExpr(i.expr),
+            .like => |l| mergeMaxIndex(maxParamInExpr(l.expr), maxParamInExpr(l.pattern)),
+            .paren => |p| maxParamInExpr(p),
+            .array_subscript => |a| mergeMaxIndex(maxParamInExpr(a.array), maxParamInExpr(a.index)),
+            .any => |a| mergeMaxIndex(maxParamInExpr(a.expr), maxParamInExpr(a.array)),
+            .all => |a| mergeMaxIndex(maxParamInExpr(a.expr), maxParamInExpr(a.array)),
             .array_constructor => |arr| blk: {
-                var count: usize = 0;
-                for (arr) |elem| count += countParamsInExpr(elem);
-                break :blk count;
+                var max: ?u32 = null;
+                for (arr) |elem| max = mergeMaxIndex(max, maxParamInExpr(elem));
+                break :blk max;
             },
             .window_function => |w| blk: {
-                var count: usize = 0;
-                for (w.args) |arg| count += countParamsInExpr(arg);
-                // Count in PARTITION BY
-                for (w.partition_by) |part_expr| count += countParamsInExpr(part_expr);
-                // Count in ORDER BY
-                for (w.order_by) |order| count += countParamsInExpr(order.expr);
-                break :blk count;
+                var max: ?u32 = null;
+                for (w.args) |arg| max = mergeMaxIndex(max, maxParamInExpr(arg));
+                // Max in PARTITION BY
+                for (w.partition_by) |part_expr| max = mergeMaxIndex(max, maxParamInExpr(part_expr));
+                // Max in ORDER BY
+                for (w.order_by) |order| max = mergeMaxIndex(max, maxParamInExpr(order.expr));
+                break :blk max;
             },
-            .exists => 0, // Subquery params handled separately
-            .subquery => 0, // Subquery params handled separately
-            else => 0,
+            .exists => null, // Subquery params handled separately
+            .subquery => null, // Subquery params handled separately
+            else => null,
         };
+    }
+
+    /// Backwards compatibility wrapper for countParamsInExpr (now uses max-index).
+    fn countParamsInExpr(expr: *const ast_mod.Expr) usize {
+        const max = maxParamInExpr(expr) orelse return 0;
+        return @as(usize, max) + 1;
     }
 
     /// Execute a plan with bound parameters (used by PreparedStatement).
@@ -20832,4 +20849,200 @@ test "prepared stmt: rebind after execution" {
 // The "memory leaks" this tried to fix are expected test artifacts (see debugging.md)
 // and don't represent production bugs. The global registry is designed to persist
 // for the lifetime of the process to maintain transaction ID monotonicity.
+
+// ── $N-Style Parameter Tests ──────────────────────────────────────────────
+
+test "numbered param: $1 in SELECT WHERE" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_numbered_param_select.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
+    defer r2.close(testing.allocator);
+
+    // Prepare statement with $1 parameter
+    var stmt = try db.prepare(testing.allocator, "SELECT * FROM t WHERE id = $1");
+    defer stmt.close();
+
+    // Bind parameter at index 0 (corresponding to $1)
+    try stmt.bind(0, Value{ .integer = 2 });
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+
+    // Verify result: should return row with id=2, name='Bob'
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        try testing.expectEqualStrings("Bob", row.values[1].text);
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "numbered param: $1 and $2 in INSERT" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_numbered_param_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Prepare statement with $1 and $2 parameters
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO t (id, name) VALUES ($1, $2)");
+    defer stmt.close();
+
+    // Bind both parameters (indices 0 and 1 corresponding to $1 and $2)
+    try stmt.bind(0, Value{ .integer = 10 });
+    try stmt.bind(1, Value{ .text = try testing.allocator.dupe(u8, "TestName") });
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+
+    // Verify the insert succeeded by reading back
+    var verify = try db.execSQL("SELECT id, name FROM t WHERE id = 10");
+    defer verify.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try verify.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expectEqual(@as(i64, 10), row.values[0].integer);
+        try testing.expectEqualStrings("TestName", row.values[1].text);
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "numbered param: reuse same parameter $1 twice" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_numbered_param_reuse.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER, c TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t (a, b, c) VALUES (5, 5, 'match'), (5, 10, 'partial'), (10, 5, 'partial2'), (10, 10, 'nomatch')");
+    defer r2.close(testing.allocator);
+
+    // Prepare statement where $1 is used twice (a = $1 OR b = $1)
+    var stmt = try db.prepare(testing.allocator, "SELECT * FROM t WHERE a = $1 OR b = $1");
+    defer stmt.close();
+
+    // Bind $1 to value 5
+    try stmt.bind(0, Value{ .integer = 5 });
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+
+    // Verify we get rows where a=5 OR b=5 (first 3 rows)
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        // Each row should have a=5 or b=5
+        const a = row.values[0].integer;
+        const b = row.values[1].integer;
+        try testing.expect(a == 5 or b == 5);
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "numbered param: out of order $2 before $1" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_numbered_param_out_of_order.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 10), (2, 20), (3, 30)");
+    defer r2.close(testing.allocator);
+
+    // Prepare statement where $2 appears before $1 (a = $2 AND b = $1)
+    var stmt = try db.prepare(testing.allocator, "SELECT * FROM t WHERE a = $2 AND b = $1");
+    defer stmt.close();
+
+    // Bind parameters: index 0 -> $1 (b value = 20), index 1 -> $2 (a value = 2)
+    try stmt.bind(0, Value{ .integer = 20 });
+    try stmt.bind(1, Value{ .integer = 2 });
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+
+    // Verify we get exactly one row where a=2 AND b=20
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        try testing.expectEqual(@as(i64, 20), row.values[1].integer);
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "numbered param: $1-style rejects $0" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_numbered_param_zero.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+    defer r1.close(testing.allocator);
+
+    // Attempt to prepare statement with invalid $0 parameter
+    // Should fail because parameter numbers must be >= 1
+    const result = db.prepare(testing.allocator, "SELECT * FROM t WHERE id = $0");
+
+    // Should fail with error (InvalidSql or similar)
+    try testing.expect(result == error.InvalidSql or result == error.SyntaxError);
+}
+
+test "numbered param: mixed ? and $1 rejected" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_numbered_param_mixed.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Attempt to prepare statement mixing ? and $1 parameter styles
+    // Should fail because we can't mix numbered and positional parameters
+    const result = db.prepare(testing.allocator, "SELECT * FROM t WHERE id = ? AND name = $1");
+
+    // Should fail with error (mixing styles not allowed)
+    try testing.expect(result == error.InvalidSql or result == error.SyntaxError);
+}
 

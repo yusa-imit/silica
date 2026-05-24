@@ -14,6 +14,7 @@ pub const TokenType = enum {
 
     // Parameters
     placeholder, // ? for prepared statements
+    numbered_placeholder, // $1, $2, etc. for PostgreSQL-style numbered params
 
     // Operators
     plus,
@@ -459,6 +460,19 @@ pub const Tokenizer = struct {
                 }
                 // Standalone ? is a bind parameter placeholder for prepared statements
                 return .{ .type = .placeholder, .start = start, .len = 1 };
+            },
+            '$' => {
+                self.pos += 1;
+                const digit_start = self.pos;
+                while (self.pos < self.source.len and isDigit(self.source[self.pos])) {
+                    self.pos += 1;
+                }
+                if (self.pos > digit_start) {
+                    // $N where N is one or more digits
+                    return .{ .type = .numbered_placeholder, .start = start, .len = self.pos - start };
+                }
+                // bare $ is invalid
+                return .{ .type = .invalid, .start = start, .len = 1 };
             },
             '#' => {
                 self.pos += 1;

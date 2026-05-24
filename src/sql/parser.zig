@@ -24,6 +24,8 @@ pub const Parser = struct {
     errors: std.ArrayListUnmanaged(ParseError),
     /// Counter for bind parameters (? placeholders) in current statement.
     bind_param_index: u32,
+    /// Flag indicating whether this statement uses numbered params ($N).
+    uses_numbered_params: bool,
 
     pub const Error = error{
         ParseFailed,
@@ -49,6 +51,7 @@ pub const Parser = struct {
             .infra_alloc = infra_alloc,
             .errors = .{},
             .bind_param_index = 0,
+            .uses_numbered_params = false,
         };
     }
 
@@ -185,6 +188,7 @@ pub const Parser = struct {
 
         // Reset bind parameter counter for each statement
         self.bind_param_index = 0;
+        self.uses_numbered_params = false;
 
         const t = self.peek();
         const stmt: ast.Stmt = switch (t.type) {
@@ -2500,9 +2504,35 @@ pub const Parser = struct {
             },
             .placeholder => {
                 // Bind parameter placeholder: ?
+                if (self.uses_numbered_params) {
+                    try self.addError(self.peek(), "cannot mix ? and $N parameter styles");
+                    return error.ParseFailed;
+                }
                 _ = self.advance();
                 const idx = self.bind_param_index;
                 self.bind_param_index += 1;
+                return self.arena.create(ast.Expr, .{ .bind_parameter = idx }) catch return error.OutOfMemory;
+            },
+            .numbered_placeholder => {
+                // PostgreSQL-style numbered parameter: $1, $2, etc.
+                if (self.bind_param_index > 0) {
+                    try self.addError(self.peek(), "cannot mix ? and $N parameter styles");
+                    return error.ParseFailed;
+                }
+                const token = self.peek();
+                const lex_str = token.lexeme(self.source);
+                std.debug.assert(lex_str.len >= 2 and lex_str[0] == '$');
+                const n = std.fmt.parseInt(u32, lex_str[1..], 10) catch {
+                    try self.addError(token, "invalid parameter number");
+                    return error.ParseFailed;
+                };
+                if (n == 0) {
+                    try self.addError(token, "parameter numbering starts at $1");
+                    return error.ParseFailed;
+                }
+                self.uses_numbered_params = true;
+                const idx = n - 1; // 0-based internally
+                _ = self.advance();
                 return self.arena.create(ast.Expr, .{ .bind_parameter = idx }) catch return error.OutOfMemory;
             },
             .minus => {
