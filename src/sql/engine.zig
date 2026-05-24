@@ -20908,7 +20908,7 @@ test "numbered param: $1 and $2 in INSERT" {
 
     // Bind both parameters (indices 0 and 1 corresponding to $1 and $2)
     try stmt.bind(0, Value{ .integer = 10 });
-    try stmt.bind(1, Value{ .text = try testing.allocator.dupe(u8, "TestName") });
+    try stmt.bind(1, Value{ .text = "TestName" });
     var result = try stmt.execute();
     defer result.close(testing.allocator);
 
