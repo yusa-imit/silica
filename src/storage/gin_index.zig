@@ -110,7 +110,6 @@ pub const ArrayInt32OpClass = struct {
         if (a.len < 4 or b.len < 4) return error.InvalidKey;
         const a_val = std.mem.readInt(u32, a[0..4], .little);
         const b_val = std.mem.readInt(u32, b[0..4], .little);
-        std.debug.print("[GIN Compare] a_val={d}, b_val={d}\n", .{ a_val, b_val });
         if (a_val < b_val) return -1;
         if (a_val > b_val) return 1;
         return 0;
@@ -258,9 +257,6 @@ pub const GIN = struct {
             self.allocator.free(query_keys);
         }
 
-        std.debug.print("[GIN Search] Query value ({d} bytes), strategy: {d}\n", .{ query_value.len, strategy });
-        std.debug.print("[GIN Search] Extracted {d} query keys\n", .{query_keys.len});
-
         // Lookup posting list for each query key
         var posting_lists = try self.allocator.alloc([]ItemPointer, query_keys.len);
         defer {
@@ -269,9 +265,7 @@ pub const GIN = struct {
         }
 
         for (query_keys, 0..) |key, i| {
-            std.debug.print("[GIN Search] Looking up key {d} ({d} bytes)\n", .{ i, key.len });
             posting_lists[i] = try self.lookupPostingList(key);
-            std.debug.print("[GIN Search] Found {d} tuples for key {d}\n", .{ posting_lists[i].len, i });
         }
 
         // Call opclass.consistent to filter results
@@ -327,36 +321,17 @@ pub const GIN = struct {
         defer self.pool.unpinPage(self.root_page_id, false);
 
         const entry_count = readEntryCount(root_frame.data);
-        std.debug.print("[GIN Debug] Entry tree dump — {d} entries\n", .{entry_count});
-
-        for (0..entry_count) |i| {
-            const entry_key = try self.readEntryKey(root_frame.data, i);
-            defer self.allocator.free(entry_key);
-
-            const posting_info = readPostingInfo(root_frame.data, i);
-            const is_tree = (posting_info & 0x80000000) != 0;
-            const value = posting_info & 0x7FFFFFFF;
-
-            if (is_tree) {
-                std.debug.print("[GIN Debug]   Entry {d}: key ({d} bytes), posting_tree_root={d}\n", .{ i, entry_key.len, value });
-            } else {
-                std.debug.print("[GIN Debug]   Entry {d}: key ({d} bytes), inline_posting_info=0x{x}\n", .{ i, entry_key.len, posting_info });
-            }
-        }
+        _ = entry_count;
     }
 
     // ── Internal Operations ────────────────────────────────────────────
 
     /// Insert a single key into the entry tree with associated tuple_id.
     fn insertKey(self: *GIN, key: []const u8, tuple_id: ItemPointer) !void {
-        const key_val = if (key.len >= 4) std.mem.readInt(u32, key[0..4], .little) else 0;
-        std.debug.print("[GIN Insert] key ({d} bytes) value={d}, tuple_id=({d},{d})\n", .{ key.len, key_val, tuple_id.page_id, tuple_id.tuple_offset });
-
         const root_frame = try self.fetchOrInitRootPage();
         defer self.pool.unpinPage(self.root_page_id, true);
 
         const entry_count = readEntryCount(root_frame.data);
-        std.debug.print("[GIN Insert] Current entry_count: {d}\n", .{entry_count});
 
         // Search for existing entry
         for (0..entry_count) |i| {
@@ -366,7 +341,6 @@ pub const GIN = struct {
             const cmp = try self.opclass.compare(self.allocator, entry_key, key);
             if (cmp == 0) {
                 // Key exists — append to posting list
-                std.debug.print("[GIN Insert] Key exists at entry {d}, appending to posting list\n", .{i});
                 try self.appendToPostingList(root_frame.data, i, tuple_id);
                 root_frame.markDirty();
                 return;
@@ -374,10 +348,8 @@ pub const GIN = struct {
         }
 
         // Key doesn't exist — insert new entry
-        std.debug.print("[GIN Insert] Key not found, inserting new entry\n", .{});
         try self.insertNewEntry(root_frame.data, key, tuple_id);
         root_frame.markDirty();
-        std.debug.print("[GIN Insert] Insert complete, new entry_count: {d}\n", .{readEntryCount(root_frame.data)});
     }
 
     /// Delete a tuple_id from a key's posting list.
@@ -410,29 +382,22 @@ pub const GIN = struct {
         defer self.pool.unpinPage(self.root_page_id, false);
 
         const entry_count = readEntryCount(root_frame.data);
-        std.debug.print("[GIN Lookup] Searching for key ({d} bytes) in {d} entries\n", .{ key.len, entry_count });
 
         // Search for entry
         for (0..entry_count) |i| {
             const entry_key = try self.readEntryKey(root_frame.data, i);
             defer self.allocator.free(entry_key);
 
-            std.debug.print("[GIN Lookup]   Entry {d}: key ({d} bytes)\n", .{ i, entry_key.len });
-
             const cmp = try self.opclass.compare(self.allocator, entry_key, key);
-            std.debug.print("[GIN Lookup]   Compare result: {d}\n", .{cmp});
 
             if (cmp == 0) {
                 // Key found — return posting list
-                std.debug.print("[GIN Lookup] Key matched at entry {d}\n", .{i});
                 const posting_list = try self.readPostingList(root_frame.data, i);
-                std.debug.print("[GIN Lookup] Read {d} tuples from posting list\n", .{posting_list.len});
                 return posting_list;
             }
         }
 
         // Key not found — return empty list
-        std.debug.print("[GIN Lookup] Key not found, returning empty list\n", .{});
         return try self.allocator.alloc(ItemPointer, 0);
     }
 
