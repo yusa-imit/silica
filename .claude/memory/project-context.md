@@ -9,9 +9,23 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 318 - FEATURE MODE)
+### Last Session (Session 322 - FEATURE MODE)
+- **Date**: 2026-05-25
+- **Mode**: FEATURE MODE (Session 322)
+- **Focus**: Crash recovery tests + PostgreSQL-style `$N` parameter binding
+- **Outcome**: ✅ Both features implemented and committed
+- **Details**:
+  - **CI Status**: ✅ GREEN
+  - **GitHub Issues**: 0 open
+  - **Work Done**:
+    1. **Crash tests** (src/tx/crash_test.zig): Re-enabled crash_test.zig module; implemented 4 of 7 crash scenarios with real crash simulation (`simulateCrash()`). Fixed "torn page" test which was corrupting committed WAL data (changed to append partial frame after committed frames). 4 tests now active, 3 still skipped (require deeper infrastructure).
+    2. **$N parameter binding** (3 files): Added `numbered_placeholder` token to tokenizer; parser handles `$N` → `bind_parameter(N-1)`, validates $0, detects mixing with `?`. Engine `countParameters()` refactored to max-index approach (handles parameter reuse, out-of-order). 6 new tests all passing.
+  - **Tests**: 2862 passed, 31 skipped (same 31 as before)
+  - **Commits**: 47c5a2f (crash tests), 4ee795f ($N params), 9913a26 (test fix)
+- **Project State**: v1.0.1 stable, crash tests improved, $N params added
+
+### Session 318 (FEATURE MODE)
 - **Date**: 2026-05-24
-- **Mode**: FEATURE MODE (Session 318)
 - **Focus**: GIN posting tree conversion — implement high-cardinality support
 - **Outcome**: ✅ GIN now converts inline lists to posting trees at MAX_INLINE_TUPLES
 - **Details**:
