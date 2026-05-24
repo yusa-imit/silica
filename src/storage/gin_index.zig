@@ -611,7 +611,11 @@ pub const GIN = struct {
         errdefer all_tuples.deinit(self.allocator);
 
         var current_page_id = tree_page_id;
+        const max_chain_pages = self.pool.pager.page_count + 1;
+        var pages_visited: u32 = 0;
         while (current_page_id != 0) {
+            pages_visited += 1;
+            if (pages_visited > max_chain_pages) return error.InvalidKey; // cycle or corruption
             const tree_frame = try self.pool.fetchPage(current_page_id);
             const count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
             const next_page = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
@@ -743,7 +747,10 @@ pub const GIN = struct {
 
             // This is the last page and it's full — allocate a new linked page
             const new_page_id = try self.pool.pager.allocPage();
-            const new_frame = try self.pool.fetchNewPage(new_page_id);
+            const new_frame = self.pool.fetchNewPage(new_page_id) catch |err| {
+                self.pool.unpinPage(current_page_id, false);
+                return err;
+            };
             const new_header = PageHeader{
                 .page_type = .leaf,
                 .page_id = new_page_id,
@@ -1816,16 +1823,38 @@ test "GIN search with contains strategy checks all keys" {
     const opclass = ArrayInt32OpClass.getOpClass();
     var gin = try GIN.init(allocator, &pool, root_id, opclass);
 
-    // Query: WHERE col @> ARRAY[1, 2] (must contain both)
-    var query: [12]u8 = undefined;
-    std.mem.writeInt(u32, query[0..4], 2, .little);
-    std.mem.writeInt(u32, query[4..8], 1, .little);
-    std.mem.writeInt(u32, query[8..12], 2, .little);
+    // Insert two rows: [1, 2] and [2, 3]
+    var row1: [12]u8 = undefined;
+    std.mem.writeInt(u32, row1[0..4], 2, .little);
+    std.mem.writeInt(u32, row1[4..8], 1, .little);
+    std.mem.writeInt(u32, row1[8..12], 2, .little);
+    const tid1 = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row1, tid1);
 
-    // Should return empty result (no data inserted)
-    const result = try gin.search(&query, 0); // strategy 0 = @>
-    defer allocator.free(result);
-    try std.testing.expectEqual(@as(usize, 0), result.len);
+    var row2: [12]u8 = undefined;
+    std.mem.writeInt(u32, row2[0..4], 2, .little);
+    std.mem.writeInt(u32, row2[4..8], 2, .little);
+    std.mem.writeInt(u32, row2[8..12], 3, .little);
+    const tid2 = ItemPointer{ .page_id = 100, .tuple_offset = 1 };
+    try gin.insert(&row2, tid2);
+
+    // Query: WHERE col @> ARRAY[2] (contains 2)
+    // Should match both rows since both contain 2
+    var query1: [8]u8 = undefined;
+    std.mem.writeInt(u32, query1[0..4], 1, .little);
+    std.mem.writeInt(u32, query1[4..8], 2, .little);
+    const result1 = try gin.search(&query1, 0); // strategy 0 = @>
+    defer allocator.free(result1);
+    try std.testing.expectEqual(@as(usize, 2), result1.len);
+
+    // Query: WHERE col @> ARRAY[4] (contains 4)
+    // Should match neither row since neither contains 4
+    var query2: [8]u8 = undefined;
+    std.mem.writeInt(u32, query2[0..4], 1, .little);
+    std.mem.writeInt(u32, query2[4..8], 4, .little);
+    const result2 = try gin.search(&query2, 0); // strategy 0 = @>
+    defer allocator.free(result2);
+    try std.testing.expectEqual(@as(usize, 0), result2.len);
 }
 
 test "GIN search with overlaps strategy checks any key" {
@@ -1843,16 +1872,40 @@ test "GIN search with overlaps strategy checks any key" {
     const opclass = ArrayInt32OpClass.getOpClass();
     var gin = try GIN.init(allocator, &pool, root_id, opclass);
 
-    // Query: WHERE col && ARRAY[1, 2] (must overlap with at least one)
-    var query: [12]u8 = undefined;
-    std.mem.writeInt(u32, query[0..4], 2, .little);
-    std.mem.writeInt(u32, query[4..8], 1, .little);
-    std.mem.writeInt(u32, query[8..12], 2, .little);
+    // Insert two rows: [1, 2] and [3, 4]
+    var row1: [12]u8 = undefined;
+    std.mem.writeInt(u32, row1[0..4], 2, .little);
+    std.mem.writeInt(u32, row1[4..8], 1, .little);
+    std.mem.writeInt(u32, row1[8..12], 2, .little);
+    const tid1 = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row1, tid1);
 
-    // Should return empty result (no data inserted)
-    const result = try gin.search(&query, 1); // strategy 1 = &&
-    defer allocator.free(result);
-    try std.testing.expectEqual(@as(usize, 0), result.len);
+    var row2: [12]u8 = undefined;
+    std.mem.writeInt(u32, row2[0..4], 2, .little);
+    std.mem.writeInt(u32, row2[4..8], 3, .little);
+    std.mem.writeInt(u32, row2[8..12], 4, .little);
+    const tid2 = ItemPointer{ .page_id = 100, .tuple_offset = 1 };
+    try gin.insert(&row2, tid2);
+
+    // Query: WHERE col && ARRAY[2] (overlaps: key 2 exists)
+    // Row 1 contains key 2, should be returned
+    var query1: [8]u8 = undefined;
+    std.mem.writeInt(u32, query1[0..4], 1, .little);
+    std.mem.writeInt(u32, query1[4..8], 2, .little);
+    const result1 = try gin.search(&query1, 1); // strategy 1 = &&
+    defer allocator.free(result1);
+    try std.testing.expectEqual(@as(usize, 1), result1.len);
+    try std.testing.expectEqual(tid1.page_id, result1[0].page_id);
+
+    // Query: WHERE col && ARRAY[5, 6] (overlaps: neither key in any row)
+    // Should return empty result since no rows have key 5 or 6
+    var query2: [12]u8 = undefined;
+    std.mem.writeInt(u32, query2[0..4], 2, .little);
+    std.mem.writeInt(u32, query2[4..8], 5, .little);
+    std.mem.writeInt(u32, query2[8..12], 6, .little);
+    const result2 = try gin.search(&query2, 1); // strategy 1 = &&
+    defer allocator.free(result2);
+    try std.testing.expectEqual(@as(usize, 0), result2.len);
 }
 
 test "GIN ItemPointer encoding round-trip" {
@@ -1887,8 +1940,9 @@ test "GIN readPostingList reads from posting tree" {
     const tree_page_id = try pager.allocPage();
     const tree_frame = try pool.fetchNewPage(tree_page_id);
 
-    // Initialize tree page: count at PAGE_HEADER_SIZE(16), tuples at POSTING_TREE_HEADER_SIZE(20)
+    // Initialize tree page: count at PAGE_HEADER_SIZE(16), tuples at POSTING_TREE_HEADER_SIZE(24)
     std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], 2, .little); // count = 2
+    std.mem.writeInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], 0, .little); // end of chain
 
     // Write tuple 0: page_id=10, tuple_offset=1
     const tuple0 = ItemPointer{ .page_id = 10, .tuple_offset = 1 };
