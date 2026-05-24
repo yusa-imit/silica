@@ -41,8 +41,7 @@ pub const conformance_test = @import("sql/conformance_test.zig");
 // Transaction modules
 pub const wal = @import("tx/wal.zig");
 pub const wal_fuzz = @import("tx/wal_fuzz.zig");
-// TEMPORARILY DISABLED: crash_test hangs in CI - need to debug
-// pub const crash_test = @import("tx/crash_test.zig");
+pub const crash_test = @import("tx/crash_test.zig");
 pub const mvcc = @import("tx/mvcc.zig");
 pub const lock = @import("tx/lock.zig");
 pub const vacuum = @import("tx/vacuum.zig");
