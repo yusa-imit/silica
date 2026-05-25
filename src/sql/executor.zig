@@ -3377,6 +3377,79 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         }
     }
 
+    // JSON built-in functions
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_key_exists") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_exists"))
+    {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const json_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer json_val.free(allocator);
+        const key_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer key_val.free(allocator);
+        return evalJsonKeyExists(json_val, key_val);
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_typeof") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_typeof"))
+    {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const json_text = switch (arg) {
+            .text => |t| t,
+            .blob => |b| b,
+            else => return .null_value,
+        };
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
+            return .null_value;
+        };
+        const type_name: []const u8 = switch (parsed.value) {
+            .object => "object",
+            .array => "array",
+            .string => "string",
+            .integer, .float, .number_string => "number",
+            .bool => "boolean",
+            .null => "null",
+        };
+        const result = allocator.dupe(u8, type_name) catch return EvalError.OutOfMemory;
+        return Value{ .text = result };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_object_keys") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_object_keys"))
+    {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const json_text = switch (arg) {
+            .text => |t| t,
+            .blob => |b| b,
+            else => return .null_value,
+        };
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
+            return .null_value;
+        };
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => return .null_value,
+        };
+        const keys = allocator.alloc(Value, obj.count()) catch return EvalError.OutOfMemory;
+        var i: usize = 0;
+        var it = obj.iterator();
+        while (it.next()) |entry| {
+            const key_copy = allocator.dupe(u8, entry.key_ptr.*) catch return EvalError.OutOfMemory;
+            keys[i] = Value{ .text = key_copy };
+            i += 1;
+        }
+        return Value{ .array = keys };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -14885,4 +14958,269 @@ test "RESET ALL clears all custom settings" {
     try std.testing.expectEqualStrings("4194304", config.get("work_mem").?);
     try std.testing.expectEqualStrings("100", config.get("max_connections").?);
     try std.testing.expectEqualStrings("public", config.get("search_path").?);
+}
+
+// ============================================================================
+// JSON Built-in SQL Functions — TDD Tests
+// ============================================================================
+
+test "json_key_exists function returns true when key exists in object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_key_exists('{"a": 1, "b": 2}', 'a') → true
+    const json_expr = ast.Expr{ .string_literal = "{\"a\": 1, \"b\": 2}" };
+    const key_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &json_expr, &key_expr };
+    const fc = .{ .name = "json_key_exists", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "json_key_exists function returns false when key does not exist" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_key_exists('{"a": 1, "b": 2}', 'c') → false
+    const json_expr = ast.Expr{ .string_literal = "{\"a\": 1, \"b\": 2}" };
+    const key_expr = ast.Expr{ .string_literal = "c" };
+    const args = [_]*const ast.Expr{ &json_expr, &key_expr };
+    const fc = .{ .name = "json_key_exists", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "json_key_exists function returns false for empty object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_key_exists('{}', 'a') → false
+    const json_expr = ast.Expr{ .string_literal = "{}" };
+    const key_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &json_expr, &key_expr };
+    const fc = .{ .name = "json_key_exists", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "json_key_exists function returns NULL when json is NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_key_exists(NULL, 'a') → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const key_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &json_expr, &key_expr };
+    const fc = .{ .name = "json_key_exists", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_key_exists function returns NULL when key is NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_key_exists('{"a": 1}', NULL) → NULL
+    const json_expr = ast.Expr{ .string_literal = "{\"a\": 1}" };
+    const key_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &json_expr, &key_expr };
+    const fc = .{ .name = "json_key_exists", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "jsonb_exists function (alias) returns true when key exists" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // jsonb_exists('{"x": true}', 'x') → true
+    const json_expr = ast.Expr{ .string_literal = "{\"x\": true}" };
+    const key_expr = ast.Expr{ .string_literal = "x" };
+    const args = [_]*const ast.Expr{ &json_expr, &key_expr };
+    const fc = .{ .name = "jsonb_exists", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "json_typeof function returns 'object' for JSON object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof('{"a": 1}') → 'object'
+    const json_expr = ast.Expr{ .string_literal = "{\"a\": 1}" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("object", result.text);
+}
+
+test "json_typeof function returns 'array' for JSON array" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof('[1,2,3]') → 'array'
+    const json_expr = ast.Expr{ .string_literal = "[1,2,3]" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("array", result.text);
+}
+
+test "json_typeof function returns 'string' for JSON string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof('"hello"') → 'string'
+    const json_expr = ast.Expr{ .string_literal = "\"hello\"" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("string", result.text);
+}
+
+test "json_typeof function returns 'number' for JSON number" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof('42') → 'number'
+    const json_expr = ast.Expr{ .string_literal = "42" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("number", result.text);
+}
+
+test "json_typeof function returns 'boolean' for JSON true" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof('true') → 'boolean'
+    const json_expr = ast.Expr{ .string_literal = "true" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("boolean", result.text);
+}
+
+test "json_typeof function returns 'null' for JSON null" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof('null') → 'null'
+    const json_expr = ast.Expr{ .string_literal = "null" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("null", result.text);
+}
+
+test "json_typeof function returns NULL when input is NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_typeof(NULL) → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_object_keys function returns array of keys from object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object_keys('{"a": 1, "b": 2, "c": 3}') → array containing 'a', 'b', 'c'
+    const json_expr = ast.Expr{ .string_literal = "{\"a\": 1, \"b\": 2, \"c\": 3}" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_object_keys", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    // Check that each element is text
+    for (result.array) |elem| {
+        try std.testing.expect(elem == .text);
+    }
+}
+
+test "json_object_keys function returns empty array for empty object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object_keys('{}') → empty array
+    const json_expr = ast.Expr{ .string_literal = "{}" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_object_keys", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
+}
+
+test "json_object_keys function returns NULL when input is NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object_keys(NULL) → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_object_keys", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "jsonb_object_keys function (alias) returns array of keys" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // jsonb_object_keys('{"x": 1, "y": 2}') → array containing 'x', 'y'
+    const json_expr = ast.Expr{ .string_literal = "{\"x\": 1, \"y\": 2}" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "jsonb_object_keys", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
 }
