@@ -9,21 +9,28 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 323 - FEATURE MODE)
-- **Date**: 2026-05-25
-- **Mode**: FEATURE MODE (Session 323)
-- **Focus**: JSON built-in SQL functions
-- **Outcome**: ✅ 6 functions implemented with 17 tests (TDD)
+### Last Session (Session 326 - FEATURE MODE)
+- **Date**: 2026-05-26
+- **Mode**: FEATURE MODE (Session 326)
+- **Focus**: JSON scalar SQL functions — extract path, to_json
+- **Outcome**: ✅ 6 functions implemented with 15 TDD tests
 - **Details**:
   - **CI Status**: ✅ GREEN
   - **GitHub Issues**: 0 open
   - **Work Done**:
-    - `json_key_exists(json, key)` / `jsonb_exists(json, key)` → BOOLEAN (wraps existing evalJsonKeyExists)
-    - `json_typeof(json)` / `jsonb_typeof(json)` → TEXT ('object','array','string','number','boolean','null')
-    - `json_object_keys(json)` / `jsonb_object_keys(json)` → TEXT[]
-  - **Tests**: 2879 passed, 31 skipped (+17 new)
-  - **Commits**: 7a16a15
-- **Project State**: v1.0.1 stable, JSON function coverage improved
+    - `json_extract_path(json, key1, ...)` / `jsonb_extract_path` → JSON (variadic path)
+    - `json_extract_path_text(json, key1, ...)` / `jsonb_extract_path_text` → TEXT
+    - `to_json(val)` / `to_jsonb(val)` → JSON (converts any SQL value)
+    - Bug fix: `evalJsonPathExtract` now parses text path elements as integer indices for array nodes
+  - **Tests**: ~2944 passed, 31 skipped (+15 new)
+  - **Commits**: 47f69d2 (test), aaecf9e (impl)
+- **Project State**: v1.0.1 stable, JSON function coverage expanded
+
+### Session 323 (FEATURE MODE)
+- **Date**: 2026-05-25
+- **Focus**: JSON built-in SQL functions
+- **Outcome**: ✅ json_key_exists, json_typeof, json_object_keys + jsonb aliases; json_set, json_insert; json_array_length, json_build_object, json_build_array, json_strip_nulls
+- **Commits**: 7a16a15, 419439d, b3932ed
 
 ### Session 322 (FEATURE MODE)
 - **Date**: 2026-05-25
