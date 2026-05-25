@@ -2380,6 +2380,11 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
 
         current = switch (current) {
             .object => |obj| obj.get(key) orelse return Value.null_value,
+            .array => |arr| blk: {
+                // When the current node is an array, try parsing the text key as an integer index (0-based)
+                const idx = std.fmt.parseInt(usize, key, 10) catch return Value.null_value;
+                break :blk if (idx < arr.items.len) arr.items[idx] else return Value.null_value;
+            },
             else => return Value.null_value,
         };
     }
@@ -3935,6 +3940,59 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         } else false;
 
         return try evalJsonInsert(allocator, json_val, path_val, new_val, insert_after);
+    }
+
+    // json_extract_path(json, key1, key2, ...) / jsonb_extract_path(...)
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_extract_path") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_extract_path"))
+    {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const json_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer json_val.free(allocator);
+
+        var path_items = std.ArrayListUnmanaged(Value){};
+        defer {
+            for (path_items.items) |item| item.free(allocator);
+            path_items.deinit(allocator);
+        }
+        for (fc.args[1..]) |arg_expr| {
+            const pval = try evalExpr(allocator, arg_expr, row, catalog);
+            path_items.append(allocator, pval) catch return EvalError.OutOfMemory;
+        }
+        const path_val = Value{ .array = path_items.items };
+        return try evalJsonPathExtract(allocator, json_val, path_val, false);
+    }
+
+    // json_extract_path_text(json, key1, key2, ...) / jsonb_extract_path_text(...)
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_extract_path_text") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_extract_path_text"))
+    {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const json_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer json_val.free(allocator);
+
+        var path_items = std.ArrayListUnmanaged(Value){};
+        defer {
+            for (path_items.items) |item| item.free(allocator);
+            path_items.deinit(allocator);
+        }
+        for (fc.args[1..]) |arg_expr| {
+            const pval = try evalExpr(allocator, arg_expr, row, catalog);
+            path_items.append(allocator, pval) catch return EvalError.OutOfMemory;
+        }
+        const path_val = Value{ .array = path_items.items };
+        return try evalJsonPathExtract(allocator, json_val, path_val, true);
+    }
+
+    // to_json(val) / to_jsonb(val)
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_json") or
+        std.ascii.eqlIgnoreCase(fc.name, "to_jsonb"))
+    {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer val.free(allocator);
+        const json_str = try valueToJsonString(allocator, val);
+        return Value{ .text = json_str };
     }
 
     return EvalError.UnsupportedExpression;
@@ -16241,4 +16299,247 @@ test "json_insert is no-op for object when key exists" {
     defer parsed.deinit();
     const a_val = parsed.value.object.get("a") orelse return error.MissingKey;
     try std.testing.expectEqual(@as(i64, 1), a_val.integer);
+}
+
+// ============================================================================
+// json_extract_path, json_extract_path_text, to_json/to_jsonb tests
+// ============================================================================
+
+test "json_extract_path single key" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path('{"a":1}', 'a') → 1
+    const json_expr = ast.Expr{ .string_literal = "{\"a\":1}" };
+    const path_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "json_extract_path nested two-level" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path('{"a":{"b":42}}', 'a', 'b') → 42
+    const json_expr = ast.Expr{ .string_literal = "{\"a\":{\"b\":42}}" };
+    const path1_expr = ast.Expr{ .string_literal = "a" };
+    const path2_expr = ast.Expr{ .string_literal = "b" };
+    const args = [_]*const ast.Expr{ &json_expr, &path1_expr, &path2_expr };
+    const fc = .{ .name = "json_extract_path", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "json_extract_path array index" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path('[10,20,30]', '1') → 10 (1-based indexing)
+    const json_expr = ast.Expr{ .string_literal = "[10,20,30]" };
+    const path_expr = ast.Expr{ .string_literal = "1" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "json_extract_path missing key returns null" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path('{"a":1}', 'nonexistent') → NULL
+    const json_expr = ast.Expr{ .string_literal = "{\"a\":1}" };
+    const path_expr = ast.Expr{ .string_literal = "nonexistent" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_extract_path null json returns null" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path(NULL, 'a') → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const path_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "jsonb_extract_path alias works" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // jsonb_extract_path('{"x":99}', 'x') → 99
+    const json_expr = ast.Expr{ .string_literal = "{\"x\":99}" };
+    const path_expr = ast.Expr{ .string_literal = "x" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "jsonb_extract_path", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "json_extract_path_text returns unquoted string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path_text('{"name":"Alice"}', 'name') → "Alice" (unquoted)
+    const json_expr = ast.Expr{ .string_literal = "{\"name\":\"Alice\"}" };
+    const path_expr = ast.Expr{ .string_literal = "name" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path_text", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "json_extract_path_text returns number as text" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path_text('{"count":42}', 'count') → "42"
+    const json_expr = ast.Expr{ .string_literal = "{\"count\":42}" };
+    const path_expr = ast.Expr{ .string_literal = "count" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path_text", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "json_extract_path_text null propagation" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_extract_path_text(NULL, 'a') → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const path_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "json_extract_path_text", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_json integer" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_json(42) → "42"
+    const arg_expr = ast.Expr{ .integer_literal = 42 };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("42", result.text);
+}
+
+test "to_json real" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_json(3.14) → "3.14"
+    const arg_expr = ast.Expr{ .float_literal = 3.14 };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "to_json boolean true" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_json(true) → "true"
+    const arg_expr = ast.Expr{ .boolean_literal = true };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("true", result.text);
+}
+
+test "to_json boolean false" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_json(false) → "false"
+    const arg_expr = ast.Expr{ .boolean_literal = false };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("false", result.text);
+}
+
+test "to_json text" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_json('hello') → "\"hello\""
+    const arg_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "to_json null" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_json(NULL) → "null"
+    const arg_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("null", result.text);
+}
+
+test "to_jsonb alias works" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_jsonb(100) → "100"
+    const arg_expr = ast.Expr{ .integer_literal = 100 };
+    const args = [_]*const ast.Expr{ &arg_expr };
+    const fc = .{ .name = "to_jsonb", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("100", result.text);
 }
