@@ -2395,7 +2395,7 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
             else => blk: {
                 var buf = std.ArrayListUnmanaged(u8){};
                 defer buf.deinit(allocator);
-                std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
+                std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
                 break :blk allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
             },
         };
@@ -2403,7 +2403,7 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
     } else {
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(allocator);
-        std.fmt.format(buf.writer(allocator), "{any}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
+        std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
         const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
         return Value{ .text = json_result };
     }
@@ -2564,13 +2564,200 @@ fn stripJsonNulls(arena_alloc: Allocator, val: std.json.Value) Allocator.Error!s
     };
 }
 
-/// Set value in JSON at path (simplified single-level for now)
-fn evalJsonSet(allocator: Allocator, json_val: Value, path_val: Value, new_val: Value) EvalError!Value {
-    _ = new_val;  // TODO: implement path-based value setting
+/// Parse a PostgreSQL-style text array path "{a,b,c}" into path elements.
+/// Splits on commas, strips whitespace. Caller owns the returned slice.
+fn parseTextArrayPath(arena: Allocator, t: []const u8) Allocator.Error![]Value {
+    if (t.len < 2 or t[0] != '{' or t[t.len - 1] != '}') return &[_]Value{};
+    const inner = std.mem.trim(u8, t[1 .. t.len - 1], " \t");
+    if (inner.len == 0) return &[_]Value{};
 
-    if (json_val == .null_value or path_val == .null_value) {
-        return Value.null_value;
+    var elems = std.ArrayListUnmanaged(Value){};
+    var it = std.mem.splitScalar(u8, inner, ',');
+    while (it.next()) |raw| {
+        const seg = std.mem.trim(u8, raw, " \t");
+        // Try integer index first
+        if (std.fmt.parseInt(i64, seg, 10)) |idx| {
+            try elems.append(arena, Value{ .integer = idx });
+        } else |_| {
+            try elems.append(arena, Value{ .text = try arena.dupe(u8, seg) });
+        }
     }
+    return elems.items;
+}
+
+/// Convert a SQL Value to std.json.Value within an arena.
+/// Text values are attempted as JSON first; falls back to JSON string.
+fn sqlValueToJsonValue(arena: Allocator, v: Value) Allocator.Error!std.json.Value {
+    return switch (v) {
+        .integer => |i| .{ .integer = i },
+        .real => |r| .{ .float = r },
+        .boolean => |b| .{ .bool = b },
+        .null_value => .null,
+        .text => |t| blk: {
+            if (std.json.parseFromSlice(std.json.Value, arena, t, .{})) |parsed| {
+                break :blk parsed.value;
+            } else |_| {
+                break :blk .{ .string = t };
+            }
+        },
+        .blob => |b| blk: {
+            if (std.json.parseFromSlice(std.json.Value, arena, b, .{})) |parsed| {
+                break :blk parsed.value;
+            } else |_| {
+                break :blk .{ .string = b };
+            }
+        },
+        else => .null,
+    };
+}
+
+/// Recursively set new_json at the given path within a JSON tree.
+/// create_missing: if true, create intermediate objects for missing keys.
+fn jsonSetAtPath(
+    arena: Allocator,
+    value: std.json.Value,
+    path: []const Value,
+    new_json: std.json.Value,
+    create_missing: bool,
+) Allocator.Error!std.json.Value {
+    if (path.len == 0) return new_json;
+
+    switch (path[0]) {
+        .text => |k| {
+            const rest = path[1..];
+            switch (value) {
+                .object => |obj| {
+                    var new_obj = std.json.ObjectMap.init(arena);
+                    var found = false;
+                    var it = obj.iterator();
+                    while (it.next()) |entry| {
+                        const key_dup = try arena.dupe(u8, entry.key_ptr.*);
+                        if (std.mem.eql(u8, entry.key_ptr.*, k)) {
+                            found = true;
+                            try new_obj.put(key_dup, try jsonSetAtPath(arena, entry.value_ptr.*, rest, new_json, create_missing));
+                        } else {
+                            try new_obj.put(key_dup, entry.value_ptr.*);
+                        }
+                    }
+                    if (!found and create_missing) {
+                        const key_dup = try arena.dupe(u8, k);
+                        try new_obj.put(key_dup, try jsonSetAtPath(arena, .null, rest, new_json, create_missing));
+                    }
+                    return .{ .object = new_obj };
+                },
+                else => {
+                    if (!create_missing) return value;
+                    var new_obj = std.json.ObjectMap.init(arena);
+                    const key_dup = try arena.dupe(u8, k);
+                    try new_obj.put(key_dup, try jsonSetAtPath(arena, .null, path[1..], new_json, create_missing));
+                    return .{ .object = new_obj };
+                },
+            }
+        },
+        .integer => |raw_idx| {
+            const rest = path[1..];
+            switch (value) {
+                .array => |arr| {
+                    const idx: usize = if (raw_idx < 0)
+                        @intCast(@as(i64, @intCast(arr.items.len)) + raw_idx)
+                    else
+                        @intCast(raw_idx);
+                    var new_arr = std.json.Array.init(arena);
+                    for (arr.items, 0..) |item, i| {
+                        if (i == idx) {
+                            try new_arr.append(try jsonSetAtPath(arena, item, rest, new_json, create_missing));
+                        } else {
+                            try new_arr.append(item);
+                        }
+                    }
+                    return .{ .array = new_arr };
+                },
+                else => return value,
+            }
+        },
+        else => return value,
+    }
+}
+
+/// Recursively insert new_json at the given path in a JSON tree.
+/// insert_after: insert after (true) or before (false) the target index for arrays.
+fn jsonInsertAtPath(
+    arena: Allocator,
+    value: std.json.Value,
+    path: []const Value,
+    new_json: std.json.Value,
+    insert_after: bool,
+) Allocator.Error!std.json.Value {
+    if (path.len == 0) return value;
+
+    switch (path[0]) {
+        .text => |k| {
+            switch (value) {
+                .object => |obj| {
+                    // For objects, only insert if key does not exist
+                    if (obj.get(k) != null) return value; // key exists, no-op
+                    var new_obj = std.json.ObjectMap.init(arena);
+                    var it = obj.iterator();
+                    while (it.next()) |entry| {
+                        const key_dup = try arena.dupe(u8, entry.key_ptr.*);
+                        try new_obj.put(key_dup, entry.value_ptr.*);
+                    }
+                    const key_dup = try arena.dupe(u8, k);
+                    // Leaf: insert new_json directly; deeper path: recurse
+                    const nested_val = if (path.len == 1)
+                        new_json
+                    else
+                        try jsonInsertAtPath(arena, .null, path[1..], new_json, insert_after);
+                    try new_obj.put(key_dup, nested_val);
+                    return .{ .object = new_obj };
+                },
+                else => return value,
+            }
+        },
+        .integer => |raw_idx| {
+            switch (value) {
+                .array => |arr| {
+                    const len: i64 = @intCast(arr.items.len);
+                    var insert_pos: usize = if (raw_idx < 0)
+                        @intCast(len + raw_idx + if (insert_after) @as(i64, 1) else 0)
+                    else
+                        @intCast(raw_idx + if (insert_after) @as(i64, 1) else 0);
+                    // Clamp to valid range
+                    if (insert_pos > arr.items.len) insert_pos = arr.items.len;
+
+                    if (path.len == 1) {
+                        // Leaf: insert new_json at insert_pos
+                        var new_arr = std.json.Array.init(arena);
+                        for (arr.items, 0..) |item, i| {
+                            if (i == insert_pos) try new_arr.append(new_json);
+                            try new_arr.append(item);
+                        }
+                        if (insert_pos >= arr.items.len) try new_arr.append(new_json);
+                        return .{ .array = new_arr };
+                    } else {
+                        // Navigate deeper
+                        const idx: usize = @intCast(if (raw_idx < 0) len + raw_idx else raw_idx);
+                        var new_arr = std.json.Array.init(arena);
+                        for (arr.items, 0..) |item, i| {
+                            if (i == idx) {
+                                try new_arr.append(try jsonInsertAtPath(arena, item, path[1..], new_json, insert_after));
+                            } else {
+                                try new_arr.append(item);
+                            }
+                        }
+                        return .{ .array = new_arr };
+                    }
+                },
+                else => return value,
+            }
+        },
+        else => return value,
+    }
+}
+
+/// Set value in JSON at path: json_set(target, path_array, new_value [, create_missing])
+fn evalJsonSet(allocator: Allocator, json_val: Value, path_val: Value, new_val: Value) EvalError!Value {
+    if (json_val == .null_value or path_val == .null_value) return Value.null_value;
 
     const json_text = switch (json_val) {
         .text => |t| t,
@@ -2578,31 +2765,30 @@ fn evalJsonSet(allocator: Allocator, json_val: Value, path_val: Value, new_val: 
         else => return EvalError.TypeError,
     };
 
-    var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer parse_arena.deinit();
-    const parse_allocator = parse_arena.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
 
-    const parsed = std.json.parseFromSlice(std.json.Value, parse_allocator, json_text, .{}) catch {
-        return EvalError.TypeError;
+    const path: []const Value = switch (path_val) {
+        .array => |a| a,
+        .text => |t| parseTextArrayPath(aa, t) catch return EvalError.OutOfMemory,
+        else => return EvalError.TypeError,
     };
 
-    // For simplicity, just return original JSON for now
-    // Full implementation would reconstruct with the new value set at the path
+    const parsed = std.json.parseFromSlice(std.json.Value, aa, json_text, .{}) catch return EvalError.TypeError;
+    const new_json = sqlValueToJsonValue(aa, new_val) catch return EvalError.OutOfMemory;
+    const result_json = jsonSetAtPath(aa, parsed.value, path, new_json, true) catch return EvalError.OutOfMemory;
+
     var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(parse_allocator);
-    std.fmt.format(buf.writer(parse_allocator), "{any}", .{std.json.fmt(parsed.value, .{})}) catch return EvalError.OutOfMemory;
+    defer buf.deinit(aa);
+    std.fmt.format(buf.writer(aa), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
     const result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
     return Value{ .text = result };
 }
 
-/// Insert value in JSON at path (similar to set but for arrays)
+/// Insert value in JSON at path: json_insert(target, path_array, new_value [, insert_after])
 fn evalJsonInsert(allocator: Allocator, json_val: Value, path_val: Value, new_val: Value, insert_after: bool) EvalError!Value {
-    _ = new_val;  // TODO: implement path-based insertion
-    _ = insert_after; // TODO: implement path-based insertion
-
-    if (json_val == .null_value or path_val == .null_value) {
-        return Value.null_value;
-    }
+    if (json_val == .null_value or path_val == .null_value) return Value.null_value;
 
     const json_text = switch (json_val) {
         .text => |t| t,
@@ -2610,20 +2796,23 @@ fn evalJsonInsert(allocator: Allocator, json_val: Value, path_val: Value, new_va
         else => return EvalError.TypeError,
     };
 
-    var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer parse_arena.deinit();
-    const parse_allocator = parse_arena.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
 
-    const parsed = std.json.parseFromSlice(std.json.Value, parse_allocator, json_text, .{}) catch {
-        return EvalError.TypeError;
+    const path: []const Value = switch (path_val) {
+        .array => |a| a,
+        .text => |t| parseTextArrayPath(aa, t) catch return EvalError.OutOfMemory,
+        else => return EvalError.TypeError,
     };
 
-    // For simplicity, just return the JSON as-is (real implementation would handle path-based insertion)
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(parse_allocator);
-    std.fmt.format(buf.writer(parse_allocator), "{f}", .{std.json.fmt(parsed.value, .{})}) catch return EvalError.OutOfMemory;
+    const parsed = std.json.parseFromSlice(std.json.Value, aa, json_text, .{}) catch return EvalError.TypeError;
+    const new_json = sqlValueToJsonValue(aa, new_val) catch return EvalError.OutOfMemory;
+    const result_json = jsonInsertAtPath(aa, parsed.value, path, new_json, insert_after) catch return EvalError.OutOfMemory;
 
-    // Copy result to main allocator before arena deinit
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(aa);
+    std.fmt.format(buf.writer(aa), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
     const result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
     return Value{ .text = result };
 }
@@ -15916,4 +16105,115 @@ test "jsonb_insert alias accepts NULL json" {
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
     try std.testing.expect(result == .null_value);
+}
+
+test "json_set sets value at single object key" {
+    const allocator = std.testing.allocator;
+    // json_set('{"a":1}', array_path_a, 2) → {"a":2}
+    var path_items = [_]Value{ Value{ .text = "a" } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 });
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    const a_val = parsed.value.object.get("a") orelse return error.MissingKey;
+    try std.testing.expectEqual(@as(i64, 2), a_val.integer);
+}
+
+test "json_set creates missing key" {
+    const allocator = std.testing.allocator;
+    // json_set('{"a":1}', '{b}', 99) → {"a":1,"b":99}
+    var path_items = [_]Value{ Value{ .text = "b" } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 });
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    const b_val = parsed.value.object.get("b") orelse return error.MissingKey;
+    try std.testing.expectEqual(@as(i64, 99), b_val.integer);
+}
+
+test "json_set navigates nested two-level path" {
+    const allocator = std.testing.allocator;
+    // json_set('{"a":{"b":1}}', '{a,b}', 42) → {"a":{"b":42}}
+    var path_items = [_]Value{ Value{ .text = "a" }, Value{ .text = "b" } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":{\"b\":1}}" }, path_val, Value{ .integer = 42 });
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    const a_obj = parsed.value.object.get("a") orelse return error.MissingOuterKey;
+    const b_val = a_obj.object.get("b") orelse return error.MissingInnerKey;
+    try std.testing.expectEqual(@as(i64, 42), b_val.integer);
+}
+
+test "json_set with text array path syntax {x}" {
+    const allocator = std.testing.allocator;
+    // json_set('{"x":5}', '{x}', 99) via text path
+    const result = try evalJsonSet(allocator, Value{ .text = "{\"x\":5}" }, Value{ .text = "{x}" }, Value{ .integer = 99 });
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    const x_val = parsed.value.object.get("x") orelse return error.MissingKey;
+    try std.testing.expectEqual(@as(i64, 99), x_val.integer);
+}
+
+test "json_insert inserts before index 1 in array" {
+    const allocator = std.testing.allocator;
+    // json_insert('[1,2,3]', idx=1, 99, insert_after=false) → [1,99,2,3]
+    var path_items = [_]Value{ Value{ .integer = 1 } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonInsert(allocator, Value{ .text = "[1,2,3]" }, path_val, Value{ .integer = 99 }, false);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 4), parsed.value.array.items.len);
+    try std.testing.expectEqual(@as(i64, 99), parsed.value.array.items[1].integer);
+}
+
+test "json_insert inserts after index 1 in array" {
+    const allocator = std.testing.allocator;
+    // json_insert('[1,2,3]', idx=1, 99, insert_after=true) → [1,2,99,3]
+    var path_items = [_]Value{ Value{ .integer = 1 } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonInsert(allocator, Value{ .text = "[1,2,3]" }, path_val, Value{ .integer = 99 }, true);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 4), parsed.value.array.items.len);
+    try std.testing.expectEqual(@as(i64, 99), parsed.value.array.items[2].integer);
+}
+
+test "json_insert adds missing key to object" {
+    const allocator = std.testing.allocator;
+    // json_insert('{"a":1}', '{b}', 2) → {"a":1,"b":2}
+    var path_items = [_]Value{ Value{ .text = "b" } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonInsert(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 }, false);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    const b_val = parsed.value.object.get("b") orelse return error.MissingKey;
+    try std.testing.expectEqual(@as(i64, 2), b_val.integer);
+}
+
+test "json_insert is no-op for object when key exists" {
+    const allocator = std.testing.allocator;
+    // json_insert('{"a":1}', '{a}', 99) → {"a":1} (key exists, no change)
+    var path_items = [_]Value{ Value{ .text = "a" } };
+    const path_val = Value{ .array = &path_items };
+    const result = try evalJsonInsert(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 }, false);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
+    defer parsed.deinit();
+    const a_val = parsed.value.object.get("a") orelse return error.MissingKey;
+    try std.testing.expectEqual(@as(i64, 1), a_val.integer);
 }
