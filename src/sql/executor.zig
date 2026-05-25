@@ -11395,6 +11395,31 @@ test "JSON delete path #- operator" {
     try std.testing.expect(obj.contains("c"));
 }
 
+test "JSON path extract #> with as_text=false returns valid JSON for object" {
+    const allocator = std.testing.allocator;
+    // '{"a":{"b":1}}' #> '{a}' → '{"b":1}' (JSON string, not text repr)
+    const json_val = Value{ .text = "{\"a\":{\"b\":1}}" };
+    var path_arr = std.ArrayListUnmanaged(Value){};
+    defer {
+        for (path_arr.items) |item| item.free(allocator);
+        path_arr.deinit(allocator);
+    }
+    try path_arr.append(allocator, Value{ .text = try allocator.dupe(u8, "a") });
+    const path_val = Value{ .array = path_arr.items };
+
+    const result = try evalJsonPathExtract(allocator, json_val, path_val, false);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    // Result must be valid JSON parseable as an object
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, arena.allocator(), result.text, .{});
+    try std.testing.expect(parsed.value == .object);
+    const b_val = parsed.value.object.get("b") orelse return error.MissingKey;
+    try std.testing.expectEqual(@as(i64, 1), b_val.integer);
+}
+
 test "JSON extract on invalid JSON returns error" {
     const allocator = std.testing.allocator;
 
