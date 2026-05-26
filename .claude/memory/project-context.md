@@ -9,22 +9,29 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 326 - FEATURE MODE)
+### Last Session (Session 327 - FEATURE MODE)
 - **Date**: 2026-05-26
-- **Mode**: FEATURE MODE (Session 326)
-- **Focus**: JSON scalar SQL functions — extract path, to_json
-- **Outcome**: ✅ 6 functions implemented with 15 TDD tests
+- **Mode**: FEATURE MODE (Session 327)
+- **Focus**: json_agg and array_agg aggregate functions
+- **Outcome**: ✅ Both functions implemented with 9 tests (7 executor unit tests + 2 planner tests)
 - **Details**:
   - **CI Status**: ✅ GREEN
   - **GitHub Issues**: 0 open
   - **Work Done**:
-    - `json_extract_path(json, key1, ...)` / `jsonb_extract_path` → JSON (variadic path)
-    - `json_extract_path_text(json, key1, ...)` / `jsonb_extract_path_text` → TEXT
-    - `to_json(val)` / `to_jsonb(val)` → JSON (converts any SQL value)
-    - Bug fix: `evalJsonPathExtract` now parses text path elements as integer indices for array nodes
-  - **Tests**: ~2944 passed, 31 skipped (+15 new)
-  - **Commits**: 47f69d2 (test), aaecf9e (impl)
-- **Project State**: v1.0.1 stable, JSON function coverage expanded
+    - `json_agg(expr)` — collects non-NULL values into a JSON array, returns NULL for all-NULL input
+    - `array_agg(expr)` — identical behavior, SQL ARRAY stored as JSON text
+    - Added `json_agg`, `array_agg` to `AggFunc` enum in planner.zig
+    - Updated `aggFuncFromName()`, `agg_names[]`, `aggResultColName()`, `aggFuncName()`
+    - JSON escaping: quotes, backslashes, newlines, carriage returns
+  - **Tests**: ~2979+ passed, 31 skipped (+9 new)
+  - **Commits**: deb6f42
+- **Project State**: v1.0.1 stable, JSON aggregate coverage added
+
+### Session 326 (FEATURE MODE)
+- **Date**: 2026-05-26
+- **Focus**: JSON scalar SQL functions — extract path, to_json
+- **Outcome**: ✅ 6 functions implemented with 15 TDD tests
+- **Commits**: 47f69d2 (test), aaecf9e (impl)
 
 ### Session 323 (FEATURE MODE)
 - **Date**: 2026-05-25
