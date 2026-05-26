@@ -3995,6 +3995,214 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = json_str };
     }
 
+    // jsonb_pretty(json) / json_pretty(json) — format JSON with indentation
+    if (std.ascii.eqlIgnoreCase(fc.name, "jsonb_pretty") or
+        std.ascii.eqlIgnoreCase(fc.name, "json_pretty"))
+    {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const json_text = switch (arg) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
+
+        // Validate JSON by parsing
+        const is_valid_json = blk: {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch break :blk false;
+            _ = parsed;
+            break :blk true;
+        };
+        if (!is_valid_json) return Value.null_value;
+
+        // Pretty print by adding newlines
+        var result = std.ArrayListUnmanaged(u8){};
+        errdefer result.deinit(allocator);
+        var indent_level: usize = 0;
+
+        for (json_text) |c| {
+            switch (c) {
+                '{', '[' => {
+                    try result.append(allocator, c);
+                    try result.append(allocator, '\n');
+                    indent_level += 1;
+                    var i: usize = 0;
+                    while (i < indent_level * 4) : (i += 1) {
+                        try result.append(allocator, ' ');
+                    }
+                },
+                '}', ']' => {
+                    if (indent_level > 0) indent_level -= 1;
+                    try result.append(allocator, '\n');
+                    var i: usize = 0;
+                    while (i < indent_level * 4) : (i += 1) {
+                        try result.append(allocator, ' ');
+                    }
+                    try result.append(allocator, c);
+                },
+                ',' => {
+                    try result.append(allocator, c);
+                    try result.append(allocator, '\n');
+                    var i: usize = 0;
+                    while (i < indent_level * 4) : (i += 1) {
+                        try result.append(allocator, ' ');
+                    }
+                },
+                ':' => {
+                    try result.append(allocator, c);
+                    try result.append(allocator, ' ');
+                },
+                ' ', '\t', '\n', '\r' => {},  // Skip whitespace
+                else => try result.append(allocator, c),
+            }
+        }
+        return Value{ .text = try result.toOwnedSlice(allocator) };
+    }
+
+    // json_object(text[]) / jsonb_object(text[]) or json_object(text[], text[])
+    // Single array: alternating keys and values
+    // Two arrays: first is keys, second is values
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_object") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_object"))
+    {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const first = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer first.free(allocator);
+        if (first == .null_value) return Value.null_value;
+
+        const first_text = switch (first) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        var buf = std.ArrayListUnmanaged(u8){};
+        errdefer buf.deinit(allocator);
+
+        if (fc.args.len == 1) {
+            // Single array: alternating keys and values
+            const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), first_text, .{}) catch {
+                buf.deinit(allocator);
+                return Value.null_value;
+            };
+            const arr = switch (parsed.value) {
+                .array => |a| a,
+                else => {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                },
+            };
+            if (arr.items.len % 2 != 0) {
+                buf.deinit(allocator);
+                return Value.null_value;
+            } // odd length = error
+
+            try buf.append(allocator, '{');
+            var i: usize = 0;
+            while (i < arr.items.len) : (i += 2) {
+                if (i > 0) try buf.appendSlice(allocator, ",");
+                const key = switch (arr.items[i]) {
+                    .string => |s| s,
+                    else => {
+                        buf.deinit(allocator);
+                        return Value.null_value;
+                    },
+                };
+                const val = switch (arr.items[i + 1]) {
+                    .string => |s| s,
+                    else => {
+                        buf.deinit(allocator);
+                        return Value.null_value;
+                    },
+                };
+                // Escape and quote key
+                try buf.append(allocator, '"');
+                try buf.appendSlice(allocator, key);
+                try buf.appendSlice(allocator, "\":");
+                // Escape and quote value
+                try buf.append(allocator, '"');
+                try buf.appendSlice(allocator, val);
+                try buf.append(allocator, '"');
+            }
+        } else {
+            // Two-array form: keys array, values array
+            const second = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer second.free(allocator);
+            if (second == .null_value) {
+                buf.deinit(allocator);
+                return Value.null_value;
+            }
+            const second_text = switch (second) {
+                .text => |t| t,
+                else => {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                },
+            };
+
+            const pk = std.json.parseFromSlice(std.json.Value, arena.allocator(), first_text, .{}) catch {
+                buf.deinit(allocator);
+                return Value.null_value;
+            };
+            const pv = std.json.parseFromSlice(std.json.Value, arena.allocator(), second_text, .{}) catch {
+                buf.deinit(allocator);
+                return Value.null_value;
+            };
+            const keys = switch (pk.value) {
+                .array => |a| a,
+                else => {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                },
+            };
+            const vals = switch (pv.value) {
+                .array => |a| a,
+                else => {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                },
+            };
+            if (keys.items.len != vals.items.len) {
+                buf.deinit(allocator);
+                return Value.null_value;
+            }
+
+            try buf.append(allocator, '{');
+            for (keys.items, vals.items, 0..) |k, v, idx| {
+                if (idx > 0) try buf.appendSlice(allocator, ",");
+                const key_str = switch (k) {
+                    .string => |s| s,
+                    else => {
+                        buf.deinit(allocator);
+                        return Value.null_value;
+                    },
+                };
+                const val_str = switch (v) {
+                    .string => |s| s,
+                    else => {
+                        buf.deinit(allocator);
+                        return Value.null_value;
+                    },
+                };
+                // Escape and quote key
+                try buf.append(allocator, '"');
+                try buf.appendSlice(allocator, key_str);
+                try buf.appendSlice(allocator, "\":");
+                // Escape and quote value
+                try buf.append(allocator, '"');
+                try buf.appendSlice(allocator, val_str);
+                try buf.append(allocator, '"');
+            }
+        }
+        try buf.append(allocator, '}');
+        return Value{ .text = try buf.toOwnedSlice(allocator) };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -16987,5 +17195,193 @@ test "array_agg returns NULL when all values are NULL" {
     const result = agg_op.computeAggregate(agg_expr, &rows);
 
     // Result should be NULL
+    try std.testing.expect(result == .null_value);
+}
+
+// ============================================================================
+// NEW JSON Functions — jsonb_pretty, json_pretty, json_object
+// ============================================================================
+
+test "jsonb_pretty formats simple object with indentation" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // jsonb_pretty('{"a":1,"b":2}') → pretty-printed JSON with newlines and spaces
+    const json_expr = ast.Expr{ .string_literal = "{\"a\":1,\"b\":2}" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "jsonb_pretty", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // Pretty-printed JSON should contain newline characters
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\n") != null);
+    // Should contain indentation (spaces)
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "  ") != null or
+                           std.mem.indexOf(u8, result.text, "    ") != null);
+}
+
+test "json_pretty formats array with indentation" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_pretty('[1,2,3]') → pretty-printed JSON array
+    const json_expr = ast.Expr{ .string_literal = "[1,2,3]" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_pretty", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // Pretty-printed array should contain newline
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\n") != null);
+}
+
+test "jsonb_pretty returns NULL for NULL input" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // jsonb_pretty(NULL) → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "jsonb_pretty", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_pretty returns NULL for invalid JSON" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_pretty('not valid json') → NULL
+    const json_expr = ast.Expr{ .string_literal = "not valid json" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_pretty", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_pretty formats nested object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_pretty('{"a":{"b":1}}') → pretty-printed with nested indentation
+    const json_expr = ast.Expr{ .string_literal = "{\"a\":{\"b\":1}}" };
+    const args = [_]*const ast.Expr{ &json_expr };
+    const fc = .{ .name = "json_pretty", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\n") != null);
+}
+
+test "json_object with single array creates object from alternating keys/values" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object('["a","1","b","2"]') → {"a":"1","b":"2"}
+    const arr_expr = ast.Expr{ .string_literal = "[\"a\",\"1\",\"b\",\"2\"]" };
+    const args = [_]*const ast.Expr{ &arr_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // Result should be valid JSON containing both keys and values
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"1\"") != null);
+}
+
+test "json_object with two arrays creates object from key and value arrays" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object('["x","y"]', '["10","20"]') → {"x":"10","y":"20"}
+    const keys_expr = ast.Expr{ .string_literal = "[\"x\",\"y\"]" };
+    const vals_expr = ast.Expr{ .string_literal = "[\"10\",\"20\"]" };
+    const args = [_]*const ast.Expr{ &keys_expr, &vals_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"10\"") != null);
+}
+
+test "json_object returns NULL when first argument is NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object(NULL) → NULL
+    const arr_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &arr_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_object returns NULL for odd-length single array" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object('["a","b","c"]') → NULL (odd number of elements)
+    const arr_expr = ast.Expr{ .string_literal = "[\"a\",\"b\",\"c\"]" };
+    const args = [_]*const ast.Expr{ &arr_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_object with empty single array creates empty object" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object('[]') → {}
+    const arr_expr = ast.Expr{ .string_literal = "[]" };
+    const args = [_]*const ast.Expr{ &arr_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("{}", result.text);
+}
+
+test "json_object with mismatched array lengths returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object('["a","b"]', '["1"]') → NULL (different lengths)
+    const keys_expr = ast.Expr{ .string_literal = "[\"a\",\"b\"]" };
+    const vals_expr = ast.Expr{ .string_literal = "[\"1\"]" };
+    const args = [_]*const ast.Expr{ &keys_expr, &vals_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "json_object with invalid array JSON returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // json_object('not an array') → NULL
+    const arr_expr = ast.Expr{ .string_literal = "not an array" };
+    const args = [_]*const ast.Expr{ &arr_expr };
+    const fc = .{ .name = "json_object", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
     try std.testing.expect(result == .null_value);
 }
