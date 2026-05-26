@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.10.0
-- **Latest available**: v2.10.0
+- **Current in silica**: v2.11.0
+- **Latest available**: v2.11.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -209,6 +209,9 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.8.0 | Cross-Platform Enhancements | DONE | Windows ConPTY integration, legacy console fallback, Linux/macOS platform-specific optimizations, comptime platform detection, zero runtime cost |
 | v2.9.0 | Developer Experience & Debugging Tools | DONE | Widget Inspector (55 tests), Advanced Profiling (38 tests), Error Boundaries (58 tests), Developer Console (40 tests, Ctrl+Shift+D toggle) |
 | v2.10.0 | AI/ML Integration & Smart Features | DONE | LLM integration layer (TokenBudget, RateLimiter, PromptTemplate, ResponseStreamWidget), Smart Autocomplete (context-aware, multi-source, semantic ranking), Layout Intelligence (AI-assisted analysis, responsiveness checking), Natural Language Commands (11 intent types, context-aware disambiguation) |
+| v2.10.1 | Natural Language Commands Bug Fixes | DONE | Bug fixes for natural language command parsing |
+| v2.10.2 | Test Reliability Improvements | DONE | Test reliability improvements |
+| v2.11.0 | Extended Graphics & Protocol Support | DONE | Sixel encoder/decoder (color palette optimization), Kitty graphics protocol, ANSI art rendering (block/braille/ASCII algorithms), particle system (fire/rain/snow/sparkle), gradient backgrounds, blur/transparency effects, transition animations |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
