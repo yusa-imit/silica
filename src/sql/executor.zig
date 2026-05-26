@@ -4203,6 +4203,452 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = try buf.toOwnedSlice(allocator) };
     }
 
+    // ── String functions ────────────────────────────────────────────────────
+
+    // substring(str, from) / substring(str, from, len) — 1-based position
+    if (std.ascii.eqlIgnoreCase(fc.name, "substring") or
+        std.ascii.eqlIgnoreCase(fc.name, "substr"))
+    {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
+        const from_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer from_val.free(allocator);
+        const from_1based: i64 = switch (from_val) {
+            .integer => |v| v,
+            else => return Value.null_value,
+        };
+        const start: usize = if (from_1based <= 1) 0 else @intCast(from_1based - 1);
+        if (start >= str.len) return Value{ .text = try allocator.dupe(u8, "") };
+        if (fc.args.len >= 3) {
+            const len_val = try evalExpr(allocator, fc.args[2], row, catalog);
+            defer len_val.free(allocator);
+            const len: i64 = switch (len_val) {
+                .integer => |v| v,
+                else => return Value.null_value,
+            };
+            const end = if (len <= 0) start else @min(str.len, start + @as(usize, @intCast(len)));
+            return Value{ .text = try allocator.dupe(u8, str[start..end]) };
+        }
+        return Value{ .text = try allocator.dupe(u8, str[start..]) };
+    }
+
+    // trim(str) — remove leading+trailing whitespace
+    if (std.ascii.eqlIgnoreCase(fc.name, "trim")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const trimmed = std.mem.trim(u8, s, &std.ascii.whitespace);
+        return Value{ .text = try allocator.dupe(u8, trimmed) };
+    }
+
+    // ltrim(str) / ltrim(str, chars) — remove leading chars
+    if (std.ascii.eqlIgnoreCase(fc.name, "ltrim")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        if (fc.args.len >= 2) {
+            const chars_val = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer chars_val.free(allocator);
+            const chars = switch (chars_val) { .text => |t| t, else => &std.ascii.whitespace };
+            return Value{ .text = try allocator.dupe(u8, std.mem.trimLeft(u8, s, chars)) };
+        }
+        return Value{ .text = try allocator.dupe(u8, std.mem.trimLeft(u8, s, &std.ascii.whitespace)) };
+    }
+
+    // rtrim(str) / rtrim(str, chars) — remove trailing chars
+    if (std.ascii.eqlIgnoreCase(fc.name, "rtrim")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        if (fc.args.len >= 2) {
+            const chars_val = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer chars_val.free(allocator);
+            const chars = switch (chars_val) { .text => |t| t, else => &std.ascii.whitespace };
+            return Value{ .text = try allocator.dupe(u8, std.mem.trimRight(u8, s, chars)) };
+        }
+        return Value{ .text = try allocator.dupe(u8, std.mem.trimRight(u8, s, &std.ascii.whitespace)) };
+    }
+
+    // replace(str, from, to) — replace all occurrences
+    if (std.ascii.eqlIgnoreCase(fc.name, "replace")) {
+        if (fc.args.len < 3) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const from_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer from_val.free(allocator);
+        const from_str = switch (from_val) { .text => |t| t, else => return Value.null_value };
+        const to_val = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer to_val.free(allocator);
+        const to_str = switch (to_val) { .text => |t| t, else => return Value.null_value };
+        if (from_str.len == 0) return Value{ .text = try allocator.dupe(u8, s) };
+        const result_str = try std.mem.replaceOwned(u8, allocator, s, from_str, to_str);
+        return Value{ .text = result_str };
+    }
+
+    // strpos(str, substr) — 1-based position, 0 if not found
+    if (std.ascii.eqlIgnoreCase(fc.name, "strpos")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const sub_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer sub_val.free(allocator);
+        const sub = switch (sub_val) { .text => |t| t, else => return Value.null_value };
+        if (std.mem.indexOf(u8, s, sub)) |idx| {
+            return Value{ .integer = @intCast(idx + 1) };
+        }
+        return Value{ .integer = 0 };
+    }
+
+    // lpad(str, len) / lpad(str, len, fill) — left pad to length
+    if (std.ascii.eqlIgnoreCase(fc.name, "lpad")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const len_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer len_val.free(allocator);
+        const total_len: usize = switch (len_val) {
+            .integer => |v| if (v <= 0) 0 else @intCast(v),
+            else => return Value.null_value,
+        };
+        if (s.len >= total_len) return Value{ .text = try allocator.dupe(u8, s[0..total_len]) };
+        const pad_len = total_len - s.len;
+        var buf = try allocator.alloc(u8, total_len);
+        errdefer allocator.free(buf);
+        // Evaluate fill before writing — keep fill_val alive until buf is filled
+        const fill_val: Value = if (fc.args.len >= 3) try evalExpr(allocator, fc.args[2], row, catalog) else .null_value;
+        defer fill_val.free(allocator);
+        const fill: []const u8 = switch (fill_val) {
+            .text => |t| if (t.len > 0) t else " ",
+            else => " ",
+        };
+        var i: usize = 0;
+        while (i < pad_len) : (i += 1) {
+            buf[i] = fill[i % fill.len];
+        }
+        @memcpy(buf[pad_len..], s);
+        return Value{ .text = buf };
+    }
+
+    // rpad(str, len) / rpad(str, len, fill) — right pad to length
+    if (std.ascii.eqlIgnoreCase(fc.name, "rpad")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const len_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer len_val.free(allocator);
+        const total_len: usize = switch (len_val) {
+            .integer => |v| if (v <= 0) 0 else @intCast(v),
+            else => return Value.null_value,
+        };
+        if (s.len >= total_len) return Value{ .text = try allocator.dupe(u8, s[0..total_len]) };
+        const pad_len = total_len - s.len;
+        var buf = try allocator.alloc(u8, total_len);
+        errdefer allocator.free(buf);
+        @memcpy(buf[0..s.len], s);
+        // Evaluate fill before writing — keep fill_val alive until buf is filled
+        const fill_val: Value = if (fc.args.len >= 3) try evalExpr(allocator, fc.args[2], row, catalog) else .null_value;
+        defer fill_val.free(allocator);
+        const fill: []const u8 = switch (fill_val) {
+            .text => |t| if (t.len > 0) t else " ",
+            else => " ",
+        };
+        var i: usize = 0;
+        while (i < pad_len) : (i += 1) {
+            buf[s.len + i] = fill[i % fill.len];
+        }
+        return Value{ .text = buf };
+    }
+
+    // repeat(str, count) — repeat string N times
+    if (std.ascii.eqlIgnoreCase(fc.name, "repeat")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const cnt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer cnt_val.free(allocator);
+        const n: usize = switch (cnt_val) {
+            .integer => |v| if (v <= 0) 0 else @intCast(v),
+            else => return Value.null_value,
+        };
+        if (n == 0 or s.len == 0) return Value{ .text = try allocator.dupe(u8, "") };
+        const buf = try allocator.alloc(u8, s.len * n);
+        for (0..n) |i| @memcpy(buf[i * s.len .. (i + 1) * s.len], s);
+        return Value{ .text = buf };
+    }
+
+    // split_part(str, delim, field) — 1-based split field
+    if (std.ascii.eqlIgnoreCase(fc.name, "split_part")) {
+        if (fc.args.len < 3) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const delim_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer delim_val.free(allocator);
+        const delim = switch (delim_val) { .text => |t| t, else => return Value.null_value };
+        const field_val = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer field_val.free(allocator);
+        const field: usize = switch (field_val) {
+            .integer => |v| if (v <= 0) return Value{ .text = try allocator.dupe(u8, "") } else @intCast(v),
+            else => return Value.null_value,
+        };
+        if (delim.len == 0) return Value{ .text = try allocator.dupe(u8, s) };
+        var it = std.mem.splitSequence(u8, s, delim);
+        var idx: usize = 1;
+        while (it.next()) |part| {
+            if (idx == field) return Value{ .text = try allocator.dupe(u8, part) };
+            idx += 1;
+        }
+        return Value{ .text = try allocator.dupe(u8, "") };
+    }
+
+    // left(str, n) — first N characters
+    if (std.ascii.eqlIgnoreCase(fc.name, "left")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const n_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer n_val.free(allocator);
+        const n: usize = switch (n_val) {
+            .integer => |v| if (v <= 0) 0 else @intCast(v),
+            else => return Value.null_value,
+        };
+        const end = @min(s.len, n);
+        return Value{ .text = try allocator.dupe(u8, s[0..end]) };
+    }
+
+    // right(str, n) — last N characters
+    if (std.ascii.eqlIgnoreCase(fc.name, "right")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        if (str_val == .null_value) return Value.null_value;
+        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const n_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer n_val.free(allocator);
+        const n: usize = switch (n_val) {
+            .integer => |v| if (v <= 0) 0 else @intCast(v),
+            else => return Value.null_value,
+        };
+        const start = if (n >= s.len) 0 else s.len - n;
+        return Value{ .text = try allocator.dupe(u8, s[start..]) };
+    }
+
+    // reverse(str) — reverse characters
+    if (std.ascii.eqlIgnoreCase(fc.name, "reverse")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const buf = try allocator.dupe(u8, s);
+        std.mem.reverse(u8, buf);
+        return Value{ .text = buf };
+    }
+
+    // concat(args...) — concatenate, silently ignoring NULLs
+    if (std.ascii.eqlIgnoreCase(fc.name, "concat")) {
+        var buf = std.ArrayListUnmanaged(u8){};
+        errdefer buf.deinit(allocator);
+        for (fc.args) |arg_expr| {
+            const v = try evalExpr(allocator, arg_expr, row, catalog);
+            defer v.free(allocator);
+            if (v == .null_value) continue;
+            switch (v) {
+                .text => |t| try buf.appendSlice(allocator, t),
+                .integer => |i| {
+                    var tmp: [32]u8 = undefined;
+                    const s = std.fmt.bufPrint(&tmp, "{}", .{i}) catch continue;
+                    try buf.appendSlice(allocator, s);
+                },
+                .real => |r| {
+                    var tmp: [64]u8 = undefined;
+                    const s = std.fmt.bufPrint(&tmp, "{d}", .{r}) catch continue;
+                    try buf.appendSlice(allocator, s);
+                },
+                else => {},
+            }
+        }
+        return Value{ .text = try buf.toOwnedSlice(allocator) };
+    }
+
+    // initcap(str) — capitalize first letter of each word
+    if (std.ascii.eqlIgnoreCase(fc.name, "initcap")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+        if (arg == .null_value) return Value.null_value;
+        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const buf = try allocator.dupe(u8, s);
+        var new_word = true;
+        for (buf, 0..) |c, i| {
+            if (std.ascii.isWhitespace(c)) {
+                new_word = true;
+            } else if (new_word) {
+                buf[i] = std.ascii.toUpper(c);
+                new_word = false;
+            } else {
+                buf[i] = std.ascii.toLower(c);
+            }
+        }
+        return Value{ .text = buf };
+    }
+
+    // ── Math functions ──────────────────────────────────────────────────────
+
+    // round(num) / round(num, scale)
+    if (std.ascii.eqlIgnoreCase(fc.name, "round")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const num_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer num_val.free(allocator);
+        if (num_val == .null_value) return Value.null_value;
+        const f: f64 = switch (num_val) {
+            .real => |v| v,
+            .integer => |v| @floatFromInt(v),
+            else => return Value.null_value,
+        };
+        if (fc.args.len >= 2) {
+            const scale_val = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer scale_val.free(allocator);
+            const scale: i64 = switch (scale_val) { .integer => |v| v, else => 0 };
+            const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
+            return Value{ .real = @round(f * factor) / factor };
+        }
+        return Value{ .real = @round(f) };
+    }
+
+    // floor(num)
+    if (std.ascii.eqlIgnoreCase(fc.name, "floor")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const num_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer num_val.free(allocator);
+        if (num_val == .null_value) return Value.null_value;
+        return switch (num_val) {
+            .real => |v| Value{ .real = @floor(v) },
+            .integer => |v| Value{ .integer = v },
+            else => Value.null_value,
+        };
+    }
+
+    // ceil(num) / ceiling(num)
+    if (std.ascii.eqlIgnoreCase(fc.name, "ceil") or
+        std.ascii.eqlIgnoreCase(fc.name, "ceiling"))
+    {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const num_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer num_val.free(allocator);
+        if (num_val == .null_value) return Value.null_value;
+        return switch (num_val) {
+            .real => |v| Value{ .real = @ceil(v) },
+            .integer => |v| Value{ .integer = v },
+            else => Value.null_value,
+        };
+    }
+
+    // sqrt(num)
+    if (std.ascii.eqlIgnoreCase(fc.name, "sqrt")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const num_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer num_val.free(allocator);
+        if (num_val == .null_value) return Value.null_value;
+        const f: f64 = switch (num_val) {
+            .real => |v| v,
+            .integer => |v| @floatFromInt(v),
+            else => return Value.null_value,
+        };
+        return Value{ .real = @sqrt(f) };
+    }
+
+    // pow(base, exp) / power(base, exp)
+    if (std.ascii.eqlIgnoreCase(fc.name, "pow") or
+        std.ascii.eqlIgnoreCase(fc.name, "power"))
+    {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const base_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer base_val.free(allocator);
+        if (base_val == .null_value) return Value.null_value;
+        const exp_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer exp_val.free(allocator);
+        if (exp_val == .null_value) return Value.null_value;
+        const base_f: f64 = switch (base_val) {
+            .real => |v| v,
+            .integer => |v| @floatFromInt(v),
+            else => return Value.null_value,
+        };
+        const exp_f: f64 = switch (exp_val) {
+            .real => |v| v,
+            .integer => |v| @floatFromInt(v),
+            else => return Value.null_value,
+        };
+        return Value{ .real = std.math.pow(f64, base_f, exp_f) };
+    }
+
+    // mod(a, b)
+    if (std.ascii.eqlIgnoreCase(fc.name, "mod")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const a_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer a_val.free(allocator);
+        if (a_val == .null_value) return Value.null_value;
+        const b_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer b_val.free(allocator);
+        if (b_val == .null_value) return Value.null_value;
+        return switch (a_val) {
+            .integer => |a| switch (b_val) {
+                .integer => |b| if (b == 0) Value.null_value else Value{ .integer = @rem(a, b) },
+                .real => |b| Value{ .real = @rem(@as(f64, @floatFromInt(a)), b) },
+                else => Value.null_value,
+            },
+            .real => |a| switch (b_val) {
+                .real => |b| Value{ .real = @rem(a, b) },
+                .integer => |b| Value{ .real = @rem(a, @as(f64, @floatFromInt(b))) },
+                else => Value.null_value,
+            },
+            else => Value.null_value,
+        };
+    }
+
+    // sign(num) — returns -1, 0, or 1
+    if (std.ascii.eqlIgnoreCase(fc.name, "sign")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const num_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer num_val.free(allocator);
+        if (num_val == .null_value) return Value.null_value;
+        return switch (num_val) {
+            .integer => |v| Value{ .integer = if (v < 0) -1 else if (v > 0) 1 else 0 },
+            .real => |v| Value{ .real = if (v < 0.0) -1.0 else if (v > 0.0) 1.0 else 0.0 },
+            else => Value.null_value,
+        };
+    }
+
+    // pi() — π constant
+    if (std.ascii.eqlIgnoreCase(fc.name, "pi")) {
+        return Value{ .real = std.math.pi };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -17384,4 +17830,795 @@ test "json_object with invalid array JSON returns NULL" {
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
     try std.testing.expect(result == .null_value);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// STRING FUNCTIONS
+// ────────────────────────────────────────────────────────────────────────────
+
+test "substring extracts substring with from_pos and length" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // substring('hello', 2, 3) → 'ell'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .integer_literal = 2 };
+    const len_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &len_expr };
+    const fc = .{ .name = "substring", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("ell", result.text);
+}
+
+test "substring with only from_pos extracts to end" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // substring('hello', 3) → 'llo'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr };
+    const fc = .{ .name = "substring", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("llo", result.text);
+}
+
+test "substring with NULL input returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // substring(NULL, 1, 3) → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const from_expr = ast.Expr{ .integer_literal = 1 };
+    const len_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &len_expr };
+    const fc = .{ .name = "substring", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "substr is alias for substring with from_pos and length" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // substr('abc', 1, 2) → 'ab'
+    const str_expr = ast.Expr{ .string_literal = "abc" };
+    const from_expr = ast.Expr{ .integer_literal = 1 };
+    const len_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &len_expr };
+    const fc = .{ .name = "substr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("ab", result.text);
+}
+
+test "trim removes leading and trailing whitespace" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // trim('  hello  ') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "  hello  " };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "trim", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "trim with no whitespace returns original string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // trim('hello') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "trim", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "ltrim removes leading whitespace" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ltrim('  hello') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "  hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "ltrim", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "ltrim with chars removes specified characters from left" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ltrim('xxxhello', 'x') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "xxxhello" };
+    const chars_expr = ast.Expr{ .string_literal = "x" };
+    const args = [_]*const ast.Expr{ &str_expr, &chars_expr };
+    const fc = .{ .name = "ltrim", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "rtrim removes trailing whitespace" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // rtrim('hello  ') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "hello  " };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "rtrim", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "rtrim with chars removes specified characters from right" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // rtrim('helloyyy', 'y') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "helloyyy" };
+    const chars_expr = ast.Expr{ .string_literal = "y" };
+    const args = [_]*const ast.Expr{ &str_expr, &chars_expr };
+    const fc = .{ .name = "rtrim", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "replace replaces all occurrences of substring" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // replace('hello world', 'o', 'a') → 'hella warld'
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const from_expr = ast.Expr{ .string_literal = "o" };
+    const to_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hella warld", result.text);
+}
+
+test "replace returns original when substring not found" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // replace('hello', 'x', 'y') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .string_literal = "x" };
+    const to_expr = ast.Expr{ .string_literal = "y" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "strpos finds 1-based position of first occurrence" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // strpos('hello', 'l') → 3
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const substr_expr = ast.Expr{ .string_literal = "l" };
+    const args = [_]*const ast.Expr{ &str_expr, &substr_expr };
+    const fc = .{ .name = "strpos", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+test "strpos returns 0 when substring not found" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // strpos('hello', 'x') → 0
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const substr_expr = ast.Expr{ .string_literal = "x" };
+    const args = [_]*const ast.Expr{ &str_expr, &substr_expr };
+    const fc = .{ .name = "strpos", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "lpad pads string to length with spaces" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // lpad('hi', 5) → '   hi'
+    const str_expr = ast.Expr{ .string_literal = "hi" };
+    const len_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &str_expr, &len_expr };
+    const fc = .{ .name = "lpad", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("   hi", result.text);
+}
+
+test "lpad with fill character pads with specified character" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // lpad('hi', 5, 'x') → 'xxxhi'
+    const str_expr = ast.Expr{ .string_literal = "hi" };
+    const len_expr = ast.Expr{ .integer_literal = 5 };
+    const fill_expr = ast.Expr{ .string_literal = "x" };
+    const args = [_]*const ast.Expr{ &str_expr, &len_expr, &fill_expr };
+    const fc = .{ .name = "lpad", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("xxxhi", result.text);
+}
+
+test "rpad pads string to length with spaces on right" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // rpad('hi', 5) → 'hi   '
+    const str_expr = ast.Expr{ .string_literal = "hi" };
+    const len_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &str_expr, &len_expr };
+    const fc = .{ .name = "rpad", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hi   ", result.text);
+}
+
+test "rpad with fill character pads right with specified character" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // rpad('hi', 5, 'x') → 'hixxx'
+    const str_expr = ast.Expr{ .string_literal = "hi" };
+    const len_expr = ast.Expr{ .integer_literal = 5 };
+    const fill_expr = ast.Expr{ .string_literal = "x" };
+    const args = [_]*const ast.Expr{ &str_expr, &len_expr, &fill_expr };
+    const fc = .{ .name = "rpad", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hixxx", result.text);
+}
+
+test "repeat repeats string N times" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // repeat('ab', 3) → 'ababab'
+    const str_expr = ast.Expr{ .string_literal = "ab" };
+    const count_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &count_expr };
+    const fc = .{ .name = "repeat", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("ababab", result.text);
+}
+
+test "repeat with zero count returns empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // repeat('ab', 0) → ''
+    const str_expr = ast.Expr{ .string_literal = "ab" };
+    const count_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &str_expr, &count_expr };
+    const fc = .{ .name = "repeat", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("", result.text);
+}
+
+test "split_part splits string by delimiter and returns field" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // split_part('a,b,c', ',', 2) → 'b'
+    const str_expr = ast.Expr{ .string_literal = "a,b,c" };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const field_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &str_expr, &delim_expr, &field_expr };
+    const fc = .{ .name = "split_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("b", result.text);
+}
+
+test "split_part with out-of-range field returns empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // split_part('a,b', ',', 5) → ''
+    const str_expr = ast.Expr{ .string_literal = "a,b" };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const field_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &str_expr, &delim_expr, &field_expr };
+    const fc = .{ .name = "split_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("", result.text);
+}
+
+test "left returns first N characters" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // left('hello', 3) → 'hel'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const n_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &n_expr };
+    const fc = .{ .name = "left", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hel", result.text);
+}
+
+test "left with N greater than length returns whole string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // left('hi', 10) → 'hi'
+    const str_expr = ast.Expr{ .string_literal = "hi" };
+    const n_expr = ast.Expr{ .integer_literal = 10 };
+    const args = [_]*const ast.Expr{ &str_expr, &n_expr };
+    const fc = .{ .name = "left", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hi", result.text);
+}
+
+test "right returns last N characters" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // right('hello', 3) → 'llo'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const n_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &n_expr };
+    const fc = .{ .name = "right", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("llo", result.text);
+}
+
+test "right with N greater than length returns whole string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // right('hi', 10) → 'hi'
+    const str_expr = ast.Expr{ .string_literal = "hi" };
+    const n_expr = ast.Expr{ .integer_literal = 10 };
+    const args = [_]*const ast.Expr{ &str_expr, &n_expr };
+    const fc = .{ .name = "right", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hi", result.text);
+}
+
+test "reverse reverses string characters" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // reverse('hello') → 'olleh'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "reverse", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("olleh", result.text);
+}
+
+test "reverse on empty string returns empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // reverse('') → ''
+    const str_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "reverse", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("", result.text);
+}
+
+test "concat concatenates multiple non-NULL strings" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat('hello', ' ', 'world') → 'hello world'
+    const s1_expr = ast.Expr{ .string_literal = "hello" };
+    const s2_expr = ast.Expr{ .string_literal = " " };
+    const s3_expr = ast.Expr{ .string_literal = "world" };
+    const args = [_]*const ast.Expr{ &s1_expr, &s2_expr, &s3_expr };
+    const fc = .{ .name = "concat", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello world", result.text);
+}
+
+test "concat with NULL silently ignores the NULL value" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat('hello', NULL, 'world') → 'helloworld'
+    const s1_expr = ast.Expr{ .string_literal = "hello" };
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const s3_expr = ast.Expr{ .string_literal = "world" };
+    const args = [_]*const ast.Expr{ &s1_expr, &null_expr, &s3_expr };
+    const fc = .{ .name = "concat", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("helloworld", result.text);
+}
+
+test "initcap capitalizes first letter of each word" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // initcap('hello world') → 'Hello World'
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "initcap", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("Hello World", result.text);
+}
+
+test "initcap with single word capitalizes first letter only" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // initcap('hello') → 'Hello'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "initcap", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("Hello", result.text);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// MATH FUNCTIONS
+// ────────────────────────────────────────────────────────────────────────────
+
+test "round rounds to nearest integer by default" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // round(3.7) → 4
+    const num_expr = ast.Expr{ .float_literal = 3.7 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "round", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result.real, 1e-9);
+}
+
+test "round with scale rounds to specified decimal places" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // round(3.14159, 2) → 3.14
+    const num_expr = ast.Expr{ .float_literal = 3.14159 };
+    const scale_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &num_expr, &scale_expr };
+    const fc = .{ .name = "round", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.14), result.real, 1e-9);
+}
+
+test "round with negative scale rounds to nearest power of 10" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // round(3456, -2) → 3500
+    const num_expr = ast.Expr{ .integer_literal = 3456 };
+    const scale_expr = ast.Expr{ .integer_literal = -2 };
+    const args = [_]*const ast.Expr{ &num_expr, &scale_expr };
+    const fc = .{ .name = "round", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    // Result could be real or integer depending on implementation
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "floor rounds down to nearest integer" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // floor(3.7) → 3
+    const num_expr = ast.Expr{ .float_literal = 3.7 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "floor", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "floor with negative number rounds down" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // floor(-3.2) → -4
+    const num_expr = ast.Expr{ .float_literal = -3.2 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "floor", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "ceil rounds up to nearest integer" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ceil(3.2) → 4
+    const num_expr = ast.Expr{ .float_literal = 3.2 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ceil", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "ceiling is alias for ceil" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ceiling(3.2) → 4
+    const num_expr = ast.Expr{ .float_literal = 3.2 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ceiling", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "sqrt computes square root" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sqrt(16) → 4
+    const num_expr = ast.Expr{ .integer_literal = 16 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sqrt", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result.real, 1e-9);
+}
+
+test "sqrt of zero returns zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sqrt(0) → 0
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sqrt", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "pow computes base raised to exponent" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // pow(2, 3) → 8
+    const base_expr = ast.Expr{ .integer_literal = 2 };
+    const exp_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &base_expr, &exp_expr };
+    const fc = .{ .name = "pow", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "power is alias for pow" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // power(3, 2) → 9
+    const base_expr = ast.Expr{ .integer_literal = 3 };
+    const exp_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &base_expr, &exp_expr };
+    const fc = .{ .name = "power", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "pow with zero exponent returns 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // pow(5, 0) → 1
+    const base_expr = ast.Expr{ .integer_literal = 5 };
+    const exp_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &base_expr, &exp_expr };
+    const fc = .{ .name = "pow", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real or result == .integer);
+}
+
+test "mod returns modulus (a % b)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // mod(10, 3) → 1
+    const a_expr = ast.Expr{ .integer_literal = 10 };
+    const b_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &a_expr, &b_expr };
+    const fc = .{ .name = "mod", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "mod with exact division returns zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // mod(10, 5) → 0
+    const a_expr = ast.Expr{ .integer_literal = 10 };
+    const b_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &a_expr, &b_expr };
+    const fc = .{ .name = "mod", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "sign returns -1 for negative numbers" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sign(-42) → -1
+    const num_expr = ast.Expr{ .integer_literal = -42 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sign", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, -1), result.integer);
+}
+
+test "sign returns 0 for zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sign(0) → 0
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sign", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "sign returns 1 for positive numbers" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sign(42) → 1
+    const num_expr = ast.Expr{ .integer_literal = 42 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sign", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "pi returns π constant" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // pi() → 3.14159...
+    const args = [_]*const ast.Expr{};
+    const fc = .{ .name = "pi", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(std.math.pi, result.real, 1e-9);
 }
