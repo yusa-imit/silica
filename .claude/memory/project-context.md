@@ -9,10 +9,10 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 327 - FEATURE MODE)
-- **Date**: 2026-05-26
-- **Mode**: FEATURE MODE (Session 327)
-- **Focus**: json_agg and array_agg aggregate functions
+### Last Session (Session 329 - FEATURE MODE)
+- **Date**: 2026-05-27
+- **Mode**: FEATURE MODE (Session 329)
+- **Focus**: String/math SQL built-in functions + JSON formatting
 - **Outcome**: ✅ Both functions implemented with 9 tests (7 executor unit tests + 2 planner tests)
 - **Details**:
   - **CI Status**: ✅ GREEN
