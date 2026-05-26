@@ -106,6 +106,8 @@ pub const AggFunc = enum {
     min,
     max,
     count_star,
+    json_agg,
+    array_agg,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -876,6 +878,8 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "avg")) return .avg;
     if (std.mem.eql(u8, lower, "min")) return .min;
     if (std.mem.eql(u8, lower, "max")) return .max;
+    if (std.mem.eql(u8, lower, "json_agg")) return .json_agg;
+    if (std.mem.eql(u8, lower, "array_agg")) return .array_agg;
     return null;
 }
 
@@ -1607,6 +1611,8 @@ test "aggFuncFromName" {
     try testing.expectEqual(AggFunc.avg, aggFuncFromName("avg").?);
     try testing.expectEqual(AggFunc.min, aggFuncFromName("Min").?);
     try testing.expectEqual(AggFunc.max, aggFuncFromName("MAX").?);
+    try testing.expectEqual(AggFunc.json_agg, aggFuncFromName("json_agg").?);
+    try testing.expectEqual(AggFunc.array_agg, aggFuncFromName("ARRAY_AGG").?);
     try testing.expect(aggFuncFromName("unknown") == null);
 }
 
