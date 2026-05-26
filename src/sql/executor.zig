@@ -18397,8 +18397,8 @@ test "round with negative scale rounds to nearest power of 10" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    // Result could be real or integer depending on implementation
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 3500.0), result.real, 1e-9);
 }
 
 test "floor rounds down to nearest integer" {
@@ -18412,7 +18412,8 @@ test "floor rounds down to nearest integer" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result.real, 1e-9);
 }
 
 test "floor with negative number rounds down" {
@@ -18426,7 +18427,8 @@ test "floor with negative number rounds down" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -4.0), result.real, 1e-9);
 }
 
 test "ceil rounds up to nearest integer" {
@@ -18440,7 +18442,8 @@ test "ceil rounds up to nearest integer" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result.real, 1e-9);
 }
 
 test "ceiling is alias for ceil" {
@@ -18454,7 +18457,8 @@ test "ceiling is alias for ceil" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result.real, 1e-9);
 }
 
 test "sqrt computes square root" {
@@ -18499,7 +18503,8 @@ test "pow computes base raised to exponent" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), result.real, 1e-9);
 }
 
 test "power is alias for pow" {
@@ -18514,7 +18519,8 @@ test "power is alias for pow" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result.real, 1e-9);
 }
 
 test "pow with zero exponent returns 1" {
@@ -18529,7 +18535,8 @@ test "pow with zero exponent returns 1" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
-    try std.testing.expect(result == .real or result == .integer);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-9);
 }
 
 test "mod returns modulus (a % b)" {
@@ -18621,4 +18628,146 @@ test "pi returns π constant" {
     defer result.free(allocator);
     try std.testing.expect(result == .real);
     try std.testing.expectApproxEqAbs(std.math.pi, result.real, 1e-9);
+}
+
+// Edge cases for math functions
+
+test "floor with integer input returns integer unchanged" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // floor(5) → 5
+    const num_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "floor", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "ceil with integer input returns integer unchanged" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ceil(7) → 7
+    const num_expr = ast.Expr{ .integer_literal = 7 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ceil", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 7), result.integer);
+}
+
+test "sign with float input returns float" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sign(-2.5) → -1.0
+    const num_expr = ast.Expr{ .float_literal = -2.5 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sign", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -1.0), result.real, 1e-9);
+}
+
+test "mod by zero returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // mod(10, 0) → NULL
+    const a_expr = ast.Expr{ .integer_literal = 10 };
+    const b_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &a_expr, &b_expr };
+    const fc = .{ .name = "mod", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "lpad truncates string longer than target width" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // lpad('hello', 3) → 'hel'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const width_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &width_expr };
+    const fc = .{ .name = "lpad", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "hel", result.text);
+}
+
+test "rpad truncates string longer than target width" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // rpad('hello', 3) → 'hel'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const width_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &width_expr };
+    const fc = .{ .name = "rpad", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "hel", result.text);
+}
+
+test "repeat with negative count returns empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // repeat('ab', -3) → ''
+    const str_expr = ast.Expr{ .string_literal = "ab" };
+    const count_expr = ast.Expr{ .integer_literal = -3 };
+    const args = [_]*const ast.Expr{ &str_expr, &count_expr };
+    const fc = .{ .name = "repeat", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "", result.text);
+}
+
+test "substring with position zero treated as position one" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // substring('hello', 0, 3) → 'hel'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .integer_literal = 0 };
+    const len_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &len_expr };
+    const fc = .{ .name = "substring", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "hel", result.text);
+}
+
+test "initcap normalizes uppercase input to title case" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // initcap('HELLO WORLD') → 'Hello World'
+    const str_expr = ast.Expr{ .string_literal = "HELLO WORLD" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "initcap", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "Hello World", result.text);
 }
