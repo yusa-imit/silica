@@ -9,25 +9,24 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 331 - FEATURE MODE)
+### Last Session (Session 332 - FEATURE MODE)
 - **Date**: 2026-05-27
-- **Mode**: FEATURE MODE (Session 331)
-- **Focus**: Date/time and string utility SQL built-in functions
-- **Outcome**: ✅ 7 new functions implemented, 26 new tests
+- **Mode**: FEATURE MODE (Session 332)
+- **Focus**: Cryptographic and string encoding SQL built-in functions
+- **Outcome**: ✅ 6 new functions implemented, 22 new tests
 - **Details**:
   - **CI Status**: ✅ GREEN
   - **GitHub Issues**: 0 open
   - **Work Done**:
-    - `date_part(field, source)` — extracts year/month/day/hour/minute/second/epoch/dow/doy/quarter/week/decade/century/milliseconds/microseconds from date/timestamp/text
-    - `date_trunc(field, source)` — truncates to year/quarter/month/week/day/hour/minute/second precision; returns timestamp
-    - `chr(n)` — integer codepoint → UTF-8 character (NULL for n≤0)
-    - `ascii(str)` — first character → ASCII code (NULL for empty/NULL)
-    - `octet_length(str)` — byte count (NULL for NULL)
-    - `char_length(str)` / `character_length(str)` — character count (NULL for NULL)
-    - `translate(str, from, to)` — character substitution/deletion map
-  - **Tests**: 3265 passed, 37 skipped (+30 new)
-  - **Commits**: bcc2edd
-- **Project State**: v1.0.1 stable, date/time and string utility SQL functions added
+    - `md5(text)` — MD5 hash → lowercase 32-char hex string
+    - `encode(data, format)` — 'hex', 'base64', 'escape' encoding
+    - `decode(data, format)` — reverse of encode for 'hex' and 'base64'
+    - `quote_ident(text)` — double-quoted SQL identifier (doubles internal `"`)
+    - `quote_literal(text)` — single-quoted SQL string (doubles internal `'`)
+    - `overlay(string, placing, from [, for])` — SQL standard string overlay; default for=length(placing)
+  - **Tests**: 3287 passed, 37 skipped (+22 new)
+  - **Commits**: a10912b
+- **Project State**: v1.0.1 stable, crypto/encoding SQL functions added
 
 ### Session 326 (FEATURE MODE)
 - **Date**: 2026-05-26
