@@ -109,6 +109,10 @@ pub const AggFunc = enum {
     json_agg,
     array_agg,
     string_agg,
+    bool_and,
+    bool_or,
+    bit_and,
+    bit_or,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -884,6 +888,10 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "json_agg")) return .json_agg;
     if (std.mem.eql(u8, lower, "array_agg")) return .array_agg;
     if (std.mem.eql(u8, lower, "string_agg")) return .string_agg;
+    if (std.mem.eql(u8, lower, "bool_and")) return .bool_and;
+    if (std.mem.eql(u8, lower, "bool_or")) return .bool_or;
+    if (std.mem.eql(u8, lower, "bit_and")) return .bit_and;
+    if (std.mem.eql(u8, lower, "bit_or")) return .bit_or;
     return null;
 }
 

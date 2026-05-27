@@ -5307,12 +5307,245 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = try buf.toOwnedSlice(allocator) };
     }
 
+    // exp(x) — exponential function (e^x)
+    if (std.ascii.eqlIgnoreCase(fc.name, "exp")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = @exp(x) };
+    }
+
+    // ln(x) — natural logarithm (log_e)
+    if (std.ascii.eqlIgnoreCase(fc.name, "ln")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        if (x <= 0) return .null_value;
+        return .{ .real = @log(x) };
+    }
+
+    // log(x) — base-10 logarithm; log(b, x) — logarithm with arbitrary base
+    if (std.ascii.eqlIgnoreCase(fc.name, "log")) {
+        if (fc.args.len < 1 or fc.args.len > 2) return EvalError.TypeError;
+        if (fc.args.len == 1) {
+            // log(x) — base 10
+            const v = try evalExpr(allocator, fc.args[0], row, catalog);
+            defer v.free(allocator);
+            const x: f64 = switch (v) {
+                .real => |f| f,
+                .integer => |n| @as(f64, @floatFromInt(n)),
+                else => return EvalError.TypeError,
+            };
+            if (x <= 0) return .null_value;
+            return .{ .real = std.math.log10(x) };
+        } else {
+            // log(b, x) — base b
+            const base_v = try evalExpr(allocator, fc.args[0], row, catalog);
+            defer base_v.free(allocator);
+            const x_v = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer x_v.free(allocator);
+            const b: f64 = switch (base_v) {
+                .real => |f| f,
+                .integer => |n| @as(f64, @floatFromInt(n)),
+                else => return EvalError.TypeError,
+            };
+            const x: f64 = switch (x_v) {
+                .real => |f| f,
+                .integer => |n| @as(f64, @floatFromInt(n)),
+                else => return EvalError.TypeError,
+            };
+            if (b <= 0 or b == 1 or x <= 0) return .null_value;
+            return .{ .real = std.math.log(f64, b, x) };
+        }
+    }
+
+    // trunc(x) — truncate toward zero; trunc(x, scale) — truncate to decimal places
+    if (std.ascii.eqlIgnoreCase(fc.name, "trunc")) {
+        if (fc.args.len < 1 or fc.args.len > 2) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        if (fc.args.len == 1) {
+            return .{ .real = @trunc(x) };
+        } else {
+            const scale_v = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer scale_v.free(allocator);
+            const scale: i32 = switch (scale_v) {
+                .integer => |n| @intCast(@min(@as(i64, 38), @max(@as(i64, -38), n))),
+                else => return EvalError.TypeError,
+            };
+            const multiplier = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(scale)));
+            return .{ .real = @trunc(x * multiplier) / multiplier };
+        }
+    }
+
+    // random() — random float in [0, 1)
+    if (std.ascii.eqlIgnoreCase(fc.name, "random")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        return .{ .real = std.crypto.random.float(f64) };
+    }
+
+    // sin(x) — sine
+    if (std.ascii.eqlIgnoreCase(fc.name, "sin")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = @sin(x) };
+    }
+
+    // cos(x) — cosine
+    if (std.ascii.eqlIgnoreCase(fc.name, "cos")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = @cos(x) };
+    }
+
+    // tan(x) — tangent
+    if (std.ascii.eqlIgnoreCase(fc.name, "tan")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = @tan(x) };
+    }
+
+    // asin(x) — arcsine
+    if (std.ascii.eqlIgnoreCase(fc.name, "asin")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        if (x < -1.0 or x > 1.0) return .null_value;
+        return .{ .real = std.math.asin(x) };
+    }
+
+    // acos(x) — arccosine
+    if (std.ascii.eqlIgnoreCase(fc.name, "acos")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        if (x < -1.0 or x > 1.0) return .null_value;
+        return .{ .real = std.math.acos(x) };
+    }
+
+    // atan(x) — arctangent
+    if (std.ascii.eqlIgnoreCase(fc.name, "atan")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = std.math.atan(x) };
+    }
+
+    // atan2(y, x) — two-argument arctangent
+    if (std.ascii.eqlIgnoreCase(fc.name, "atan2")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const y_v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer y_v.free(allocator);
+        const x_v = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer x_v.free(allocator);
+        const y: f64 = switch (y_v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        const x: f64 = switch (x_v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = std.math.atan2(y, x) };
+    }
+
+    // degrees(x) — convert radians to degrees
+    if (std.ascii.eqlIgnoreCase(fc.name, "degrees")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = x * (180.0 / std.math.pi) };
+    }
+
+    // radians(x) — convert degrees to radians
+    if (std.ascii.eqlIgnoreCase(fc.name, "radians")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        return .{ .real = x * (std.math.pi / 180.0) };
+    }
+
+    // cot(x) — cotangent (1 / tan(x))
+    if (std.ascii.eqlIgnoreCase(fc.name, "cot")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer v.free(allocator);
+        const x: f64 = switch (v) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => return EvalError.TypeError,
+        };
+        const tan_x = @tan(x);
+        if (tan_x == 0) return .null_value;
+        return .{ .real = 1.0 / tan_x };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -5337,6 +5570,10 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "json_agg")) return "json_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "array_agg")) return "array_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "string_agg")) return "string_agg";
+    if (std.ascii.eqlIgnoreCase(fc.name, "bool_and")) return "bool_and";
+    if (std.ascii.eqlIgnoreCase(fc.name, "bool_or")) return "bool_or";
+    if (std.ascii.eqlIgnoreCase(fc.name, "bit_and")) return "bit_and";
+    if (std.ascii.eqlIgnoreCase(fc.name, "bit_or")) return "bit_or";
     return fc.name;
 }
 
@@ -6993,6 +7230,96 @@ pub const AggregateOp = struct {
                 const text_copy = self.allocator.dupe(u8, result.items) catch return .null_value;
                 return .{ .text = text_copy };
             },
+            .bool_and => {
+                // Return true if all non-NULL values are true, false if any is false, NULL if all NULL
+                var result: ?bool = null;
+                for (group) |*row_iter| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val == .null_value) continue;
+                        const b = switch (val) {
+                            .boolean => |bool_val| bool_val,
+                            .integer => |n| n != 0,
+                            else => continue,
+                        };
+                        if (result == null) {
+                            result = b;
+                        } else {
+                            result = result.? and b;
+                        }
+                    }
+                }
+                if (result) |b| return .{ .integer = if (b) 1 else 0 };
+                return .null_value;
+            },
+            .bool_or => {
+                // Return true if any non-NULL value is true, false if all false, NULL if all NULL
+                var result: ?bool = null;
+                for (group) |*row_iter| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val == .null_value) continue;
+                        const b = switch (val) {
+                            .boolean => |bool_val| bool_val,
+                            .integer => |n| n != 0,
+                            else => continue,
+                        };
+                        if (result == null) {
+                            result = b;
+                        } else {
+                            result = result.? or b;
+                        }
+                    }
+                }
+                if (result) |b| return .{ .integer = if (b) 1 else 0 };
+                return .null_value;
+            },
+            .bit_and => {
+                // Bitwise AND of integer values
+                var result: ?i64 = null;
+                for (group) |*row_iter| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val == .null_value) continue;
+                        const n: i64 = switch (val) {
+                            .integer => |int_val| int_val,
+                            else => continue,
+                        };
+                        if (result == null) {
+                            result = n;
+                        } else {
+                            result = result.? & n;
+                        }
+                    }
+                }
+                if (result) |r| return .{ .integer = r };
+                return .null_value;
+            },
+            .bit_or => {
+                // Bitwise OR of integer values
+                var result: ?i64 = null;
+                for (group) |*row_iter| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val == .null_value) continue;
+                        const n: i64 = switch (val) {
+                            .integer => |int_val| int_val,
+                            else => continue,
+                        };
+                        if (result == null) {
+                            result = n;
+                        } else {
+                            result = result.? | n;
+                        }
+                    }
+                }
+                if (result) |r| return .{ .integer = r };
+                return .null_value;
+            },
         }
     }
 
@@ -7061,6 +7388,10 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .json_agg => "json_agg",
         .array_agg => "array_agg",
         .string_agg => "string_agg",
+        .bool_and => "bool_and",
+        .bool_or => "bool_or",
+        .bit_and => "bit_and",
+        .bit_or => "bit_or",
     };
 }
 
@@ -20620,4 +20951,690 @@ test "string_agg returns NULL for empty group" {
 
     // Result should be NULL (no rows)
     try std.testing.expect(result == .null_value);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Math scalar function tests
+// ────────────────────────────────────────────────────────────────────────────
+
+test "exp(1) computes e to the power of 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // exp(1) ≈ 2.718...
+    const num_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "exp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.718281828), result.real, 1e-6);
+}
+
+test "exp(0) returns 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // exp(0) = 1
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "exp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-9);
+}
+
+test "ln(1) computes natural logarithm" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ln(1) = 0
+    const num_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ln", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "ln(e) returns approximately 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ln(e) ≈ 1 (where e ≈ 2.71828)
+    const num_expr = ast.Expr{ .float_literal = 2.718281828 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ln", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "log(1) computes base-10 logarithm" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // log(1) = 0
+    const num_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "log(100) returns 2" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // log(100) = 2 (base 10)
+    const num_expr = ast.Expr{ .integer_literal = 100 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-9);
+}
+
+test "log(base, x) computes logarithm with arbitrary base" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // log(2, 8) = 3 (2^3 = 8)
+    const base_expr = ast.Expr{ .integer_literal = 2 };
+    const num_expr = ast.Expr{ .integer_literal = 8 };
+    const args = [_]*const ast.Expr{ &base_expr, &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result.real, 1e-9);
+}
+
+test "trunc truncates toward zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // trunc(3.7) = 3
+    const num_expr = ast.Expr{ .float_literal = 3.7 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result.real, 1e-9);
+}
+
+test "trunc with negative number truncates toward zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // trunc(-3.7) = -3
+    const num_expr = ast.Expr{ .float_literal = -3.7 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -3.0), result.real, 1e-9);
+}
+
+test "trunc(x, scale) truncates to decimal places" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // trunc(3.789, 2) = 3.78
+    const num_expr = ast.Expr{ .float_literal = 3.789 };
+    const scale_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &num_expr, &scale_expr };
+    const fc = .{ .name = "trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.78), result.real, 1e-9);
+}
+
+test "random returns value in [0, 1)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // random() should return a float in [0, 1)
+    const args = [_]*const ast.Expr{};
+    const fc = .{ .name = "random", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expect(result.real >= 0.0 and result.real < 1.0);
+}
+
+test "sin(0) returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sin(0) = 0
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sin", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "sin(π/2) returns approximately 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // sin(π/2) ≈ 1
+    const pi_over_2 = std.math.pi / 2.0;
+    const num_expr = ast.Expr{ .float_literal = pi_over_2 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "sin", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "cos(0) returns 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // cos(0) = 1
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "cos", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-9);
+}
+
+test "cos(π) returns approximately -1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // cos(π) ≈ -1
+    const num_expr = ast.Expr{ .float_literal = std.math.pi };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "cos", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -1.0), result.real, 1e-6);
+}
+
+test "tan(0) returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // tan(0) = 0
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "tan", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "asin(0) returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // asin(0) = 0
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "asin", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "asin(1) returns approximately π/2" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // asin(1) ≈ π/2
+    const num_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "asin", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, std.math.pi / 2.0), result.real, 1e-6);
+}
+
+test "acos(1) returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // acos(1) = 0
+    const num_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "acos", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "atan(0) returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // atan(0) = 0
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "atan", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
+}
+
+test "atan2(1, 1) returns approximately π/4" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // atan2(1, 1) ≈ π/4
+    const y_expr = ast.Expr{ .integer_literal = 1 };
+    const x_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &y_expr, &x_expr };
+    const fc = .{ .name = "atan2", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, std.math.pi / 4.0), result.real, 1e-6);
+}
+
+test "degrees(π) returns approximately 180" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // degrees(π) ≈ 180
+    const num_expr = ast.Expr{ .float_literal = std.math.pi };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "degrees", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 180.0), result.real, 1e-6);
+}
+
+test "radians(180) returns approximately π" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // radians(180) ≈ π
+    const num_expr = ast.Expr{ .integer_literal = 180 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "radians", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, std.math.pi), result.real, 1e-6);
+}
+
+test "cot(π/4) returns approximately 1" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // cot(π/4) ≈ 1
+    const pi_over_4 = std.math.pi / 4.0;
+    const num_expr = ast.Expr{ .float_literal = pi_over_4 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "cot", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Aggregate function tests: bool_and, bool_or, bit_and, bit_or
+// ────────────────────────────────────────────────────────────────────────────
+
+test "bool_and all true rows returns true" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_2 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be true (all true)
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "bool_and one false row returns false" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_2 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be false (one is false)
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "bool_and all null returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be NULL (all null)
+    try std.testing.expect(result == .null_value);
+}
+
+test "bool_or any true row returns true" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_2 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_3 = [_]Value{ Value{ .integer = 0 } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be true (one is true)
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "bool_or all false rows returns false" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_2 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_3 = [_]Value{ Value{ .integer = 0 } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be false (all false)
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "bool_or all null returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be NULL (all null)
+    try std.testing.expect(result == .null_value);
+}
+
+test "bit_and performs bitwise AND of integers" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bit_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 15 } }; // 0b1111
+    var row_values_2 = [_]Value{ Value{ .integer = 14 } }; // 0b1110
+    var row_values_3 = [_]Value{ Value{ .integer = 6 } };  // 0b0110
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be 0b0110 & ... = 0b0110 = 6
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 6), result.integer);
+}
+
+test "bit_or performs bitwise OR of integers" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bit_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 1 } }; // 0b0001
+    var row_values_2 = [_]Value{ Value{ .integer = 2 } }; // 0b0010
+    var row_values_3 = [_]Value{ Value{ .integer = 4 } }; // 0b0100
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be 0b0001 | 0b0010 | 0b0100 = 0b0111 = 7
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 7), result.integer);
 }
