@@ -108,6 +108,7 @@ pub const AggFunc = enum {
     count_star,
     json_agg,
     array_agg,
+    string_agg,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -210,6 +211,7 @@ pub const PlanNode = union(enum) {
         arg: ?*const ast.Expr = null,
         alias: ?[]const u8 = null,
         distinct: bool = false,
+        separator: ?*const ast.Expr = null,
     };
 
     pub const Limit = struct {
@@ -742,6 +744,7 @@ pub const Planner = struct {
                     .arg = if (func == .count_star) null else if (fc.args.len > 0) fc.args[0] else null,
                     .alias = alias,
                     .distinct = fc.distinct,
+                    .separator = if (func == .string_agg and fc.args.len > 1) fc.args[1] else null,
                 };
             },
             else => null,
@@ -880,6 +883,7 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "max")) return .max;
     if (std.mem.eql(u8, lower, "json_agg")) return .json_agg;
     if (std.mem.eql(u8, lower, "array_agg")) return .array_agg;
+    if (std.mem.eql(u8, lower, "string_agg")) return .string_agg;
     return null;
 }
 

@@ -5103,6 +5103,164 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = try buf.toOwnedSlice(allocator) };
     }
 
+    // concat_ws(sep, val1, val2, ...) — concatenate with separator
+    // If sep is NULL → return NULL
+    // Concatenate non-NULL values with sep between them
+    // If no value args or all NULL → return empty string
+    if (std.ascii.eqlIgnoreCase(fc.name, "concat_ws")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const sep_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer sep_val.free(allocator);
+        const sep = switch (sep_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        var result = std.ArrayListUnmanaged(u8){};
+        defer result.deinit(allocator);
+        var first = true;
+        for (fc.args[1..]) |arg_expr| {
+            const val = try evalExpr(allocator, arg_expr, row, catalog);
+            defer val.free(allocator);
+            if (val != .null_value) {
+                const text = switch (val) {
+                    .text => |t| t,
+                    .integer => |n| blk: {
+                        var buf: [32]u8 = undefined;
+                        const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch break :blk "";
+                        break :blk try allocator.dupe(u8, s);
+                    },
+                    else => continue,
+                };
+                if (!first) {
+                    try result.appendSlice(allocator, sep);
+                }
+                try result.appendSlice(allocator, text);
+                if (val == .integer) allocator.free(text);
+                first = false;
+            }
+        }
+        const text_copy = try allocator.dupe(u8, result.items);
+        return .{ .text = text_copy };
+    }
+
+    // format(fmt_text, arg1, arg2, ...) — printf-style string formatting
+    // If fmt is NULL → return NULL
+    // %s → next arg as text, %I → identifier (double-quoted), %L → literal (single-quoted)
+    // %% → literal %, %N$s/etc → positional (1-based)
+    if (std.ascii.eqlIgnoreCase(fc.name, "format")) {
+        if (fc.args.len < 1) return EvalError.TypeError;
+        const fmt_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt = switch (fmt_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        var result = std.ArrayListUnmanaged(u8){};
+        defer result.deinit(allocator);
+
+        var i: usize = 0;
+        var seq_arg_idx: usize = 1;
+        while (i < fmt.len) {
+            if (fmt[i] == '%') {
+                if (i + 1 >= fmt.len) {
+                    try result.append(allocator, '%');
+                    i += 1;
+                    continue;
+                }
+                i += 1;
+                if (fmt[i] == '%') {
+                    try result.append(allocator, '%');
+                    i += 1;
+                    continue;
+                }
+
+                // Parse positional (N$) or sequential specifier
+                var pos_num: usize = 0;
+                var is_positional = false;
+                while (i < fmt.len and std.ascii.isDigit(fmt[i])) {
+                    pos_num = pos_num * 10 + (fmt[i] - '0');
+                    i += 1;
+                }
+                if (i < fmt.len and fmt[i] == '$') {
+                    is_positional = true;
+                    i += 1;
+                } else {
+                    pos_num = 0;
+                }
+
+                // Parse specifier: s, I, L
+                if (i >= fmt.len) break;
+                const spec = fmt[i];
+                i += 1;
+
+                // Determine which argument to use
+                const arg_idx = if (is_positional) pos_num else blk: {
+                    const idx = seq_arg_idx;
+                    seq_arg_idx += 1;
+                    break :blk idx;
+                };
+
+                if (arg_idx >= fc.args.len) continue;
+
+                const arg_val = try evalExpr(allocator, fc.args[arg_idx], row, catalog);
+                defer arg_val.free(allocator);
+
+                switch (spec) {
+                    's' => {
+                        const text = switch (arg_val) {
+                            .text => |t| t,
+                            .null_value => "",
+                            .integer => |n| blk: {
+                                var buf: [32]u8 = undefined;
+                                const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch "";
+                                break :blk try allocator.dupe(u8, s);
+                            },
+                            else => "",
+                        };
+                        try result.appendSlice(allocator, text);
+                        if (arg_val == .integer) allocator.free(text);
+                    },
+                    'I' => {
+                        const text = switch (arg_val) {
+                            .text => |t| t,
+                            .null_value => "",
+                            else => "",
+                        };
+                        try result.append(allocator, '"');
+                        for (text) |c| {
+                            try result.append(allocator, c);
+                            if (c == '"') try result.append(allocator, '"');
+                        }
+                        try result.append(allocator, '"');
+                    },
+                    'L' => {
+                        const text = switch (arg_val) {
+                            .text => |t| t,
+                            .null_value => "",
+                            else => "",
+                        };
+                        try result.append(allocator, '\'');
+                        for (text) |c| {
+                            try result.append(allocator, c);
+                            if (c == '\'') try result.append(allocator, '\'');
+                        }
+                        try result.append(allocator, '\'');
+                    },
+                    else => {},
+                }
+            } else {
+                try result.append(allocator, fmt[i]);
+                i += 1;
+            }
+        }
+
+        const text_copy = try allocator.dupe(u8, result.items);
+        return .{ .text = text_copy };
+    }
+
     // overlay(string, placing, from [, for]) — SQL string overlay
     // Replaces `for` bytes starting at `from` (1-based) with `placing`.
     // Default for = length(placing).
@@ -5154,7 +5312,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -5178,6 +5336,7 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "max")) return "max";
     if (std.ascii.eqlIgnoreCase(fc.name, "json_agg")) return "json_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "array_agg")) return "array_agg";
+    if (std.ascii.eqlIgnoreCase(fc.name, "string_agg")) return "string_agg";
     return fc.name;
 }
 
@@ -6767,6 +6926,73 @@ pub const AggregateOp = struct {
                 const text_copy = self.allocator.dupe(u8, result.items) catch return .null_value;
                 return .{ .text = text_copy };
             },
+            .string_agg => {
+                // Collect non-null text values and concatenate with delimiter
+                var values = std.ArrayListUnmanaged([]const u8){};
+                defer {
+                    for (values.items) |v| self.allocator.free(v);
+                    values.deinit(self.allocator);
+                }
+
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        if (val == .null_value) {
+                            val.free(self.allocator);
+                            continue;
+                        }
+                        const text = switch (val) {
+                            .text => |t| self.allocator.dupe(u8, t) catch return .null_value,
+                            .integer => |n| blk: {
+                                var buf: [32]u8 = undefined;
+                                const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return .null_value;
+                                break :blk self.allocator.dupe(u8, s) catch return .null_value;
+                            },
+                            else => {
+                                val.free(self.allocator);
+                                continue;
+                            },
+                        };
+                        values.append(self.allocator, text) catch return .null_value;
+                        val.free(self.allocator);
+                    }
+                }
+
+                if (values.items.len == 0) return .null_value;
+
+                // Evaluate separator from agg.separator (once, using first row)
+                var sep: []const u8 = "";
+                var should_free_sep = false;
+                if (agg.separator) |sep_expr| {
+                    if (group.len > 0) {
+                        const sep_val = evalExpr(self.allocator, sep_expr, &group[0], null) catch return .null_value;
+                        defer sep_val.free(self.allocator);
+                        switch (sep_val) {
+                            .text => |t| {
+                                sep = self.allocator.dupe(u8, t) catch return .null_value;
+                                should_free_sep = true;
+                            },
+                            .null_value => return .null_value,
+                            else => return .null_value,
+                        }
+                    }
+                }
+                defer if (should_free_sep) self.allocator.free(sep);
+
+                // Build result by joining with separator
+                var result = std.ArrayListUnmanaged(u8){};
+                defer result.deinit(self.allocator);
+
+                for (values.items, 0..) |v, i| {
+                    if (i > 0) {
+                        result.appendSlice(self.allocator, sep) catch return .null_value;
+                    }
+                    result.appendSlice(self.allocator, v) catch return .null_value;
+                }
+
+                const text_copy = self.allocator.dupe(u8, result.items) catch return .null_value;
+                return .{ .text = text_copy };
+            },
         }
     }
 
@@ -6834,6 +7060,7 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .count_star => "count(*)",
         .json_agg => "json_agg",
         .array_agg => "array_agg",
+        .string_agg => "string_agg",
     };
 }
 
@@ -20072,5 +20299,325 @@ test "overlay NULL placing returns NULL" {
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// concat_ws tests
+// ────────────────────────────────────────────────────────────────────────────
+
+test "concat_ws basic concatenation with separator" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat_ws('-', 'a', 'b', 'c') → 'a-b-c'
+    const sep_expr = ast.Expr{ .string_literal = "-" };
+    const a_expr = ast.Expr{ .string_literal = "a" };
+    const b_expr = ast.Expr{ .string_literal = "b" };
+    const c_expr = ast.Expr{ .string_literal = "c" };
+    const args = [_]*const ast.Expr{ &sep_expr, &a_expr, &b_expr, &c_expr };
+    const fc = .{ .name = "concat_ws", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("a-b-c", result.text);
+}
+
+test "concat_ws skips NULL values in arguments" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat_ws(', ', 'foo', NULL, 'bar') → 'foo, bar'
+    const sep_expr = ast.Expr{ .string_literal = ", " };
+    const foo_expr = ast.Expr{ .string_literal = "foo" };
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const bar_expr = ast.Expr{ .string_literal = "bar" };
+    const args = [_]*const ast.Expr{ &sep_expr, &foo_expr, &null_expr, &bar_expr };
+    const fc = .{ .name = "concat_ws", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("foo, bar", result.text);
+}
+
+test "concat_ws with NULL separator returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat_ws(NULL, 'a', 'b') → NULL
+    const sep_expr = ast.Expr{ .null_literal = {} };
+    const a_expr = ast.Expr{ .string_literal = "a" };
+    const b_expr = ast.Expr{ .string_literal = "b" };
+    const args = [_]*const ast.Expr{ &sep_expr, &a_expr, &b_expr };
+    const fc = .{ .name = "concat_ws", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "concat_ws with all NULL values returns empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat_ws('-', NULL, NULL) → ''
+    const sep_expr = ast.Expr{ .string_literal = "-" };
+    const null1_expr = ast.Expr{ .null_literal = {} };
+    const null2_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &sep_expr, &null1_expr, &null2_expr };
+    const fc = .{ .name = "concat_ws", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("", result.text);
+}
+
+test "concat_ws with no value arguments returns empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // concat_ws('-') → ''
+    const sep_expr = ast.Expr{ .string_literal = "-" };
+    const args = [_]*const ast.Expr{ &sep_expr };
+    const fc = .{ .name = "concat_ws", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("", result.text);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// format tests
+// ────────────────────────────────────────────────────────────────────────────
+
+test "format with %s replaces with text argument" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // format('Hello %s', 'world') → 'Hello world'
+    const fmt_expr = ast.Expr{ .string_literal = "Hello %s" };
+    const arg_expr = ast.Expr{ .string_literal = "world" };
+    const args = [_]*const ast.Expr{ &fmt_expr, &arg_expr };
+    const fc = .{ .name = "format", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("Hello world", result.text);
+}
+
+test "format with %I wraps identifier in double quotes" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // format('%I is %L', 'name', 'Alice') → '"name" is ''Alice'''
+    const fmt_expr = ast.Expr{ .string_literal = "%I is %L" };
+    const id_expr = ast.Expr{ .string_literal = "name" };
+    const lit_expr = ast.Expr{ .string_literal = "Alice" };
+    const args = [_]*const ast.Expr{ &fmt_expr, &id_expr, &lit_expr };
+    const fc = .{ .name = "format", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("\"name\" is 'Alice'", result.text);
+}
+
+test "format with %% escapes to single percent" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // format('100%%') → '100%'
+    const fmt_expr = ast.Expr{ .string_literal = "100%%" };
+    const args = [_]*const ast.Expr{ &fmt_expr };
+    const fc = .{ .name = "format", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("100%", result.text);
+}
+
+test "format with positional argument references" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // format('%2$s %1$s', 'world', 'Hello') → 'Hello world'
+    const fmt_expr = ast.Expr{ .string_literal = "%2$s %1$s" };
+    const arg1_expr = ast.Expr{ .string_literal = "world" };
+    const arg2_expr = ast.Expr{ .string_literal = "Hello" };
+    const args = [_]*const ast.Expr{ &fmt_expr, &arg1_expr, &arg2_expr };
+    const fc = .{ .name = "format", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("Hello world", result.text);
+}
+
+test "format with NULL format string returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // format(NULL, 'arg') → NULL
+    const fmt_expr = ast.Expr{ .null_literal = {} };
+    const arg_expr = ast.Expr{ .string_literal = "arg" };
+    const args = [_]*const ast.Expr{ &fmt_expr, &arg_expr };
+    const fc = .{ .name = "format", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// string_agg tests
+// ────────────────────────────────────────────────────────────────────────────
+
+test "string_agg basic concatenation with delimiter" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const sep_expr = ast.Expr{ .string_literal = "-" };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .string_agg,
+        .arg = &col_ref,
+        .alias = null,
+        .separator = &sep_expr,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .text = "a" } };
+    var row_values_2 = [_]Value{ Value{ .text = "b" } };
+    var row_values_3 = [_]Value{ Value{ .text = "c" } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be 'a-b-c'
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("a-b-c", result.text);
+}
+
+test "string_agg skips NULL values" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const sep_expr = ast.Expr{ .string_literal = ", " };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .string_agg,
+        .arg = &col_ref,
+        .alias = null,
+        .separator = &sep_expr,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .text = "foo" } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_3 = [_]Value{ Value{ .text = "bar" } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be 'foo, bar' (NULL skipped)
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("foo, bar", result.text);
+}
+
+test "string_agg returns NULL when all values are NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const sep_expr = ast.Expr{ .string_literal = "," };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .string_agg,
+        .arg = &col_ref,
+        .alias = null,
+        .separator = &sep_expr,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be NULL (all values NULL)
+    try std.testing.expect(result == .null_value);
+}
+
+test "string_agg returns NULL for empty group" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const sep_expr = ast.Expr{ .string_literal = "," };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .string_agg,
+        .arg = &col_ref,
+        .alias = null,
+        .separator = &sep_expr,
+    };
+
+    var rows = [_]Row{};
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Result should be NULL (no rows)
     try std.testing.expect(result == .null_value);
 }
