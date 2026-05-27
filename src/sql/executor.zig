@@ -4954,6 +4954,201 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = try result.toOwnedSlice(allocator) };
     }
 
+    // md5(text) → 32-char lowercase hex MD5 hash
+    if (std.ascii.eqlIgnoreCase(fc.name, "md5")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const s = switch (str_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        var h = std.crypto.hash.Md5.init(.{});
+        h.update(s);
+        var digest: [std.crypto.hash.Md5.digest_length]u8 = undefined;
+        h.final(&digest);
+        const hex = try allocator.alloc(u8, digest.len * 2);
+        for (digest, 0..) |b, i| {
+            _ = std.fmt.bufPrint(hex[i * 2 .. i * 2 + 2], "{x:0>2}", .{b}) catch unreachable; // SAFETY: buffer is exactly 2 bytes
+        }
+        return Value{ .text = hex };
+    }
+
+    // encode(data, format) → text  formats: 'hex', 'base64', 'escape'
+    if (std.ascii.eqlIgnoreCase(fc.name, "encode")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const data_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer data_val.free(allocator);
+        const data = switch (data_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        const fmt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt = switch (fmt_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        if (std.ascii.eqlIgnoreCase(fmt, "hex")) {
+            const out = try allocator.alloc(u8, data.len * 2);
+            for (data, 0..) |b, i| {
+                _ = std.fmt.bufPrint(out[i * 2 .. i * 2 + 2], "{x:0>2}", .{b}) catch unreachable; // SAFETY: 2-byte buffer
+            }
+            return Value{ .text = out };
+        } else if (std.ascii.eqlIgnoreCase(fmt, "base64")) {
+            const out_len = std.base64.standard.Encoder.calcSize(data.len);
+            const out = try allocator.alloc(u8, out_len);
+            _ = std.base64.standard.Encoder.encode(out, data);
+            return Value{ .text = out };
+        } else if (std.ascii.eqlIgnoreCase(fmt, "escape")) {
+            var buf = std.ArrayListUnmanaged(u8){};
+            defer buf.deinit(allocator);
+            for (data) |b| {
+                if (b == '\\') {
+                    try buf.appendSlice(allocator, "\\\\");
+                } else if (b >= 0x20 and b < 0x7f) {
+                    try buf.append(allocator, b);
+                } else {
+                    var tmp: [5]u8 = undefined;
+                    const written = std.fmt.bufPrint(&tmp, "\\{o:0>3}", .{b}) catch unreachable; // SAFETY: octal fits in 4 bytes + backslash
+                    try buf.appendSlice(allocator, written);
+                }
+            }
+            return Value{ .text = try buf.toOwnedSlice(allocator) };
+        }
+        return .null_value;
+    }
+
+    // decode(data, format) → text  formats: 'hex', 'base64'
+    if (std.ascii.eqlIgnoreCase(fc.name, "decode")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const data_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer data_val.free(allocator);
+        const data = switch (data_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        const fmt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt = switch (fmt_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        if (std.ascii.eqlIgnoreCase(fmt, "hex")) {
+            if (data.len % 2 != 0) return .null_value;
+            const out = try allocator.alloc(u8, data.len / 2);
+            for (0..data.len / 2) |i| {
+                out[i] = std.fmt.parseInt(u8, data[i * 2 .. i * 2 + 2], 16) catch {
+                    allocator.free(out);
+                    return .null_value;
+                };
+            }
+            return Value{ .text = out };
+        } else if (std.ascii.eqlIgnoreCase(fmt, "base64")) {
+            const out_len = std.base64.standard.Decoder.calcSizeForSlice(data) catch return .null_value;
+            const out = try allocator.alloc(u8, out_len);
+            std.base64.standard.Decoder.decode(out, data) catch {
+                allocator.free(out);
+                return .null_value;
+            };
+            return Value{ .text = out };
+        }
+        return .null_value;
+    }
+
+    // quote_ident(text) → double-quoted identifier with internal double-quotes doubled
+    if (std.ascii.eqlIgnoreCase(fc.name, "quote_ident")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const s = switch (str_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        try buf.append(allocator, '"');
+        for (s) |c| {
+            try buf.append(allocator, c);
+            if (c == '"') try buf.append(allocator, '"');
+        }
+        try buf.append(allocator, '"');
+        return Value{ .text = try buf.toOwnedSlice(allocator) };
+    }
+
+    // quote_literal(text) → single-quoted string with internal single-quotes doubled
+    if (std.ascii.eqlIgnoreCase(fc.name, "quote_literal")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const s = switch (str_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        try buf.append(allocator, '\'');
+        for (s) |c| {
+            try buf.append(allocator, c);
+            if (c == '\'') try buf.append(allocator, '\'');
+        }
+        try buf.append(allocator, '\'');
+        return Value{ .text = try buf.toOwnedSlice(allocator) };
+    }
+
+    // overlay(string, placing, from [, for]) — SQL string overlay
+    // Replaces `for` bytes starting at `from` (1-based) with `placing`.
+    // Default for = length(placing).
+    if (std.ascii.eqlIgnoreCase(fc.name, "overlay")) {
+        if (fc.args.len < 3 or fc.args.len > 4) return EvalError.TypeError;
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const s = switch (str_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        const placing_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer placing_val.free(allocator);
+        const placing = switch (placing_val) {
+            .text => |t| t,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        const from_val = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer from_val.free(allocator);
+        const from_pos = switch (from_val) {
+            .integer => |n| n,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+        const for_len: i64 = if (fc.args.len == 4) blk: {
+            const for_val = try evalExpr(allocator, fc.args[3], row, catalog);
+            defer for_val.free(allocator);
+            break :blk switch (for_val) {
+                .integer => |n| n,
+                .null_value => return .null_value,
+                else => return .null_value,
+            };
+        } else @intCast(placing.len);
+        // 0-based start index; clamp to [0, s.len]
+        const start: usize = @intCast(@min(@as(i64, @intCast(s.len)), @max(0, from_pos - 1)));
+        const del: usize = @intCast(@min(@as(i64, @intCast(s.len)) - @as(i64, @intCast(start)), @max(0, for_len)));
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, s[0..start]);
+        try buf.appendSlice(allocator, placing);
+        try buf.appendSlice(allocator, s[start + del ..]);
+        return Value{ .text = try buf.toOwnedSlice(allocator) };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -19545,6 +19740,335 @@ test "translate with NULL from returns NULL" {
     const to_expr = ast.Expr{ .string_literal = "ip" };
     const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
     const fc = .{ .name = "translate", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// md5 tests
+test "md5 empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "md5", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "d41d8cd98f00b204e9800998ecf8427e", result.text);
+}
+
+test "md5 basic hash" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "md5", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "5eb63bbbe01eeed093cb22bb8f5acdc3", result.text);
+}
+
+test "md5 NULL input returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "md5", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// encode tests
+test "encode hex abc" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .string_literal = "abc" };
+    const format_expr = ast.Expr{ .string_literal = "hex" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "encode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "616263", result.text);
+}
+
+test "encode hex empty string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .string_literal = "" };
+    const format_expr = ast.Expr{ .string_literal = "hex" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "encode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "", result.text);
+}
+
+test "encode base64 abc" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .string_literal = "abc" };
+    const format_expr = ast.Expr{ .string_literal = "base64" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "encode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "YWJj", result.text);
+}
+
+test "encode NULL data returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .null_literal = {} };
+    const format_expr = ast.Expr{ .string_literal = "hex" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "encode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// decode tests
+test "decode hex 616263" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .string_literal = "616263" };
+    const format_expr = ast.Expr{ .string_literal = "hex" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "decode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "abc", result.text);
+}
+
+test "decode base64 YWJj" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .string_literal = "YWJj" };
+    const format_expr = ast.Expr{ .string_literal = "base64" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "decode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "abc", result.text);
+}
+
+test "decode NULL data returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const data_expr = ast.Expr{ .null_literal = {} };
+    const format_expr = ast.Expr{ .string_literal = "hex" };
+    const args = [_]*const ast.Expr{ &data_expr, &format_expr };
+    const fc = .{ .name = "decode", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// quote_ident tests
+test "quote_ident simple identifier" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "\"hello\"", result.text);
+}
+
+test "quote_ident with space" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "\"hello world\"", result.text);
+}
+
+test "quote_ident with internal quotes" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "say \"hi\"" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "\"say \"\"hi\"\"\"", result.text);
+}
+
+test "quote_ident NULL returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// quote_literal tests
+test "quote_literal simple string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_literal", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "'hello'", result.text);
+}
+
+test "quote_literal with apostrophe" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "it's" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_literal", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "'it''s'", result.text);
+}
+
+test "quote_literal NULL returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "quote_literal", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// overlay tests
+test "overlay with for clause" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // overlay('Txxxxas' placing 'hom' from 2 for 4) → 'Thomas'
+    const str_expr = ast.Expr{ .string_literal = "Txxxxas" };
+    const placing_expr = ast.Expr{ .string_literal = "hom" };
+    const from_expr = ast.Expr{ .integer_literal = 2 };
+    const for_expr = ast.Expr{ .integer_literal = 4 };
+    const args = [_]*const ast.Expr{ &str_expr, &placing_expr, &from_expr, &for_expr };
+    const fc = .{ .name = "overlay", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "Thomas", result.text);
+}
+
+test "overlay without for clause" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // overlay('hello' placing 'XY' from 3) → 'heXYo'  (default for=length('XY')=2)
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const placing_expr = ast.Expr{ .string_literal = "XY" };
+    const from_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &str_expr, &placing_expr, &from_expr };
+    const fc = .{ .name = "overlay", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "heXYo", result.text);
+}
+
+test "overlay with for zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // overlay('abcde' placing 'Z' from 2 for 0) → 'aZbcde'
+    const str_expr = ast.Expr{ .string_literal = "abcde" };
+    const placing_expr = ast.Expr{ .string_literal = "Z" };
+    const from_expr = ast.Expr{ .integer_literal = 2 };
+    const for_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &str_expr, &placing_expr, &from_expr, &for_expr };
+    const fc = .{ .name = "overlay", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "aZbcde", result.text);
+}
+
+test "overlay NULL string returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const placing_expr = ast.Expr{ .string_literal = "X" };
+    const from_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &str_expr, &placing_expr, &from_expr };
+    const fc = .{ .name = "overlay", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "overlay NULL placing returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "abc" };
+    const placing_expr = ast.Expr{ .null_literal = {} };
+    const from_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &str_expr, &placing_expr, &from_expr };
+    const fc = .{ .name = "overlay", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
     defer result.free(allocator);
