@@ -9,23 +9,25 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 329 - FEATURE MODE)
+### Last Session (Session 331 - FEATURE MODE)
 - **Date**: 2026-05-27
-- **Mode**: FEATURE MODE (Session 329)
-- **Focus**: String/math SQL built-in functions + JSON formatting
-- **Outcome**: ✅ Both functions implemented with 9 tests (7 executor unit tests + 2 planner tests)
+- **Mode**: FEATURE MODE (Session 331)
+- **Focus**: Date/time and string utility SQL built-in functions
+- **Outcome**: ✅ 7 new functions implemented, 26 new tests
 - **Details**:
   - **CI Status**: ✅ GREEN
   - **GitHub Issues**: 0 open
   - **Work Done**:
-    - `json_agg(expr)` — collects non-NULL values into a JSON array, returns NULL for all-NULL input
-    - `array_agg(expr)` — identical behavior, SQL ARRAY stored as JSON text
-    - Added `json_agg`, `array_agg` to `AggFunc` enum in planner.zig
-    - Updated `aggFuncFromName()`, `agg_names[]`, `aggResultColName()`, `aggFuncName()`
-    - JSON escaping: quotes, backslashes, newlines, carriage returns
-  - **Tests**: ~2979+ passed, 31 skipped (+9 new)
-  - **Commits**: deb6f42
-- **Project State**: v1.0.1 stable, JSON aggregate coverage added
+    - `date_part(field, source)` — extracts year/month/day/hour/minute/second/epoch/dow/doy/quarter/week/decade/century/milliseconds/microseconds from date/timestamp/text
+    - `date_trunc(field, source)` — truncates to year/quarter/month/week/day/hour/minute/second precision; returns timestamp
+    - `chr(n)` — integer codepoint → UTF-8 character (NULL for n≤0)
+    - `ascii(str)` — first character → ASCII code (NULL for empty/NULL)
+    - `octet_length(str)` — byte count (NULL for NULL)
+    - `char_length(str)` / `character_length(str)` — character count (NULL for NULL)
+    - `translate(str, from, to)` — character substitution/deletion map
+  - **Tests**: 3265 passed, 37 skipped (+30 new)
+  - **Commits**: bcc2edd
+- **Project State**: v1.0.1 stable, date/time and string utility SQL functions added
 
 ### Session 326 (FEATURE MODE)
 - **Date**: 2026-05-26
