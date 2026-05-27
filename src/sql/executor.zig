@@ -4649,6 +4649,311 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .real = std.math.pi };
     }
 
+    // date_part(field, source) — extract date/time component
+    if (std.ascii.eqlIgnoreCase(fc.name, "date_part")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+
+        const field_expr = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer field_expr.free(allocator);
+        const field_str = switch (field_expr) {
+            .text => |s| s,
+            else => return .null_value,
+        };
+
+        const source_expr = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer source_expr.free(allocator);
+
+        // Parse source to get timestamp
+        const ts_micros: i64 = switch (source_expr) {
+            .date => |days| @as(i64, days) * MICROS_PER_DAY,
+            .timestamp => |ts| ts,
+            .text => |s| parseTimestampString(s) orelse (parseDateString(s) orelse return .null_value) * MICROS_PER_DAY,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        // Decompose timestamp to date/time components
+        const days = @divFloor(ts_micros, MICROS_PER_DAY);
+        const time_micros = @mod(ts_micros, MICROS_PER_DAY);
+        const date = daysToDate(@intCast(days));
+
+        const hour: i64 = @divFloor(time_micros, MICROS_PER_HOUR);
+        const minute: i64 = @divFloor(@mod(time_micros, MICROS_PER_HOUR), MICROS_PER_MINUTE);
+        const second: i64 = @divFloor(@mod(time_micros, MICROS_PER_MINUTE), MICROS_PER_SECOND);
+        const micros: i64 = @mod(time_micros, MICROS_PER_SECOND);
+
+        // Extract requested field
+        if (std.ascii.eqlIgnoreCase(field_str, "year")) {
+            return Value{ .real = @floatFromInt(date.year) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "month")) {
+            return Value{ .real = @floatFromInt(date.month) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "day")) {
+            return Value{ .real = @floatFromInt(date.day) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "hour")) {
+            return Value{ .real = @floatFromInt(hour) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "minute")) {
+            return Value{ .real = @floatFromInt(minute) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "second")) {
+            return Value{ .real = @floatFromInt(second) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "millisecond")) {
+            return Value{ .real = @floatFromInt(@divFloor(micros, 1000)) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "microsecond")) {
+            return Value{ .real = @floatFromInt(micros) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "epoch")) {
+            return Value{ .real = @floatFromInt(@divFloor(ts_micros, MICROS_PER_SECOND)) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "dow")) {
+            // Day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
+            // Jan 1, 1970 was Thursday (4), so: (days + 4) % 7
+            const dow = @mod(days + 4, 7);
+            return Value{ .real = @floatFromInt(dow) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "doy")) {
+            // Day of year: 1-366
+            var doy: i32 = date.day;
+            for (1..date.month) |m| {
+                doy += daysInMonth(@intCast(m), date.year);
+            }
+            return Value{ .real = @floatFromInt(doy) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "quarter")) {
+            return Value{ .real = @floatFromInt(@divFloor(date.month - 1, 3) + 1) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "decade")) {
+            return Value{ .real = @floatFromInt(@divFloor(date.year, 10)) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "century")) {
+            return Value{ .real = @floatFromInt(@divFloor(date.year - 1, 100) + 1) };
+        } else if (std.ascii.eqlIgnoreCase(field_str, "week")) {
+            // ISO week number (simplified): (doy - 1) / 7 + 1
+            var doy: i32 = date.day;
+            for (1..date.month) |m| {
+                doy += daysInMonth(@intCast(m), date.year);
+            }
+            return Value{ .real = @floatFromInt(@divFloor(doy - 1, 7) + 1) };
+        }
+        return .null_value;
+    }
+
+    // date_trunc(field, source) — truncate to precision, return timestamp
+    if (std.ascii.eqlIgnoreCase(fc.name, "date_trunc")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+
+        const field_expr = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer field_expr.free(allocator);
+        const field_str = switch (field_expr) {
+            .text => |s| s,
+            else => return .null_value,
+        };
+
+        const source_expr = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer source_expr.free(allocator);
+
+        // Parse source to get timestamp
+        const ts_micros: i64 = switch (source_expr) {
+            .date => |days| @as(i64, days) * MICROS_PER_DAY,
+            .timestamp => |ts| ts,
+            .text => |s| parseTimestampString(s) orelse (parseDateString(s) orelse return .null_value) * MICROS_PER_DAY,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        // Decompose to components
+        const days = @divFloor(ts_micros, MICROS_PER_DAY);
+        const time_micros = @mod(ts_micros, MICROS_PER_DAY);
+        const date = daysToDate(@intCast(days));
+
+        // Truncate based on field
+        var truncated_year = date.year;
+        var truncated_month = date.month;
+        var truncated_day = date.day;
+        var truncated_hour: i64 = @divFloor(time_micros, MICROS_PER_HOUR);
+        var truncated_minute: i64 = @divFloor(@mod(time_micros, MICROS_PER_HOUR), MICROS_PER_MINUTE);
+        var truncated_second: i64 = @divFloor(@mod(time_micros, MICROS_PER_MINUTE), MICROS_PER_SECOND);
+
+        if (std.ascii.eqlIgnoreCase(field_str, "year")) {
+            truncated_month = 1;
+            truncated_day = 1;
+            truncated_hour = 0;
+            truncated_minute = 0;
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "quarter")) {
+            truncated_month = (@divFloor(date.month - 1, 3) * 3 + 1);
+            truncated_day = 1;
+            truncated_hour = 0;
+            truncated_minute = 0;
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "month")) {
+            truncated_day = 1;
+            truncated_hour = 0;
+            truncated_minute = 0;
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "week")) {
+            // Truncate to Monday of the week containing this date
+            var doy: i32 = date.day;
+            for (1..date.month) |m| {
+                doy += daysInMonth(@intCast(m), date.year);
+            }
+            const week_doy = (@divFloor(doy - 1, 7) * 7 + 1);
+            // Approximate: just go to start of week day (Mon)
+            const adj = @mod(doy - week_doy, 7);
+            var new_day: i32 = @as(i32, date.day) - adj;
+            if (new_day < 1) {
+                new_day += daysInMonth(@intCast(truncated_month - 1), truncated_year);
+                if (truncated_month == 1) {
+                    truncated_month = 12;
+                    truncated_year -= 1;
+                } else {
+                    truncated_month -= 1;
+                }
+            }
+            truncated_day = @intCast(new_day);
+            truncated_hour = 0;
+            truncated_minute = 0;
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "day")) {
+            truncated_hour = 0;
+            truncated_minute = 0;
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "hour")) {
+            truncated_minute = 0;
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "minute")) {
+            truncated_second = 0;
+        } else if (std.ascii.eqlIgnoreCase(field_str, "second")) {
+            // Already set
+        } else if (std.ascii.eqlIgnoreCase(field_str, "millisecond") or std.ascii.eqlIgnoreCase(field_str, "milliseconds")) {
+            // Already set (microsecond precision truncated)
+        } else {
+            return .null_value;
+        }
+
+        // Reconstruct timestamp
+        const truncated_days = dateToDays(truncated_year, truncated_month, truncated_day);
+        const truncated_ts = @as(i64, truncated_days) * MICROS_PER_DAY +
+                            truncated_hour * MICROS_PER_HOUR +
+                            truncated_minute * MICROS_PER_MINUTE +
+                            truncated_second * MICROS_PER_SECOND;
+        return Value{ .timestamp = truncated_ts };
+    }
+
+    // chr(n) — return character from codepoint
+    if (std.ascii.eqlIgnoreCase(fc.name, "chr")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+
+        const code: i64 = switch (arg) {
+            .integer => |v| v,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        if (code <= 0) return .null_value;
+
+        // Simple UTF-8 encoding
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(@intCast(code), &buf) catch return .null_value;
+        const result = try allocator.dupe(u8, buf[0..len]);
+        return Value{ .text = result };
+    }
+
+    // ascii(str) — return code of first character
+    if (std.ascii.eqlIgnoreCase(fc.name, "ascii")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+
+        switch (arg) {
+            .text => |s| {
+                if (s.len == 0) return .null_value;
+                return Value{ .integer = s[0] };
+            },
+            .null_value => return .null_value,
+            else => return .null_value,
+        }
+    }
+
+    // octet_length(str) — return byte count
+    if (std.ascii.eqlIgnoreCase(fc.name, "octet_length")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+
+        switch (arg) {
+            .text => |s| return Value{ .integer = @intCast(s.len) },
+            .blob => |b| return Value{ .integer = @intCast(b.len) },
+            .null_value => return .null_value,
+            else => return .null_value,
+        }
+    }
+
+    // char_length(str) / character_length(str) — return character count
+    if (std.ascii.eqlIgnoreCase(fc.name, "char_length") or std.ascii.eqlIgnoreCase(fc.name, "character_length")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const arg = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer arg.free(allocator);
+
+        switch (arg) {
+            .text => |s| {
+                // Count UTF-8 characters, not bytes
+                var count: i64 = 0;
+                var i: usize = 0;
+                while (i < s.len) {
+                    const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+                    i += len;
+                    count += 1;
+                }
+                return Value{ .integer = count };
+            },
+            .null_value => return .null_value,
+            else => return .null_value,
+        }
+    }
+
+    // translate(str, from, to) — replace characters
+    if (std.ascii.eqlIgnoreCase(fc.name, "translate")) {
+        if (fc.args.len != 3) return EvalError.TypeError;
+
+        const str_expr = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_expr.free(allocator);
+        const str = switch (str_expr) {
+            .text => |s| s,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        const from_expr = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer from_expr.free(allocator);
+        const from = switch (from_expr) {
+            .text => |s| s,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        const to_expr = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer to_expr.free(allocator);
+        const to = switch (to_expr) {
+            .text => |s| s,
+            .null_value => return .null_value,
+            else => return .null_value,
+        };
+
+        // Build result by replacing/deleting characters
+        var result = std.ArrayListUnmanaged(u8){};
+        defer result.deinit(allocator);
+
+        for (str) |c| {
+            if (std.mem.indexOfScalar(u8, from, c)) |idx| {
+                // Character found in 'from'
+                if (idx < to.len) {
+                    try result.append(allocator, to[idx]);
+                }
+                // else: delete (don't append)
+            } else {
+                // Character not in 'from', keep it
+                try result.append(allocator, c);
+            }
+        }
+
+        return Value{ .text = try result.toOwnedSlice(allocator) };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -18770,4 +19075,478 @@ test "initcap normalizes uppercase input to title case" {
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     try std.testing.expectEqualSlices(u8, "Hello World", result.text);
+}
+
+// date_part tests
+test "date_part extracts year from date string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('year', '2023-06-15') → 2023
+    const field_expr = ast.Expr{ .string_literal = "year" };
+    const date_expr = ast.Expr{ .string_literal = "2023-06-15" };
+    const args = [_]*const ast.Expr{ &field_expr, &date_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectEqual(@as(f64, 2023.0), result.real);
+}
+
+test "date_part extracts month from date string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('month', '2023-06-15') → 6
+    const field_expr = ast.Expr{ .string_literal = "month" };
+    const date_expr = ast.Expr{ .string_literal = "2023-06-15" };
+    const args = [_]*const ast.Expr{ &field_expr, &date_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectEqual(@as(f64, 6.0), result.real);
+}
+
+test "date_part extracts day from date string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('day', '2023-06-15') → 15
+    const field_expr = ast.Expr{ .string_literal = "day" };
+    const date_expr = ast.Expr{ .string_literal = "2023-06-15" };
+    const args = [_]*const ast.Expr{ &field_expr, &date_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectEqual(@as(f64, 15.0), result.real);
+}
+
+test "date_part extracts hour from timestamp string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('hour', '2023-06-15 14:30:45') → 14
+    const field_expr = ast.Expr{ .string_literal = "hour" };
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &field_expr, &ts_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectEqual(@as(f64, 14.0), result.real);
+}
+
+test "date_part extracts minute from timestamp string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('minute', '2023-06-15 14:30:45') → 30
+    const field_expr = ast.Expr{ .string_literal = "minute" };
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &field_expr, &ts_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectEqual(@as(f64, 30.0), result.real);
+}
+
+test "date_part extracts second from timestamp string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('second', '2023-06-15 14:30:45') → 45
+    const field_expr = ast.Expr{ .string_literal = "second" };
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &field_expr, &ts_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectEqual(@as(f64, 45.0), result.real);
+}
+
+test "date_part with NULL source returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_part('year', NULL) → NULL
+    const field_expr = ast.Expr{ .string_literal = "year" };
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &field_expr, &null_expr };
+    const fc = .{ .name = "date_part", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// date_trunc tests
+test "date_trunc truncates timestamp to day" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_trunc('day', '2023-06-15 14:30:45') → '2023-06-15 00:00:00'
+    const field_expr = ast.Expr{ .string_literal = "day" };
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &field_expr, &ts_expr };
+    const fc = .{ .name = "date_trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .timestamp);
+    // Expected: 2023-06-15 00:00:00
+    const days: i32 = dateToDays(2023, 6, 15);
+    const expected: i64 = @as(i64, days) * MICROS_PER_DAY;
+    try std.testing.expectEqual(expected, result.timestamp);
+}
+
+test "date_trunc truncates timestamp to hour" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_trunc('hour', '2023-06-15 14:30:45') → '2023-06-15 14:00:00'
+    const field_expr = ast.Expr{ .string_literal = "hour" };
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &field_expr, &ts_expr };
+    const fc = .{ .name = "date_trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .timestamp);
+    const days: i32 = dateToDays(2023, 6, 15);
+    const expected: i64 = @as(i64, days) * MICROS_PER_DAY + 14 * MICROS_PER_HOUR;
+    try std.testing.expectEqual(expected, result.timestamp);
+}
+
+test "date_trunc truncates timestamp to minute" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_trunc('minute', '2023-06-15 14:30:45') → '2023-06-15 14:30:00'
+    const field_expr = ast.Expr{ .string_literal = "minute" };
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &field_expr, &ts_expr };
+    const fc = .{ .name = "date_trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .timestamp);
+    const days: i32 = dateToDays(2023, 6, 15);
+    const expected: i64 = @as(i64, days) * MICROS_PER_DAY + 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE;
+    try std.testing.expectEqual(expected, result.timestamp);
+}
+
+test "date_trunc with NULL source returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // date_trunc('day', NULL) → NULL
+    const field_expr = ast.Expr{ .string_literal = "day" };
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &field_expr, &null_expr };
+    const fc = .{ .name = "date_trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// chr tests
+test "chr returns character from ASCII code" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // chr(65) → 'A'
+    const code_expr = ast.Expr{ .integer_literal = 65 };
+    const args = [_]*const ast.Expr{ &code_expr };
+    const fc = .{ .name = "chr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "A", result.text);
+}
+
+test "chr with code 0 returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // chr(0) → NULL
+    const code_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &code_expr };
+    const fc = .{ .name = "chr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "chr with negative code returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // chr(-1) → NULL
+    const code_expr = ast.Expr{ .integer_literal = -1 };
+    const args = [_]*const ast.Expr{ &code_expr };
+    const fc = .{ .name = "chr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "chr with NULL code returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // chr(NULL) → NULL
+    const code_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &code_expr };
+    const fc = .{ .name = "chr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// ascii tests
+test "ascii returns code of first character" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ascii('A') → 65
+    const str_expr = ast.Expr{ .string_literal = "A" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "ascii", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 65), result.integer);
+}
+
+test "ascii with empty string returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ascii('') → NULL
+    const str_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "ascii", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "ascii with NULL string returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // ascii(NULL) → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "ascii", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// octet_length tests
+test "octet_length returns byte count" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // octet_length('hello') → 5
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "octet_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "octet_length with empty string returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // octet_length('') → 0
+    const str_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "octet_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "octet_length with NULL returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // octet_length(NULL) → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "octet_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// char_length / character_length tests
+test "char_length returns character count" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // char_length('hello') → 5
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "char_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "character_length is alias for char_length" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // character_length('hello') → 5
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "character_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "char_length with empty string returns 0" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // char_length('') → 0
+    const str_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "char_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "char_length with NULL returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // char_length(NULL) → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "char_length", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// translate tests
+test "translate replaces characters with mapping" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // translate('hello', 'el', 'ip') → 'hippo'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .string_literal = "el" };
+    const to_expr = ast.Expr{ .string_literal = "ip" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "translate", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "hippo", result.text);
+}
+
+test "translate deletes characters with no mapping" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // translate('hello', 'aeiou', '') → 'hll' (all vowels deleted)
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .string_literal = "aeiou" };
+    const to_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "translate", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "hll", result.text);
+}
+
+test "translate with no matching characters returns original" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // translate('hello', 'xyz', 'abc') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .string_literal = "xyz" };
+    const to_expr = ast.Expr{ .string_literal = "abc" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "translate", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "hello", result.text);
+}
+
+test "translate with NULL string returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // translate(NULL, 'el', 'ip') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const from_expr = ast.Expr{ .string_literal = "el" };
+    const to_expr = ast.Expr{ .string_literal = "ip" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "translate", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "translate with NULL from returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // translate('hello', NULL, 'ip') → NULL
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const from_expr = ast.Expr{ .null_literal = {} };
+    const to_expr = ast.Expr{ .string_literal = "ip" };
+    const args = [_]*const ast.Expr{ &str_expr, &from_expr, &to_expr };
+    const fc = .{ .name = "translate", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
 }
