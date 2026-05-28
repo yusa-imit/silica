@@ -21638,3 +21638,408 @@ test "bit_or performs bitwise OR of integers" {
     try std.testing.expect(result == .integer);
     try std.testing.expectEqual(@as(i64, 7), result.integer);
 }
+
+// Edge-case tests for math functions and aggregate functions
+
+test "ln(0) returns NULL (domain error)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ln", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "ln(-5) returns NULL (domain error)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .float_literal = -5.0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "ln", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "log(0) returns NULL (domain error, base-10)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "log(-1) returns NULL (domain error, base-10)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .float_literal = -1.0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "log(1, 8) returns NULL (invalid base=1)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const base_expr = ast.Expr{ .integer_literal = 1 };
+    const num_expr = ast.Expr{ .integer_literal = 8 };
+    const args = [_]*const ast.Expr{ &base_expr, &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "log(0, 8) returns NULL (invalid base=0)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const base_expr = ast.Expr{ .integer_literal = 0 };
+    const num_expr = ast.Expr{ .integer_literal = 8 };
+    const args = [_]*const ast.Expr{ &base_expr, &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "log(2, 0) returns NULL (x<=0)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const base_expr = ast.Expr{ .integer_literal = 2 };
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &base_expr, &num_expr };
+    const fc = .{ .name = "log", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "asin(2.0) returns NULL (out of domain [-1, 1])" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .float_literal = 2.0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "asin", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "acos(-2.0) returns NULL (out of domain [-1, 1])" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .float_literal = -2.0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "acos", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "cot(0) returns NULL (tan(0)=0)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const num_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "cot", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "trunc(1234.567, -2) truncates to hundreds place" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // trunc(1234.567, -2) = 1200.0 (truncate at 10^-(-2) = 10^2 = 100s place)
+    const num_expr = ast.Expr{ .float_literal = 1234.567 };
+    const scale_expr = ast.Expr{ .integer_literal = -2 };
+    const args = [_]*const ast.Expr{ &num_expr, &scale_expr };
+    const fc = .{ .name = "trunc", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1200.0), result.real, 1e-9);
+}
+
+test "exp(-1) returns approximately 0.3679" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // exp(-1) ≈ 0.36788 (valid, just testing negative exponent)
+    const num_expr = ast.Expr{ .integer_literal = -1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "exp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.36788), result.real, 1e-4);
+}
+
+test "bool_and with mixed NULLs and all-true non-NULLs returns true" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .integer = 1 } }; // true
+    var row_values_3 = [_]Value{ Value{ .integer = 1 } }; // true
+    var row_values_4 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+    const row4 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_4,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3, row4 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // NULLs skipped, remaining are all true → true (1)
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "bool_or with mixed NULLs and all-false non-NULLs returns false" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bool_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .integer = 0 } }; // false
+    var row_values_3 = [_]Value{ Value{ .integer = 0 } }; // false
+    var row_values_4 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+    const row4 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_4,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3, row4 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // NULLs skipped, remaining are all false → false (0)
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "bit_and with NULL values skips NULLs" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bit_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 7 } };  // 0b0111
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_3 = [_]Value{ Value{ .integer = 3 } };  // 0b0011
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // 7 & 3 = 0b0111 & 0b0011 = 0b0011 = 3
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+test "bit_or with NULL values skips NULLs" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bit_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 1 } };  // 0b0001
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_3 = [_]Value{ Value{ .integer = 2 } };  // 0b0010
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // 1 | 2 = 0b0001 | 0b0010 = 0b0011 = 3
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+test "bit_and single row returns that row's value" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bit_and,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 42 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{row1};
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // Single value → that value
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 42), result.integer);
+}
+
+test "bit_or all null returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .bit_or,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // All NULLs → NULL
+    try std.testing.expect(result == .null_value);
+}
