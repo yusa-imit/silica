@@ -3618,6 +3618,82 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
     return .{ .year = year, .month = month, .day = day, .hour = hour, .minute = minute, .second = second };
 }
 
+/// Parse a text string to a numeric value using a PostgreSQL-style format template.
+/// Format tokens supported: 9, 0, ., D, ,, G, MI, S, PR, L, FM
+/// Returns f64 result, or null on parse error.
+fn toNumber(text: []const u8, fmt: []const u8) ?f64 {
+    // Check for PR (angle bracket negative): <number> means negative
+    var pr_negative = false;
+    if (std.mem.containsAtLeast(u8, fmt, 1, "PR") or std.mem.containsAtLeast(u8, fmt, 1, "pr")) {
+        // Check if text has angle brackets
+        if (text.len >= 2 and text[0] == '<' and text[text.len - 1] == '>') {
+            pr_negative = true;
+        }
+    }
+
+    // Check for MI (trailing minus): last non-space char is '-'
+    var mi_negative = false;
+    if (std.mem.containsAtLeast(u8, fmt, 1, "MI") or std.mem.containsAtLeast(u8, fmt, 1, "mi")) {
+        var trimmed = text;
+        while (trimmed.len > 0 and trimmed[trimmed.len - 1] == ' ') {
+            trimmed = trimmed[0 .. trimmed.len - 1];
+        }
+        if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '-') {
+            mi_negative = true;
+        }
+    }
+
+    // Check for S (leading sign): starts with + or -
+    var has_s = false;
+    var s_negative = false;
+    if (std.mem.containsAtLeast(u8, fmt, 1, "S") or std.mem.containsAtLeast(u8, fmt, 1, "s")) {
+        has_s = true;
+        if (text.len > 0 and text[0] == '-') {
+            s_negative = true;
+        }
+    }
+
+    // Strip special format characters and build numeric string using stack buffer
+    // Keep only digits, decimal point
+    var cleaned: [256]u8 = undefined;
+    var cleaned_len: usize = 0;
+
+    var idx: usize = 0;
+    while (idx < text.len) : (idx += 1) {
+        if (cleaned_len >= 256) return null; // Buffer overflow
+        const c = text[idx];
+        // Skip spaces
+        if (c == ' ') continue;
+        // Skip commas and other separators
+        if (c == ',' or c == 'G' or c == 'g') continue;
+        // Skip angle brackets from PR
+        if (c == '<' or c == '>') continue;
+        // Skip leading +/- from S format (will reapply at end)
+        if (has_s and idx == 0 and (c == '+' or c == '-')) continue;
+        // Skip trailing -/+ from MI format
+        if (idx == text.len - 1 and (c == '-' or c == '+')) continue;
+        // Keep digits and decimal point
+        if (std.ascii.isDigit(c) or c == '.' or c == 'D') {
+            const ch = if (c == 'D') '.' else c;
+            cleaned[cleaned_len] = ch;
+            cleaned_len += 1;
+        }
+    }
+
+    if (cleaned_len == 0) return null;
+
+    // Parse cleaned string as f64
+    const cleaned_str = cleaned[0..cleaned_len];
+    var result = std.fmt.parseFloat(f64, cleaned_str) catch return null;
+
+    // Apply sign
+    if (pr_negative or mi_negative or (has_s and s_negative)) {
+        result = -result;
+    }
+
+    return result;
+}
+
 fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog: ?*Catalog) EvalError!Value {
     // Aggregate functions: look up result by column name from the aggregate output row.
     // When an Aggregate operator has already computed COUNT/SUM/etc., the result is
@@ -6010,6 +6086,26 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const parsed = parseFormattedDatetime(text_str, fmt_str) orelse return Value.null_value;
         const days = dateToDays(parsed.year, parsed.month, parsed.day);
         return Value{ .date = days };
+    }
+
+    // to_number(text, format) — parse string to numeric value
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_number")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const text_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer text_val.free(allocator);
+        if (text_val == .null_value) return Value.null_value;
+        const text_str = switch (text_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        const fmt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt_str = switch (fmt_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        const result = toNumber(text_str, fmt_str) orelse return Value.null_value;
+        return Value{ .real = result };
     }
 
     return EvalError.UnsupportedExpression;
@@ -22825,4 +22921,163 @@ test "to_char formats large number with thousands separator" {
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     try std.testing.expectEqualSlices(u8, "1,234,567.89", result.text);
+}
+
+// to_number(text, format) tests
+test "to_number parses simple decimal" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('1234.56', '9999.99') → 1234.56
+    const text_expr = ast.Expr{ .string_literal = "1234.56" };
+    const fmt_expr = ast.Expr{ .string_literal = "9999.99" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, 1234.56, 0.001);
+}
+
+test "to_number parses integer without decimal" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('42', '9999') → 42.0
+    const text_expr = ast.Expr{ .string_literal = "42" };
+    const fmt_expr = ast.Expr{ .string_literal = "9999" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, 42.0, 0.001);
+}
+
+test "to_number parses with thousands separator" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('1,234,567.89', '9,999,999.99') → 1234567.89 (commas ignored in parsing)
+    const text_expr = ast.Expr{ .string_literal = "1,234,567.89" };
+    const fmt_expr = ast.Expr{ .string_literal = "9,999,999.99" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, 1234567.89, 0.001);
+}
+
+test "to_number parses trailing minus (MI)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('  42-', '9999MI') → -42.0 (trailing minus indicates negative)
+    const text_expr = ast.Expr{ .string_literal = "  42-" };
+    const fmt_expr = ast.Expr{ .string_literal = "9999MI" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, -42.0, 0.001);
+}
+
+test "to_number parses angle bracket negative (PR)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('<42>', '9999PR') → -42.0 (angle brackets indicate negative)
+    const text_expr = ast.Expr{ .string_literal = "<42>" };
+    const fmt_expr = ast.Expr{ .string_literal = "9999PR" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, -42.0, 0.001);
+}
+
+test "to_number parses leading sign (S)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('+1234', 'S9999') → 1234.0 (leading + sign)
+    const text_expr = ast.Expr{ .string_literal = "+1234" };
+    const fmt_expr = ast.Expr{ .string_literal = "S9999" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, 1234.0, 0.001);
+}
+
+test "to_number parses leading minus sign (S)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('-5678', 'S9999') → -5678.0 (leading - sign)
+    const text_expr = ast.Expr{ .string_literal = "-5678" };
+    const fmt_expr = ast.Expr{ .string_literal = "S9999" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, -5678.0, 0.001);
+}
+
+test "to_number with NULL text returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number(NULL, '9999') → NULL
+    const text_expr = ast.Expr{ .null_literal = {} };
+    const fmt_expr = ast.Expr{ .string_literal = "9999" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_number with NULL format returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('1234', NULL) → NULL
+    const text_expr = ast.Expr{ .string_literal = "1234" };
+    const fmt_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_number parses large number with comma and decimal" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_number('999,999.99', '999,999.99') → 999999.99
+    const text_expr = ast.Expr{ .string_literal = "999,999.99" };
+    const fmt_expr = ast.Expr{ .string_literal = "999,999.99" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_number", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(result.real, 999999.99, 0.001);
 }
