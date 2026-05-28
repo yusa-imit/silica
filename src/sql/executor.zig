@@ -3232,6 +3232,392 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
     };
 }
 
+/// Format a timestamp (microseconds since epoch) using PostgreSQL-style format string.
+fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 {
+    const month_short = [12][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const month_full = [12][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+    const day_short = [7][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    const day_full = [7][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+
+    const ts_days = @divFloor(ts_micros, MICROS_PER_DAY);
+    const time_micros = @mod(ts_micros, MICROS_PER_DAY);
+    const dt = daysToDate(@intCast(ts_days));
+    const hour24: i64 = @divFloor(time_micros, MICROS_PER_HOUR);
+    const minute: i64 = @divFloor(@mod(time_micros, MICROS_PER_HOUR), MICROS_PER_MINUTE);
+    const second: i64 = @divFloor(@mod(time_micros, MICROS_PER_MINUTE), MICROS_PER_SECOND);
+    const ms: i64 = @divFloor(@mod(time_micros, MICROS_PER_SECOND), 1000);
+    const us: i64 = @mod(time_micros, MICROS_PER_SECOND);
+    const hour12: i64 = if (@mod(hour24, 12) == 0) 12 else @mod(hour24, 12);
+    const dow: usize = @intCast(@mod(ts_days + 4, 7));
+
+    var doy: i32 = @as(i32, dt.day);
+    var m: u8 = 1;
+    while (m < dt.month) : (m += 1) doy += @as(i32, daysInMonth(m, dt.year));
+    const woy: i32 = @divFloor(doy - 1, 7) + 1;
+    const wom: i32 = @divFloor(@as(i32, dt.day) - 1, 7) + 1;
+
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < fmt.len) {
+        const rest = fmt[i..];
+        // Quoted literal: "text"
+        if (rest[0] == '"') {
+            i += 1;
+            while (i < fmt.len and fmt[i] != '"') {
+                try out.append(allocator, fmt[i]);
+                i += 1;
+            }
+            if (i < fmt.len) i += 1;
+            continue;
+        }
+        // 5-char patterns
+        if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "MONTH")) {
+            for (month_full[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            i += 5; continue;
+        }
+        if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "Month")) {
+            try out.appendSlice(allocator, month_full[@as(usize, dt.month) - 1]);
+            i += 5; continue;
+        }
+        if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "month")) {
+            for (month_full[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toLower(c));
+            i += 5; continue;
+        }
+        // 4-char patterns
+        if (rest.len >= 4 and (std.mem.eql(u8, rest[0..4], "YYYY") or std.mem.eql(u8, rest[0..4], "IYYY"))) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>4}", .{@as(u32, @intCast(dt.year))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 4; continue;
+        }
+        if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH24")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour24))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 4; continue;
+        }
+        if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH12")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 4; continue;
+        }
+        // 3-char patterns
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "MON")) {
+            for (month_short[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            i += 3; continue;
+        }
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "Mon")) {
+            try out.appendSlice(allocator, month_short[@as(usize, dt.month) - 1]);
+            i += 3; continue;
+        }
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "mon")) {
+            for (month_short[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toLower(c));
+            i += 3; continue;
+        }
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "DAY")) {
+            for (day_full[dow]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            i += 3; continue;
+        }
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "Day")) {
+            try out.appendSlice(allocator, day_full[dow]);
+            i += 3; continue;
+        }
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "day")) {
+            for (day_full[dow]) |c| try out.append(allocator, std.ascii.toLower(c));
+            i += 3; continue;
+        }
+        if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "YYY")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 1000)}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 3; continue;
+        }
+        // 2-char patterns
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MM")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.month}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DD")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.day}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DY")) {
+            for (day_short[dow]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "Dy")) {
+            try out.appendSlice(allocator, day_short[dow]);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "dy")) {
+            for (day_short[dow]) |c| try out.append(allocator, std.ascii.toLower(c));
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "HH")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MI")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(minute))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "SS")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(second))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MS")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@as(u64, @intCast(ms))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "US")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>6}", .{@as(u64, @intCast(us))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "AM") or std.mem.eql(u8, rest[0..2], "PM"))) {
+            try out.appendSlice(allocator, if (hour24 >= 12) "PM" else "AM");
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "am") or std.mem.eql(u8, rest[0..2], "pm"))) {
+            try out.appendSlice(allocator, if (hour24 >= 12) "pm" else "am");
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "YY")) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 100)}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "IW") or std.mem.eql(u8, rest[0..2], "WW"))) {
+            var buf: [10]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u32, @intCast(woy))}) catch unreachable;
+            try out.appendSlice(allocator, s);
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "TZ")) {
+            try out.appendSlice(allocator, "UTC");
+            i += 2; continue;
+        }
+        if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "FM")) {
+            i += 2; continue;
+        }
+        // 1-char patterns
+        switch (rest[0]) {
+            'Y' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 10)}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
+            'D' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(dow + 1))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
+            'Q' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(@divFloor(@as(i32, dt.month) - 1, 3) + 1))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
+            'W' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(wom))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
+            'J' => { var buf: [30]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u64, @intCast(ts_days + 2440588))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
+            else => {},
+        }
+        // Literal character
+        try out.append(allocator, rest[0]);
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Format a floating-point number using PostgreSQL-style format string.
+fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
+    // Check for trailing MI (minus sign at end)
+    var effective_fmt = fmt;
+    var has_mi = false;
+    if (fmt.len >= 2 and std.ascii.eqlIgnoreCase(fmt[fmt.len - 2 ..], "MI")) {
+        has_mi = true;
+        effective_fmt = fmt[0 .. fmt.len - 2];
+    }
+
+    // Find decimal point
+    var decimal_pos: ?usize = null;
+    for (effective_fmt, 0..) |c, idx| {
+        if (c == '.') { decimal_pos = idx; break; }
+    }
+
+    const int_fmt_part = if (decimal_pos) |dp| effective_fmt[0..dp] else effective_fmt;
+    const frac_fmt_part = if (decimal_pos) |dp| effective_fmt[dp + 1 ..] else "";
+
+    // Count integer digit positions and detect commas
+    var int_digit_positions: usize = 0;
+    var uses_zero = false;
+    var has_comma = false;
+    for (int_fmt_part) |c| {
+        if (c == '9') { int_digit_positions += 1; }
+        else if (c == '0') { int_digit_positions += 1; uses_zero = true; }
+        else if (c == ',') { has_comma = true; }
+    }
+
+    // Count fractional digit positions
+    var frac_digit_positions: usize = 0;
+    for (frac_fmt_part) |c| {
+        if (c == '9' or c == '0') frac_digit_positions += 1;
+    }
+
+    // Get absolute value and sign
+    const is_neg = value < 0;
+    const abs_val = if (is_neg) -value else value;
+
+    // Round to required decimal places
+    const scale = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(frac_digit_positions)));
+    const rounded = @round(abs_val * scale) / scale;
+    const int_val: i64 = @intFromFloat(@trunc(rounded));
+    const frac_val_f = (rounded - @as(f64, @floatFromInt(int_val))) * scale;
+    const frac_val: i64 = @intFromFloat(@round(frac_val_f));
+
+    // Format integer digits
+    var int_buf: [32]u8 = undefined;
+    const int_str = std.fmt.bufPrint(&int_buf, "{d}", .{int_val}) catch unreachable;
+
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+
+    if (int_str.len > int_digit_positions) {
+        // Overflow: fill with '#'
+        for (0..int_digit_positions) |_| try out.append(allocator, '#');
+    } else if (has_comma) {
+        // Build integer part with commas, scanning format right-to-left
+        var tmp = std.ArrayListUnmanaged(u8){};
+        defer tmp.deinit(allocator);
+        var digit_idx: isize = @as(isize, @intCast(int_str.len));
+        var fi: usize = int_fmt_part.len;
+        while (fi > 0) {
+            fi -= 1;
+            const fc = int_fmt_part[fi];
+            if (fc == '9' or fc == '0') {
+                if (digit_idx > 0) {
+                    digit_idx -= 1;
+                    try tmp.append(allocator, int_str[@intCast(digit_idx)]);
+                } else {
+                    try tmp.append(allocator, if (uses_zero) '0' else ' ');
+                }
+            } else if (fc == ',') {
+                try tmp.append(allocator, if (digit_idx > 0) ',' else ' ');
+            }
+        }
+        std.mem.reverse(u8, tmp.items);
+        try out.appendSlice(allocator, tmp.items);
+    } else {
+        // Simple: pad then digits
+        const padding = int_digit_positions - int_str.len;
+        const pad_char: u8 = if (uses_zero) '0' else ' ';
+        for (0..padding) |_| try out.append(allocator, pad_char);
+        try out.appendSlice(allocator, int_str);
+    }
+
+    // Decimal part
+    if (decimal_pos != null and frac_digit_positions > 0) {
+        try out.append(allocator, '.');
+        var frac_buf: [32]u8 = undefined;
+        const frac_raw = std.fmt.bufPrint(&frac_buf, "{d}", .{frac_val}) catch unreachable;
+        const frac_pad = if (frac_raw.len < frac_digit_positions) frac_digit_positions - frac_raw.len else 0;
+        for (0..frac_pad) |_| try out.append(allocator, '0');
+        try out.appendSlice(allocator, frac_raw[0..@min(frac_raw.len, frac_digit_positions)]);
+    } else if (decimal_pos != null) {
+        try out.append(allocator, '.');
+    }
+
+    // Trailing MI
+    if (has_mi) try out.append(allocator, if (is_neg) '-' else ' ');
+
+    return out.toOwnedSlice(allocator);
+}
+
+/// Parse a date/datetime string using a format template.
+/// Returns a struct with year/month/day/hour/minute/second components.
+fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
+    year: i32, month: u8, day: u8, hour: i64, minute: i64, second: i64,
+} {
+    const month_abbrevs = [12][]const u8{ "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec" };
+    var ti: usize = 0;
+    var fi: usize = 0;
+    var year: i32 = 1970;
+    var month: u8 = 1;
+    var day: u8 = 1;
+    var hour: i64 = 0;
+    var minute: i64 = 0;
+    var second: i64 = 0;
+
+    while (fi < fmt.len) {
+        if (ti > text.len) return null;
+        const rf = fmt[fi..];
+
+        // 4-char patterns
+        if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "YYYY")) {
+            if (ti + 4 > text.len) return null;
+            year = std.fmt.parseInt(i32, text[ti .. ti + 4], 10) catch return null;
+            ti += 4; fi += 4; continue;
+        }
+        if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "HH24")) {
+            if (ti + 2 > text.len) return null;
+            hour = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
+            ti += 2; fi += 4; continue;
+        }
+        // 3-char patterns
+        if (rf.len >= 3 and (std.mem.eql(u8, rf[0..3], "Mon") or std.mem.eql(u8, rf[0..3], "MON") or std.mem.eql(u8, rf[0..3], "mon"))) {
+            if (ti + 3 > text.len) return null;
+            var lower: [3]u8 = undefined;
+            for (0..3) |k| lower[k] = std.ascii.toLower(text[ti + k]);
+            var found = false;
+            for (month_abbrevs, 0..) |mn, idx| {
+                if (std.mem.eql(u8, &lower, mn)) {
+                    month = @intCast(idx + 1);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return null;
+            ti += 3; fi += 3; continue;
+        }
+        // 2-char patterns
+        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MM")) {
+            if (ti + 2 > text.len) return null;
+            month = std.fmt.parseInt(u8, text[ti .. ti + 2], 10) catch return null;
+            ti += 2; fi += 2; continue;
+        }
+        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "DD")) {
+            if (ti + 2 > text.len) return null;
+            day = std.fmt.parseInt(u8, text[ti .. ti + 2], 10) catch return null;
+            ti += 2; fi += 2; continue;
+        }
+        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MI")) {
+            if (ti + 2 > text.len) return null;
+            minute = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
+            ti += 2; fi += 2; continue;
+        }
+        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "SS")) {
+            if (ti + 2 > text.len) return null;
+            second = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
+            ti += 2; fi += 2; continue;
+        }
+        // Literal character
+        if (ti < text.len and fmt[fi] == text[ti]) {
+            ti += 1; fi += 1; continue;
+        }
+        // Skip non-matching (best-effort)
+        fi += 1;
+    }
+
+    if (month < 1 or month > 12) return null;
+    if (day < 1 or day > daysInMonth(month, year)) return null;
+
+    return .{ .year = year, .month = month, .day = day, .hour = hour, .minute = minute, .second = second };
+}
+
 fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog: ?*Catalog) EvalError!Value {
     // Aggregate functions: look up result by column name from the aggregate output row.
     // When an Aggregate operator has already computed COUNT/SUM/etc., the result is
@@ -5538,6 +5924,92 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const tan_x = @tan(x);
         if (tan_x == 0) return .null_value;
         return .{ .real = 1.0 / tan_x };
+    }
+
+    // to_char(value, format) — format timestamp/date/number as string
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_char")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer val.free(allocator);
+        if (val == .null_value) return Value.null_value;
+        const fmt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt_str = switch (fmt_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+
+        // Determine if value is a timestamp/date or a number
+        const ts_micros: ?i64 = switch (val) {
+            .timestamp => |ts| ts,
+            .date => |days| @as(i64, days) * MICROS_PER_DAY,
+            .text => |s| blk: {
+                if (parseTimestampString(s)) |ts| break :blk ts;
+                if (parseDateString(s)) |days| break :blk @as(i64, days) * MICROS_PER_DAY;
+                break :blk null;
+            },
+            .integer, .real => null,
+            else => return Value.null_value,
+        };
+
+        if (ts_micros) |ts| {
+            const s = toCharTimestamp(allocator, ts, fmt_str) catch return EvalError.OutOfMemory;
+            return Value{ .text = s };
+        } else {
+            const num: f64 = switch (val) {
+                .integer => |n| @as(f64, @floatFromInt(n)),
+                .real => |f| f,
+                else => return Value.null_value,
+            };
+            const s = toCharNumber(allocator, num, fmt_str) catch return EvalError.OutOfMemory;
+            return Value{ .text = s };
+        }
+    }
+
+    // to_timestamp(text, format) — parse string to timestamp
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_timestamp")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const text_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer text_val.free(allocator);
+        if (text_val == .null_value) return Value.null_value;
+        const text_str = switch (text_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        const fmt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt_str = switch (fmt_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        const parsed = parseFormattedDatetime(text_str, fmt_str) orelse return Value.null_value;
+        const days = dateToDays(parsed.year, parsed.month, parsed.day);
+        const ts = @as(i64, days) * MICROS_PER_DAY +
+            parsed.hour * MICROS_PER_HOUR +
+            parsed.minute * MICROS_PER_MINUTE +
+            parsed.second * MICROS_PER_SECOND;
+        return Value{ .timestamp = ts };
+    }
+
+    // to_date(text, format) — parse string to date
+    if (std.ascii.eqlIgnoreCase(fc.name, "to_date")) {
+        if (fc.args.len != 2) return EvalError.TypeError;
+        const text_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer text_val.free(allocator);
+        if (text_val == .null_value) return Value.null_value;
+        const text_str = switch (text_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        const fmt_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer fmt_val.free(allocator);
+        const fmt_str = switch (fmt_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        const parsed = parseFormattedDatetime(text_str, fmt_str) orelse return Value.null_value;
+        const days = dateToDays(parsed.year, parsed.month, parsed.day);
+        return Value{ .date = days };
     }
 
     return EvalError.UnsupportedExpression;
@@ -22042,4 +22514,315 @@ test "bit_or all null returns NULL" {
 
     // All NULLs → NULL
     try std.testing.expect(result == .null_value);
+}
+
+// to_char(timestamp, format) tests
+test "to_char formats timestamp as ISO datetime" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-01-15 10:30:00'), 'YYYY-MM-DD HH24:MI:SS') → '2024-01-15 10:30:00'
+    const ts_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD HH24:MI:SS" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "2024-01-15 10:30:00", result.text);
+}
+
+test "to_char formats timestamp with day and month name" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-01-15 10:30:00'), 'DD Mon YYYY') → '15 Jan 2024'
+    const ts_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "DD Mon YYYY" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "15 Jan 2024", result.text);
+}
+
+test "to_char formats timestamp as 12-hour time with AM/PM" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-01-15 14:30:45'), 'HH12:MI:SS AM') → '02:30:45 PM'
+    const ts_expr = ast.Expr{ .string_literal = "2024-01-15 14:30:45" };
+    const fmt_expr = ast.Expr{ .string_literal = "HH12:MI:SS AM" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "02:30:45 PM", result.text);
+}
+
+test "to_char formats timestamp with quarter" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-03-15'), 'Q') → '1' (Q1 = Jan-Mar)
+    const ts_expr = ast.Expr{ .string_literal = "2024-03-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "Q" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "1", result.text);
+}
+
+test "to_char formats timestamp with ISO week" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-01-15'), 'YYYY-"W"WW-D') → '2024-W03-2' (week 3, day 2 of week)
+    const ts_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-\"W\"WW-D" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "2024-W03-2", result.text);
+}
+
+test "to_char formats timestamp with full month name" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-01-15'), 'Month DD, YYYY') → 'January 15, 2024'
+    const ts_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "Month DD, YYYY" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "January 15, 2024", result.text);
+}
+
+test "to_char formats timestamp with abbreviated weekday and month" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(timestamp('2024-01-15'), 'DY, DD MON YYYY') → 'MON, 15 JAN 2024' (2024-01-15 is a Monday)
+    const ts_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "DY, DD MON YYYY" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "MON, 15 JAN 2024", result.text);
+}
+
+test "to_char with NULL timestamp returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(NULL, 'YYYY-MM-DD') → NULL
+    const ts_expr = ast.Expr{ .null_literal = {} };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_char formats date as ISO date" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(date('2024-01-15'), 'YYYY-MM-DD') → '2024-01-15'
+    const date_expr = ast.Expr{ .string_literal = "2024-01-15" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &date_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "2024-01-15", result.text);
+}
+
+// to_timestamp(text, format) tests
+test "to_timestamp parses ISO datetime string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_timestamp('2024-01-15 10:30:00', 'YYYY-MM-DD HH24:MI:SS') → timestamp for 2024-01-15 10:30:00
+    const text_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD HH24:MI:SS" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .timestamp);
+    // Verify it matches the expected timestamp
+    const expected_ts = parseTimestampString("2024-01-15 10:30:00").?;
+    try std.testing.expectEqual(expected_ts, result.timestamp);
+}
+
+test "to_timestamp parses date with different format" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_timestamp('15/01/2024', 'DD/MM/YYYY') → timestamp for 2024-01-15 00:00:00
+    const text_expr = ast.Expr{ .string_literal = "15/01/2024" };
+    const fmt_expr = ast.Expr{ .string_literal = "DD/MM/YYYY" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .timestamp);
+    // Expected timestamp for 2024-01-15 00:00:00
+    const expected_ts = parseTimestampString("2024-01-15 00:00:00").?;
+    try std.testing.expectEqual(expected_ts, result.timestamp);
+}
+
+test "to_timestamp with NULL text returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_timestamp(NULL, 'YYYY-MM-DD') → NULL
+    const text_expr = ast.Expr{ .null_literal = {} };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// to_date(text, format) tests
+test "to_date parses ISO date string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_date('2024-01-15', 'YYYY-MM-DD') → date value for 2024-01-15
+    const text_expr = ast.Expr{ .string_literal = "2024-01-15" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .date);
+    const expected_date = parseDateString("2024-01-15").?;
+    try std.testing.expectEqual(expected_date, result.date);
+}
+
+test "to_date parses date with month name" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_date('15 Jan 2024', 'DD Mon YYYY') → date value for 2024-01-15
+    const text_expr = ast.Expr{ .string_literal = "15 Jan 2024" };
+    const fmt_expr = ast.Expr{ .string_literal = "DD Mon YYYY" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .date);
+    const expected_date = parseDateString("2024-01-15").?;
+    try std.testing.expectEqual(expected_date, result.date);
+}
+
+test "to_date with NULL text returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_date(NULL, 'YYYY-MM-DD') → NULL
+    const text_expr = ast.Expr{ .null_literal = {} };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+// to_char(number, format) tests
+test "to_char formats decimal number with two decimal places" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(1234.567, '9999.99') → '1234.57' (rounded to 2 decimal places)
+    const num_expr = ast.Expr{ .float_literal = 1234.567 };
+    const fmt_expr = ast.Expr{ .string_literal = "9999.99" };
+    const args = [_]*const ast.Expr{ &num_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "1234.57", result.text);
+}
+
+test "to_char formats integer with zero padding" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(42, '0000') → '0042' (zero-padded 4 digits)
+    const num_expr = ast.Expr{ .integer_literal = 42 };
+    const fmt_expr = ast.Expr{ .string_literal = "0000" };
+    const args = [_]*const ast.Expr{ &num_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "0042", result.text);
+}
+
+test "to_char formats negative number with trailing minus" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(-42, '9999MI') → '  42-' (minus at end, leading spaces)
+    const num_expr = ast.Expr{ .integer_literal = -42 };
+    const fmt_expr = ast.Expr{ .string_literal = "9999MI" };
+    const args = [_]*const ast.Expr{ &num_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "  42-", result.text);
+}
+
+test "to_char formats large number with thousands separator" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_char(1234567.89, '9,999,999.99') → '1,234,567.89'
+    const num_expr = ast.Expr{ .float_literal = 1234567.89 };
+    const fmt_expr = ast.Expr{ .string_literal = "9,999,999.99" };
+    const args = [_]*const ast.Expr{ &num_expr, &fmt_expr };
+    const fc = .{ .name = "to_char", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualSlices(u8, "1,234,567.89", result.text);
 }
