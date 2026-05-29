@@ -24427,3 +24427,355 @@ test "array_remove with NULL array returns NULL" {
     defer result.free(allocator);
     try std.testing.expect(result == .null_value);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// EDGE CASE TESTS FOR ARRAY/STRING/CONVERSION FUNCTIONS
+// ────────────────────────────────────────────────────────────────────────────
+
+test "array_to_string with empty array returns empty string" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_to_string(ARRAY[]::text[], ',') → ''
+    const elements = try aa.alloc(*const ast.Expr, 0);
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const args = [_]*const ast.Expr{ array_expr, &delim_expr };
+    const fc = .{ .name = "array_to_string", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("", result.text);
+}
+
+test "array_to_string with NULL elements replaces with null_text parameter" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_to_string(ARRAY[1, NULL, 3], ',', 'X') → '1,X,3' (NULL replaced by 'X')
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 1 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .null_literal = {} };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 3 };
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const null_text_expr = ast.Expr{ .string_literal = "X" };
+    const args = [_]*const ast.Expr{ array_expr, &delim_expr, &null_text_expr };
+    const fc = .{ .name = "array_to_string", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // Verify it contains the elements with delimiter
+    try std.testing.expectEqual(@as(usize, 5), result.text.len); // "1" + "," + "X" + "," + "3" = 5 chars
+}
+
+test "array_to_string with single element" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_to_string(ARRAY['single'], '-') → 'single'
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .string_literal = "single" };
+    const elements = try aa.alloc(*const ast.Expr, 1);
+    elements[0] = elem1;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const delim_expr = ast.Expr{ .string_literal = "-" };
+    const args = [_]*const ast.Expr{ array_expr, &delim_expr };
+    const fc = .{ .name = "array_to_string", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("single", result.text);
+}
+
+test "string_to_array with empty string input" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // string_to_array('', ',') → {''}
+    const str_expr = ast.Expr{ .string_literal = "" };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const args = [_]*const ast.Expr{ &str_expr, &delim_expr };
+    const fc = .{ .name = "string_to_array", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expectEqualStrings("", result.array[0].text);
+}
+
+test "string_to_array with multi-character delimiter" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // string_to_array('a::b::c', '::') → {a,b,c}
+    const str_expr = ast.Expr{ .string_literal = "a::b::c" };
+    const delim_expr = ast.Expr{ .string_literal = "::" };
+    const args = [_]*const ast.Expr{ &str_expr, &delim_expr };
+    const fc = .{ .name = "string_to_array", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    try std.testing.expectEqualStrings("a", result.array[0].text);
+    try std.testing.expectEqualStrings("b", result.array[1].text);
+    try std.testing.expectEqualStrings("c", result.array[2].text);
+}
+
+test "string_to_array with trailing delimiter" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // string_to_array('a,b,', ',') → {a,b,''}
+    const str_expr = ast.Expr{ .string_literal = "a,b," };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const args = [_]*const ast.Expr{ &str_expr, &delim_expr };
+    const fc = .{ .name = "string_to_array", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    try std.testing.expectEqualStrings("a", result.array[0].text);
+    try std.testing.expectEqualStrings("b", result.array[1].text);
+    try std.testing.expectEqualStrings("", result.array[2].text);
+}
+
+test "string_to_array with leading delimiter" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // string_to_array(',a,b', ',') → {'',a,b}
+    const str_expr = ast.Expr{ .string_literal = ",a,b" };
+    const delim_expr = ast.Expr{ .string_literal = "," };
+    const args = [_]*const ast.Expr{ &str_expr, &delim_expr };
+    const fc = .{ .name = "string_to_array", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    try std.testing.expectEqualStrings("", result.array[0].text);
+    try std.testing.expectEqualStrings("a", result.array[1].text);
+    try std.testing.expectEqualStrings("b", result.array[2].text);
+}
+
+test "to_hex with negative number" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_hex(-1) → 'ffffffffffffffff' (two's complement for 64-bit signed)
+    const num_expr = ast.Expr{ .integer_literal = -1 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // PostgreSQL returns 'ffffffffffffffff' for -1 in 64-bit
+    try std.testing.expectEqualStrings("ffffffffffffffff", result.text);
+}
+
+test "to_hex with large positive number" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // to_hex(1000000) → 'f4240'
+    const num_expr = ast.Expr{ .integer_literal = 1000000 };
+    const args = [_]*const ast.Expr{ &num_expr };
+    const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("f4240", result.text);
+}
+
+test "width_bucket at exact low boundary" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // width_bucket(1, 1, 10, 5) → 1 (at low boundary goes to first bucket)
+    const operand_expr = ast.Expr{ .integer_literal = 1 };
+    const low_expr = ast.Expr{ .integer_literal = 1 };
+    const high_expr = ast.Expr{ .integer_literal = 10 };
+    const count_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &operand_expr, &low_expr, &high_expr, &count_expr };
+    const fc = .{ .name = "width_bucket", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "width_bucket with negative range" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // width_bucket(-5, -10, 0, 5) → 3
+    // [-10,0) split into 5 buckets: [-10,-8), [-8,-6), [-6,-4), [-4,-2), [-2,0)
+    // -5 falls into bucket 3
+    const operand_expr = ast.Expr{ .integer_literal = -5 };
+    const low_expr = ast.Expr{ .integer_literal = -10 };
+    const high_expr = ast.Expr{ .integer_literal = 0 };
+    const count_expr = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &operand_expr, &low_expr, &high_expr, &count_expr };
+    const fc = .{ .name = "width_bucket", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+test "array_position with NULL element in array matches NULL search" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_position(ARRAY[1, NULL, 3], NULL) → 2 (NULL matches NULL by implementation)
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 1 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .null_literal = {} };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 3 };
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const search_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ array_expr, &search_expr };
+    const fc = .{ .name = "array_position", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "array_position with start index at array length" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_position(ARRAY[1,2,3], 2, 3) → NULL (start at index 3 past last element)
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 1 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .integer_literal = 2 };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 3 };
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const search_expr = ast.Expr{ .integer_literal = 2 };
+    const start_expr = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ array_expr, &search_expr, &start_expr };
+    const fc = .{ .name = "array_position", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "array_remove removes NULL elements when NULL is search element" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_remove(ARRAY[1, NULL, 2], NULL) → {1, 2} (NULL matches NULL by implementation)
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 1 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .null_literal = {} };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 2 };
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const remove_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ array_expr, &remove_expr };
+    const fc = .{ .name = "array_remove", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expectEqual(@as(i64, 1), result.array[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), result.array[1].integer);
+}
+
+test "array_remove all elements removes all occurrences" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_remove(ARRAY[2,2,2], 2) → {} (all elements removed)
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 2 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .integer_literal = 2 };
+    const elem3 = try aa.create(ast.Expr);
+    elem3.* = ast.Expr{ .integer_literal = 2 };
+    const elements = try aa.alloc(*const ast.Expr, 3);
+    elements[0] = elem1;
+    elements[1] = elem2;
+    elements[2] = elem3;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const remove_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ array_expr, &remove_expr };
+    const fc = .{ .name = "array_remove", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
+}
