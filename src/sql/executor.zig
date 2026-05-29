@@ -24798,3 +24798,155 @@ test "array_remove all elements removes all occurrences" {
     try std.testing.expect(result == .array);
     try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// DATE VALIDATION AND LEAP YEAR EDGE CASES
+// ────────────────────────────────────────────────────────────────────────────
+
+test "to_date leap year Feb 29 in year 2000 (divisible by 400)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // 2000 is a leap year (divisible by 400), so Feb 29 is valid
+    const text_expr = ast.Expr{ .string_literal = "2000-02-29" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .date);
+}
+
+test "to_date non-leap year 1900 rejects Feb 29" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // 1900 is NOT a leap year (divisible by 100 but not 400), so Feb 29 is invalid
+    const text_expr = ast.Expr{ .string_literal = "1900-02-29" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_date leap year 2024 accepts Feb 29" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const text_expr = ast.Expr{ .string_literal = "2024-02-29" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .date);
+}
+
+test "to_date common year 2023 rejects Feb 29" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const text_expr = ast.Expr{ .string_literal = "2023-02-29" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_date invalid month 13 returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const text_expr = ast.Expr{ .string_literal = "2024-13-01" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "to_date Feb 30 returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const text_expr = ast.Expr{ .string_literal = "2024-02-30" };
+    const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD" };
+    const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
+    const fc = .{ .name = "to_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "array_append with NULL element adds null_value to array" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_append(ARRAY[1,2], NULL) → {1,2,NULL}
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 1 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .integer_literal = 2 };
+    const elements = try aa.alloc(*const ast.Expr, 2);
+    elements[0] = elem1;
+    elements[1] = elem2;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const null_elem = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ array_expr, &null_elem };
+    const fc = .{ .name = "array_append", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    try std.testing.expectEqual(@as(i64, 1), result.array[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), result.array[1].integer);
+    try std.testing.expect(result.array[2] == .null_value);
+}
+
+test "array_prepend with NULL element adds null_value at front" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // array_prepend(NULL, ARRAY[1,2]) → {NULL,1,2}
+    const elem1 = try aa.create(ast.Expr);
+    elem1.* = ast.Expr{ .integer_literal = 1 };
+    const elem2 = try aa.create(ast.Expr);
+    elem2.* = ast.Expr{ .integer_literal = 2 };
+    const elements = try aa.alloc(*const ast.Expr, 2);
+    elements[0] = elem1;
+    elements[1] = elem2;
+
+    const array_expr = try aa.create(ast.Expr);
+    array_expr.* = ast.Expr{ .array_constructor = elements };
+    const null_elem = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &null_elem, array_expr };
+    const fc = .{ .name = "array_prepend", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    try std.testing.expect(result.array[0] == .null_value);
+    try std.testing.expectEqual(@as(i64, 1), result.array[1].integer);
+    try std.testing.expectEqual(@as(i64, 2), result.array[2].integer);
+}
