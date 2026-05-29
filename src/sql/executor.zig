@@ -6207,10 +6207,20 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
         const null_str: ?[]const u8 = if (fc.args.len == 3) blk: {
             const nsv = try evalExpr(allocator, fc.args[2], row, catalog);
-            defer nsv.free(allocator);
-            if (nsv == .null_value) break :blk null;
-            break :blk if (nsv == .text) nsv.text else null;
+            if (nsv == .null_value) {
+                nsv.free(allocator);
+                break :blk null;
+            }
+            if (nsv != .text) {
+                nsv.free(allocator);
+                break :blk null;
+            }
+            // Dupe to avoid use-after-free: nsv is freed, but we need the text alive
+            const duped = try allocator.dupe(u8, nsv.text);
+            nsv.free(allocator);
+            break :blk duped;
         } else null;
+        defer if (null_str) |ns| allocator.free(ns);
 
         var buf = std.ArrayListUnmanaged(u8){};
         errdefer buf.deinit(allocator);
