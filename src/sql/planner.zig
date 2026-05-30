@@ -120,6 +120,18 @@ pub const AggFunc = enum {
     stddev_samp,
     stddev,
     every,
+    corr,
+    covar_pop,
+    covar_samp,
+    regr_slope,
+    regr_intercept,
+    regr_r2,
+    regr_count,
+    regr_avgx,
+    regr_avgy,
+    regr_sxx,
+    regr_syy,
+    regr_sxy,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -220,6 +232,7 @@ pub const PlanNode = union(enum) {
     pub const AggregateExpr = struct {
         func: AggFunc,
         arg: ?*const ast.Expr = null,
+        arg2: ?*const ast.Expr = null,
         alias: ?[]const u8 = null,
         distinct: bool = false,
         separator: ?*const ast.Expr = null,
@@ -750,9 +763,16 @@ pub const Planner = struct {
                 {
                     func = .count_star;
                 }
+                // For two-argument aggregates (regression functions), populate arg2
+                const is_two_arg_agg = func == .corr or func == .covar_pop or func == .covar_samp or
+                    func == .regr_slope or func == .regr_intercept or func == .regr_r2 or
+                    func == .regr_count or func == .regr_avgx or func == .regr_avgy or
+                    func == .regr_sxx or func == .regr_syy or func == .regr_sxy;
+
                 return .{
                     .func = func,
                     .arg = if (func == .count_star) null else if (fc.args.len > 0) fc.args[0] else null,
+                    .arg2 = if (is_two_arg_agg and fc.args.len > 1) fc.args[1] else null,
                     .alias = alias,
                     .distinct = fc.distinct,
                     .separator = if (func == .string_agg and fc.args.len > 1) fc.args[1] else null,
@@ -906,6 +926,18 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "stddev_samp")) return .stddev_samp;
     if (std.mem.eql(u8, lower, "stddev")) return .stddev;
     if (std.mem.eql(u8, lower, "every")) return .every;
+    if (std.mem.eql(u8, lower, "corr")) return .corr;
+    if (std.mem.eql(u8, lower, "covar_pop")) return .covar_pop;
+    if (std.mem.eql(u8, lower, "covar_samp")) return .covar_samp;
+    if (std.mem.eql(u8, lower, "regr_slope")) return .regr_slope;
+    if (std.mem.eql(u8, lower, "regr_intercept")) return .regr_intercept;
+    if (std.mem.eql(u8, lower, "regr_r2")) return .regr_r2;
+    if (std.mem.eql(u8, lower, "regr_count")) return .regr_count;
+    if (std.mem.eql(u8, lower, "regr_avgx")) return .regr_avgx;
+    if (std.mem.eql(u8, lower, "regr_avgy")) return .regr_avgy;
+    if (std.mem.eql(u8, lower, "regr_sxx")) return .regr_sxx;
+    if (std.mem.eql(u8, lower, "regr_syy")) return .regr_syy;
+    if (std.mem.eql(u8, lower, "regr_sxy")) return .regr_sxy;
     return null;
 }
 

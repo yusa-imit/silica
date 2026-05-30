@@ -6893,7 +6893,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -6929,6 +6929,18 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "stddev_samp")) return "stddev_samp";
     if (std.ascii.eqlIgnoreCase(fc.name, "stddev")) return "stddev";
     if (std.ascii.eqlIgnoreCase(fc.name, "every")) return "every";
+    if (std.ascii.eqlIgnoreCase(fc.name, "corr")) return "corr";
+    if (std.ascii.eqlIgnoreCase(fc.name, "covar_pop")) return "covar_pop";
+    if (std.ascii.eqlIgnoreCase(fc.name, "covar_samp")) return "covar_samp";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_slope")) return "regr_slope";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_intercept")) return "regr_intercept";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_r2")) return "regr_r2";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_count")) return "regr_count";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_avgx")) return "regr_avgx";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_avgy")) return "regr_avgy";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_sxx")) return "regr_sxx";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_syy")) return "regr_syy";
+    if (std.ascii.eqlIgnoreCase(fc.name, "regr_sxy")) return "regr_sxy";
     return fc.name;
 }
 
@@ -8816,6 +8828,103 @@ pub const AggregateOp = struct {
                 if (result) |b| return .{ .integer = if (b) 1 else 0 };
                 return .null_value;
             },
+            // ──────────────────────────────────────────────────────────────────────
+            // Regression aggregates: two-argument aggregates (Y, X)
+            // ──────────────────────────────────────────────────────────────────────
+            .corr, .covar_pop, .covar_samp, .regr_slope, .regr_intercept, .regr_r2, .regr_count, .regr_avgx, .regr_avgy, .regr_sxx, .regr_syy, .regr_sxy => {
+                // Two-pass algorithm for regression aggregates
+                // First pass: collect valid (Y, X) pairs and compute sums
+                var sum_x: f64 = 0;
+                var sum_y: f64 = 0;
+                var n: f64 = 0;
+                var y_values = std.ArrayListUnmanaged(f64){};
+                var x_values = std.ArrayListUnmanaged(f64){};
+                defer y_values.deinit(self.allocator);
+                defer x_values.deinit(self.allocator);
+
+                for (group) |*row| {
+                    if (agg.arg) |y_expr| {
+                        if (agg.arg2) |x_expr| {
+                            const y_val = evalExpr(self.allocator, y_expr, row, null) catch continue;
+                            defer y_val.free(self.allocator);
+                            const x_val = evalExpr(self.allocator, x_expr, row, null) catch continue;
+                            defer x_val.free(self.allocator);
+
+                            if (y_val.toReal()) |y| {
+                                if (x_val.toReal()) |x| {
+                                    y_values.append(self.allocator, y) catch return .null_value;
+                                    x_values.append(self.allocator, x) catch return .null_value;
+                                    sum_x += x;
+                                    sum_y += y;
+                                    n += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle regr_count specially (always returns integer, never NULL)
+                if (agg.func == .regr_count) {
+                    return .{ .integer = @as(i64, @intFromFloat(n)) };
+                }
+
+                // All other regression functions return NULL if n < 1
+                if (n < 1) return .null_value;
+
+                const n_f = n;
+                const mean_x = sum_x / n_f;
+                const mean_y = sum_y / n_f;
+
+                // Second pass: compute sums of squared deviations
+                var sxx: f64 = 0;
+                var syy: f64 = 0;
+                var sxy: f64 = 0;
+                for (x_values.items) |x| {
+                    const dx = x - mean_x;
+                    sxx += dx * dx;
+                }
+                for (y_values.items) |y| {
+                    const dy = y - mean_y;
+                    syy += dy * dy;
+                }
+                for (x_values.items, y_values.items) |x, y| {
+                    const dx = x - mean_x;
+                    const dy = y - mean_y;
+                    sxy += dx * dy;
+                }
+
+                return switch (agg.func) {
+                    .regr_avgx => .{ .real = mean_x },
+                    .regr_avgy => .{ .real = mean_y },
+                    .regr_sxx => .{ .real = sxx },
+                    .regr_syy => .{ .real = syy },
+                    .regr_sxy => .{ .real = sxy },
+                    .covar_pop => .{ .real = sxy / n_f },
+                    .covar_samp => {
+                        if (n < 2) return .null_value;
+                        return .{ .real = sxy / (n_f - 1) };
+                    },
+                    .corr => {
+                        if (n < 2 or sxx == 0 or syy == 0) return .null_value;
+                        return .{ .real = sxy / @sqrt(sxx * syy) };
+                    },
+                    .regr_r2 => {
+                        if (n < 2 or sxx == 0 or syy == 0) return .null_value;
+                        const r = sxy / @sqrt(sxx * syy);
+                        return .{ .real = r * r };
+                    },
+                    .regr_slope => {
+                        if (n < 2 or sxx == 0) return .null_value;
+                        return .{ .real = sxy / sxx };
+                    },
+                    .regr_intercept => {
+                        if (n < 2 or sxx == 0) return .null_value;
+                        const slope = sxy / sxx;
+                        return .{ .real = mean_y - slope * mean_x };
+                    },
+                    else => .null_value,
+                };
+            },
         }
     }
 
@@ -8895,6 +9004,18 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .stddev_samp => "stddev_samp",
         .stddev => "stddev",
         .every => "every",
+        .corr => "corr",
+        .covar_pop => "covar_pop",
+        .covar_samp => "covar_samp",
+        .regr_slope => "regr_slope",
+        .regr_intercept => "regr_intercept",
+        .regr_r2 => "regr_r2",
+        .regr_count => "regr_count",
+        .regr_avgx => "regr_avgx",
+        .regr_avgy => "regr_avgy",
+        .regr_sxx => "regr_sxx",
+        .regr_syy => "regr_syy",
+        .regr_sxy => "regr_sxy",
     };
 }
 
@@ -27704,4 +27825,1024 @@ test "typeof returns 'real' for float value" {
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     try std.testing.expectEqualStrings("real", result.text);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Regression aggregate functions: corr, covar_pop, covar_samp, regr_slope,
+// regr_intercept, regr_r2, regr_count, regr_avgx, regr_avgy, regr_sxx,
+// regr_syy, regr_sxy
+// ────────────────────────────────────────────────────────────────────────────
+
+test "corr calculates pearson correlation for perfect positive linear data" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .corr,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (2,2), (3,3)] -> perfect positive correlation = 1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "corr with less than 2 rows returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .corr,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "corr skips rows where either Y or X is NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .corr,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (NULL,2), (2,2), (3,NULL), (3,3)]
+    // Valid pairs: [(1,1), (2,2), (3,3)] -> corr = 1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_4 = [_]Value{ Value{ .real = 3.0 }, Value{ .null_value = {} } };
+    var row_values_5 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+    const row4 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_4,
+        .allocator = allocator,
+    };
+    const row5 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_5,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3, row4, row5 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "covar_pop calculates population covariance" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .covar_pop,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,3), (2,1), (3,2)]
+    // mean_y = 2, mean_x = 2
+    // covar_pop = ((1-2)(3-2) + (2-2)(1-2) + (3-2)(2-2)) / 3 = (-1 + 0 + 0) / 3 = -0.3333
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 3.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 1.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 2.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -0.3333), result.real, 1e-3);
+}
+
+test "covar_pop with empty rows returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .covar_pop,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var rows = [_]Row{};
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "covar_samp calculates sample covariance" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .covar_samp,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,3), (2,1), (3,2)]
+    // mean_y = 2, mean_x = 2
+    // covar_samp = ((1-2)(3-2) + (2-2)(1-2) + (3-2)(2-2)) / (3-1) = -1 / 2 = -0.5
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 3.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 1.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 2.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -0.5), result.real, 1e-6);
+}
+
+test "covar_samp with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .covar_samp,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_slope calculates linear regression slope" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_slope,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (2,2), (3,3)]
+    // slope = covar_samp(Y,X) / var_samp(X) = 1.0 / 1.0 = 1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "regr_slope with less than 2 rows returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_slope,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_slope when var_samp(X) is zero returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_slope,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,5), (2,5), (3,5)] - X is constant, var_samp(X) = 0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 5.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 5.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_intercept calculates y-intercept of regression line" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_intercept,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (2,2), (3,3)]
+    // mean_y = 2, slope = 1.0, mean_x = 2
+    // intercept = mean_y - slope * mean_x = 2 - 1.0 * 2 = 0.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-6);
+}
+
+test "regr_intercept with less than 2 rows returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_intercept,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_r2 calculates R-squared (coefficient of determination)" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_r2,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (2,2), (3,3)]
+    // corr = 1.0, r2 = 1.0^2 = 1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "regr_r2 when corr is NULL returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_r2,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_count returns count of non-NULL (Y,X) pairs" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_count,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (NULL,2), (2,2), (3,NULL), (3,3)]
+    // Valid pairs: 3
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_4 = [_]Value{ Value{ .real = 3.0 }, Value{ .null_value = {} } };
+    var row_values_5 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+    const row4 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_4,
+        .allocator = allocator,
+    };
+    const row5 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_5,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3, row4, row5 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+test "regr_count with no valid pairs returns 0" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_count,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(NULL,1), (2,NULL)]
+    // Valid pairs: 0
+    var row_values_1 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "regr_avgx returns average of X over non-NULL pairs" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_avgx,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (NULL,2), (2,2), (3,NULL), (3,3)]
+    // Valid pairs: [(1,1), (2,2), (3,3)], avg(X) = (1+2+3)/3 = 2.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_4 = [_]Value{ Value{ .real = 3.0 }, Value{ .null_value = {} } };
+    var row_values_5 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+    const row4 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_4,
+        .allocator = allocator,
+    };
+    const row5 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_5,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3, row4, row5 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-6);
+}
+
+test "regr_avgx with no valid pairs returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_avgx,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 1.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_avgy returns average of Y over non-NULL pairs" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_avgy,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (NULL,2), (2,2), (3,NULL), (3,3)]
+    // Valid pairs: [(1,1), (2,2), (3,3)], avg(Y) = (1+2+3)/3 = 2.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_4 = [_]Value{ Value{ .real = 3.0 }, Value{ .null_value = {} } };
+    var row_values_5 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+    const row4 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_4,
+        .allocator = allocator,
+    };
+    const row5 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_5,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3, row4, row5 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-6);
+}
+
+test "regr_avgy with no valid pairs returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_avgy,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_sxx calculates sum of squared X deviations" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_sxx,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (2,2), (3,3)]
+    // mean_x = 2, sxx = (1-2)^2 + (2-2)^2 + (3-2)^2 = 1 + 0 + 1 = 2.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-6);
+}
+
+test "regr_sxx with no valid pairs returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_sxx,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} }, Value{ .real = 1.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_syy calculates sum of squared Y deviations" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_syy,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,1), (2,2), (3,3)]
+    // mean_y = 2, syy = (1-2)^2 + (2-2)^2 + (3-2)^2 = 1 + 0 + 1 = 2.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-6);
+}
+
+test "regr_syy with no valid pairs returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_syy,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "regr_sxy calculates sum of cross products of deviations" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_sxy,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    // Data: [(1,3), (2,1), (3,2)]
+    // mean_y = 2, mean_x = 2
+    // sxy = (1-2)(3-2) + (2-2)(1-2) + (3-2)(2-2) = (-1)(1) + (0)(-1) + (1)(0) = -1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 }, Value{ .real = 3.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 }, Value{ .real = 1.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 }, Value{ .real = 2.0 } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, -1.0), result.real, 1e-6);
+}
+
+test "regr_sxy with no valid pairs returns NULL" {
+    const allocator = std.testing.allocator;
+    const y_ref = ast.Expr{ .column_ref = .{ .name = "y" } };
+    const x_ref = ast.Expr{ .column_ref = .{ .name = "x" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .regr_sxy,
+        .arg = &y_ref,
+        .arg2 = &x_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} }, Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{ "y", "x" },
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
 }
