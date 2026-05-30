@@ -27470,3 +27470,238 @@ test "stddev with single row returns NULL" {
 
     try std.testing.expect(result == .null_value);
 }
+
+// ─ coalesce / nullif / greatest / least / typeof Tests ──────────────────────
+
+test "coalesce returns first non-NULL value" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const int_expr = ast.Expr{ .integer_literal = 42 };
+    const int2_expr = ast.Expr{ .integer_literal = 99 };
+    const args = [_]*const ast.Expr{ &null_expr, &int_expr, &int2_expr };
+    const fc = .{ .name = "coalesce", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 42), result.integer);
+}
+
+test "coalesce with all NULL values returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const n1 = ast.Expr{ .null_literal = {} };
+    const n2 = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &n1, &n2 };
+    const fc = .{ .name = "coalesce", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "coalesce with first value non-NULL skips rest" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const int_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &str_expr, &int_expr };
+    const fc = .{ .name = "coalesce", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "nullif returns NULL when values are equal" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const val1 = ast.Expr{ .integer_literal = 5 };
+    const val2 = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &val1, &val2 };
+    const fc = .{ .name = "nullif", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "nullif returns first value when values differ" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const val1 = ast.Expr{ .integer_literal = 5 };
+    const val2 = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &val1, &val2 };
+    const fc = .{ .name = "nullif", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "nullif with string equality returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const val1 = ast.Expr{ .string_literal = "foo" };
+    const val2 = ast.Expr{ .string_literal = "foo" };
+    const args = [_]*const ast.Expr{ &val1, &val2 };
+    const fc = .{ .name = "nullif", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "greatest returns maximum of integer arguments" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const a = ast.Expr{ .integer_literal = 3 };
+    const b = ast.Expr{ .integer_literal = 7 };
+    const c = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &a, &b, &c };
+    const fc = .{ .name = "greatest", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 7), result.integer);
+}
+
+test "greatest skips NULL values" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const n = ast.Expr{ .null_literal = {} };
+    const a = ast.Expr{ .integer_literal = 5 };
+    const args = [_]*const ast.Expr{ &n, &a };
+    const fc = .{ .name = "greatest", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "greatest with all NULL values returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const n1 = ast.Expr{ .null_literal = {} };
+    const n2 = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &n1, &n2 };
+    const fc = .{ .name = "greatest", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "least returns minimum of integer arguments" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const a = ast.Expr{ .integer_literal = 3 };
+    const b = ast.Expr{ .integer_literal = 7 };
+    const c = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &a, &b, &c };
+    const fc = .{ .name = "least", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "least skips NULL values" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const a = ast.Expr{ .integer_literal = 5 };
+    const n = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &a, &n };
+    const fc = .{ .name = "least", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 5), result.integer);
+}
+
+test "least with all NULL values returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const n = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &n };
+    const fc = .{ .name = "least", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "typeof returns 'integer' for integer value" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const int_expr = ast.Expr{ .integer_literal = 42 };
+    const args = [_]*const ast.Expr{ &int_expr };
+    const fc = .{ .name = "typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("integer", result.text);
+}
+
+test "typeof returns 'text' for string value" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr };
+    const fc = .{ .name = "typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("text", result.text);
+}
+
+test "typeof returns 'null' for NULL value" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const null_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &null_expr };
+    const fc = .{ .name = "typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("null", result.text);
+}
+
+test "typeof returns 'real' for float value" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const float_expr = ast.Expr{ .float_literal = 3.14 };
+    const args = [_]*const ast.Expr{ &float_expr };
+    const fc = .{ .name = "typeof", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("real", result.text);
+}
