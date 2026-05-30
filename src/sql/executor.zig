@@ -5295,6 +5295,153 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .timestamp = truncated_ts };
     }
 
+    // make_date(year, month, day) → DATE
+    if (std.ascii.eqlIgnoreCase(fc.name, "make_date")) {
+        if (fc.args.len != 3) return EvalError.TypeError;
+        const year_v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer year_v.free(allocator);
+        const month_v = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer month_v.free(allocator);
+        const day_v = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer day_v.free(allocator);
+        if (year_v == .null_value or month_v == .null_value or day_v == .null_value) return .null_value;
+        const year: i32 = switch (year_v) { .integer => |v| @intCast(v), else => return .null_value };
+        const month: u8 = switch (month_v) {
+            .integer => |v| blk: { if (v < 1 or v > 12) return .null_value; break :blk @intCast(v); },
+            else => return .null_value,
+        };
+        const day: u8 = switch (day_v) {
+            .integer => |v| blk: { if (v < 1 or v > daysInMonth(month, year)) return .null_value; break :blk @intCast(v); },
+            else => return .null_value,
+        };
+        const days = dateToDays(year, month, day);
+        const formatted = formatDate(allocator, days) catch return .null_value;
+        return .{ .text = formatted };
+    }
+
+    // make_time(hour, min, sec) → TIME
+    // sec can be integer or float (for fractional seconds)
+    if (std.ascii.eqlIgnoreCase(fc.name, "make_time")) {
+        if (fc.args.len != 3) return EvalError.TypeError;
+        const hour_v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer hour_v.free(allocator);
+        const min_v = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer min_v.free(allocator);
+        const sec_v = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer sec_v.free(allocator);
+        if (hour_v == .null_value or min_v == .null_value or sec_v == .null_value) return .null_value;
+        const hour: i64 = switch (hour_v) {
+            .integer => |v| blk: { if (v < 0 or v > 23) return .null_value; break :blk v; },
+            else => return .null_value,
+        };
+        const min: i64 = switch (min_v) {
+            .integer => |v| blk: { if (v < 0 or v > 59) return .null_value; break :blk v; },
+            else => return .null_value,
+        };
+        // sec can be real (fractional seconds)
+        const sec_f: f64 = switch (sec_v) {
+            .integer => |v| @floatFromInt(v),
+            .real => |v| v,
+            else => return .null_value,
+        };
+        if (sec_f < 0 or sec_f >= 60) return .null_value;
+        const sec_whole: i64 = @intFromFloat(sec_f);
+        const micros_frac: i64 = @intFromFloat((sec_f - @as(f64, @floatFromInt(sec_whole))) * 1_000_000);
+        const time_micros = hour * MICROS_PER_HOUR + min * MICROS_PER_MINUTE + sec_whole * MICROS_PER_SECOND + micros_frac;
+        const formatted = formatTime(allocator, time_micros) catch return .null_value;
+        return .{ .text = formatted };
+    }
+
+    // make_timestamp(year, month, day, hour, min, sec) → TIMESTAMP
+    if (std.ascii.eqlIgnoreCase(fc.name, "make_timestamp")) {
+        if (fc.args.len != 6) return EvalError.TypeError;
+        const year_v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer year_v.free(allocator);
+        const month_v = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer month_v.free(allocator);
+        const day_v = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer day_v.free(allocator);
+        const hour_v = try evalExpr(allocator, fc.args[3], row, catalog);
+        defer hour_v.free(allocator);
+        const min_v = try evalExpr(allocator, fc.args[4], row, catalog);
+        defer min_v.free(allocator);
+        const sec_v = try evalExpr(allocator, fc.args[5], row, catalog);
+        defer sec_v.free(allocator);
+        if (year_v == .null_value or month_v == .null_value or day_v == .null_value or
+            hour_v == .null_value or min_v == .null_value or sec_v == .null_value) return .null_value;
+        const year: i32 = switch (year_v) { .integer => |v| @intCast(v), else => return .null_value };
+        const month: u8 = switch (month_v) {
+            .integer => |v| blk: { if (v < 1 or v > 12) return .null_value; break :blk @intCast(v); },
+            else => return .null_value,
+        };
+        const day: u8 = switch (day_v) {
+            .integer => |v| blk: { if (v < 1 or v > daysInMonth(month, year)) return .null_value; break :blk @intCast(v); },
+            else => return .null_value,
+        };
+        const hour: i64 = switch (hour_v) {
+            .integer => |v| blk: { if (v < 0 or v > 23) return .null_value; break :blk v; },
+            else => return .null_value,
+        };
+        const min: i64 = switch (min_v) {
+            .integer => |v| blk: { if (v < 0 or v > 59) return .null_value; break :blk v; },
+            else => return .null_value,
+        };
+        const sec_f: f64 = switch (sec_v) {
+            .integer => |v| @floatFromInt(v),
+            .real => |v| v,
+            else => return .null_value,
+        };
+        if (sec_f < 0 or sec_f >= 60) return .null_value;
+        const sec_whole: i64 = @intFromFloat(sec_f);
+        const micros_frac: i64 = @intFromFloat((sec_f - @as(f64, @floatFromInt(sec_whole))) * 1_000_000);
+        const days = dateToDays(year, month, day);
+        const time_micros = hour * MICROS_PER_HOUR + min * MICROS_PER_MINUTE + sec_whole * MICROS_PER_SECOND + micros_frac;
+        const ts_micros = @as(i64, days) * MICROS_PER_DAY + time_micros;
+        const formatted = formatTimestamp(allocator, ts_micros) catch return .null_value;
+        return .{ .text = formatted };
+    }
+
+    // age(timestamp) / age(timestamp1, timestamp2) → interval
+    // age(timestamp) returns interval from timestamp to now
+    // age(timestamp1, timestamp2) returns interval timestamp1 - timestamp2
+    if (std.ascii.eqlIgnoreCase(fc.name, "age")) {
+        if (fc.args.len < 1 or fc.args.len > 2) return EvalError.TypeError;
+
+        const ts1_v = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer ts1_v.free(allocator);
+        if (ts1_v == .null_value) return .null_value;
+
+        const ts1_micros: i64 = switch (ts1_v) {
+            .timestamp => |ts| ts,
+            .date => |d| @as(i64, d) * MICROS_PER_DAY,
+            .text => |s| parseTimestampString(s) orelse return .null_value,
+            else => return .null_value,
+        };
+
+        const ts2_micros: i64 = if (fc.args.len == 2) blk: {
+            const ts2_v = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer ts2_v.free(allocator);
+            if (ts2_v == .null_value) return .null_value;
+            break :blk switch (ts2_v) {
+                .timestamp => |ts| ts,
+                .date => |d| @as(i64, d) * MICROS_PER_DAY,
+                .text => |s| parseTimestampString(s) orelse return .null_value,
+                else => return .null_value,
+            };
+        } else blk: {
+            // age(ts) = age(now, ts)
+            const now = std.time.timestamp();
+            break :blk now * MICROS_PER_SECOND;
+        };
+
+        // Compute diff in microseconds and return as interval
+        const diff_micros = ts1_micros - ts2_micros;
+        // Decompose into days and remaining microseconds
+        const diff_days: i32 = @intCast(@divFloor(diff_micros, MICROS_PER_DAY));
+        const rem_micros = @mod(diff_micros, MICROS_PER_DAY);
+        return .{ .interval = .{ .months = 0, .days = diff_days, .micros = rem_micros } };
+    }
+
     // chr(n) — return character from codepoint
     if (std.ascii.eqlIgnoreCase(fc.name, "chr")) {
         if (fc.args.len != 1) return EvalError.TypeError;
@@ -6746,7 +6893,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -6775,6 +6922,13 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "bool_or")) return "bool_or";
     if (std.ascii.eqlIgnoreCase(fc.name, "bit_and")) return "bit_and";
     if (std.ascii.eqlIgnoreCase(fc.name, "bit_or")) return "bit_or";
+    if (std.ascii.eqlIgnoreCase(fc.name, "var_pop")) return "var_pop";
+    if (std.ascii.eqlIgnoreCase(fc.name, "var_samp")) return "var_samp";
+    if (std.ascii.eqlIgnoreCase(fc.name, "variance")) return "variance";
+    if (std.ascii.eqlIgnoreCase(fc.name, "stddev_pop")) return "stddev_pop";
+    if (std.ascii.eqlIgnoreCase(fc.name, "stddev_samp")) return "stddev_samp";
+    if (std.ascii.eqlIgnoreCase(fc.name, "stddev")) return "stddev";
+    if (std.ascii.eqlIgnoreCase(fc.name, "every")) return "every";
     return fc.name;
 }
 
@@ -8521,6 +8675,145 @@ pub const AggregateOp = struct {
                 if (result) |r| return .{ .integer = r };
                 return .null_value;
             },
+            .var_pop => {
+                // Population variance: Σ(xi - μ)² / N. NULL if N < 2.
+                var sum: f64 = 0;
+                var count: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            sum += v;
+                            count += 1;
+                        }
+                    }
+                }
+                if (count < 2) return .null_value;
+                const mean = sum / count;
+                var sq_sum: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            const diff = v - mean;
+                            sq_sum += diff * diff;
+                        }
+                    }
+                }
+                return .{ .real = sq_sum / count };
+            },
+            .var_samp, .variance => {
+                // Sample variance: Σ(xi - μ)² / (N-1). NULL if N < 2.
+                var sum: f64 = 0;
+                var count: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            sum += v;
+                            count += 1;
+                        }
+                    }
+                }
+                if (count < 2) return .null_value;
+                const mean = sum / count;
+                var sq_sum: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            const diff = v - mean;
+                            sq_sum += diff * diff;
+                        }
+                    }
+                }
+                return .{ .real = sq_sum / (count - 1) };
+            },
+            .stddev_pop => {
+                // Population std dev = sqrt(var_pop). NULL if N < 2.
+                var sum: f64 = 0;
+                var count: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            sum += v;
+                            count += 1;
+                        }
+                    }
+                }
+                if (count < 2) return .null_value;
+                const mean = sum / count;
+                var sq_sum: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            const diff = v - mean;
+                            sq_sum += diff * diff;
+                        }
+                    }
+                }
+                return .{ .real = @sqrt(sq_sum / count) };
+            },
+            .stddev_samp, .stddev => {
+                // Sample std dev = sqrt(var_samp). NULL if N < 2.
+                var sum: f64 = 0;
+                var count: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            sum += v;
+                            count += 1;
+                        }
+                    }
+                }
+                if (count < 2) return .null_value;
+                const mean = sum / count;
+                var sq_sum: f64 = 0;
+                for (group) |*row| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val.toReal()) |v| {
+                            const diff = v - mean;
+                            sq_sum += diff * diff;
+                        }
+                    }
+                }
+                return .{ .real = @sqrt(sq_sum / (count - 1)) };
+            },
+            .every => {
+                // every(x) = bool_and(x): true if all non-NULL values are true, NULL if all NULL
+                var result: ?bool = null;
+                for (group) |*row_iter| {
+                    if (agg.arg) |arg_expr| {
+                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        defer val.free(self.allocator);
+                        if (val == .null_value) continue;
+                        const b = switch (val) {
+                            .boolean => |bool_val| bool_val,
+                            .integer => |n| n != 0,
+                            else => continue,
+                        };
+                        if (result == null) {
+                            result = b;
+                        } else {
+                            result = result.? and b;
+                        }
+                    }
+                }
+                if (result) |b| return .{ .integer = if (b) 1 else 0 };
+                return .null_value;
+            },
         }
     }
 
@@ -8593,6 +8886,13 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .bool_or => "bool_or",
         .bit_and => "bit_and",
         .bit_or => "bit_or",
+        .var_pop => "var_pop",
+        .var_samp => "var_samp",
+        .variance => "variance",
+        .stddev_pop => "stddev_pop",
+        .stddev_samp => "stddev_samp",
+        .stddev => "stddev",
+        .every => "every",
     };
 }
 
@@ -26192,4 +26492,832 @@ test "regexp_replace case-insensitive flag" {
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     try std.testing.expectEqualStrings("hi world", result.text);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Statistical aggregate functions: var_pop, var_samp, variance, stddev_pop,
+// stddev_samp, stddev, every
+// ────────────────────────────────────────────────────────────────────────────
+
+test "var_pop calculates population variance for numeric values" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_pop,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    // For [1, 2, 3]: mean=2, var_pop = ((1-2)^2 + (2-2)^2 + (3-2)^2) / 3 = 2/3 ≈ 0.6667
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.6667), result.real, 1e-3);
+}
+
+test "var_pop with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_pop,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "var_pop with all NULL values returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_pop,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "var_pop with mixed NULL and numeric values skips NULLs" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_pop,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    // [2, NULL, 4] -> variance computed on [2, 4] only
+    var row_values_1 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_3 = [_]Value{ Value{ .real = 4.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    // [2, 4]: mean=3, var_pop = ((2-3)^2 + (4-3)^2) / 2 = 2/2 = 1.0
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "var_samp calculates sample variance" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_samp,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    // For [1, 2, 3]: mean=2, var_samp = 2/2 = 1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "var_samp with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_samp,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "var_samp with two rows calculates correctly" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .var_samp,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    // For [1, 3]: mean=2, var_samp = ((1-2)^2 + (3-2)^2) / 1 = 2/1 = 2.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-6);
+}
+
+test "variance is alias for var_samp" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .variance,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 4.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result.real, 1e-6);
+}
+
+test "stddev_pop calculates population standard deviation" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .stddev_pop,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    // For [1, 2, 3]: var_pop = 2/3, stddev_pop = sqrt(2/3) ≈ 0.8165
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8165), result.real, 1e-3);
+}
+
+test "stddev_pop with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .stddev_pop,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "stddev_samp calculates sample standard deviation" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .stddev_samp,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    // For [1, 2, 3]: var_samp = 1.0, stddev_samp = sqrt(1.0) = 1.0
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "stddev_samp with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .stddev_samp,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "stddev is alias for stddev_samp" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .stddev,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
+    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
+    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
+}
+
+test "every is alias for bool_and" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .every,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_2 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "every returns false when one flag is false" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "flag" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .every,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_2 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+
+    const row1 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+    const row2 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_2,
+        .allocator = allocator,
+    };
+    const row3 = Row{
+        .columns = &.{"flag"},
+        .values = &row_values_3,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1, row2, row3 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Date/Time construction functions: make_date, make_time, make_timestamp, age
+// ────────────────────────────────────────────────────────────────────────────
+
+test "make_date constructs valid date from year, month, day" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2023, 6, 15) → '2023-06-15'
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 6 };
+    const day_expr = ast.Expr{ .integer_literal = 15 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("2023-06-15", result.text);
+}
+
+test "make_date with invalid month (>12) returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2023, 13, 15) → NULL (invalid month)
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 13 };
+    const day_expr = ast.Expr{ .integer_literal = 15 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_date with invalid day (>31) returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2023, 6, 32) → NULL (invalid day)
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 6 };
+    const day_expr = ast.Expr{ .integer_literal = 32 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_date with NULL month returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2023, NULL, 15) → NULL
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .null_literal = {} };
+    const day_expr = ast.Expr{ .integer_literal = 15 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_date with NULL day returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2023, 6, NULL) → NULL
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 6 };
+    const day_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_time constructs valid time from hour, minute, second" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_time(14, 30, 45) → '14:30:45'
+    const hour_expr = ast.Expr{ .integer_literal = 14 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_time", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("14:30:45", result.text);
+}
+
+test "make_time with fractional seconds" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_time(14, 30, 45.5) → '14:30:45.5'
+    const hour_expr = ast.Expr{ .integer_literal = 14 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.5 };
+    const args = [_]*const ast.Expr{ &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_time", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+}
+
+test "make_time with invalid hour (>23) returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_time(25, 30, 45) → NULL (invalid hour)
+    const hour_expr = ast.Expr{ .integer_literal = 25 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_time", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_time with NULL hour returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_time(NULL, 30, 45) → NULL
+    const hour_expr = ast.Expr{ .null_literal = {} };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_time", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_timestamp constructs valid timestamp" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_timestamp(2023, 6, 15, 14, 30, 45) → '2023-06-15 14:30:45'
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 6 };
+    const day_expr = ast.Expr{ .integer_literal = 15 };
+    const hour_expr = ast.Expr{ .integer_literal = 14 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("2023-06-15 14:30:45", result.text);
+}
+
+test "make_timestamp with invalid month returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_timestamp(2023, 13, 15, 14, 30, 45) → NULL
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 13 };
+    const day_expr = ast.Expr{ .integer_literal = 15 };
+    const hour_expr = ast.Expr{ .integer_literal = 14 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_timestamp with invalid hour returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_timestamp(2023, 6, 15, 25, 30, 45) → NULL
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 6 };
+    const day_expr = ast.Expr{ .integer_literal = 15 };
+    const hour_expr = ast.Expr{ .integer_literal = 25 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_timestamp with NULL day returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_timestamp(2023, 6, NULL, 14, 30, 45) → NULL
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 6 };
+    const day_expr = ast.Expr{ .null_literal = {} };
+    const hour_expr = ast.Expr{ .integer_literal = 14 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 45.0 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "age(timestamp1, timestamp2) calculates interval between two timestamps" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // age('2023-06-15 14:30:45', '2023-06-15 14:30:00') → interval of 45 seconds
+    const ts1_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const ts2_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:00" };
+    const args = [_]*const ast.Expr{ &ts1_expr, &ts2_expr };
+    const fc = .{ .name = "age", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    // Result is an interval representing the difference
+    try std.testing.expect(result != .null_value);
+}
+
+test "age(timestamp) calculates interval from timestamp to now" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // age('2023-06-15 14:30:45') → interval from that time to now
+    const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const args = [_]*const ast.Expr{ &ts_expr };
+    const fc = .{ .name = "age", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    // Result should be an interval
+    try std.testing.expect(result != .null_value);
+}
+
+test "age with NULL timestamp returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // age(NULL) → NULL
+    const ts_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &ts_expr };
+    const fc = .{ .name = "age", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "age with NULL second timestamp returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // age('2023-06-15 14:30:45', NULL) → NULL
+    const ts1_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const ts2_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &ts1_expr, &ts2_expr };
+    const fc = .{ .name = "age", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
 }

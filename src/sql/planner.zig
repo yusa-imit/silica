@@ -113,6 +113,13 @@ pub const AggFunc = enum {
     bool_or,
     bit_and,
     bit_or,
+    var_pop,
+    var_samp,
+    variance,
+    stddev_pop,
+    stddev_samp,
+    stddev,
+    every,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -892,6 +899,13 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "bool_or")) return .bool_or;
     if (std.mem.eql(u8, lower, "bit_and")) return .bit_and;
     if (std.mem.eql(u8, lower, "bit_or")) return .bit_or;
+    if (std.mem.eql(u8, lower, "var_pop")) return .var_pop;
+    if (std.mem.eql(u8, lower, "var_samp")) return .var_samp;
+    if (std.mem.eql(u8, lower, "variance")) return .variance;
+    if (std.mem.eql(u8, lower, "stddev_pop")) return .stddev_pop;
+    if (std.mem.eql(u8, lower, "stddev_samp")) return .stddev_samp;
+    if (std.mem.eql(u8, lower, "stddev")) return .stddev;
+    if (std.mem.eql(u8, lower, "every")) return .every;
     return null;
 }
 
