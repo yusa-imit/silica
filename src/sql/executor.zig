@@ -28,6 +28,7 @@ const page_mod = @import("../storage/page.zig");
 
 const mvcc_mod = @import("../tx/mvcc.zig");
 const lock_mod = @import("../tx/lock.zig");
+const regex_mod = @import("../util/regex.zig");
 
 const BTree = btree_mod.BTree;
 const HashIndex = hash_index_mod.HashIndex;
@@ -6615,6 +6616,129 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
         const bucket = @as(i64, @intFromFloat(@floor((op - lo) / (hi - lo) * @as(f64, @floatFromInt(cnt))))) + 1;
         return Value{ .integer = bucket };
+    }
+
+    // ─ regexp_like ─
+    if (std.ascii.eqlIgnoreCase(fc.name, "regexp_like")) {
+        if (fc.args.len < 2 or fc.args.len > 3) return EvalError.TypeError;
+
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer pat_val.free(allocator);
+
+        const str = switch (str_val) { .text => |t| t, else => return .null_value };
+        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+
+        var flags = regex_mod.Flags{};
+        if (fc.args.len == 3) {
+            const flags_val = try evalExpr(allocator, fc.args[2], row, catalog);
+            defer flags_val.free(allocator);
+            if (flags_val == .text) {
+                for (flags_val.text) |c| {
+                    if (c == 'i') flags.ignore_case = true;
+                    if (c == 's') flags.dot_all = true;
+                }
+            }
+        }
+
+        var rx = regex_mod.Regex.compile(allocator, pat) catch return .null_value;
+        defer rx.deinit(allocator);
+
+        const m = rx.find(allocator, str, flags) catch return .null_value;
+        return Value{ .boolean = m != null };
+    }
+
+    // ─ regexp_match ─
+    if (std.ascii.eqlIgnoreCase(fc.name, "regexp_match")) {
+        if (fc.args.len < 2 or fc.args.len > 3) return EvalError.TypeError;
+
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer pat_val.free(allocator);
+
+        const str = switch (str_val) { .text => |t| t, else => return .null_value };
+        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+
+        var flags = regex_mod.Flags{};
+        if (fc.args.len == 3) {
+            const flags_val = try evalExpr(allocator, fc.args[2], row, catalog);
+            defer flags_val.free(allocator);
+            if (flags_val == .text) {
+                for (flags_val.text) |c| {
+                    if (c == 'i') flags.ignore_case = true;
+                    if (c == 's') flags.dot_all = true;
+                }
+            }
+        }
+
+        var rx = regex_mod.Regex.compile(allocator, pat) catch return .null_value;
+        defer rx.deinit(allocator);
+
+        const m = rx.find(allocator, str, flags) catch return .null_value;
+        if (m == null) return .null_value;
+        const match = m.?;
+
+        if (rx.n_groups == 0) {
+            // No capture groups: return array with whole match
+            const whole = allocator.dupe(u8, str[match.start..match.end]) catch return EvalError.OutOfMemory;
+            const elems = allocator.alloc(Value, 1) catch {
+                allocator.free(whole);
+                return EvalError.OutOfMemory;
+            };
+            elems[0] = Value{ .text = whole };
+            return Value{ .array = elems };
+        } else {
+            // Has capture groups: return array of group texts
+            const elems = allocator.alloc(Value, rx.n_groups) catch return EvalError.OutOfMemory;
+            errdefer allocator.free(elems);
+            var i: u32 = 0;
+            while (i < rx.n_groups) : (i += 1) {
+                if (match.groupText(i + 1, str)) |gt| {
+                    elems[i] = Value{ .text = allocator.dupe(u8, gt) catch return EvalError.OutOfMemory };
+                } else {
+                    elems[i] = .null_value;
+                }
+            }
+            return Value{ .array = elems };
+        }
+    }
+
+    // ─ regexp_replace ─
+    if (std.ascii.eqlIgnoreCase(fc.name, "regexp_replace")) {
+        if (fc.args.len < 3 or fc.args.len > 4) return EvalError.TypeError;
+
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer pat_val.free(allocator);
+        const repl_val = try evalExpr(allocator, fc.args[2], row, catalog);
+        defer repl_val.free(allocator);
+
+        const str = switch (str_val) { .text => |t| t, else => return .null_value };
+        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+        const repl = switch (repl_val) { .text => |t| t, else => return .null_value };
+
+        var flags = regex_mod.Flags{};
+        var global = false;
+        if (fc.args.len == 4) {
+            const flags_val = try evalExpr(allocator, fc.args[3], row, catalog);
+            defer flags_val.free(allocator);
+            if (flags_val == .text) {
+                for (flags_val.text) |c| {
+                    if (c == 'i') flags.ignore_case = true;
+                    if (c == 's') flags.dot_all = true;
+                    if (c == 'g') global = true;
+                }
+            }
+        }
+
+        var rx = regex_mod.Regex.compile(allocator, pat) catch return .null_value;
+        defer rx.deinit(allocator);
+
+        const result = rx.replace(allocator, str, repl, global, flags) catch return .null_value;
+        return Value{ .text = result };
     }
 
     return EvalError.UnsupportedExpression;
@@ -25698,4 +25822,374 @@ test "array_replace replaces NULL elements with value" {
     try std.testing.expectEqual(@as(i64, 1), result.array[0].integer);
     try std.testing.expectEqual(@as(i64, 0), result.array[1].integer);
     try std.testing.expectEqual(@as(i64, 1), result.array[2].integer);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// REGEXP FUNCTION TESTS (Red Phase TDD)
+// ────────────────────────────────────────────────────────────────────────────
+
+// ─ regexp_like Tests
+
+test "regexp_like matches substring" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('hello world', 'world') → true
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "world" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "regexp_like does not match" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('hello', 'xyz') → false
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "xyz" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "regexp_like with . wildcard" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('cat', 'c.t') → true (. matches any single char)
+    const str_expr = ast.Expr{ .string_literal = "cat" };
+    const pat_expr = ast.Expr{ .string_literal = "c.t" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "regexp_like with ^ anchor" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('hello', '^he') → true
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "^he" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "regexp_like with $ anchor" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('hello', 'lo$') → true
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "lo$" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "regexp_like with NULL string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like(NULL, 'pattern') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const pat_expr = ast.Expr{ .string_literal = "pattern" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_like with NULL pattern" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('string', NULL) → NULL
+    const str_expr = ast.Expr{ .string_literal = "string" };
+    const pat_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_like case-insensitive flag" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_like('HELLO', 'hello', 'i') → true (case-insensitive)
+    const str_expr = ast.Expr{ .string_literal = "HELLO" };
+    const pat_expr = ast.Expr{ .string_literal = "hello" };
+    const flags_expr = ast.Expr{ .string_literal = "i" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &flags_expr };
+    const fc = .{ .name = "regexp_like", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+// ─ regexp_match Tests
+
+test "regexp_match simple match with whole string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match('hello', 'hello') → ['hello'] (whole match as single element array)
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expectEqualStrings("hello", result.array[0].text);
+}
+
+test "regexp_match single capture group" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match('hello world', '(world)') → ['world']
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "(world)" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expectEqualStrings("world", result.array[0].text);
+}
+
+test "regexp_match no match returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match('hello', 'xyz') → NULL
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "xyz" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_match with NULL string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match(NULL, 'pattern') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const pat_expr = ast.Expr{ .string_literal = "pattern" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_match with NULL pattern" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match('string', NULL) → NULL
+    const str_expr = ast.Expr{ .string_literal = "string" };
+    const pat_expr = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_match multiple capture groups" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match('hello world', '([a-z]+) ([a-z]+)') → ['hello', 'world']
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "([a-z]+) ([a-z]+)" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expectEqualStrings("hello", result.array[0].text);
+    try std.testing.expectEqualStrings("world", result.array[1].text);
+}
+
+test "regexp_match first match only" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_match('cat bat rat', '(\\w+)') → ['cat'] (first match only)
+    const str_expr = ast.Expr{ .string_literal = "cat bat rat" };
+    const pat_expr = ast.Expr{ .string_literal = "(\\w+)" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_match", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expectEqualStrings("cat", result.array[0].text);
+}
+
+// ─ regexp_replace Tests
+
+test "regexp_replace simple replace first" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace('hello world', 'world', 'there') → 'hello there'
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "world" };
+    const repl_expr = ast.Expr{ .string_literal = "there" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello there", result.text);
+}
+
+test "regexp_replace with empty replacement" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace('hello world', 'world', '') → 'hello '
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "world" };
+    const repl_expr = ast.Expr{ .string_literal = "" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello ", result.text);
+}
+
+test "regexp_replace all occurrences with g flag" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace('cat bat cat', 'cat', 'dog', 'g') → 'dog bat dog'
+    const str_expr = ast.Expr{ .string_literal = "cat bat cat" };
+    const pat_expr = ast.Expr{ .string_literal = "cat" };
+    const repl_expr = ast.Expr{ .string_literal = "dog" };
+    const flags_expr = ast.Expr{ .string_literal = "g" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr, &flags_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("dog bat dog", result.text);
+}
+
+test "regexp_replace no match returns original" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace('hello', 'xyz', 'abc') → 'hello' (no match)
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "xyz" };
+    const repl_expr = ast.Expr{ .string_literal = "abc" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+test "regexp_replace with NULL string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace(NULL, 'pattern', 'repl') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const pat_expr = ast.Expr{ .string_literal = "pattern" };
+    const repl_expr = ast.Expr{ .string_literal = "repl" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_replace with NULL pattern" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace('string', NULL, 'repl') → NULL
+    const str_expr = ast.Expr{ .string_literal = "string" };
+    const pat_expr = ast.Expr{ .null_literal = {} };
+    const repl_expr = ast.Expr{ .string_literal = "repl" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_replace case-insensitive flag" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_replace('HELLO world', 'hello', 'hi', 'i') → 'hi world'
+    const str_expr = ast.Expr{ .string_literal = "HELLO world" };
+    const pat_expr = ast.Expr{ .string_literal = "hello" };
+    const repl_expr = ast.Expr{ .string_literal = "hi" };
+    const flags_expr = ast.Expr{ .string_literal = "i" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &repl_expr, &flags_expr };
+    const fc = .{ .name = "regexp_replace", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hi world", result.text);
 }
