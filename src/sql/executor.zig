@@ -27321,3 +27321,146 @@ test "age with NULL second timestamp returns NULL" {
     defer result.free(allocator);
     try std.testing.expect(result == .null_value);
 }
+
+test "age(timestamp1, timestamp2) validates interval fields" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // age('2023-06-15 14:30:45', '2023-06-15 14:30:00') → 45 seconds
+    const ts1_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
+    const ts2_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:00" };
+    const args = [_]*const ast.Expr{ &ts1_expr, &ts2_expr };
+    const fc = .{ .name = "age", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .interval);
+    try std.testing.expectEqual(@as(i32, 0), result.interval.months);
+    try std.testing.expectEqual(@as(i32, 0), result.interval.days);
+    try std.testing.expectEqual(@as(i64, 45_000_000), result.interval.micros); // 45 seconds × 1,000,000
+}
+
+test "make_date with leap year Feb 29 returns valid date" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2024, 2, 29) → '2024-02-29' (2024 is a leap year)
+    const year_expr = ast.Expr{ .integer_literal = 2024 };
+    const month_expr = ast.Expr{ .integer_literal = 2 };
+    const day_expr = ast.Expr{ .integer_literal = 29 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("2024-02-29", result.text);
+}
+
+test "make_date with non-leap year Feb 29 returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_date(2023, 2, 29) → NULL (2023 is not a leap year)
+    const year_expr = ast.Expr{ .integer_literal = 2023 };
+    const month_expr = ast.Expr{ .integer_literal = 2 };
+    const day_expr = ast.Expr{ .integer_literal = 29 };
+    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr };
+    const fc = .{ .name = "make_date", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "make_time with seconds boundary (sec=59) returns valid time" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_time(0, 0, 59) → '00:00:59' (valid boundary)
+    const hour_expr = ast.Expr{ .integer_literal = 0 };
+    const min_expr = ast.Expr{ .integer_literal = 0 };
+    const sec_expr = ast.Expr{ .float_literal = 59.0 };
+    const args = [_]*const ast.Expr{ &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_time", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("00:00:59", result.text);
+}
+
+test "make_time with seconds >= 60 returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // make_time(14, 30, 60) → NULL (seconds must be < 60)
+    const hour_expr = ast.Expr{ .integer_literal = 14 };
+    const min_expr = ast.Expr{ .integer_literal = 30 };
+    const sec_expr = ast.Expr{ .float_literal = 60.0 };
+    const args = [_]*const ast.Expr{ &hour_expr, &min_expr, &sec_expr };
+    const fc = .{ .name = "make_time", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "variance with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .variance,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "stddev with single row returns NULL" {
+    const allocator = std.testing.allocator;
+    const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .stddev,
+        .arg = &col_ref,
+        .alias = null,
+    };
+
+    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+
+    const row1 = Row{
+        .columns = &.{"val"},
+        .values = &row_values_1,
+        .allocator = allocator,
+    };
+
+    var rows = [_]Row{ row1 };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
