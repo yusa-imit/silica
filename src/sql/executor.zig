@@ -8676,7 +8676,8 @@ pub const AggregateOp = struct {
                 return .null_value;
             },
             .var_pop => {
-                // Population variance: Σ(xi - μ)² / N. NULL if N < 2.
+                // Population variance: Σ(xi - μ)² / N. NULL if N < 1 (no data).
+                // N=1 yields 0.0 (a single point has zero spread from its own mean).
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
@@ -8689,7 +8690,7 @@ pub const AggregateOp = struct {
                         }
                     }
                 }
-                if (count < 2) return .null_value;
+                if (count < 1) return .null_value;
                 const mean = sum / count;
                 var sq_sum: f64 = 0;
                 for (group) |*row| {
@@ -8734,7 +8735,8 @@ pub const AggregateOp = struct {
                 return .{ .real = sq_sum / (count - 1) };
             },
             .stddev_pop => {
-                // Population std dev = sqrt(var_pop). NULL if N < 2.
+                // Population std dev = sqrt(var_pop). NULL if N < 1 (no data).
+                // N=1 yields 0.0 (sqrt of population variance for one point).
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
@@ -8747,7 +8749,7 @@ pub const AggregateOp = struct {
                         }
                     }
                 }
-                if (count < 2) return .null_value;
+                if (count < 1) return .null_value;
                 const mean = sum / count;
                 var sq_sum: f64 = 0;
                 for (group) |*row| {
@@ -26540,7 +26542,7 @@ test "var_pop calculates population variance for numeric values" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.6667), result.real, 1e-3);
 }
 
-test "var_pop with single row returns NULL" {
+test "var_pop with single row returns 0.0" {
     const allocator = std.testing.allocator;
     const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
 
@@ -26564,7 +26566,9 @@ test "var_pop with single row returns NULL" {
     const result = agg_op.computeAggregate(agg_expr, &rows);
     defer result.free(allocator);
 
-    try std.testing.expect(result == .null_value);
+    // Population variance of a single value is 0 (no spread from its own mean).
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
 }
 
 test "var_pop with all NULL values returns NULL" {
@@ -26820,7 +26824,7 @@ test "stddev_pop calculates population standard deviation" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.8165), result.real, 1e-3);
 }
 
-test "stddev_pop with single row returns NULL" {
+test "stddev_pop with single row returns 0.0" {
     const allocator = std.testing.allocator;
     const col_ref = ast.Expr{ .column_ref = .{ .name = "val" } };
 
@@ -26844,7 +26848,9 @@ test "stddev_pop with single row returns NULL" {
     const result = agg_op.computeAggregate(agg_expr, &rows);
     defer result.free(allocator);
 
-    try std.testing.expect(result == .null_value);
+    // Population stddev of a single value is 0 (sqrt of population variance = sqrt(0)).
+    try std.testing.expect(result == .real);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result.real, 1e-9);
 }
 
 test "stddev_samp calculates sample standard deviation" {
