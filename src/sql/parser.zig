@@ -653,10 +653,16 @@ pub const Parser = struct {
             if (!self.match(.comma)) break;
         }
 
+        var returning: ?[]const ast.ResultColumn = null;
+        if (self.match(.kw_returning)) {
+            returning = try self.parseResultColumns();
+        }
+
         return .{
             .table = table,
             .columns = columns,
             .values = rows.toOwnedSlice(a) catch return error.OutOfMemory,
+            .returning = returning,
         };
     }
 
@@ -682,10 +688,16 @@ pub const Parser = struct {
             where = try self.parseExpr(0);
         }
 
+        var returning: ?[]const ast.ResultColumn = null;
+        if (self.match(.kw_returning)) {
+            returning = try self.parseResultColumns();
+        }
+
         return .{
             .table = table,
             .assignments = assignments.toOwnedSlice(a) catch return error.OutOfMemory,
             .where = where,
+            .returning = returning,
         };
     }
 
@@ -701,7 +713,12 @@ pub const Parser = struct {
             where = try self.parseExpr(0);
         }
 
-        return .{ .table = table, .where = where };
+        var returning: ?[]const ast.ResultColumn = null;
+        if (self.match(.kw_returning)) {
+            returning = try self.parseResultColumns();
+        }
+
+        return .{ .table = table, .where = where, .returning = returning };
     }
 
     // ── CREATE ────────────────────────────────────────────────────
@@ -2687,6 +2704,30 @@ pub const Parser = struct {
         }
 
         _ = try self.expect(.right_paren);
+
+        // Check for WITHIN GROUP clause — converts to ordered-set aggregate
+        if (self.match(.kw_within)) {
+            _ = try self.expect(.kw_group);
+            _ = try self.expect(.left_paren);
+            _ = try self.expect(.kw_order);
+            _ = try self.expect(.kw_by);
+            var order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
+            while (true) {
+                const expr = try self.parseExpr(0);
+                const dir: ast.OrderDirection = if (self.match(.kw_desc)) .desc else blk: {
+                    _ = self.match(.kw_asc);
+                    break :blk .asc;
+                };
+                order_by.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+            return self.arena.create(ast.Expr, .{ .ordered_set_agg = .{
+                .name = name,
+                .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
+                .order_by = order_by.toOwnedSlice(a) catch return error.OutOfMemory,
+            } }) catch return error.OutOfMemory;
+        }
 
         // Check for OVER clause — converts to window function
         if (self.check(.kw_over)) {

@@ -244,6 +244,12 @@ pub const Expr = union(enum) {
     },
     /// Window function call: func(...) OVER (PARTITION BY ... ORDER BY ... frame)
     window_function: WindowFunctionExpr,
+    /// Ordered-set aggregate: func(args) WITHIN GROUP (ORDER BY ...)
+    ordered_set_agg: struct {
+        name: []const u8,
+        args: []const *const Expr,
+        order_by: []const OrderByItem,
+    },
     /// ARRAY[expr, expr, ...] constructor
     array_constructor: []const *const Expr,
     /// expr[index] — array subscript access (1-based)
@@ -413,6 +419,7 @@ pub const InsertStmt = struct {
     table: []const u8,
     columns: ?[]const []const u8 = null,
     values: []const []const *const Expr = &.{},
+    returning: ?[]const ResultColumn = null,
 };
 
 /// UPDATE statement.
@@ -420,6 +427,7 @@ pub const UpdateStmt = struct {
     table: []const u8,
     assignments: []const Assignment = &.{},
     where: ?*const Expr = null,
+    returning: ?[]const ResultColumn = null,
 };
 
 pub const Assignment = struct {
@@ -431,6 +439,7 @@ pub const Assignment = struct {
 pub const DeleteStmt = struct {
     table: []const u8,
     where: ?*const Expr = null,
+    returning: ?[]const ResultColumn = null,
 };
 
 /// CREATE TABLE statement.

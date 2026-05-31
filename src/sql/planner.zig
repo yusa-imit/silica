@@ -132,6 +132,9 @@ pub const AggFunc = enum {
     regr_sxx,
     regr_syy,
     regr_sxy,
+    percentile_cont,
+    percentile_disc,
+    mode,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -236,6 +239,10 @@ pub const PlanNode = union(enum) {
         alias: ?[]const u8 = null,
         distinct: bool = false,
         separator: ?*const ast.Expr = null,
+        /// For ordered-set aggregates: expressions to sort by
+        order_exprs: []const *const ast.Expr = &.{},
+        /// For ordered-set aggregates: sort directions (asc/desc)
+        order_dirs: []const ast.OrderDirection = &.{},
     };
 
     pub const Limit = struct {
@@ -264,6 +271,7 @@ pub const PlanNode = union(enum) {
         table: []const u8,
         columns: ?[]const []const u8 = null,
         rows: []const []const *const ast.Expr,
+        returning: ?[]const ast.ResultColumn = null,
     };
 
     pub const Empty = struct {
@@ -289,6 +297,8 @@ pub const LogicalPlan = struct {
     plan_type: PlanType,
     /// Planned CTEs (in definition order; each may reference earlier ones).
     ctes: []const CtePlan = &.{},
+    /// RETURNING clause for DML statements (INSERT/UPDATE/DELETE)
+    returning: ?[]const ast.ResultColumn = null,
 };
 
 pub const PlanType = enum {
@@ -749,11 +759,12 @@ pub const Planner = struct {
     fn isAggregateExpr(_: *Planner, expr: *const ast.Expr) bool {
         return switch (expr.*) {
             .function_call => |fc| isAggregateName(fc.name),
+            .ordered_set_agg => true,
             else => false,
         };
     }
 
-    fn exprToAggregate(_: *Planner, expr: *const ast.Expr, alias: ?[]const u8) ?PlanNode.AggregateExpr {
+    fn exprToAggregate(self: *Planner, expr: *const ast.Expr, alias: ?[]const u8) ?PlanNode.AggregateExpr {
         return switch (expr.*) {
             .function_call => |fc| {
                 var func = aggFuncFromName(fc.name) orelse return null;
@@ -778,6 +789,29 @@ pub const Planner = struct {
                     .separator = if (func == .string_agg and fc.args.len > 1) fc.args[1] else null,
                 };
             },
+            .ordered_set_agg => |osa| {
+                const func: AggFunc = blk: {
+                    if (std.ascii.eqlIgnoreCase(osa.name, "percentile_cont")) break :blk .percentile_cont;
+                    if (std.ascii.eqlIgnoreCase(osa.name, "percentile_disc")) break :blk .percentile_disc;
+                    if (std.ascii.eqlIgnoreCase(osa.name, "mode")) break :blk .mode;
+                    return null;
+                };
+                // Collect order_by expressions and directions
+                const a = self.arena.allocator();
+                var order_exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                var order_dirs = std.ArrayListUnmanaged(ast.OrderDirection){};
+                for (osa.order_by) |item| {
+                    order_exprs.append(a, item.expr) catch return null;
+                    order_dirs.append(a, item.direction) catch return null;
+                }
+                return .{
+                    .func = func,
+                    .arg = if (osa.args.len > 0) osa.args[0] else null,
+                    .alias = alias,
+                    .order_exprs = order_exprs.toOwnedSlice(a) catch return null,
+                    .order_dirs = order_dirs.toOwnedSlice(a) catch return null,
+                };
+            },
             else => null,
         };
     }
@@ -789,8 +823,9 @@ pub const Planner = struct {
             .table = stmt.table,
             .columns = stmt.columns,
             .rows = stmt.values,
+            .returning = stmt.returning,
         } });
-        return .{ .root = node, .plan_type = .insert };
+        return .{ .root = node, .plan_type = .insert, .returning = stmt.returning };
     }
 
     // ── UPDATE planning ──────────────────────────────────────────────
@@ -823,7 +858,7 @@ pub const Planner = struct {
             .columns = proj_cols.toOwnedSlice(alloc) catch return error.OutOfMemory,
         } });
 
-        return .{ .root = node, .plan_type = .update };
+        return .{ .root = node, .plan_type = .update, .returning = stmt.returning };
     }
 
     // ── DELETE planning ──────────────────────────────────────────────
@@ -841,7 +876,7 @@ pub const Planner = struct {
             } });
         }
 
-        return .{ .root = node, .plan_type = .delete };
+        return .{ .root = node, .plan_type = .delete, .returning = stmt.returning };
     }
 
     // ── DDL planning (pass-through) ─────────────────────────────────
@@ -938,6 +973,9 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "regr_sxx")) return .regr_sxx;
     if (std.mem.eql(u8, lower, "regr_syy")) return .regr_syy;
     if (std.mem.eql(u8, lower, "regr_sxy")) return .regr_sxy;
+    if (std.mem.eql(u8, lower, "percentile_cont")) return .percentile_cont;
+    if (std.mem.eql(u8, lower, "percentile_disc")) return .percentile_disc;
+    if (std.mem.eql(u8, lower, "mode")) return .mode;
     return null;
 }
 

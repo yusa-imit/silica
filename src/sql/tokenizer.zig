@@ -107,6 +107,7 @@ pub const TokenType = enum {
     kw_function,
     kw_returns,
     kw_return,
+    kw_returning,
     kw_language,
     kw_immutable,
     kw_stable,
@@ -212,6 +213,7 @@ pub const TokenType = enum {
     kw_rows,
     kw_range,
     kw_groups,
+    kw_within,
     kw_unbounded,
     kw_preceding,
     kw_following,
@@ -810,6 +812,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "function", .kw_function },
         .{ "returns", .kw_returns },
         .{ "return", .kw_return },
+        .{ "returning", .kw_returning },
         .{ "language", .kw_language },
         .{ "immutable", .kw_immutable },
         .{ "stable", .kw_stable },
@@ -912,6 +915,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "rows", .kw_rows },
         .{ "range", .kw_range },
         .{ "groups", .kw_groups },
+        .{ "within", .kw_within },
         .{ "unbounded", .kw_unbounded },
         .{ "preceding", .kw_preceding },
         .{ "following", .kw_following },
@@ -1181,6 +1185,7 @@ test "function keywords" {
     try expectSingleToken("function", .kw_function, "function");
     try expectSingleToken("returns", .kw_returns, "returns");
     try expectSingleToken("return", .kw_return, "return");
+    try expectSingleToken("returning", .kw_returning, "returning");
     try expectSingleToken("language", .kw_language, "language");
     try expectSingleToken("immutable", .kw_immutable, "immutable");
     try expectSingleToken("stable", .kw_stable, "stable");

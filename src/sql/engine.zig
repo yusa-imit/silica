@@ -1681,64 +1681,193 @@ pub const Database = struct {
     }
 
     fn buildTableFunctionScan(self: *Database, tfs: PlanNode.TableFunctionScan, ops: *OperatorChain) EngineError!RowIterator {
-        // Currently only supports unnest() function
-        if (!std.mem.eql(u8, tfs.function_name, "unnest")) {
-            return EngineError.ExecutionError; // Unknown table function
-        }
+        // Handle unnest() function
+        if (std.mem.eql(u8, tfs.function_name, "unnest")) {
+            // unnest() requires exactly 1 argument (the array)
+            if (tfs.args.len != 1) {
+                return EngineError.ExecutionError;
+            }
 
-        // unnest() requires exactly 1 argument (the array)
-        if (tfs.args.len != 1) {
-            return EngineError.ExecutionError;
-        }
+            // Create an empty row context for evaluating the array expression
+            // (since unnest is in FROM clause, there's no input row to reference)
+            var empty_row = Row{
+                .columns = &.{},
+                .values = &.{},
+                .allocator = self.allocator,
+            };
 
-        // Create an empty row context for evaluating the array expression
-        // (since unnest is in FROM clause, there's no input row to reference)
-        var empty_row = Row{
-            .columns = &.{},
-            .values = &.{},
-            .allocator = self.allocator,
-        };
+            // Evaluate the array argument
+            const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+                return EngineError.ExecutionError;
 
-        // Evaluate the array argument
-        const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
-            return EngineError.ExecutionError;
+            // Ensure it's actually an array
+            if (array_value != .array) {
+                array_value.free(self.allocator);
+                return EngineError.ExecutionError; // Type mismatch
+            }
 
-        // Ensure it's actually an array
-        if (array_value != .array) {
+            // Build column name
+            const col_name = if (tfs.alias) |a|
+                try std.fmt.allocPrint(self.allocator, "{s}", .{a})
+            else
+                try std.fmt.allocPrint(self.allocator, "unnest", .{});
+
+            const col_names = try self.allocator.alloc([]const u8, 1);
+            col_names[0] = col_name;
+
+            // Convert array elements into rows
+            var rows = std.ArrayListUnmanaged([]Value){};
+            for (array_value.array) |elem| {
+                const vals = try self.allocator.alloc(Value, 1);
+                vals[0] = try elem.dupe(self.allocator);
+                try rows.append(self.allocator, vals);
+            }
+
+            // Clean up the array value (we've already duped the elements)
             array_value.free(self.allocator);
-            return EngineError.ExecutionError; // Type mismatch
+
+            // Create MaterializedOp to hold the rows
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+
+            ops.materialized = mat_op;
+            return mat_op.iterator();
         }
 
-        // Build column name
-        const col_name = if (tfs.alias) |a|
-            try std.fmt.allocPrint(self.allocator, "{s}", .{a})
-        else
-            try std.fmt.allocPrint(self.allocator, "unnest", .{});
+        // Handle generate_series() function
+        if (std.mem.eql(u8, tfs.function_name, "generate_series")) {
+            // generate_series requires 2 or 3 arguments (start, stop, [step])
+            if (tfs.args.len < 2 or tfs.args.len > 3) {
+                return EngineError.ExecutionError;
+            }
 
-        const col_names = try self.allocator.alloc([]const u8, 1);
-        col_names[0] = col_name;
+            // Create an empty row context for evaluating arguments
+            var empty_row = Row{
+                .columns = &.{},
+                .values = &.{},
+                .allocator = self.allocator,
+            };
 
-        // Convert array elements into rows
-        var rows = std.ArrayListUnmanaged([]Value){};
-        for (array_value.array) |elem| {
-            const vals = try self.allocator.alloc(Value, 1);
-            vals[0] = try elem.dupe(self.allocator);
-            try rows.append(self.allocator, vals);
+            // Evaluate the arguments
+            const start_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+                return EngineError.ExecutionError;
+            defer start_val.free(self.allocator);
+
+            const stop_val = executor_mod.evalExpr(self.allocator, tfs.args[1], &empty_row, null) catch
+                return EngineError.ExecutionError;
+            defer stop_val.free(self.allocator);
+
+            const step_val = if (tfs.args.len > 2)
+                executor_mod.evalExpr(self.allocator, tfs.args[2], &empty_row, null) catch return EngineError.ExecutionError
+            else
+                null;
+            defer if (step_val) |sv| sv.free(self.allocator);
+
+            // Build column name
+            const col_name = if (tfs.alias) |a|
+                try std.fmt.allocPrint(self.allocator, "{s}", .{a})
+            else
+                try std.fmt.allocPrint(self.allocator, "generate_series", .{});
+
+            const col_names = try self.allocator.alloc([]const u8, 1);
+            col_names[0] = col_name;
+
+            var rows = std.ArrayListUnmanaged([]Value){};
+
+            // Check if we're dealing with floats or integers
+            const is_float = start_val == .real or stop_val == .real or (step_val != null and step_val.? == .real);
+
+            if (is_float) {
+                // Float path
+                const start = switch (start_val) {
+                    .integer => |i| @as(f64, @floatFromInt(i)),
+                    .real => |r| r,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const stop = switch (stop_val) {
+                    .integer => |i| @as(f64, @floatFromInt(i)),
+                    .real => |r| r,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const step = if (step_val) |sv|
+                    switch (sv) {
+                        .integer => |i| @as(f64, @floatFromInt(i)),
+                        .real => |r| r,
+                        else => return EngineError.ExecutionError,
+                    }
+                else
+                    @as(f64, 1.0); // Default step is always 1
+
+                if (step == 0.0 or (step > 0 and start > stop) or (step < 0 and start < stop)) {
+                    // Empty result
+                } else {
+                    var v = start;
+                    const max_rows = 10_000_000;
+                    var count: usize = 0;
+                    while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
+                        if (count >= max_rows) break;
+                        const vals = try self.allocator.alloc(Value, 1);
+                        vals[0] = .{ .real = v };
+                        try rows.append(self.allocator, vals);
+                        v += step;
+                    }
+                }
+            } else {
+                // Integer path
+                const start = switch (start_val) {
+                    .integer => |i| i,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const stop = switch (stop_val) {
+                    .integer => |i| i,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const step = if (step_val) |sv|
+                    switch (sv) {
+                        .integer => |i| i,
+                        else => return EngineError.ExecutionError,
+                    }
+                else
+                    @as(i64, 1); // Default step is always 1
+
+                if (step == 0 or (step > 0 and start > stop) or (step < 0 and start < stop)) {
+                    // Empty result
+                } else {
+                    var v = start;
+                    const max_rows = 10_000_000;
+                    var count: usize = 0;
+                    while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
+                        if (count >= max_rows) break;
+                        const vals = try self.allocator.alloc(Value, 1);
+                        vals[0] = .{ .integer = v };
+                        try rows.append(self.allocator, vals);
+                        v += step;
+                    }
+                }
+            }
+
+            // Create MaterializedOp to hold the rows
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+
+            ops.materialized = mat_op;
+            return mat_op.iterator();
         }
 
-        // Clean up the array value (we've already duped the elements)
-        array_value.free(self.allocator);
-
-        // Create MaterializedOp to hold the rows
-        const mat_op = try self.allocator.create(MaterializedOp);
-        mat_op.* = MaterializedOp.init(
-            self.allocator,
-            col_names,
-            try rows.toOwnedSlice(self.allocator),
-        );
-
-        ops.materialized = mat_op;
-        return mat_op.iterator();
+        // Unknown table function
+        return EngineError.ExecutionError;
     }
 
     fn buildViewScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, view_info: catalog_mod.Catalog.ViewInfo) EngineError!RowIterator {
@@ -2515,6 +2644,16 @@ pub const Database = struct {
         var next_key: u64 = self.findNextRowKey(&tree) catch return EngineError.StorageError;
 
         var rows_inserted: u64 = 0;
+
+        // Collect inserted rows if RETURNING clause is present
+        var inserted_rows = std.ArrayListUnmanaged([]Value){};
+        defer {
+            for (inserted_rows.items) |row| {
+                self.allocator.free(row);
+            }
+            inserted_rows.deinit(self.allocator);
+        }
+
         for (values_node.rows) |row_exprs| {
             // Evaluate value expressions
             const vals = self.allocator.alloc(Value, row_exprs.len) catch return EngineError.OutOfMemory;
@@ -2580,12 +2719,114 @@ pub const Database = struct {
                 };
             };
 
+            // Collect row for RETURNING clause
+            if (plan.returning != null) {
+                const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
+                for (vals, 0..) |v, i| {
+                    row_copy[i] = try v.dupe(self.allocator);
+                }
+                try inserted_rows.append(self.allocator, row_copy);
+            }
+
             rows_inserted += 1;
         }
 
         // Track inserts for auto-vacuum
         if (rows_inserted > 0) {
             self.auto_vacuum.recordModification(actual_table, rows_inserted, 0, 0) catch {};
+        }
+
+        // Handle RETURNING clause
+        if (plan.returning) |returning_cols| {
+            // Build column names for result set
+            var result_col_names = std.ArrayListUnmanaged([]const u8){};
+            var result_rows = std.ArrayListUnmanaged([]Value){};
+
+            for (returning_cols) |ret_col| {
+                switch (ret_col) {
+                    .all_columns => {
+                        // Add all table column names
+                        for (table_info.columns) |col| {
+                            try result_col_names.append(self.allocator, col.name);
+                        }
+                        break; // all_columns should be alone
+                    },
+                    .expr => |e| {
+                        // Use alias if provided, otherwise stringify the expression
+                        const col_name = e.alias orelse "?column?";
+                        try result_col_names.append(self.allocator, col_name);
+                    },
+                    .table_all_columns => {
+                        // For now, treat as all_columns
+                        for (table_info.columns) |col| {
+                            try result_col_names.append(self.allocator, col.name);
+                        }
+                        break;
+                    },
+                }
+            }
+
+            // Build result rows by evaluating RETURNING expressions for each inserted row
+            for (inserted_rows.items) |inserted_row| {
+                var result_row = std.ArrayListUnmanaged(Value){};
+
+                // Create a Row object for expression evaluation
+                const col_names = try self.allocator.alloc([]const u8, table_info.columns.len);
+                for (table_info.columns, 0..) |col, i| {
+                    col_names[i] = col.name;
+                }
+                var input_row = Row{
+                    .columns = col_names,
+                    .values = inserted_row,
+                    .allocator = self.allocator,
+                };
+                defer self.allocator.free(input_row.columns);
+
+                for (returning_cols) |ret_col| {
+                    switch (ret_col) {
+                        .all_columns => {
+                            // Return all columns
+                            for (inserted_row) |val| {
+                                try result_row.append(self.allocator, try val.dupe(self.allocator));
+                            }
+                            break;
+                        },
+                        .expr => |e| {
+                            // Evaluate the expression
+                            const val = evalExpr(self.allocator, e.value, &input_row, null) catch
+                                return EngineError.ExecutionError;
+                            try result_row.append(self.allocator, val);
+                        },
+                        .table_all_columns => {
+                            // Return all columns
+                            for (inserted_row) |val| {
+                                try result_row.append(self.allocator, try val.dupe(self.allocator));
+                            }
+                            break;
+                        },
+                    }
+                }
+
+                try result_rows.append(self.allocator, try result_row.toOwnedSlice(self.allocator));
+            }
+
+            // Create MaterializedOp for RETURNING results
+            const ops = try self.allocator.create(OperatorChain);
+            ops.* = .{};
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                try result_col_names.toOwnedSlice(self.allocator),
+                try result_rows.toOwnedSlice(self.allocator),
+            );
+            ops.materialized = mat_op;
+
+            return .{
+                .rows = mat_op.iterator(),
+                .rows_affected = rows_inserted,
+                .message = "INSERT",
+                ._ops = ops,
+            };
         }
 
         return .{
@@ -21044,5 +21285,738 @@ test "numbered param: mixed ? and $1 rejected" {
 
     // Should fail with error (mixing styles not allowed)
     try testing.expect(result == error.InvalidSql or result == error.SyntaxError);
+}
+
+test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - median with even set" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_median.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE salaries (sal REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO salaries VALUES (100.0), (200.0), (300.0), (400.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY sal) FROM salaries");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // percentile_cont(0.5) should interpolate: (250.0 + 250.0) / 2 = 250.0
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 250.0), r, 0.001),
+            .integer => |i| try testing.expectEqual(@as(i64, 250), i),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(0.0) WITHIN GROUP (ORDER BY value) - minimum" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_min.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (100.0), (200.0), (300.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 100.0), r, 0.001),
+            .integer => |i| try testing.expectEqual(@as(i64, 100), i),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(1.0) WITHIN GROUP (ORDER BY value) - maximum" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_max.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (100.0), (200.0), (300.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 300.0), r, 0.001),
+            .integer => |i| try testing.expectEqual(@as(i64, 300), i),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - single row" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (42.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 42.0), r, 0.001),
+            .integer => |i| try testing.expectEqual(@as(i64, 42), i),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - all NULLs returns NULL" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (NULL), (NULL), (NULL)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .null_value);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value) - discrete median" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_median.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE salaries (sal INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO salaries VALUES (100), (200), (300), (400)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY sal) FROM salaries");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // percentile_disc(0.5) with 4 values: ceil(0.5 * 4) - 1 = 2 - 1 = 1 (0-indexed) → 200
+        try testing.expectEqual(@as(i64, 200), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc(0.0) WITHIN GROUP (ORDER BY value) - first value" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_min.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (100), (200), (300)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_disc(0.0) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 100), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc(1.0) WITHIN GROUP (ORDER BY value) - last value" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_max.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (100), (200), (300)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_disc(1.0) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 300), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value DESC) - with descending order" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_desc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (100), (200), (300), (400)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY v DESC) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // With DESC: 400, 300, 200, 100. ceil(0.5 * 4) - 1 = 1 → 300
+        try testing.expectEqual(@as(i64, 300), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "mode() WITHIN GROUP (ORDER BY value) - most frequent value" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mode_most_frequent.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (1), (1), (1), (2), (2), (3)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT mode() WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // 1 appears 3 times (most frequent)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "mode() WITHIN GROUP (ORDER BY value) - equal frequency returns smallest" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mode_equal_freq.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (3), (3), (1), (1), (2), (2)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT mode() WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // All have same frequency (2); return smallest value (1)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(0.25) WITHIN GROUP (ORDER BY value) - Q1 quartile" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_q1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (1.0), (2.0), (3.0), (4.0), (5.0), (6.0), (7.0), (8.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // Q1 at 0.25: position = 0.25 * (8-1) + 1 = 2.75 (interpolate between 2nd and 3rd values: 2.0 and 3.0)
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 2.75), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 2.75, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+// ── generate_series() Table Function Tests ──────────────────────────────────
+
+test "generate_series basic 1 to 5" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(1, 5)");
+    defer r.close(testing.allocator);
+
+    // Should have 5 rows: 1, 2, 3, 4, 5
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 4), row4.values[0].integer);
+
+    var row5 = (try r.rows.?.next()).?;
+    defer row5.deinit();
+    try testing.expectEqual(@as(i64, 5), row5.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series with step 2" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(1, 10, 2)");
+    defer r.close(testing.allocator);
+
+    // Should have 5 rows: 1, 3, 5, 7, 9
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 5), row3.values[0].integer);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 7), row4.values[0].integer);
+
+    var row5 = (try r.rows.?.next()).?;
+    defer row5.deinit();
+    try testing.expectEqual(@as(i64, 9), row5.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series with negative step" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(5, 1, -1)");
+    defer r.close(testing.allocator);
+
+    // Should have 5 rows: 5, 4, 3, 2, 1
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 5), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 4), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 2), row4.values[0].integer);
+
+    var row5 = (try r.rows.?.next()).?;
+    defer row5.deinit();
+    try testing.expectEqual(@as(i64, 1), row5.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series single element" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(3, 3)");
+    defer r.close(testing.allocator);
+
+    // Should have 1 row: 3
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series empty range" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(1, 0)");
+    defer r.close(testing.allocator);
+
+    // Should have 0 rows (empty result, not an error)
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series with alias" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT gs FROM generate_series(1, 3) AS gs");
+    defer r.close(testing.allocator);
+
+    // Should be able to reference the column by its alias "gs"
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series float step" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(1.0, 2.0, 0.5)");
+    defer r.close(testing.allocator);
+
+    // Should have 3 rows: 1.0, 1.5, 2.0
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    const val1 = row1.values[0];
+    switch (val1) {
+        .real => |f| try testing.expectApproxEqAbs(@as(f64, 1.0), f, 0.001),
+        .integer => |i| try testing.expectApproxEqAbs(@as(f64, 1.0), @as(f64, @floatFromInt(i)), 0.001),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    const val2 = row2.values[0];
+    switch (val2) {
+        .real => |f| try testing.expectApproxEqAbs(@as(f64, 1.5), f, 0.001),
+        .integer => |i| try testing.expectApproxEqAbs(@as(f64, 1.5), @as(f64, @floatFromInt(i)), 0.001),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    const val3 = row3.values[0];
+    switch (val3) {
+        .real => |f| try testing.expectApproxEqAbs(@as(f64, 2.0), f, 0.001),
+        .integer => |i| try testing.expectApproxEqAbs(@as(f64, 2.0), @as(f64, @floatFromInt(i)), 0.001),
+        else => return error.TestUnexpectedResult,
+    }
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series with WHERE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM generate_series(1, 10) WHERE generate_series > 7");
+    defer r.close(testing.allocator);
+
+    // Should filter to only values > 7: 8, 9, 10
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 8), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 9), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 10), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+// ── RETURNING Clause Tests ──────────────────────────────────────────────────
+
+test "INSERT RETURNING *" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_insert_returning.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert with RETURNING *
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice') RETURNING *");
+    defer r2.close(testing.allocator);
+
+    // Should return the inserted row
+    if (try r2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("Alice", row.values[1].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Verify no more rows
+    try testing.expect((try r2.rows.?.next()) == null);
+}
+
+test "INSERT RETURNING specific column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_insert_returning_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert with RETURNING specific column
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (2, 'Bob') RETURNING id");
+    defer r2.close(testing.allocator);
+
+    // Should return only the id
+    if (try r2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try r2.rows.?.next()) == null);
+}
+
+test "INSERT RETURNING expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_insert_returning_expr.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert with RETURNING expression
+    var r2 = try db.execSQL("INSERT INTO nums (val) VALUES (10) RETURNING val * 2");
+    defer r2.close(testing.allocator);
+
+    // Should return 20 (the expression)
+    if (try r2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 20), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try r2.rows.?.next()) == null);
+}
+
+test "UPDATE RETURNING *" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_update_returning.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice')");
+    defer r2.close(testing.allocator);
+
+    // Update with RETURNING *
+    var r3 = try db.execSQL("UPDATE users SET name = 'Alicia' WHERE id = 1 RETURNING *");
+    defer r3.close(testing.allocator);
+
+    // Should return the updated row
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("Alicia", row.values[1].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try r3.rows.?.next()) == null);
+}
+
+test "UPDATE RETURNING specific column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_update_returning_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (2, 'Bob')");
+    defer r2.close(testing.allocator);
+
+    // Update with RETURNING specific column
+    var r3 = try db.execSQL("UPDATE users SET name = 'Bobby' WHERE id = 2 RETURNING name");
+    defer r3.close(testing.allocator);
+
+    // Should return only the updated name
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("Bobby", row.values[0].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try r3.rows.?.next()) == null);
+}
+
+test "DELETE RETURNING *" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_delete_returning.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (3, 'Charlie')");
+    defer r2.close(testing.allocator);
+
+    // Delete with RETURNING *
+    var r3 = try db.execSQL("DELETE FROM users WHERE id = 3 RETURNING *");
+    defer r3.close(testing.allocator);
+
+    // Should return the deleted row
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+        try testing.expectEqualStrings("Charlie", row.values[1].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try r3.rows.?.next()) == null);
 }
 

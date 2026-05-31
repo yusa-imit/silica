@@ -161,7 +161,7 @@ pub const Analyzer = struct {
     }
 
     /// Register a table function's output columns in scope.
-    /// Currently supports unnest() which produces a single column.
+    /// Currently supports unnest() and generate_series() which produce a single column.
     fn addTableFunctionToScope(self: *Analyzer, ref: *const ast.TableRef) void {
         const tf = ref.table_function;
 
@@ -176,7 +176,7 @@ pub const Analyzer = struct {
             }
         }
 
-        // Currently only unnest() is supported
+        // Support unnest() and generate_series()
         if (std.mem.eql(u8, tf.name, "unnest")) {
             // unnest() produces a single column
             // Column name: alias if provided, otherwise "unnest"
@@ -191,6 +191,30 @@ pub const Analyzer = struct {
 
             // For now, use blob type since we don't have full type inference
             // In the future, this could inspect the array argument's element type
+            cols[0] = .{
+                .name = col_name,
+                .column_type = .blob,
+                .flags = .{},
+            };
+
+            self.scope_tables.append(self.allocator, .{
+                .alias = func_alias,
+                .table_name = tf.name,
+                .columns = cols,
+            }) catch {};
+        } else if (std.mem.eql(u8, tf.name, "generate_series")) {
+            // generate_series() produces a single column (integer or real)
+            // Column name: alias if provided, otherwise "generate_series"
+            const col_name = tf.alias orelse "generate_series";
+
+            // Allocate column info in arena
+            const arena = self.arena.allocator();
+            const cols = arena.alloc(ColumnInfo, 1) catch {
+                self.addError(.invalid_expression, "out of memory", .{});
+                return;
+            };
+
+            // Use blob type for now (runtime will determine if int or float)
             cols[0] = .{
                 .name = col_name,
                 .column_type = .blob,
@@ -1087,6 +1111,11 @@ pub const Analyzer = struct {
             },
             .exists => {
                 // EXISTS subqueries have their own scope — skip deep analysis for now
+            },
+            .ordered_set_agg => |osa| {
+                // Analyze arguments and ORDER BY expressions
+                for (osa.args) |arg| self.analyzeExpr(arg);
+                for (osa.order_by) |ob| self.analyzeExpr(ob.expr);
             },
             .bind_parameter => {},
         }
