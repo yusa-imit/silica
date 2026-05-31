@@ -7440,6 +7440,16 @@ pub const ProjectOp = struct {
                             continue;
                         }
                     }
+                    // For ordered-set aggregates (percentile_cont, percentile_disc, mode),
+                    // look up by function name from the AggregateOp output row.
+                    if (col.expr.* == .ordered_set_agg) {
+                        if (row.getColumn(col.expr.ordered_set_agg.name)) |v| {
+                            vals[i] = v.dupe(self.allocator) catch return ExecError.OutOfMemory;
+                            inited += 1;
+                            col_names[i] = col.alias orelse col.expr.ordered_set_agg.name;
+                            continue;
+                        }
+                    }
                 }
                 return switch (err) {
                     error.OutOfMemory => ExecError.OutOfMemory,

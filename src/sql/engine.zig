@@ -2649,6 +2649,7 @@ pub const Database = struct {
         var inserted_rows = std.ArrayListUnmanaged([]Value){};
         defer {
             for (inserted_rows.items) |row| {
+                for (row) |v| v.free(self.allocator);
                 self.allocator.free(row);
             }
             inserted_rows.deinit(self.allocator);
