@@ -2720,7 +2720,7 @@ pub const Database = struct {
             };
 
             // Collect row for RETURNING clause
-            if (plan.returning != null) {
+            if (values_node.returning != null) {
                 const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
                 for (vals, 0..) |v, i| {
                     row_copy[i] = try v.dupe(self.allocator);
@@ -2737,7 +2737,7 @@ pub const Database = struct {
         }
 
         // Handle RETURNING clause
-        if (plan.returning) |returning_cols| {
+        if (values_node.returning) |returning_cols| {
             // Build column names for result set
             var result_col_names = std.ArrayListUnmanaged([]const u8){};
             var result_rows = std.ArrayListUnmanaged([]Value){};
@@ -2745,21 +2745,25 @@ pub const Database = struct {
             for (returning_cols) |ret_col| {
                 switch (ret_col) {
                     .all_columns => {
-                        // Add all table column names
+                        // Add all table column names (dupe to avoid dangling pointers)
                         for (table_info.columns) |col| {
-                            try result_col_names.append(self.allocator, col.name);
+                            const name_copy = try self.allocator.dupe(u8, col.name);
+                            try result_col_names.append(self.allocator, name_copy);
                         }
                         break; // all_columns should be alone
                     },
                     .expr => |e| {
                         // Use alias if provided, otherwise stringify the expression
+                        // Dupe the column name to ensure it remains valid after table_info is freed
                         const col_name = e.alias orelse "?column?";
-                        try result_col_names.append(self.allocator, col_name);
+                        const name_copy = try self.allocator.dupe(u8, col_name);
+                        try result_col_names.append(self.allocator, name_copy);
                     },
                     .table_all_columns => {
-                        // For now, treat as all_columns
+                        // For now, treat as all_columns (dupe to avoid dangling pointers)
                         for (table_info.columns) |col| {
-                            try result_col_names.append(self.allocator, col.name);
+                            const name_copy = try self.allocator.dupe(u8, col.name);
+                            try result_col_names.append(self.allocator, name_copy);
                         }
                         break;
                     },
@@ -3420,6 +3424,113 @@ pub const Database = struct {
             self.auto_vacuum.recordModification(actual_table, 0, @intCast(rows_updated), 0) catch {};
         }
 
+        // Handle RETURNING clause
+        if (plan.returning) |returning_cols| {
+            // Collect updated rows for RETURNING (from the updates collection)
+            var result_col_names = std.ArrayListUnmanaged([]const u8){};
+            var result_rows = std.ArrayListUnmanaged([]Value){};
+
+            for (returning_cols) |ret_col| {
+                switch (ret_col) {
+                    .all_columns => {
+                        // Add all table column names (dupe to avoid dangling pointers)
+                        for (table_info.columns) |col| {
+                            const name_copy = try self.allocator.dupe(u8, col.name);
+                            try result_col_names.append(self.allocator, name_copy);
+                        }
+                        break;
+                    },
+                    .expr => |e| {
+                        // Use alias if provided, otherwise stringify the expression
+                        const col_name = e.alias orelse "?column?";
+                        const name_copy = try self.allocator.dupe(u8, col_name);
+                        try result_col_names.append(self.allocator, name_copy);
+                    },
+                    .table_all_columns => {
+                        // For now, treat as all_columns (dupe to avoid dangling pointers)
+                        for (table_info.columns) |col| {
+                            const name_copy = try self.allocator.dupe(u8, col.name);
+                            try result_col_names.append(self.allocator, name_copy);
+                        }
+                        break;
+                    },
+                }
+            }
+
+            // Build result rows by evaluating RETURNING expressions for each updated row
+            // Note: We need to deserialize the updated rows from the updates collection
+            for (updates.items) |item| {
+                const idx_data = if (isVersionedRowData(item.value))
+                    item.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                else
+                    item.value;
+                const new_values = executor_mod.deserializeRow(self.allocator, idx_data) catch continue;
+                defer {
+                    for (new_values) |v| v.free(self.allocator);
+                    self.allocator.free(new_values);
+                }
+
+                var result_row = std.ArrayListUnmanaged(Value){};
+
+                // Create a Row object for expression evaluation
+                const ret_col_names = try self.allocator.alloc([]const u8, table_info.columns.len);
+                for (table_info.columns, 0..) |col, i| {
+                    ret_col_names[i] = col.name;
+                }
+                var input_row = Row{
+                    .columns = ret_col_names,
+                    .values = new_values,
+                    .allocator = self.allocator,
+                };
+                defer self.allocator.free(input_row.columns);
+
+                for (returning_cols) |ret_col| {
+                    switch (ret_col) {
+                        .all_columns => {
+                            // Return all columns
+                            for (new_values) |val| {
+                                try result_row.append(self.allocator, try val.dupe(self.allocator));
+                            }
+                            break;
+                        },
+                        .expr => |e| {
+                            // Evaluate the expression
+                            const val = evalExpr(self.allocator, e.value, &input_row, null) catch
+                                return EngineError.ExecutionError;
+                            try result_row.append(self.allocator, val);
+                        },
+                        .table_all_columns => {
+                            // Return all columns
+                            for (new_values) |val| {
+                                try result_row.append(self.allocator, try val.dupe(self.allocator));
+                            }
+                            break;
+                        },
+                    }
+                }
+
+                try result_rows.append(self.allocator, try result_row.toOwnedSlice(self.allocator));
+            }
+
+            // Create MaterializedOp for RETURNING results
+            const ops = try self.allocator.create(OperatorChain);
+            ops.* = .{};
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                try result_col_names.toOwnedSlice(self.allocator),
+                try result_rows.toOwnedSlice(self.allocator),
+            );
+            ops.materialized = mat_op;
+
+            return .{
+                .rows = mat_op.iterator(),
+                .rows_affected = @intCast(rows_updated),
+                .message = "UPDATE",
+                ._ops = ops,
+            };
+        }
+
         return .{
             .rows_affected = @intCast(rows_updated),
             .message = "UPDATE",
@@ -3640,6 +3751,102 @@ pub const Database = struct {
         // Track deletes for auto-vacuum (each delete creates a dead tuple)
         if (rows_deleted > 0) {
             self.auto_vacuum.recordModification(actual_table, 0, 0, @intCast(rows_deleted)) catch {};
+        }
+
+        // Handle RETURNING clause
+        if (plan.returning) |returning_cols| {
+            // Collect deleted rows for RETURNING (from the deletes collection)
+            var result_col_names = std.ArrayListUnmanaged([]const u8){};
+            var result_rows = std.ArrayListUnmanaged([]Value){};
+
+            for (returning_cols) |ret_col| {
+                switch (ret_col) {
+                    .all_columns => {
+                        // Add all table column names (dupe to avoid dangling pointers)
+                        for (table_info.columns) |col| {
+                            const name_copy = try self.allocator.dupe(u8, col.name);
+                            try result_col_names.append(self.allocator, name_copy);
+                        }
+                        break;
+                    },
+                    .expr => |e| {
+                        // Use alias if provided, otherwise stringify the expression
+                        const col_name = e.alias orelse "?column?";
+                        const name_copy = try self.allocator.dupe(u8, col_name);
+                        try result_col_names.append(self.allocator, name_copy);
+                    },
+                    .table_all_columns => {
+                        // For now, treat as all_columns (dupe to avoid dangling pointers)
+                        for (table_info.columns) |col| {
+                            const name_copy = try self.allocator.dupe(u8, col.name);
+                            try result_col_names.append(self.allocator, name_copy);
+                        }
+                        break;
+                    },
+                }
+            }
+
+            // Build result rows by evaluating RETURNING expressions for each deleted row
+            for (deletes.items) |d| {
+                var result_row = std.ArrayListUnmanaged(Value){};
+
+                // Create a Row object for expression evaluation
+                const ret_col_names = try self.allocator.alloc([]const u8, table_info.columns.len);
+                for (table_info.columns, 0..) |col, i| {
+                    ret_col_names[i] = col.name;
+                }
+                var input_row = Row{
+                    .columns = ret_col_names,
+                    .values = d.values,
+                    .allocator = self.allocator,
+                };
+                defer self.allocator.free(input_row.columns);
+
+                for (returning_cols) |ret_col| {
+                    switch (ret_col) {
+                        .all_columns => {
+                            // Return all columns
+                            for (d.values) |val| {
+                                try result_row.append(self.allocator, try val.dupe(self.allocator));
+                            }
+                            break;
+                        },
+                        .expr => |e| {
+                            // Evaluate the expression
+                            const val = evalExpr(self.allocator, e.value, &input_row, null) catch
+                                return EngineError.ExecutionError;
+                            try result_row.append(self.allocator, val);
+                        },
+                        .table_all_columns => {
+                            // Return all columns
+                            for (d.values) |val| {
+                                try result_row.append(self.allocator, try val.dupe(self.allocator));
+                            }
+                            break;
+                        },
+                    }
+                }
+
+                try result_rows.append(self.allocator, try result_row.toOwnedSlice(self.allocator));
+            }
+
+            // Create MaterializedOp for RETURNING results
+            const ops = try self.allocator.create(OperatorChain);
+            ops.* = .{};
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                try result_col_names.toOwnedSlice(self.allocator),
+                try result_rows.toOwnedSlice(self.allocator),
+            );
+            ops.materialized = mat_op;
+
+            return .{
+                .rows = mat_op.iterator(),
+                .rows_affected = @intCast(rows_deleted),
+                .message = "DELETE",
+                ._ops = ops,
+            };
         }
 
         return .{

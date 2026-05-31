@@ -8926,10 +8926,187 @@ pub const AggregateOp = struct {
                     else => .null_value,
                 };
             },
-            .percentile_cont, .percentile_disc, .mode => {
-                // Ordered-set aggregates — for now return NULL
-                // TODO: implement percentile/mode computation
+            .percentile_cont => {
+                // percentile_cont(fraction) WITHIN GROUP (ORDER BY expr)
+                // Returns interpolated continuous percentile value
+                if (group.len == 0 or agg.order_exprs.len == 0) return .null_value;
+
+                // Evaluate the fraction argument (should be constant but may be expression)
+                if (agg.arg == null) return .null_value;
+                const frac_val = evalExpr(self.allocator, agg.arg.?, &group[0], null) catch return .null_value;
+                defer frac_val.free(self.allocator);
+
+                const fraction = frac_val.toReal() orelse return .null_value;
+                if (fraction < 0.0 or fraction > 1.0) return .null_value;
+
+                // Collect non-NULL values from the ORDER BY expression
+                var vals = std.ArrayListUnmanaged(Value){};
+                defer {
+                    for (vals.items) |v| v.free(self.allocator);
+                    vals.deinit(self.allocator);
+                }
+
+                for (group) |*row| {
+                    if (agg.order_exprs.len > 0) {
+                        const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
+                        if (val != .null_value) {
+                            vals.append(self.allocator, val) catch {
+                                val.free(self.allocator);
+                                return .null_value;
+                            };
+                        } else {
+                            val.free(self.allocator);
+                        }
+                    }
+                }
+
+                if (vals.items.len == 0) return .null_value;
+
+                // Sort values (by direction in order_dirs[0], default asc)
+                const dir = if (agg.order_dirs.len > 0) agg.order_dirs[0] else .asc;
+                std.mem.sort(Value, vals.items, dir, struct {
+                    fn compare(direction: ast.OrderDirection, a: Value, b: Value) bool {
+                        const cmp = Value.compare(a, b);
+                        return if (direction == .asc) cmp == .lt else cmp == .gt;
+                    }
+                }.compare);
+
+                // Interpolate: pos = fraction * (n - 1)
+                const n = @as(f64, @floatFromInt(vals.items.len));
+                const pos = fraction * (n - 1.0);
+                const lo = @as(usize, @intFromFloat(@floor(pos)));
+                const hi = @min(lo + 1, vals.items.len - 1);
+                const frac = pos - @floor(pos);
+
+                // If exact position or last value, return directly
+                if (frac == 0.0 or lo == hi) {
+                    if (lo < vals.items.len) {
+                        return vals.items[lo].dupe(self.allocator) catch .null_value;
+                    }
+                }
+
+                // Interpolate between lo and hi
+                const lo_real = vals.items[lo].toReal() orelse return .null_value;
+                const hi_real = vals.items[hi].toReal() orelse return .null_value;
+                return .{ .real = lo_real * (1.0 - frac) + hi_real * frac };
+            },
+            .percentile_disc => {
+                // percentile_disc(fraction) WITHIN GROUP (ORDER BY expr)
+                // Returns discrete percentile (smallest value >= cumulative fraction)
+                if (group.len == 0 or agg.order_exprs.len == 0) return .null_value;
+
+                if (agg.arg == null) return .null_value;
+                const frac_val = evalExpr(self.allocator, agg.arg.?, &group[0], null) catch return .null_value;
+                defer frac_val.free(self.allocator);
+
+                const fraction = frac_val.toReal() orelse return .null_value;
+                if (fraction < 0.0 or fraction > 1.0) return .null_value;
+
+                // Collect non-NULL values
+                var vals = std.ArrayListUnmanaged(Value){};
+                defer {
+                    for (vals.items) |v| v.free(self.allocator);
+                    vals.deinit(self.allocator);
+                }
+
+                for (group) |*row| {
+                    if (agg.order_exprs.len > 0) {
+                        const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
+                        if (val != .null_value) {
+                            vals.append(self.allocator, val) catch {
+                                val.free(self.allocator);
+                                return .null_value;
+                            };
+                        } else {
+                            val.free(self.allocator);
+                        }
+                    }
+                }
+
+                if (vals.items.len == 0) return .null_value;
+
+                // Sort values (by direction in order_dirs[0], default asc)
+                const dir = if (agg.order_dirs.len > 0) agg.order_dirs[0] else .asc;
+                std.mem.sort(Value, vals.items, dir, struct {
+                    fn compare(direction: ast.OrderDirection, a: Value, b: Value) bool {
+                        const cmp = Value.compare(a, b);
+                        return if (direction == .asc) cmp == .lt else cmp == .gt;
+                    }
+                }.compare);
+
+                // Discrete percentile: ceil(fraction * n) - 1 (0-indexed)
+                // Special case: fraction == 0 → index = 0
+                const n = @as(f64, @floatFromInt(vals.items.len));
+                const index = if (fraction == 0.0)
+                    0
+                else
+                    @as(usize, @intFromFloat(@ceil(fraction * n) - 1));
+
+                if (index < vals.items.len) {
+                    return vals.items[index].dupe(self.allocator) catch .null_value;
+                }
                 return .null_value;
+            },
+            .mode => {
+                // mode() WITHIN GROUP (ORDER BY expr)
+                // Returns most frequent value; on tie, returns first in ordering
+                if (group.len == 0 or agg.order_exprs.len == 0) return .null_value;
+
+                // Collect non-NULL values
+                var vals = std.ArrayListUnmanaged(Value){};
+                defer {
+                    for (vals.items) |v| v.free(self.allocator);
+                    vals.deinit(self.allocator);
+                }
+
+                for (group) |*row| {
+                    if (agg.order_exprs.len > 0) {
+                        const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
+                        if (val != .null_value) {
+                            vals.append(self.allocator, val) catch {
+                                val.free(self.allocator);
+                                return .null_value;
+                            };
+                        } else {
+                            val.free(self.allocator);
+                        }
+                    }
+                }
+
+                if (vals.items.len == 0) return .null_value;
+
+                // Sort values ascending for tie-breaking (mode returns smallest on tie)
+                std.mem.sort(Value, vals.items, {}, struct {
+                    fn compare(_: @TypeOf({}), a: Value, b: Value) bool {
+                        return Value.compare(a, b) == .lt;
+                    }
+                }.compare);
+
+                // Count frequencies: find max
+                var max_count: usize = 1;
+                var max_val: Value = vals.items[0];
+                var current_count: usize = 1;
+                var current_val: Value = vals.items[0];
+
+                for (vals.items[1..]) |val| {
+                    if (Value.compare(val, current_val) == .eq) {
+                        current_count += 1;
+                    } else {
+                        if (current_count > max_count) {
+                            max_count = current_count;
+                            max_val = current_val;
+                        }
+                        current_val = val;
+                        current_count = 1;
+                    }
+                }
+                // Check last group
+                if (current_count > max_count) {
+                    max_count = current_count;
+                    max_val = current_val;
+                }
+
+                return max_val.dupe(self.allocator) catch .null_value;
             },
         }
     }
