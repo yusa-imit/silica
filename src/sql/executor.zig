@@ -1975,6 +1975,7 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
         .subquery,
         .exists,
         .bind_parameter,
+        .ordered_set_agg,
         => return EvalError.UnsupportedExpression,
     }
 }
@@ -8925,6 +8926,11 @@ pub const AggregateOp = struct {
                     else => .null_value,
                 };
             },
+            .percentile_cont, .percentile_disc, .mode => {
+                // Ordered-set aggregates — for now return NULL
+                // TODO: implement percentile/mode computation
+                return .null_value;
+            },
         }
     }
 
@@ -9016,6 +9022,9 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .regr_sxx => "regr_sxx",
         .regr_syy => "regr_syy",
         .regr_sxy => "regr_sxy",
+        .percentile_cont => "percentile_cont",
+        .percentile_disc => "percentile_disc",
+        .mode => "mode",
     };
 }
 
