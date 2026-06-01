@@ -646,6 +646,8 @@ const OperatorChain = struct {
     stat_activity_scan: ?*executor_mod.StatActivityScanOp = null,
     /// LocksScanOp for pg_locks.
     locks_scan: ?*executor_mod.LocksScanOp = null,
+    /// LATERAL join operator.
+    lateral_join: ?*LateralJoinOp = null,
 
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
@@ -687,6 +689,7 @@ const OperatorChain = struct {
         if (self.window) |w| allocator.destroy(w);
         if (self.stat_activity_scan) |s| allocator.destroy(s);
         if (self.locks_scan) |l| allocator.destroy(l);
+        if (self.lateral_join) |lj| allocator.destroy(lj);
         // Clean up set operation sub-query chains.
         for (self.set_op_chains.items) |chain| {
             chain.cte_materialized = null;
@@ -710,6 +713,152 @@ const OperatorChain = struct {
             cte_map.deinit(allocator);
         }
         allocator.destroy(self);
+    }
+};
+
+/// LATERAL join operator — for each left row, evaluates right SRF with that row as context.
+const LateralJoinOp = struct {
+    allocator: Allocator,
+    db: *Database,
+    left: executor_mod.RowIterator,
+    tfs: PlanNode.TableFunctionScan,
+    join_type: ast_mod.JoinType,
+    on_condition: ?*const ast_mod.Expr,
+
+    // State
+    current_left_row: ?executor_mod.Row = null,
+    right_iter: ?executor_mod.RowIterator = null,
+    right_col_count: usize = 0,
+    right_ops: OperatorChain = .{},
+    exhausted: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        db: *Database,
+        left: executor_mod.RowIterator,
+        tfs: PlanNode.TableFunctionScan,
+        join_type: ast_mod.JoinType,
+        on_condition: ?*const ast_mod.Expr,
+    ) LateralJoinOp {
+        return .{
+            .allocator = allocator,
+            .db = db,
+            .left = left,
+            .tfs = tfs,
+            .join_type = join_type,
+            .on_condition = on_condition,
+        };
+    }
+
+    pub fn iterator(self: *LateralJoinOp) executor_mod.RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&LateralJoinOp.next),
+                .close = @ptrCast(&LateralJoinOp.close),
+            },
+        };
+    }
+
+    fn next(ctx: *anyopaque) executor_mod.ExecError!?executor_mod.Row {
+        const self: *LateralJoinOp = @ptrCast(@alignCast(ctx));
+
+        while (!self.exhausted) {
+            // If we have a right iterator, try to get the next row from it
+            if (self.right_iter) |*right| {
+                if (try right.next()) |right_row| {
+                    var rr = right_row;
+                    defer rr.deinit();
+                    if (self.current_left_row) |left_row| {
+                        return try executor_mod.combineRows(self.allocator, &left_row, &rr);
+                    }
+                    return executor_mod.ExecError.ExecutionError;
+                }
+                // Right iterator exhausted
+                right.close();
+                self.right_iter = null;
+
+                // For LEFT JOIN LATERAL, if right produced no rows, emit left with NULLs
+                if (self.join_type == .left) {
+                    if (self.current_left_row) |left_row| {
+                        const null_cols = try self.allocator.alloc([]const u8, self.right_col_count);
+                        errdefer self.allocator.free(null_cols);
+                        for (null_cols, 0..) |*col, i| {
+                            col.* = try std.fmt.allocPrint(self.allocator, "col_{d}", .{i});
+                        }
+
+                        const null_vals = try self.allocator.alloc(executor_mod.Value, self.right_col_count);
+                        errdefer self.allocator.free(null_vals);
+                        for (null_vals) |*val| {
+                            val.* = .null_value;
+                        }
+
+                        var null_right = executor_mod.Row{
+                            .columns = null_cols,
+                            .values = null_vals,
+                            .allocator = self.allocator,
+                        };
+                        defer null_right.deinit();
+                        return try executor_mod.combineRows(self.allocator, &left_row, &null_right);
+                    }
+                }
+
+                // Note: right_ops is cleaned up automatically when LateralJoinOp is destroyed
+                // Don't explicitly deinit here to avoid double-free
+            }
+
+            // Need next left row
+            if (self.current_left_row) |*old| {
+                old.deinit();
+                self.current_left_row = null;
+            }
+
+            const left_row = try self.left.next() orelse {
+                self.exhausted = true;
+                return null;
+            };
+            self.current_left_row = left_row;
+
+            // Evaluate right SRF with left_row as context
+            self.right_ops = .{};
+            self.right_iter = self.db.buildTableFunctionScanWithContext(
+                self.tfs,
+                left_row,
+                &self.right_ops,
+            ) catch return executor_mod.ExecError.ExecutionError;
+
+            // Peek at first right row to determine column count
+            if (try self.right_iter.?.next()) |peek_row| {
+                var pr = peek_row;
+                defer pr.deinit();
+                self.right_col_count = pr.columns.len;
+                if (self.current_left_row) |left_row2| {
+                    return try executor_mod.combineRows(self.allocator, &left_row2, &pr);
+                }
+                return executor_mod.ExecError.ExecutionError;
+            }
+
+            // Right iterator returned no rows on first call
+            // For LEFT JOIN, we'll emit left + NULLs (handled next loop)
+            // For INNER, we skip this left row
+            if (self.join_type != .left) {
+                if (self.right_iter) |*r| r.close();
+                self.right_iter = null;
+                self.right_ops.deinit(self.allocator);
+                self.right_ops = .{};
+            }
+            // Continue loop to handle LEFT JOIN or get next left row
+        }
+
+        return null;
+    }
+
+    pub fn close(ctx: *anyopaque) void {
+        const self: *LateralJoinOp = @ptrCast(@alignCast(ctx));
+        if (self.right_iter) |*r| r.close();
+        if (self.current_left_row) |*lr| lr.deinit();
+        // Note: right_ops deinit is handled by OperatorChain cleanup, not here
+        self.left.close();
     }
 };
 
@@ -1679,6 +1828,366 @@ pub const Database = struct {
             defer view_info.deinit();
             return self.buildViewScan(scan, ops, view_info);
         }
+    }
+
+    fn buildTableFunctionScanWithContext(
+        self: *Database,
+        tfs: PlanNode.TableFunctionScan,
+        context_row: executor_mod.Row,
+        ops: *OperatorChain,
+    ) EngineError!executor_mod.RowIterator {
+        // Handle unnest() function with context
+        if (std.mem.eql(u8, tfs.function_name, "unnest")) {
+            if (tfs.args.len != 1) {
+                return EngineError.ExecutionError;
+            }
+
+            // Evaluate the array argument using the context row
+            const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+                return EngineError.ExecutionError;
+
+            if (array_value != .array) {
+                array_value.free(self.allocator);
+                return EngineError.ExecutionError;
+            }
+
+            const col_name = if (tfs.alias) |a|
+                try std.fmt.allocPrint(self.allocator, "{s}", .{a})
+            else
+                try std.fmt.allocPrint(self.allocator, "unnest", .{});
+
+            const col_names = try self.allocator.alloc([]const u8, 1);
+            col_names[0] = col_name;
+
+            var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
+            for (array_value.array) |elem| {
+                const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                vals[0] = try elem.dupe(self.allocator);
+                try rows.append(self.allocator, vals);
+            }
+
+            array_value.free(self.allocator);
+
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+
+            ops.materialized = mat_op;
+            return mat_op.iterator();
+        }
+
+        // Handle generate_series() function with context
+        if (std.mem.eql(u8, tfs.function_name, "generate_series")) {
+            if (tfs.args.len < 2 or tfs.args.len > 3) {
+                return EngineError.ExecutionError;
+            }
+
+            // Evaluate the arguments using the context row
+            const start_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+                return EngineError.ExecutionError;
+            defer start_val.free(self.allocator);
+
+            const stop_val = executor_mod.evalExpr(self.allocator, tfs.args[1], &context_row, null) catch
+                return EngineError.ExecutionError;
+            defer stop_val.free(self.allocator);
+
+            const step_val = if (tfs.args.len > 2)
+                executor_mod.evalExpr(self.allocator, tfs.args[2], &context_row, null) catch return EngineError.ExecutionError
+            else
+                null;
+            defer if (step_val) |sv| sv.free(self.allocator);
+
+            const col_name = if (tfs.alias) |a|
+                try std.fmt.allocPrint(self.allocator, "{s}", .{a})
+            else
+                try std.fmt.allocPrint(self.allocator, "generate_series", .{});
+
+            const col_names = try self.allocator.alloc([]const u8, 1);
+            col_names[0] = col_name;
+
+            var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
+
+            const is_float = start_val == .real or stop_val == .real or (step_val != null and step_val.? == .real);
+
+            if (is_float) {
+                const start = switch (start_val) {
+                    .integer => |i| @as(f64, @floatFromInt(i)),
+                    .real => |r| r,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const stop = switch (stop_val) {
+                    .integer => |i| @as(f64, @floatFromInt(i)),
+                    .real => |r| r,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const step = if (step_val) |sv|
+                    switch (sv) {
+                        .integer => |i| @as(f64, @floatFromInt(i)),
+                        .real => |r| r,
+                        else => return EngineError.ExecutionError,
+                    }
+                else
+                    @as(f64, 1.0);
+
+                if (step == 0.0 or (step > 0 and start > stop) or (step < 0 and start < stop)) {
+                    // Empty result
+                } else {
+                    var v = start;
+                    const max_rows = 10_000_000;
+                    var count: usize = 0;
+                    while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
+                        if (count >= max_rows) break;
+                        const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                        vals[0] = .{ .real = v };
+                        try rows.append(self.allocator, vals);
+                        v += step;
+                    }
+                }
+            } else {
+                const start = switch (start_val) {
+                    .integer => |i| i,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const stop = switch (stop_val) {
+                    .integer => |i| i,
+                    else => return EngineError.ExecutionError,
+                };
+
+                const step = if (step_val) |sv|
+                    switch (sv) {
+                        .integer => |i| i,
+                        else => return EngineError.ExecutionError,
+                    }
+                else
+                    1;
+
+                if (step == 0 or (step > 0 and start > stop) or (step < 0 and start < stop)) {
+                    // Empty result
+                } else {
+                    var v = start;
+                    const max_rows = 10_000_000;
+                    var count: usize = 0;
+                    while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
+                        if (count >= max_rows) break;
+                        const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                        vals[0] = .{ .integer = v };
+                        try rows.append(self.allocator, vals);
+                        if (step > 0) {
+                            v +|= @as(i64, @intCast(step));
+                        } else {
+                            v -|= @as(i64, @intCast(-step));
+                        }
+                    }
+                }
+            }
+
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+
+            ops.materialized = mat_op;
+            return mat_op.iterator();
+        }
+
+        // For other functions (json_each, json_array_elements, etc.), handle with context row
+        // by using standard JSON parsing like buildTableFunctionScan does.
+        // Handle json_each() and jsonb_each() — expand JSON object into (key, value) rows
+        if (std.mem.eql(u8, tfs.function_name, "json_each") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_each") or
+            std.mem.eql(u8, tfs.function_name, "json_each_text") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_each_text"))
+        {
+            const as_text = std.mem.endsWith(u8, tfs.function_name, "_text");
+
+            if (tfs.args.len != 1) return EngineError.ExecutionError;
+
+            // Evaluate with context row instead of empty row
+            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+                return EngineError.ExecutionError;
+            defer json_val.free(self.allocator);
+
+            // NULL → empty result
+            if (json_val == .null_value) {
+                const col_names = try self.allocator.alloc([]const u8, 2);
+                col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
+                col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+                const mat_op = try self.allocator.create(MaterializedOp);
+                mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
+                ops.materialized = mat_op;
+                return mat_op.iterator();
+            }
+
+            const json_text = switch (json_val) {
+                .text => |t| t,
+                .blob => |b| b,
+                else => return EngineError.ExecutionError,
+            };
+
+            const col_names = try self.allocator.alloc([]const u8, 2);
+            col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
+            col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+
+            var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
+
+            // Parse and iterate JSON object entries
+            if (std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{})) |parsed| {
+                defer parsed.deinit();
+
+                switch (parsed.value) {
+                    .object => |obj| {
+                        var iter = obj.iterator();
+                        while (iter.next()) |entry| {
+                            const vals = try self.allocator.alloc(executor_mod.Value, 2);
+                            vals[0] = .{ .text = try self.allocator.dupe(u8, entry.key_ptr.*) };
+                            vals[1] = blk: {
+                                const v = entry.value_ptr.*;
+                                if (as_text) {
+                                    // _text variant: return bare text, null for null
+                                    switch (v) {
+                                        .null => break :blk executor_mod.Value.null_value,
+                                        .string => |s| break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, s) },
+                                        .integer => |i| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
+                                        .float => |f| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
+                                        .bool => |b| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                        else => {
+                                            var buf = std.ArrayListUnmanaged(u8){};
+                                            defer buf.deinit(self.allocator);
+                                            try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
+                                            break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                        },
+                                    }
+                                } else {
+                                    // json_each: serialize value back to JSON text
+                                    var buf = std.ArrayListUnmanaged(u8){};
+                                    defer buf.deinit(self.allocator);
+                                    try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
+                                    break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                }
+                            };
+                            try rows.append(self.allocator, vals);
+                        }
+                    },
+                    else => {}, // Not an object → empty result
+                }
+            } else |_| {
+                // Parse error → empty result
+            }
+
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+
+            ops.materialized = mat_op;
+            return mat_op.iterator();
+        }
+
+        // Handle json_array_elements() function with context
+        if (std.mem.eql(u8, tfs.function_name, "json_array_elements") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_array_elements") or
+            std.mem.eql(u8, tfs.function_name, "json_array_elements_text") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_array_elements_text"))
+        {
+            const as_text = std.mem.endsWith(u8, tfs.function_name, "_text");
+
+            if (tfs.args.len != 1) return EngineError.ExecutionError;
+
+            // Evaluate with context row
+            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+                return EngineError.ExecutionError;
+            defer json_val.free(self.allocator);
+
+            // NULL → empty result
+            if (json_val == .null_value) {
+                const col_name = if (tfs.alias) |a|
+                    try std.fmt.allocPrint(self.allocator, "{s}", .{a})
+                else
+                    try std.fmt.allocPrint(self.allocator, "value", .{});
+                const col_names = try self.allocator.alloc([]const u8, 1);
+                col_names[0] = col_name;
+                const mat_op = try self.allocator.create(MaterializedOp);
+                mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
+                ops.materialized = mat_op;
+                return mat_op.iterator();
+            }
+
+            const json_text = switch (json_val) {
+                .text => |t| t,
+                .blob => |b| b,
+                else => return EngineError.ExecutionError,
+            };
+
+            const col_name = if (tfs.alias) |a|
+                try std.fmt.allocPrint(self.allocator, "{s}", .{a})
+            else
+                try std.fmt.allocPrint(self.allocator, "value", .{});
+            const col_names = try self.allocator.alloc([]const u8, 1);
+            col_names[0] = col_name;
+
+            var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
+
+            // Parse and iterate JSON array elements
+            if (std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{})) |parsed| {
+                defer parsed.deinit();
+
+                switch (parsed.value) {
+                    .array => |arr| {
+                        for (arr.items) |elem| {
+                            const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                            vals[0] = blk: {
+                                if (as_text) {
+                                    switch (elem) {
+                                        .null => break :blk executor_mod.Value.null_value,
+                                        .string => |s| break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, s) },
+                                        .integer => |i| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
+                                        .float => |f| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
+                                        .bool => |b| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                        else => {
+                                            var buf = std.ArrayListUnmanaged(u8){};
+                                            defer buf.deinit(self.allocator);
+                                            try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(elem, .{})});
+                                            break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                        },
+                                    }
+                                } else {
+                                    var buf = std.ArrayListUnmanaged(u8){};
+                                    defer buf.deinit(self.allocator);
+                                    try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(elem, .{})});
+                                    break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                }
+                            };
+                            try rows.append(self.allocator, vals);
+                        }
+                    },
+                    else => {}, // Not an array → empty result
+                }
+            } else |_| {
+                // Parse error → empty result
+            }
+
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+
+            ops.materialized = mat_op;
+            return mat_op.iterator();
+        }
+
+        return EngineError.ExecutionError;
     }
 
     fn buildTableFunctionScan(self: *Database, tfs: PlanNode.TableFunctionScan, ops: *OperatorChain) EngineError!RowIterator {
@@ -2663,6 +3172,19 @@ pub const Database = struct {
     }
 
     fn buildJoin(self: *Database, join: PlanNode.Join, ops: *OperatorChain) EngineError!RowIterator {
+        // Check if right side is a LATERAL table function scan
+        if (join.right.* == .table_function_scan) {
+            const tfs = join.right.table_function_scan;
+            if (tfs.is_lateral) {
+                // Use LateralJoinOp instead of regular join
+                const left = try self.buildIterator(join.left, ops);
+                const lateral_op = self.allocator.create(LateralJoinOp) catch return EngineError.OutOfMemory;
+                lateral_op.* = LateralJoinOp.init(self.allocator, self, left, tfs, join.join_type, join.on_condition);
+                ops.lateral_join = lateral_op;
+                return lateral_op.iterator();
+            }
+        }
+
         const left = try self.buildIterator(join.left, ops);
         const right = try self.buildIterator(join.right, ops);
 
@@ -23380,5 +23902,197 @@ test "json_each with WHERE clause" {
     for (keys.items) |k| {
         try testing.expect(!std.mem.eql(u8, k, "b"));
     }
+}
+
+// ── LATERAL join support for table-valued functions ──────────────────────────
+
+test "LATERAL — json_each expands column from table" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_lateral_json_each.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with JSON data
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, data TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert a row with JSON object
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, '{\"name\":\"Alice\",\"age\":30}')");
+    defer r2.close(testing.allocator);
+
+    // Select with LATERAL json_each - should expand JSON object
+    var r3 = try db.execSQL("SELECT key, value FROM t, LATERAL json_each(t.data) j");
+    defer r3.close(testing.allocator);
+
+    var rows = std.ArrayListUnmanaged([2][]const u8){};
+    defer {
+        for (rows.items) |row_pair| {
+            testing.allocator.free(row_pair[0]);
+            testing.allocator.free(row_pair[1]);
+        }
+        rows.deinit(testing.allocator);
+    }
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const key = try testing.allocator.dupe(u8, row.values[0].text);
+        const value = try testing.allocator.dupe(u8, row.values[1].text);
+        try rows.append(testing.allocator, .{ key, value });
+    }
+
+    // Should have 2 rows: (name, Alice) and (age, 30)
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+
+    // Verify both keys are present
+    var found_name = false;
+    var found_age = false;
+    for (rows.items) |row_pair| {
+        if (std.mem.eql(u8, row_pair[0], "name")) {
+            found_name = true;
+            try testing.expectEqualStrings("Alice", row_pair[1]);
+        } else if (std.mem.eql(u8, row_pair[0], "age")) {
+            found_age = true;
+            try testing.expectEqualStrings("30", row_pair[1]);
+        }
+    }
+    try testing.expect(found_name);
+    try testing.expect(found_age);
+}
+
+test "LATERAL — json_each multiple rows expand independently" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_lateral_json_each_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with JSON data
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, data TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert two rows with different JSON
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, '{\"x\":1,\"y\":2}'), (2, '{\"a\":10,\"b\":20}')");
+    defer r2.close(testing.allocator);
+
+    // Select with LATERAL json_each - should produce 4 rows total (2+2)
+    var r3 = try db.execSQL("SELECT t.id, j.key, j.value FROM t, LATERAL json_each(t.data) j");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+
+    // Should have 4 rows total
+    try testing.expectEqual(@as(usize, 4), row_count);
+}
+
+test "LATERAL — LEFT JOIN LATERAL with empty JSON object" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_lateral_left_join.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with JSON data
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, data TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert a row with empty JSON object
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, '{}')");
+    defer r2.close(testing.allocator);
+
+    // LEFT JOIN LATERAL json_each should emit left row even if right produces no rows
+    var r3 = try db.execSQL("SELECT t.id, j.key, j.value FROM t LEFT JOIN LATERAL json_each(t.data) j ON true");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var has_null_key = false;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+        // For LEFT JOIN with no matching right rows, key and value should be NULL
+        if (row.values[1] == .null_value) {
+            has_null_key = true;
+        }
+    }
+
+    // Should have 1 row from the left table
+    try testing.expectEqual(@as(usize, 1), row_count);
+    try testing.expect(has_null_key);
+}
+
+test "LATERAL — json_array_elements expands column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_lateral_json_array.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with JSON array data
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, data TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert a row with JSON array
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, '[1,2,3]')");
+    defer r2.close(testing.allocator);
+
+    // Select with LATERAL json_array_elements - should expand array
+    var r3 = try db.execSQL("SELECT t.id, e.value FROM t, LATERAL json_array_elements(t.data) e");
+    defer r3.close(testing.allocator);
+
+    var values = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (values.items) |v| testing.allocator.free(v);
+        values.deinit(testing.allocator);
+    }
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = try testing.allocator.dupe(u8, row.values[1].text);
+        try values.append(testing.allocator, val);
+    }
+
+    // Should have 3 rows: 1, 2, 3
+    try testing.expectEqual(@as(usize, 3), values.items.len);
+    try testing.expectEqualStrings("1", values.items[0]);
+    try testing.expectEqualStrings("2", values.items[1]);
+    try testing.expectEqualStrings("3", values.items[2]);
+}
+
+test "LATERAL — generate_series with column as stop" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_lateral_generate_series.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with integer values
+    var r1 = try db.execSQL("CREATE TABLE t (n INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert values 1, 2, 3
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1), (2), (3)");
+    defer r2.close(testing.allocator);
+
+    // Select with LATERAL generate_series - should produce 1 + 2 + 3 = 6 rows total
+    var r3 = try db.execSQL("SELECT t.n, s.generate_series FROM t, LATERAL generate_series(1, t.n) s");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+
+    // Should have 1 + 2 + 3 = 6 rows total
+    try testing.expectEqual(@as(usize, 6), row_count);
 }
 

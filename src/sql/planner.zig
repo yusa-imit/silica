@@ -186,6 +186,7 @@ pub const PlanNode = union(enum) {
         function_name: []const u8,
         args: []const *const ast.Expr,
         alias: ?[]const u8 = null,
+        is_lateral: bool = false,
     };
 
     pub const Filter = struct {
@@ -644,6 +645,7 @@ pub const Planner = struct {
                     .function_name = tf.name,
                     .args = tf.args,
                     .alias = tf.alias,
+                    .is_lateral = tf.is_lateral,
                 } });
             },
         };

@@ -337,6 +337,18 @@ pub const Parser = struct {
             stmt.from = try self.parseTableRef();
 
             var joins = std.ArrayListUnmanaged(ast.JoinClause){};
+
+            // Handle comma-separated table references (implicit CROSS JOIN)
+            while (self.match(.comma)) {
+                const right_table = try self.parseTableRef();
+                joins.append(a, .{
+                    .join_type = .cross,
+                    .table = right_table,
+                    .on_condition = null,
+                }) catch return error.OutOfMemory;
+            }
+
+            // Handle explicit JOINs
             while (self.peekIsJoinKeyword()) {
                 joins.append(a, try self.parseJoin()) catch return error.OutOfMemory;
             }
@@ -509,6 +521,9 @@ pub const Parser = struct {
     }
 
     fn parseTableRef(self: *Parser) Error!*const ast.TableRef {
+        // Check for LATERAL keyword
+        const is_lateral = self.match(.kw_lateral);
+
         if (self.match(.left_paren)) {
             if (self.check(.kw_select)) {
                 const select = try self.parseSelect();
@@ -517,7 +532,7 @@ pub const Parser = struct {
                 const alias = try self.expectIdentifier();
                 const sel_ptr = self.arena.create(ast.SelectStmt, select) catch return error.OutOfMemory;
                 return self.arena.create(ast.TableRef, .{
-                    .subquery = .{ .select = sel_ptr, .alias = alias },
+                    .subquery = .{ .select = sel_ptr, .alias = alias, .is_lateral = is_lateral },
                 }) catch return error.OutOfMemory;
             }
             try self.addError(self.peek(), "expected SELECT in subquery");
@@ -552,6 +567,7 @@ pub const Parser = struct {
                     .name = name,
                     .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
                     .alias = alias,
+                    .is_lateral = is_lateral,
                 },
             }) catch return error.OutOfMemory;
         }
@@ -574,7 +590,7 @@ pub const Parser = struct {
             t == .kw_having or t == .kw_limit or t == .kw_join or
             t == .kw_inner or t == .kw_left or t == .kw_right or
             t == .kw_full or t == .kw_cross or t == .kw_natural or
-            t == .kw_on or t == .kw_set;
+            t == .kw_lateral or t == .kw_on or t == .kw_set;
     }
 
     fn peekIsJoinKeyword(self: *const Parser) bool {

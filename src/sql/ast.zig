@@ -125,12 +125,14 @@ pub const TableRef = union(enum) {
     subquery: struct {
         select: *const SelectStmt,
         alias: []const u8,
+        is_lateral: bool = false,
     },
     /// Table function call: func(args...) with optional alias
     table_function: struct {
         name: []const u8,
         args: []const *const Expr,
         alias: ?[]const u8 = null,
+        is_lateral: bool = false,
     },
 };
 

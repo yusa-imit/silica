@@ -9324,7 +9324,7 @@ pub const NestedLoopJoinOp = struct {
     }
 };
 
-fn combineRows(allocator: Allocator, left: *const Row, right: *const Row) ExecError!Row {
+pub fn combineRows(allocator: Allocator, left: *const Row, right: *const Row) ExecError!Row {
     const total = left.columns.len + right.columns.len;
     const cols = allocator.alloc([]const u8, total) catch return ExecError.OutOfMemory;
     errdefer allocator.free(cols);
