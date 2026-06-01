@@ -9,24 +9,27 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 332 - FEATURE MODE)
-- **Date**: 2026-05-27
-- **Mode**: FEATURE MODE (Session 332)
-- **Focus**: Cryptographic and string encoding SQL built-in functions
-- **Outcome**: ✅ 6 new functions implemented, 22 new tests
+### Last Session (Session 352 - FEATURE MODE)
+- **Date**: 2026-06-01
+- **Mode**: FEATURE MODE (Session 352)
+- **Focus**: INSERT ON CONFLICT (upsert) — DO NOTHING and DO UPDATE SET
+- **Outcome**: ✅ Full upsert support implemented, 8 new TDD tests, all passing
 - **Details**:
   - **CI Status**: ✅ GREEN
   - **GitHub Issues**: 0 open
   - **Work Done**:
-    - `md5(text)` — MD5 hash → lowercase 32-char hex string
-    - `encode(data, format)` — 'hex', 'base64', 'escape' encoding
-    - `decode(data, format)` — reverse of encode for 'hex' and 'base64'
-    - `quote_ident(text)` — double-quoted SQL identifier (doubles internal `"`)
-    - `quote_literal(text)` — single-quoted SQL string (doubles internal `'`)
-    - `overlay(string, placing, from [, for])` — SQL standard string overlay; default for=length(placing)
-  - **Tests**: 3287 passed, 37 skipped (+22 new)
-  - **Commits**: a10912b
-- **Project State**: v1.0.1 stable, crypto/encoding SQL functions added
+    - Tokenizer: kw_conflict, kw_do, kw_nothing, kw_excluded
+    - AST: OnConflictClause with action (nothing|update) and assignments
+    - Parser: ON CONFLICT [(cols...)] DO NOTHING | DO UPDATE SET col=expr,...
+    - Planner: on_conflict threaded through insert plan node
+    - Engine: DO NOTHING (skips row), DO UPDATE (finds conflict via unique index,
+      reads existing row, evaluates SET assignments with EXCLUDED.col support,
+      delete+reinsert updated row, maintains indexes)
+  - **Tests**: 3422 passed total (+8 new upsert tests)
+  - **Commits**: 9facf0b
+  - **Architecture**: Combined row built with "excluded.col" names for EXCLUDED
+    references; getQualifiedColumn() already handles prefix matching
+- **Project State**: v1.0.1 stable, upsert support added
 
 ### Session 326 (FEATURE MODE)
 - **Date**: 2026-05-26
