@@ -22228,3 +22228,182 @@ test "DELETE RETURNING *" {
     try testing.expect((try r3.rows.?.next()) == null);
 }
 
+test "DELETE RETURNING specific column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_delete_ret_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users (id, name) VALUES (4, 'David')");
+    defer r2.close(testing.allocator);
+
+    // Delete with RETURNING specific column
+    var r3 = try db.execSQL("DELETE FROM users WHERE id = 4 RETURNING name");
+    defer r3.close(testing.allocator);
+
+    // Should return only the name of deleted row
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("David", row.values[0].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try r3.rows.?.next()) == null);
+}
+
+test "UPDATE RETURNING multiple rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_update_ret_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert multiple rows
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER, name TEXT, category TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO products (id, name, category) VALUES (1, 'Widget', 'tools'), (2, 'Gadget', 'tools'), (3, 'Gizmo', 'tools')");
+    defer r2.close(testing.allocator);
+
+    // Update multiple rows with RETURNING *
+    var r3 = try db.execSQL("UPDATE products SET category = 'electronics' WHERE category = 'tools' RETURNING *");
+    defer r3.close(testing.allocator);
+
+    // Should return all 3 updated rows
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        // Verify structure: id, name, category
+        try testing.expect(row.values[0].integer > 0 and row.values[0].integer <= 3);
+        try testing.expectEqualStrings("electronics", row.values[2].text);
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "INSERT RETURNING multiple rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_insert_ret_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, value TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert multiple rows with RETURNING *
+    var r2 = try db.execSQL("INSERT INTO items (id, value) VALUES (10, 'first'), (11, 'second'), (12, 'third') RETURNING *");
+    defer r2.close(testing.allocator);
+
+    // Should return all 3 inserted rows
+    var count: usize = 0;
+    var ids: [3]i64 = undefined;
+    var values: [3][16]u8 = undefined;
+    var value_lens: [3]usize = undefined;
+
+    while (try r2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (count < 3) {
+            ids[count] = row.values[0].integer;
+            const text = row.values[1].text;
+            value_lens[count] = text.len;
+            @memcpy(values[count][0..text.len], text);
+        }
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+    try testing.expectEqual(@as(i64, 10), ids[0]);
+    try testing.expectEqual(@as(i64, 11), ids[1]);
+    try testing.expectEqual(@as(i64, 12), ids[2]);
+}
+
+test "percentile_cont with integers" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_int.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE scores (score INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO scores VALUES (10), (20), (30), (40), (50)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY score) FROM scores");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // percentile_cont(0.5) with [10,20,30,40,50]: position = 0.5 * (5-1) = 2.0 → value at index 2 = 30
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 30.0), r, 0.001),
+            .integer => |i| try testing.expectEqual(@as(i64, 30), i),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "mode() WITHIN GROUP - all same value" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mode_all_same.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (5), (5), (5), (5)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT mode() WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // All values are 5, so mode should be 5
+        try testing.expectEqual(@as(i64, 5), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont empty table" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
+    r1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM vals");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        // Empty table should return NULL
+        try testing.expect(row.values[0] == .null_value);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
