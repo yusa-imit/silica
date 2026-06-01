@@ -161,7 +161,7 @@ pub const Analyzer = struct {
     }
 
     /// Register a table function's output columns in scope.
-    /// Currently supports unnest() and generate_series() which produce a single column.
+    /// Currently supports unnest(), generate_series(), json_each(), json_array_elements().
     fn addTableFunctionToScope(self: *Analyzer, ref: *const ast.TableRef) void {
         const tf = ref.table_function;
 
@@ -221,6 +221,41 @@ pub const Analyzer = struct {
                 .flags = .{},
             };
 
+            self.scope_tables.append(self.allocator, .{
+                .alias = func_alias,
+                .table_name = tf.name,
+                .columns = cols,
+            }) catch {};
+        } else if (std.mem.eql(u8, tf.name, "json_each") or
+                   std.mem.eql(u8, tf.name, "jsonb_each") or
+                   std.mem.eql(u8, tf.name, "json_each_text") or
+                   std.mem.eql(u8, tf.name, "jsonb_each_text"))
+        {
+            // json_each/json_each_text produce 2 columns: key (text), value (text)
+            const arena = self.arena.allocator();
+            const cols = arena.alloc(ColumnInfo, 2) catch {
+                self.addError(.invalid_expression, "out of memory", .{});
+                return;
+            };
+            cols[0] = .{ .name = "key", .column_type = .text, .flags = .{} };
+            cols[1] = .{ .name = "value", .column_type = .text, .flags = .{} };
+            self.scope_tables.append(self.allocator, .{
+                .alias = func_alias,
+                .table_name = tf.name,
+                .columns = cols,
+            }) catch {};
+        } else if (std.mem.eql(u8, tf.name, "json_array_elements") or
+                   std.mem.eql(u8, tf.name, "jsonb_array_elements") or
+                   std.mem.eql(u8, tf.name, "json_array_elements_text") or
+                   std.mem.eql(u8, tf.name, "jsonb_array_elements_text"))
+        {
+            // json_array_elements/json_array_elements_text produce 1 column: value (text)
+            const arena = self.arena.allocator();
+            const cols = arena.alloc(ColumnInfo, 1) catch {
+                self.addError(.invalid_expression, "out of memory", .{});
+                return;
+            };
+            cols[0] = .{ .name = "value", .column_type = .text, .flags = .{} };
             self.scope_tables.append(self.allocator, .{
                 .alias = func_alias,
                 .table_name = tf.name,

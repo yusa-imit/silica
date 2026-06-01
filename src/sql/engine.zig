@@ -1867,6 +1867,181 @@ pub const Database = struct {
             return mat_op.iterator();
         }
 
+        // Handle json_each() and jsonb_each() — expand JSON object into (key, value) rows
+        if (std.mem.eql(u8, tfs.function_name, "json_each") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_each") or
+            std.mem.eql(u8, tfs.function_name, "json_each_text") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_each_text"))
+        {
+            const as_text = std.mem.endsWith(u8, tfs.function_name, "_text");
+
+            if (tfs.args.len != 1) return EngineError.ExecutionError;
+
+            var empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
+            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+                return EngineError.ExecutionError;
+            defer json_val.free(self.allocator);
+
+            // NULL → empty result
+            if (json_val == .null_value) {
+                const col_names = try self.allocator.alloc([]const u8, 2);
+                col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
+                col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+                const mat_op = try self.allocator.create(MaterializedOp);
+                mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
+                ops.materialized = mat_op;
+                return mat_op.iterator();
+            }
+
+            const json_text = switch (json_val) {
+                .text => |t| t,
+                .blob => |b| b,
+                else => return EngineError.ExecutionError,
+            };
+
+            const col_names = try self.allocator.alloc([]const u8, 2);
+            col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
+            col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+
+            var rows = std.ArrayListUnmanaged([]Value){};
+
+            // Parse and iterate JSON object entries
+            if (std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{})) |parsed| {
+                defer parsed.deinit();
+
+                switch (parsed.value) {
+                    .object => |obj| {
+                        var iter = obj.iterator();
+                        while (iter.next()) |entry| {
+                            const vals = try self.allocator.alloc(Value, 2);
+                            vals[0] = .{ .text = try self.allocator.dupe(u8, entry.key_ptr.*) };
+                            vals[1] = blk: {
+                                const v = entry.value_ptr.*;
+                                if (as_text) {
+                                    // _text variant: return bare text, null for null
+                                    switch (v) {
+                                        .null => break :blk Value.null_value,
+                                        .string => |s| break :blk Value{ .text = try self.allocator.dupe(u8, s) },
+                                        .integer => |i| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
+                                        .float => |f| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
+                                        .bool => |b| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                        else => {
+                                            var buf = std.ArrayListUnmanaged(u8){};
+                                            defer buf.deinit(self.allocator);
+                                            try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
+                                            break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                        },
+                                    }
+                                } else {
+                                    // json_each: serialize value back to JSON text
+                                    var buf = std.ArrayListUnmanaged(u8){};
+                                    defer buf.deinit(self.allocator);
+                                    try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
+                                    break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                }
+                            };
+                            try rows.append(self.allocator, vals);
+                        }
+                    },
+                    else => {}, // Not an object → empty result
+                }
+            } else |_| {
+                // Parse error → empty result
+            }
+
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+            ops.materialized = mat_op;
+            return mat_op.iterator();
+        }
+
+        // Handle json_array_elements() and jsonb_array_elements() — expand JSON array into value rows
+        if (std.mem.eql(u8, tfs.function_name, "json_array_elements") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_array_elements") or
+            std.mem.eql(u8, tfs.function_name, "json_array_elements_text") or
+            std.mem.eql(u8, tfs.function_name, "jsonb_array_elements_text"))
+        {
+            const as_text = std.mem.endsWith(u8, tfs.function_name, "_text");
+
+            if (tfs.args.len != 1) return EngineError.ExecutionError;
+
+            var empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
+            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+                return EngineError.ExecutionError;
+            defer json_val.free(self.allocator);
+
+            const col_name = try std.fmt.allocPrint(self.allocator, "value", .{});
+            const col_names = try self.allocator.alloc([]const u8, 1);
+            col_names[0] = col_name;
+
+            var rows = std.ArrayListUnmanaged([]Value){};
+
+            // NULL → empty result
+            if (json_val != .null_value) {
+                const json_text = switch (json_val) {
+                    .text => |t| t,
+                    .blob => |b| b,
+                    else => {
+                        // Free col_names and return error
+                        self.allocator.free(col_name);
+                        self.allocator.free(col_names);
+                        return EngineError.ExecutionError;
+                    },
+                };
+
+                if (std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{})) |parsed| {
+                    defer parsed.deinit();
+
+                    switch (parsed.value) {
+                        .array => |arr| {
+                            for (arr.items) |item| {
+                                const vals = try self.allocator.alloc(Value, 1);
+                                vals[0] = blk: {
+                                    if (as_text) {
+                                        switch (item) {
+                                            .null => break :blk Value.null_value,
+                                            .string => |s| break :blk Value{ .text = try self.allocator.dupe(u8, s) },
+                                            .integer => |i| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
+                                            .float => |f| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
+                                            .bool => |b| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                            else => {
+                                                var buf = std.ArrayListUnmanaged(u8){};
+                                                defer buf.deinit(self.allocator);
+                                                try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(item, .{})});
+                                                break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                            },
+                                        }
+                                    } else {
+                                        var buf = std.ArrayListUnmanaged(u8){};
+                                        defer buf.deinit(self.allocator);
+                                        try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(item, .{})});
+                                        break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                    }
+                                };
+                                try rows.append(self.allocator, vals);
+                            }
+                        },
+                        else => {}, // Not an array → empty result
+                    }
+                } else |_| {
+                    // Parse error → empty result
+                }
+            }
+
+            const mat_op = try self.allocator.create(MaterializedOp);
+            mat_op.* = MaterializedOp.init(
+                self.allocator,
+                col_names,
+                try rows.toOwnedSlice(self.allocator),
+            );
+            ops.materialized = mat_op;
+            return mat_op.iterator();
+        }
+
         // Unknown table function
         return EngineError.ExecutionError;
     }
@@ -22876,5 +23051,334 @@ test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
         count2 += 1;
     }
     try testing.expectEqual(@as(usize, 0), count2);
+}
+
+// ============================================================================
+// JSON Table-Valued Functions Tests (json_each, json_each_text,
+// json_array_elements, json_array_elements_text)
+// ============================================================================
+
+test "json_each — basic object returns key-value rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM json_each('{\"a\":1,\"b\":\"hello\"}')");
+    defer r.close(testing.allocator);
+
+    // Collect all rows (order may vary for JSON object keys)
+    var rows_collected = std.ArrayListUnmanaged(struct { key: []const u8, value: []const u8 }){};
+    defer {
+        for (rows_collected.items) |row| {
+            testing.allocator.free(row.key);
+            testing.allocator.free(row.value);
+        }
+        rows_collected.deinit(testing.allocator);
+    }
+
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(usize, 2), row.values.len);
+
+        const key = try testing.allocator.dupe(u8, row.values[0].text);
+        const value = try testing.allocator.dupe(u8, row.values[1].text);
+        try rows_collected.append(testing.allocator, .{ .key = key, .value = value });
+    }
+
+    try testing.expectEqual(@as(usize, 2), rows_collected.items.len);
+
+    // Check both rows exist (order-independent)
+    var found_a = false;
+    var found_b = false;
+    for (rows_collected.items) |row| {
+        if (std.mem.eql(u8, row.key, "a")) {
+            found_a = true;
+            try testing.expectEqualStrings("1", row.value);
+        } else if (std.mem.eql(u8, row.key, "b")) {
+            found_b = true;
+            try testing.expectEqualStrings("\"hello\"", row.value);
+        }
+    }
+    try testing.expect(found_a and found_b);
+}
+
+test "json_each — empty object returns no rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM json_each('{}')");
+    defer r.close(testing.allocator);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_each — NULL arg returns empty or error" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    // NULL argument should either return empty result or be handled gracefully
+    var r = db.exec("SELECT key, value FROM json_each(NULL)") catch return; // Allow error
+    defer r.close(testing.allocator);
+
+    // If it succeeds, result should be empty
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_each — nested object value stays as JSON text" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM json_each('{\"obj\":{\"x\":1}}')");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expectEqualStrings("obj", row.values[0].text);
+    try testing.expectEqualStrings("{\"x\":1}", row.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_each_text — string values are unquoted" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM json_each_text('{\"name\":\"alice\",\"age\":30}')");
+    defer r.close(testing.allocator);
+
+    // Collect rows in a map to handle order variation
+    var rows_map = std.StringHashMapUnmanaged([]const u8){};
+    defer {
+        var iter = rows_map.iterator();
+        while (iter.next()) |entry| {
+            testing.allocator.free(entry.key_ptr.*);
+            testing.allocator.free(entry.value_ptr.*);
+        }
+        rows_map.deinit(testing.allocator);
+    }
+
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const key = try testing.allocator.dupe(u8, row.values[0].text);
+        const value = try testing.allocator.dupe(u8, row.values[1].text);
+        try rows_map.put(testing.allocator, key, value);
+    }
+
+    try testing.expectEqual(@as(usize, 2), rows_map.count());
+
+    // "name" should be "alice" (unquoted, no JSON quotes)
+    if (rows_map.get("name")) |name_val| {
+        try testing.expectEqualStrings("alice", name_val);
+    } else {
+        try testing.expect(false); // "name" key should exist
+    }
+
+    // "age" should be "30" (as text)
+    if (rows_map.get("age")) |age_val| {
+        try testing.expectEqualStrings("30", age_val);
+    } else {
+        try testing.expect(false); // "age" key should exist
+    }
+}
+
+test "json_each_text — null value becomes NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM json_each_text('{\"k\":null}')");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expectEqualStrings("k", row.values[0].text);
+    try testing.expect(row.values[1] == .null_value);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements — basic array returns element rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM json_array_elements('[1,2,3]')");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("1", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("2", row2.values[0].text);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("3", row3.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements — array of objects" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM json_array_elements('[{\"x\":1},{\"x\":2}]')");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("{\"x\":1}", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("{\"x\":2}", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements — empty array returns no rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM json_array_elements('[]')");
+    defer r.close(testing.allocator);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements — with LIMIT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM json_array_elements('[10,20,30,40]') LIMIT 2");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("10", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("20", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements_text — string elements unquoted" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM json_array_elements_text('[\"foo\",\"bar\"]')");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("foo", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("bar", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements_text — null element becomes NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM json_array_elements_text('[null,\"x\"]')");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expect(row1.values[0] == .null_value);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("x", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "jsonb_each — works like json_each" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM jsonb_each('{\"z\":99}')");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+
+    try testing.expectEqualStrings("z", row.values[0].text);
+    try testing.expectEqualStrings("99", row.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "jsonb_array_elements — works like json_array_elements" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT value FROM jsonb_array_elements('[true,false]')");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("true", row1.values[0].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("false", row2.values[0].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_each with WHERE clause" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT key, value FROM json_each('{\"a\":1,\"b\":2,\"c\":3}') WHERE key != 'b'");
+    defer r.close(testing.allocator);
+
+    // Collect rows to check count and verify both a and c are present
+    var keys = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (keys.items) |k| testing.allocator.free(k);
+        keys.deinit(testing.allocator);
+    }
+
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const key = try testing.allocator.dupe(u8, row.values[0].text);
+        try keys.append(testing.allocator, key);
+    }
+
+    try testing.expectEqual(@as(usize, 2), keys.items.len);
+
+    // Verify 'b' is not in results
+    for (keys.items) |k| {
+        try testing.expect(!std.mem.eql(u8, k, "b"));
+    }
 }
 
