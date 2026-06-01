@@ -256,6 +256,10 @@ pub const TokenType = enum {
     kw_reindex,
     kw_show,
     kw_reset,
+    kw_conflict,
+    kw_do,
+    kw_nothing,
+    kw_excluded,
 
     // Keywords — Types
     kw_integer,
@@ -956,6 +960,10 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "reindex", .kw_reindex },
         .{ "show", .kw_show },
         .{ "reset", .kw_reset },
+        .{ "conflict", .kw_conflict },
+        .{ "do", .kw_do },
+        .{ "nothing", .kw_nothing },
+        .{ "excluded", .kw_excluded },
         // Types
         .{ "integer", .kw_integer },
         .{ "int", .kw_int },

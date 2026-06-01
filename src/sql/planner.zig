@@ -271,6 +271,7 @@ pub const PlanNode = union(enum) {
         table: []const u8,
         columns: ?[]const []const u8 = null,
         rows: []const []const *const ast.Expr,
+        on_conflict: ?*const ast.OnConflictClause = null,
         returning: ?[]const ast.ResultColumn = null,
     };
 
@@ -823,6 +824,7 @@ pub const Planner = struct {
             .table = stmt.table,
             .columns = stmt.columns,
             .rows = stmt.values,
+            .on_conflict = stmt.on_conflict,
             .returning = stmt.returning,
         } });
         return .{ .root = node, .plan_type = .insert, .returning = stmt.returning };

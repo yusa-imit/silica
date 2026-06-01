@@ -653,6 +653,53 @@ pub const Parser = struct {
             if (!self.match(.comma)) break;
         }
 
+        var on_conflict: ?*const ast.OnConflictClause = null;
+        if (self.match(.kw_on)) {
+            _ = try self.expect(.kw_conflict);
+
+            var conflict_target: ?[]const []const u8 = null;
+            if (self.match(.left_paren)) {
+                var target_cols = std.ArrayListUnmanaged([]const u8){};
+                while (true) {
+                    target_cols.append(a, try self.expectIdentifier()) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                _ = try self.expect(.right_paren);
+                conflict_target = target_cols.toOwnedSlice(a) catch return error.OutOfMemory;
+            }
+
+            _ = try self.expect(.kw_do);
+
+            var action: ast.OnConflictAction = .nothing;
+            var assignments: []const ast.Assignment = &.{};
+
+            if (self.match(.kw_nothing)) {
+                action = .nothing;
+            } else {
+                _ = try self.expect(.kw_update);
+                _ = try self.expect(.kw_set);
+
+                var assign_list = std.ArrayListUnmanaged(ast.Assignment){};
+                while (true) {
+                    const col = try self.expectIdentifier();
+                    _ = try self.expect(.equals);
+                    const val = try self.parseExpr(0);
+                    assign_list.append(a, .{ .column = col, .value = val }) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                action = .update;
+                assignments = assign_list.toOwnedSlice(a) catch return error.OutOfMemory;
+            }
+
+            const oc = try a.create(ast.OnConflictClause);
+            oc.* = .{
+                .conflict_target = conflict_target,
+                .action = action,
+                .assignments = assignments,
+            };
+            on_conflict = oc;
+        }
+
         var returning: ?[]const ast.ResultColumn = null;
         if (self.match(.kw_returning)) {
             returning = try self.parseResultColumns();
@@ -662,6 +709,7 @@ pub const Parser = struct {
             .table = table,
             .columns = columns,
             .values = rows.toOwnedSlice(a) catch return error.OutOfMemory,
+            .on_conflict = on_conflict,
             .returning = returning,
         };
     }

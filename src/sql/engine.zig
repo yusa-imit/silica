@@ -106,6 +106,7 @@ const ShowOp = executor_mod.ShowOp;
 const ResetOp = executor_mod.ResetOp;
 const MvccContext = executor_mod.MvccContext;
 const serializeRow = executor_mod.serializeRow;
+const deserializeRow = executor_mod.deserializeRow;
 const evalExpr = executor_mod.evalExpr;
 
 // ── Shared Transaction Manager Registry ────────────────────────────────
@@ -2712,24 +2713,182 @@ pub const Database = struct {
                 table_info.data_root_page_id = tree.root_page_id;
             }
 
-            // Maintain secondary indexes
+            // Maintain secondary indexes — handle conflicts if needed
+            var insert_succeeded = true;
             self.insertIndexEntries(actual_table, &table_info, vals, &key_buf) catch |err| {
-                return switch (err) {
-                    error.UniqueConstraintViolation => EngineError.UniqueConstraintViolation,
-                    else => EngineError.StorageError,
-                };
+                if (err != error.UniqueConstraintViolation) {
+                    return EngineError.StorageError;
+                }
+
+                insert_succeeded = false;
+
+                // Unique constraint violation — handle ON CONFLICT clause
+                if (values_node.on_conflict) |oc| {
+                    // Remove the just-inserted row from the B+Tree
+                    tree.delete(key) catch return EngineError.StorageError;
+
+                    switch (oc.action) {
+                        .nothing => {
+                            // DO NOTHING: skip this row entirely
+                            next_key -= 1;
+                            continue;
+                        },
+                        .update => {
+                            // Find the existing conflicting row key from the unique index.
+                            const conflicting_key: []u8 = blk: {
+                                for (table_info.indexes) |idx| {
+                                    if (!idx.is_unique) continue;
+                                    if (idx.column_index >= vals.len) continue;
+                                    const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
+                                    defer self.allocator.free(idx_key);
+                                    switch (idx.index_type) {
+                                        .btree => {
+                                            var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                                            if (idx_tree.get(self.allocator, idx_key) catch null) |existing| {
+                                                break :blk existing;
+                                            }
+                                        },
+                                        .hash => {
+                                            var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
+                                            if (idx_hash.get(self.allocator, idx_key) catch null) |existing| {
+                                                break :blk existing;
+                                            }
+                                        },
+                                        else => {},
+                                    }
+                                }
+                                return EngineError.StorageError;
+                            };
+                            defer self.allocator.free(conflicting_key);
+
+                            // Read existing row from main table.
+                            const existing_data = (tree.get(self.allocator, conflicting_key) catch
+                                return EngineError.StorageError) orelse return EngineError.StorageError;
+                            defer self.allocator.free(existing_data);
+
+                            const existing_raw = if (isVersionedRowData(existing_data))
+                                existing_data[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                            else
+                                existing_data;
+
+                            const existing_vals = deserializeRow(self.allocator, existing_raw) catch
+                                return EngineError.StorageError;
+                            defer {
+                                for (existing_vals) |v| v.free(self.allocator);
+                                self.allocator.free(existing_vals);
+                            }
+
+                            const n_cols = table_info.columns.len;
+
+                            // Build column names for this table.
+                            const upsert_col_names = self.allocator.alloc([]const u8, n_cols) catch
+                                return EngineError.OutOfMemory;
+                            defer self.allocator.free(upsert_col_names);
+                            for (table_info.columns, 0..) |col, i| {
+                                upsert_col_names[i] = col.name;
+                            }
+
+                            // Build "excluded.<col>" names for the combined evaluation row.
+                            const excluded_names = self.allocator.alloc([]u8, n_cols) catch
+                                return EngineError.OutOfMemory;
+                            var excluded_inited: usize = 0;
+                            defer {
+                                for (excluded_names[0..excluded_inited]) |en| self.allocator.free(en);
+                                self.allocator.free(excluded_names);
+                            }
+                            for (upsert_col_names, 0..) |cn, i| {
+                                excluded_names[i] = std.fmt.allocPrint(self.allocator, "excluded.{s}", .{cn}) catch
+                                    return EngineError.OutOfMemory;
+                                excluded_inited += 1;
+                            }
+
+                            // Combined row: existing values first, then excluded values.
+                            // EXCLUDED.col → new row value; col / table.col → existing row value.
+                            const combined_cols = self.allocator.alloc([]const u8, n_cols * 2) catch
+                                return EngineError.OutOfMemory;
+                            defer self.allocator.free(combined_cols);
+                            const combined_values = self.allocator.alloc(Value, n_cols * 2) catch
+                                return EngineError.OutOfMemory;
+                            defer self.allocator.free(combined_values);
+
+                            for (0..n_cols) |i| {
+                                combined_cols[i] = upsert_col_names[i];
+                                combined_values[i] = if (i < existing_vals.len) existing_vals[i] else .null_value;
+                                combined_cols[n_cols + i] = excluded_names[i];
+                                combined_values[n_cols + i] = if (i < vals.len) vals[i] else .null_value;
+                            }
+
+                            var combined_row = Row{
+                                .columns = combined_cols,
+                                .values = combined_values,
+                                .allocator = self.allocator,
+                            };
+
+                            // Start with a copy of the existing row, then apply SET assignments.
+                            const updated_vals = self.allocator.alloc(Value, n_cols) catch
+                                return EngineError.OutOfMemory;
+                            var updated_inited: usize = 0;
+                            defer {
+                                for (updated_vals[0..updated_inited]) |v| v.free(self.allocator);
+                                self.allocator.free(updated_vals);
+                            }
+                            for (existing_vals, 0..) |v, i| {
+                                updated_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                updated_inited += 1;
+                            }
+
+                            for (oc.assignments) |assign| {
+                                const new_val = evalExpr(self.allocator, assign.value, &combined_row, null) catch continue;
+                                var found_col = false;
+                                for (upsert_col_names, 0..) |cn, ci| {
+                                    if (std.ascii.eqlIgnoreCase(cn, assign.column)) {
+                                        updated_vals[ci].free(self.allocator);
+                                        updated_vals[ci] = new_val;
+                                        combined_values[ci] = new_val;
+                                        found_col = true;
+                                        break;
+                                    }
+                                }
+                                if (!found_col) new_val.free(self.allocator);
+                            }
+
+                            // Remove old index entries, update the row, re-insert index entries.
+                            self.deleteIndexEntries(&table_info, existing_vals);
+                            tree.delete(conflicting_key) catch return EngineError.StorageError;
+
+                            const new_row_data = serializeRow(self.allocator, updated_vals) catch
+                                return EngineError.OutOfMemory;
+                            defer self.allocator.free(new_row_data);
+
+                            tree.insert(conflicting_key, new_row_data) catch return EngineError.StorageError;
+
+                            self.insertIndexEntries(actual_table, &table_info, updated_vals, conflicting_key) catch |ie| {
+                                return if (ie == error.UniqueConstraintViolation)
+                                    EngineError.UniqueConstraintViolation
+                                else
+                                    EngineError.StorageError;
+                            };
+
+                            next_key -= 1;
+                            insert_succeeded = true;
+                        },
+                    }
+                } else {
+                    return EngineError.UniqueConstraintViolation;
+                }
             };
 
-            // Collect row for RETURNING clause
-            if (values_node.returning != null) {
-                const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
-                for (vals, 0..) |v, i| {
-                    row_copy[i] = try v.dupe(self.allocator);
+            // For successful inserts (no conflict or conflict handled), add to RETURNING and increment count
+            if (insert_succeeded) {
+                if (values_node.returning != null) {
+                    const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
+                    for (vals, 0..) |v, i| {
+                        row_copy[i] = try v.dupe(self.allocator);
+                    }
+                    try inserted_rows.append(self.allocator, row_copy);
                 }
-                try inserted_rows.append(self.allocator, row_copy);
+                rows_inserted += 1;
             }
-
-            rows_inserted += 1;
         }
 
         // Track inserts for auto-vacuum
@@ -22405,5 +22564,317 @@ test "percentile_cont empty table" {
     } else {
         return error.TestUnexpectedResult;
     }
+}
+
+// ── INSERT ON CONFLICT (UPSERT) Tests ─────────────────────────────────────
+
+test "INSERT ON CONFLICT DO NOTHING — basic" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_nothing_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on id
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_users_id ON users (id)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row
+    var r3 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice')");
+    defer r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+
+    // Insert conflicting row with ON CONFLICT DO NOTHING — should not fail, row unchanged
+    var r4 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Bob') ON CONFLICT DO NOTHING");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 0), r4.rows_affected);
+
+    // Verify row count is still 1
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM users");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Verify row still contains original name
+    var r6 = try db.execSQL("SELECT name FROM users WHERE id = 1");
+    defer r6.close(testing.allocator);
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("Alice", row.values[0].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO NOTHING — no conflict" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_nothing_no_conflict.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (code TEXT, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on code
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_items_code ON items (code)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row
+    var r3 = try db.execSQL("INSERT INTO items (code, val) VALUES ('A', 10)");
+    defer r3.close(testing.allocator);
+
+    // Insert non-conflicting row with ON CONFLICT DO NOTHING — should actually insert
+    var r4 = try db.execSQL("INSERT INTO items (code, val) VALUES ('B', 20) ON CONFLICT DO NOTHING");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Verify both rows exist
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM items");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO UPDATE SET — basic" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_update_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE kv (key TEXT, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on key
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_kv_key ON kv (key)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row
+    var r3 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('x', 1)");
+    defer r3.close(testing.allocator);
+
+    // Insert conflicting row with ON CONFLICT DO UPDATE SET — should update
+    var r4 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('x', 99) ON CONFLICT DO UPDATE SET value = 99");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Verify value was updated to 99
+    var r5 = try db.execSQL("SELECT value FROM kv WHERE key = 'x'");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 99), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO UPDATE SET — uses EXCLUDED" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_update_excluded.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE kv (key TEXT, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on key
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_kv_key ON kv (key)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row
+    var r3 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('a', 10)");
+    defer r3.close(testing.allocator);
+
+    // Insert conflicting row with EXCLUDED reference — should use value from the attempted insert (20)
+    var r4 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('a', 20) ON CONFLICT DO UPDATE SET value = EXCLUDED.value");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Verify value was updated to 20 (the EXCLUDED value)
+    var r5 = try db.execSQL("SELECT value FROM kv WHERE key = 'a'");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 20), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO UPDATE SET — with expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_update_expr.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE counters (name TEXT, cnt INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on name
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_counters_name ON counters (name)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row
+    var r3 = try db.execSQL("INSERT INTO counters (name, cnt) VALUES ('hits', 5)");
+    defer r3.close(testing.allocator);
+
+    // Insert conflicting row with expression — should add 5 + 1 = 6
+    var r4 = try db.execSQL("INSERT INTO counters (name, cnt) VALUES ('hits', 1) ON CONFLICT DO UPDATE SET cnt = counters.cnt + EXCLUDED.cnt");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Verify counter was updated to 6
+    var r5 = try db.execSQL("SELECT cnt FROM counters WHERE name = 'hits'");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 6), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO NOTHING — multiple values, some conflict" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_nothing_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on id
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_t_id ON t (id)");
+    defer r2.close(testing.allocator);
+
+    // Insert initial values 1, 2, 3
+    var r3 = try db.execSQL("INSERT INTO t (id) VALUES (1), (2), (3)");
+    defer r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 3), r3.rows_affected);
+
+    // Insert values 2, 4, 5 with DO NOTHING — 2 conflicts, 4 and 5 are inserted
+    var r4 = try db.execSQL("INSERT INTO t (id) VALUES (2), (4), (5) ON CONFLICT DO NOTHING");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 2), r4.rows_affected);
+
+    // Verify total count is 5 (1,2,3,4,5 — not 6, since 2 conflicted)
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM t");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 5), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO UPDATE SET — multiple assignments" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_update_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE product (sku TEXT, name TEXT, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on sku
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_product_sku ON product (sku)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row
+    var r3 = try db.execSQL("INSERT INTO product (sku, name, price) VALUES ('A1', 'Widget', 10)");
+    defer r3.close(testing.allocator);
+
+    // Insert conflicting row with multiple SET assignments
+    var r4 = try db.execSQL("INSERT INTO product (sku, name, price) VALUES ('A1', 'WidgetV2', 15) ON CONFLICT DO UPDATE SET name = 'WidgetV2', price = 15");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Verify both name and price were updated
+    var r5 = try db.execSQL("SELECT name, price FROM product WHERE sku = 'A1'");
+    defer r5.close(testing.allocator);
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("WidgetV2", row.values[0].text);
+        try testing.expectEqual(@as(i64, 15), row.values[1].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_nothing_returning.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE events (id INTEGER, msg TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on id
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_events_id ON events (id)");
+    defer r2.close(testing.allocator);
+
+    // Insert first row with RETURNING — should return 1 row
+    var r3 = try db.execSQL("INSERT INTO events (id, msg) VALUES (1, 'first') ON CONFLICT DO NOTHING RETURNING *");
+    defer r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("first", row.values[1].text);
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+
+    // Insert conflicting row with RETURNING — should return 0 rows (nothing inserted/updated)
+    var r4 = try db.execSQL("INSERT INTO events (id, msg) VALUES (1, 'second') ON CONFLICT DO NOTHING RETURNING *");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 0), r4.rows_affected);
+
+    var count2: usize = 0;
+    while (try r4.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count2 += 1;
+    }
+    try testing.expectEqual(@as(usize, 0), count2);
 }
 

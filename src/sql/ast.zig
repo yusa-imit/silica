@@ -414,11 +414,23 @@ pub const SelectStmt = struct {
     set_operation: ?*const SetOperation = null,
 };
 
+pub const OnConflictAction = enum { nothing, update };
+
+pub const OnConflictClause = struct {
+    /// Optional list of conflict target columns (e.g., ON CONFLICT (id) DO ...)
+    /// If null, matches any unique constraint violation.
+    conflict_target: ?[]const []const u8 = null,
+    action: OnConflictAction,
+    /// SET assignments for DO UPDATE action (empty for DO NOTHING)
+    assignments: []const Assignment = &.{},
+};
+
 /// INSERT statement.
 pub const InsertStmt = struct {
     table: []const u8,
     columns: ?[]const []const u8 = null,
     values: []const []const *const Expr = &.{},
+    on_conflict: ?*const OnConflictClause = null,
     returning: ?[]const ResultColumn = null,
 };
 
