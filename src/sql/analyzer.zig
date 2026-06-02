@@ -179,8 +179,8 @@ pub const Analyzer = struct {
         // Support unnest() and generate_series()
         if (std.mem.eql(u8, tf.name, "unnest")) {
             // unnest() produces a single column
-            // Column name: alias if provided, otherwise "unnest"
-            const col_name = tf.alias orelse "unnest";
+            // Column name is always "unnest" (function name), not the table alias
+            const col_name = "unnest";
 
             // Allocate column info in arena
             const arena = self.arena.allocator();
@@ -204,8 +204,8 @@ pub const Analyzer = struct {
             }) catch {};
         } else if (std.mem.eql(u8, tf.name, "generate_series")) {
             // generate_series() produces a single column (integer or real)
-            // Column name: alias if provided, otherwise "generate_series"
-            const col_name = tf.alias orelse "generate_series";
+            // Column name is always "generate_series" (function name), not the table alias
+            const col_name = "generate_series";
 
             // Allocate column info in arena
             const arena = self.arena.allocator();
