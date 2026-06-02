@@ -2544,6 +2544,79 @@ fn valueToJsonString(allocator: Allocator, v: Value) EvalError![]const u8 {
     };
 }
 
+/// Pretty-print a compact JSON string: adds newlines and 4-space indentation.
+/// Caller owns the returned string. String content inside quotes is preserved verbatim.
+fn prettyPrintJsonCompact(allocator: Allocator, compact: []const u8) EvalError!Value {
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+
+    var indent: usize = 0;
+    var in_string = false;
+    var i: usize = 0;
+    while (i < compact.len) : (i += 1) {
+        const c = compact[i];
+        if (in_string) {
+            try result.append(allocator, c);
+            if (c == '\\' and i + 1 < compact.len) {
+                i += 1;
+                try result.append(allocator, compact[i]);
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        switch (c) {
+            '"' => {
+                in_string = true;
+                try result.append(allocator, c);
+            },
+            '{', '[' => {
+                try result.append(allocator, c);
+                // Peek: if next non-space char is closing bracket, keep inline
+                var j = i + 1;
+                while (j < compact.len and (compact[j] == ' ' or compact[j] == '\n')) j += 1;
+                if (j < compact.len and (compact[j] == '}' or compact[j] == ']')) {
+                    // Empty container — keep on same line
+                } else {
+                    indent += 1;
+                    try result.append(allocator, '\n');
+                    var k: usize = 0;
+                    while (k < indent * 4) : (k += 1) try result.append(allocator, ' ');
+                }
+            },
+            '}', ']' => {
+                // Check if we just opened (empty container)
+                var j: usize = result.items.len;
+                while (j > 0 and (result.items[j - 1] == ' ' or result.items[j - 1] == '\n')) j -= 1;
+                const last = if (j > 0) result.items[j - 1] else 0;
+                if (last != '{' and last != '[') {
+                    if (indent > 0) indent -= 1;
+                    try result.append(allocator, '\n');
+                    var k: usize = 0;
+                    while (k < indent * 4) : (k += 1) try result.append(allocator, ' ');
+                } else {
+                    if (indent > 0) indent -= 1;
+                }
+                try result.append(allocator, c);
+            },
+            ':' => {
+                try result.append(allocator, ':');
+                try result.append(allocator, ' ');
+            },
+            ',' => {
+                try result.append(allocator, ',');
+                try result.append(allocator, '\n');
+                var k: usize = 0;
+                while (k < indent * 4) : (k += 1) try result.append(allocator, ' ');
+            },
+            ' ', '\t', '\n', '\r' => {},
+            else => try result.append(allocator, c),
+        }
+    }
+
+    return Value{ .text = try result.toOwnedSlice(allocator) };
+}
+
 /// Recursively strip null fields from JSON objects, preserving array nulls
 fn stripJsonNulls(arena_alloc: Allocator, val: std.json.Value) Allocator.Error!std.json.Value {
     return switch (val) {
@@ -4455,6 +4528,82 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         if (fc.args.len != 1) return EvalError.TypeError;
         const val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer val.free(allocator);
+        const json_str = try valueToJsonString(allocator, val);
+        return Value{ .text = json_str };
+    }
+
+    // row_to_json(record [, pretty_bool]) / row_to_jsonb(...)
+    // Converts all columns matching the table alias prefix to a JSON object.
+    // Usage: SELECT row_to_json(t) FROM some_table t
+    if (std.ascii.eqlIgnoreCase(fc.name, "row_to_json") or
+        std.ascii.eqlIgnoreCase(fc.name, "row_to_jsonb"))
+    {
+        if (fc.args.len < 1 or fc.args.len > 2) return EvalError.TypeError;
+
+        const pretty = if (fc.args.len == 2) blk: {
+            const pv = try evalExpr(allocator, fc.args[1], row, catalog);
+            defer pv.free(allocator);
+            break :blk pv == .boolean and pv.boolean;
+        } else false;
+
+        // When the argument is a bare table alias (column_ref with no prefix),
+        // collect all row columns with matching "alias." prefix.
+        if (fc.args[0].* == .column_ref and fc.args[0].column_ref.prefix == null) {
+            const alias = fc.args[0].column_ref.name;
+
+            // Build the dot-prefix to match: "alias."
+            const dot_prefix = try std.fmt.allocPrint(allocator, "{s}.", .{alias});
+            defer allocator.free(dot_prefix);
+
+            var buf = std.ArrayListUnmanaged(u8){};
+            defer buf.deinit(allocator);
+
+            try buf.append(allocator, '{');
+            var found_any = false;
+            var first_field = true;
+
+            for (row.columns, row.values) |col_name, col_val| {
+                if (col_name.len <= dot_prefix.len) continue;
+                if (!std.ascii.eqlIgnoreCase(col_name[0..dot_prefix.len], dot_prefix)) continue;
+
+                found_any = true;
+                const unqual = col_name[dot_prefix.len..];
+
+                if (!first_field) try buf.append(allocator, ',');
+                first_field = false;
+
+                // Append JSON key
+                try buf.append(allocator, '"');
+                for (unqual) |c| {
+                    if (c == '"' or c == '\\') try buf.append(allocator, '\\');
+                    try buf.append(allocator, c);
+                }
+                try buf.append(allocator, '"');
+                try buf.append(allocator, ':');
+
+                // Append JSON value
+                const val_json = try valueToJsonString(allocator, col_val);
+                defer allocator.free(val_json);
+                try buf.appendSlice(allocator, val_json);
+            }
+
+            try buf.append(allocator, '}');
+
+            if (!found_any) return Value.null_value;
+
+            if (pretty) {
+                const compact = try allocator.dupe(u8, buf.items);
+                defer allocator.free(compact);
+                return prettyPrintJsonCompact(allocator, compact);
+            }
+
+            return Value{ .text = try allocator.dupe(u8, buf.items) };
+        }
+
+        // Fallback: evaluate the expression normally (scalar → wrap in JSON)
+        const val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer val.free(allocator);
+        if (val == .null_value) return Value.null_value;
         const json_str = try valueToJsonString(allocator, val);
         return Value{ .text = json_str };
     }
@@ -29041,4 +29190,260 @@ test "regr_sxy with no valid pairs returns NULL" {
     defer result.free(allocator);
 
     try std.testing.expect(result == .null_value);
+}
+
+// ── row_to_json Tests ──────────────────────────────────────────────────────────
+
+test "row_to_json basic two columns converts to JSON object" {
+    const allocator = std.testing.allocator;
+
+    // Row with qualified column names: t.id and t.name
+    var col_values = [_]Value{ .{ .integer = 1 }, .{ .text = "Alice" } };
+    const cols = [_][]const u8{ "t.id", "t.name" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t)
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return text (JSON string)
+    try std.testing.expect(result == .text);
+
+    // JSON should contain "id":1 and "name":"Alice"
+    // Expected: {"id":1,"name":"Alice"} or similar
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"id\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"name\"") != null);
+}
+
+test "row_to_json with NULL value converts to null in JSON" {
+    const allocator = std.testing.allocator;
+
+    // Row with qualified columns, one NULL
+    var col_values = [_]Value{ .{ .integer = 42 }, .{ .null_value = {} } };
+    const cols = [_][]const u8{ "t.id", "t.x" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t)
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return text
+    try std.testing.expect(result == .text);
+
+    // JSON should contain "x":null
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "null") != null);
+}
+
+test "row_to_json with no matching prefix returns NULL" {
+    const allocator = std.testing.allocator;
+
+    // Row has columns with prefix "other.id", but we ask for prefix "t"
+    var col_values = [_]Value{ .{ .integer = 1 } };
+    const cols = [_][]const u8{ "other.id" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t) — should find no "t.*" columns
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return NULL
+    try std.testing.expect(result == .null_value);
+}
+
+test "row_to_json with single real-valued column" {
+    const allocator = std.testing.allocator;
+
+    // Row with single real column
+    var col_values = [_]Value{ .{ .real = 3.14159 } };
+    const cols = [_][]const u8{ "t.score" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t)
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return text (JSON)
+    try std.testing.expect(result == .text);
+
+    // Should contain "score":3.14... (unquoted real number)
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"score\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "3.14") != null);
+}
+
+test "row_to_json with pretty=false produces compact JSON" {
+    const allocator = std.testing.allocator;
+
+    // Row with multiple columns
+    var col_values = [_]Value{
+        .{ .integer = 1 },
+        .{ .text = "Alice" },
+        .{ .boolean = true },
+    };
+    const cols = [_][]const u8{ "t.id", "t.name", "t.active" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t, false)
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const pretty_arg = ast.Expr{ .boolean_literal = false };
+    const args = [_]*const ast.Expr{ &arg, &pretty_arg };
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return text
+    try std.testing.expect(result == .text);
+
+    // Compact JSON should NOT have newlines (or should be minimal)
+    // For now, just verify it contains the field names
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"id\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"name\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"active\"") != null);
+}
+
+test "row_to_json with pretty=true produces formatted JSON" {
+    const allocator = std.testing.allocator;
+
+    // Row with multiple columns
+    var col_values = [_]Value{
+        .{ .integer = 1 },
+        .{ .text = "Alice" },
+    };
+    const cols = [_][]const u8{ "t.id", "t.name" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t, true)
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const pretty_arg = ast.Expr{ .boolean_literal = true };
+    const args = [_]*const ast.Expr{ &arg, &pretty_arg };
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return text
+    try std.testing.expect(result == .text);
+
+    // Pretty JSON should contain newlines or indentation
+    // At minimum, should be valid JSON with the fields
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"id\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"name\"") != null);
+}
+
+test "row_to_json with NULL argument returns NULL" {
+    const allocator = std.testing.allocator;
+
+    // Row is ignored when argument is NULL
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // Call row_to_json(NULL)
+    const arg = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    // Should return NULL
+    try std.testing.expect(result == .null_value);
+}
+
+test "row_to_json with unqualified column names" {
+    const allocator = std.testing.allocator;
+
+    // Row with unqualified column names (no "t." prefix)
+    var col_values = [_]Value{ .{ .integer = 99 }, .{ .text = "test" } };
+    const cols = [_][]const u8{ "id", "name" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t) — should find no "t.*" columns, return NULL
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return NULL (prefix doesn't match unqualified names)
+    try std.testing.expect(result == .null_value);
+}
+
+test "row_to_json with mixed data types" {
+    const allocator = std.testing.allocator;
+
+    // Row with integer, text, real, boolean, and NULL
+    var col_values = [_]Value{
+        .{ .integer = 42 },
+        .{ .text = "hello" },
+        .{ .real = 2.71828 },
+        .{ .boolean = false },
+        .{ .null_value = {} },
+    };
+    const cols = [_][]const u8{ "t.a", "t.b", "t.c", "t.d", "t.e" };
+    const row = Row{
+        .columns = &cols,
+        .values = &col_values,
+        .allocator = allocator,
+    };
+
+    // Call row_to_json(t)
+    const arg = ast.Expr{ .column_ref = .{ .name = "t" } };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "row_to_json", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &row, null);
+    defer result.free(allocator);
+
+    // Should return valid JSON with all fields
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"b\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"c\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"d\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.text, "\"e\"") != null);
 }

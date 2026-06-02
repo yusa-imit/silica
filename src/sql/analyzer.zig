@@ -1079,9 +1079,26 @@ pub const Analyzer = struct {
                 self.analyzeExpr(b.right);
             },
             .function_call => |f| {
-                for (f.args) |arg| {
+                for (f.args, 0..) |arg, arg_idx| {
                     // Skip resolution for * in aggregate functions like COUNT(*)
                     if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*")) continue;
+                    // row_to_json/row_to_jsonb: first arg is a table alias, not a column —
+                    // skip column resolution if the name matches a known table alias.
+                    if (arg_idx == 0 and
+                        (std.ascii.eqlIgnoreCase(f.name, "row_to_json") or
+                        std.ascii.eqlIgnoreCase(f.name, "row_to_jsonb")) and
+                        arg.* == .column_ref and arg.column_ref.prefix == null)
+                    {
+                        const alias_name = arg.column_ref.name;
+                        var is_alias = false;
+                        for (self.scope_tables.items) |st| {
+                            if (std.ascii.eqlIgnoreCase(st.alias, alias_name)) {
+                                is_alias = true;
+                                break;
+                            }
+                        }
+                        if (is_alias) continue;
+                    }
                     self.analyzeExpr(arg);
                 }
             },

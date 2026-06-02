@@ -24158,3 +24158,105 @@ test "LATERAL — generate_series with column as stop" {
     try testing.expectEqual(@as(usize, 6), row_count);
 }
 
+// ── row_to_json Integration Tests ──────────────────────────────────────────────
+
+test "row_to_json integration: basic row from table" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_to_json_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create employees table
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Alice', 30), (2, 'Bob', 25)");
+    defer r2.close(testing.allocator);
+
+    // SELECT row_to_json(t) FROM employees t
+    var r3 = try db.execSQL("SELECT row_to_json(t) FROM employees t");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var has_alice_json = false;
+    var has_bob_json = false;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Should have 1 column (the JSON result)
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+
+        // Check that result is text
+        try testing.expect(row.values[0] == .text);
+
+        const json_text = row.values[0].text;
+
+        // First row should contain Alice's data
+        if (std.mem.indexOf(u8, json_text, "Alice") != null) {
+            has_alice_json = true;
+        }
+
+        // Second row should contain Bob's data
+        if (std.mem.indexOf(u8, json_text, "Bob") != null) {
+            has_bob_json = true;
+        }
+    }
+
+    // Should have 2 rows
+    try testing.expectEqual(@as(usize, 2), row_count);
+
+    // Both employees should appear in results
+    try testing.expect(has_alice_json);
+    try testing.expect(has_bob_json);
+}
+
+test "row_to_json integration: filtered single row with WHERE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_to_json_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create employees table
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)");
+    defer r2.close(testing.allocator);
+
+    // SELECT row_to_json(t) FROM employees t WHERE id = 2
+    var r3 = try db.execSQL("SELECT row_to_json(t) FROM employees t WHERE id = 2");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var found_bob = false;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+        try testing.expect(row.values[0] == .text);
+
+        const json_text = row.values[0].text;
+
+        // Should contain Bob (id=2) but not Alice or Charlie
+        if (std.mem.indexOf(u8, json_text, "Bob") != null) {
+            found_bob = true;
+        }
+    }
+
+    // Should have exactly 1 row (id=2)
+    try testing.expectEqual(@as(usize, 1), row_count);
+
+    // Must be Bob's record
+    try testing.expect(found_bob);
+}
+
