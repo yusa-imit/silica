@@ -716,6 +716,36 @@ const OperatorChain = struct {
     }
 };
 
+/// Returns heap-allocated column names for a built-in table-valued function.
+/// Used by LEFT JOIN LATERAL when the right side produces zero rows — we still need
+/// the column schema to emit properly NULL-filled right columns.
+/// Caller owns the returned slice and must free each element and the slice itself.
+fn tvfDefaultColumnNames(allocator: Allocator, func_name: []const u8) Allocator.Error![]const []const u8 {
+    const static_names: []const []const u8 = blk: {
+        if (std.mem.eql(u8, func_name, "json_each") or
+            std.mem.eql(u8, func_name, "jsonb_each") or
+            std.mem.eql(u8, func_name, "json_each_text") or
+            std.mem.eql(u8, func_name, "jsonb_each_text"))
+            break :blk &[_][]const u8{ "key", "value" };
+        if (std.mem.eql(u8, func_name, "json_array_elements") or
+            std.mem.eql(u8, func_name, "jsonb_array_elements") or
+            std.mem.eql(u8, func_name, "json_array_elements_text") or
+            std.mem.eql(u8, func_name, "jsonb_array_elements_text"))
+            break :blk &[_][]const u8{"value"};
+        if (std.mem.eql(u8, func_name, "unnest"))
+            break :blk &[_][]const u8{"unnest"};
+        if (std.mem.eql(u8, func_name, "generate_series"))
+            break :blk &[_][]const u8{"generate_series"};
+        break :blk &[_][]const u8{};
+    };
+
+    const result = try allocator.alloc([]const u8, static_names.len);
+    for (result, static_names) |*dest, src| {
+        dest.* = try allocator.dupe(u8, src);
+    }
+    return result;
+}
+
 /// LATERAL join operator — for each left row, evaluates right SRF with that row as context.
 const LateralJoinOp = struct {
     allocator: Allocator,
@@ -785,14 +815,21 @@ const LateralJoinOp = struct {
                 // For LEFT JOIN LATERAL, if right produced no rows, emit left with NULLs
                 if (self.join_type == .left) {
                     if (self.current_left_row) |left_row| {
-                        // Use saved column names, or empty if we never peeked any rows
+                        // If we never peeked a row (right produced zero rows immediately),
+                        // derive column names from the TVF's static schema.
+                        if (self.right_col_names == null) {
+                            self.right_col_names = try tvfDefaultColumnNames(
+                                self.allocator,
+                                self.tfs.function_name,
+                            );
+                        }
                         const right_count = if (self.right_col_names) |rn| rn.len else 0;
                         const null_cols = try self.allocator.alloc([]const u8, right_count);
                         errdefer self.allocator.free(null_cols);
+                        // Column name strings are owned by right_col_names (freed in close()).
+                        // Row.deinit() only frees the slice, not individual strings — no dupe needed.
                         if (self.right_col_names) |rn| {
-                            for (null_cols, rn) |*dest, src| {
-                                dest.* = try self.allocator.dupe(u8, src);
-                            }
+                            for (null_cols, rn) |*dest, src| dest.* = src;
                         }
 
                         const null_vals = try self.allocator.alloc(executor_mod.Value, right_count);
@@ -23997,8 +24034,59 @@ test "LATERAL — json_each multiple rows expand independently" {
 }
 
 test "LATERAL — LEFT JOIN LATERAL with empty JSON object" {
-    // TODO: debug LEFT JOIN LATERAL with empty result set issue
-    return error.SkipZigTest;
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_lateral_left_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with JSON data
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, data TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Insert a row with empty JSON object
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, '{}')");
+    defer r2.close(testing.allocator);
+
+    // Select with LEFT JOIN LATERAL json_each on empty object
+    // Should produce 1 row with NULLs for j.key and j.value
+    var r3 = try db.execSQL("SELECT t.id, j.key, j.value FROM t LEFT JOIN LATERAL json_each(t.data) j ON true");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var has_null_key = false;
+    var has_null_value = false;
+    var id_val: i64 = 0;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Should have 3 columns: t.id, j.key, j.value
+        try testing.expectEqual(@as(usize, 3), row.values.len);
+
+        // First column (t.id) should be 1
+        id_val = row.values[0].integer;
+        try testing.expectEqual(@as(i64, 1), id_val);
+
+        // Second column (j.key) should be NULL
+        if (row.values[1] == .null_value) {
+            has_null_key = true;
+        }
+
+        // Third column (j.value) should be NULL
+        if (row.values[2] == .null_value) {
+            has_null_value = true;
+        }
+    }
+
+    // Should have exactly 1 row (LEFT JOIN keeps the left row even if right produces no rows)
+    try testing.expectEqual(@as(usize, 1), row_count);
+
+    // Both right-side columns should be NULL
+    try testing.expect(has_null_key);
+    try testing.expect(has_null_value);
 }
 
 test "LATERAL — json_array_elements expands column" {
