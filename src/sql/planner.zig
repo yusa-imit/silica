@@ -135,6 +135,7 @@ pub const AggFunc = enum {
     percentile_cont,
     percentile_disc,
     mode,
+    grouping,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -247,6 +248,8 @@ pub const PlanNode = union(enum) {
         order_dirs: []const ast.OrderDirection = &.{},
         /// For FILTER clause: expressions to filter aggregate rows
         filter_expr: ?*const ast.Expr = null,
+        /// For GROUPING(): multi-argument column list
+        args: []const *const ast.Expr = &.{},
     };
 
     pub const Limit = struct {
@@ -797,6 +800,15 @@ pub const Planner = struct {
                     func == .regr_count or func == .regr_avgx or func == .regr_avgy or
                     func == .regr_sxx or func == .regr_syy or func == .regr_sxy;
 
+                // For GROUPING(): store all args
+                if (func == .grouping) {
+                    return .{
+                        .func = func,
+                        .args = fc.args,
+                        .alias = alias,
+                    };
+                }
+
                 return .{
                     .func = func,
                     .arg = if (func == .count_star) null else if (fc.args.len > 0) fc.args[0] else null,
@@ -995,6 +1007,7 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "percentile_cont")) return .percentile_cont;
     if (std.mem.eql(u8, lower, "percentile_disc")) return .percentile_disc;
     if (std.mem.eql(u8, lower, "mode")) return .mode;
+    if (std.mem.eql(u8, lower, "grouping")) return .grouping;
     return null;
 }
 

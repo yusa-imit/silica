@@ -8448,7 +8448,11 @@ pub const AggregateOp = struct {
         // Aggregate columns
         for (self.aggregates, 0..) |agg, i| {
             const idx = self.group_by.len + i;
-            vals[idx] = self.computeAggregate(agg, group);
+            if (agg.func == .grouping) {
+                vals[idx] = .{ .integer = 0 };  // Regular GROUP BY: all columns are active
+            } else {
+                vals[idx] = self.computeAggregate(agg, group);
+            }
             inited += 1;
             col_names[idx] = agg.alias orelse aggFuncName(agg.func);
         }
@@ -8484,7 +8488,11 @@ pub const AggregateOp = struct {
 
         for (self.aggregates, 0..) |agg, i| {
             const idx = self.group_by.len + i;
-            vals[idx] = self.computeAggregate(agg, group);
+            if (agg.func == .grouping) {
+                vals[idx] = computeGroupingValue(agg.args, active_set);
+            } else {
+                vals[idx] = self.computeAggregate(agg, group);
+            }
             inited += 1;
             col_names[idx] = agg.alias orelse aggFuncName(agg.func);
         }
@@ -9531,6 +9539,7 @@ pub const AggregateOp = struct {
 
                 return max_val.dupe(self.allocator) catch .null_value;
             },
+            .grouping => return .{ .integer = 0 },
         }
     }
 
@@ -9613,6 +9622,19 @@ fn exprInGroupingSet(expr: *const ast.Expr, set: []const *const ast.Expr) bool {
     return false;
 }
 
+fn computeGroupingValue(args: []const *const ast.Expr, active_set: []const *const ast.Expr) Value {
+    var mask: i64 = 0;
+    const n = args.len;
+    for (args, 0..) |arg, i| {
+        const bit: u6 = @intCast(n - 1 - i);
+        const in_active = exprInGroupingSet(arg, active_set);
+        if (!in_active) {
+            mask |= (@as(i64, 1) << bit);
+        }
+    }
+    return .{ .integer = mask };
+}
+
 fn aggFuncName(func: AggFunc) []const u8 {
     return switch (func) {
         .count => "count",
@@ -9650,6 +9672,7 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .percentile_cont => "percentile_cont",
         .percentile_disc => "percentile_disc",
         .mode => "mode",
+        .grouping => "grouping",
     };
 }
 

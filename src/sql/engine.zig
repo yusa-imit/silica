@@ -24836,3 +24836,182 @@ test "ROLLUP: NULL in non-grouped columns" {
     try testing.expect(found_grand_total);
 }
 
+// ============================================================================
+// GROUPING() Function Tests (SQL:2003)
+// ============================================================================
+
+test "GROUPING() with ROLLUP — detect grand total rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_grouping_rollup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with department and salary
+    var r1 = try db.execSQL("CREATE TABLE emp (dept TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 100000)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 120000)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO emp VALUES ('Sales', 80000)");
+    defer r4.close(testing.allocator);
+
+    // Query with ROLLUP(dept) and GROUPING(dept)
+    // GROUPING(dept) returns 0 for normal grouped rows, 1 for grand total rows
+    var result = try db.execSQL("SELECT dept, SUM(salary), GROUPING(dept) FROM emp GROUP BY ROLLUP(dept)");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var grand_total_count: usize = 0;
+    var regular_grouped_count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Column 2 should have GROUPING(dept) value
+        try testing.expectEqual(@as(usize, 3), row.values.len);
+        try testing.expect(row.values[2] == .integer);
+
+        // Count rows where GROUPING(dept) = 1 (grand total)
+        if (row.values[2].integer == 1) {
+            grand_total_count += 1;
+            // Grand total row should have dept IS NULL
+            try testing.expect(row.values[0] == .null_value);
+        }
+
+        // Regular grouped rows should have GROUPING(dept) = 0
+        if (row.values[0] != .null_value) {
+            try testing.expectEqual(@as(i64, 0), row.values[2].integer);
+            regular_grouped_count += 1;
+        }
+    }
+
+    // ROLLUP(dept) with 3 rows should produce 3 rows total
+    // (2 department groups + 1 grand total)
+    try testing.expectEqual(@as(usize, 3), row_count);
+    // Exactly 1 grand total row where GROUPING(dept) = 1
+    try testing.expectEqual(@as(usize, 1), grand_total_count);
+    // Exactly 2 regular grouped rows
+    try testing.expectEqual(@as(usize, 2), regular_grouped_count);
+}
+
+test "GROUPING() with GROUPING SETS — bitmask for two-arg GROUPING" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_grouping_sets_bitmask.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with two grouping columns
+    var r1 = try db.execSQL("CREATE TABLE t (a TEXT, b TEXT, v INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('x', 'p', 10)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t VALUES ('y', 'q', 20)");
+    defer r3.close(testing.allocator);
+
+    // Query with GROUPING SETS((a, b), (a), ())
+    // Expected rows:
+    // - (a,b) grouping: GROUPING(a, b) = 0b00 = 0 (both active)
+    // - (a) grouping: GROUPING(a, b) = 0b01 = 1 (b is NULLed: bit 0 set)
+    // - () grand total: GROUPING(a, b) = 0b11 = 3 (both NULLed: bits 1 and 0 set)
+    var result = try db.execSQL("SELECT a, b, SUM(v), GROUPING(a, b) FROM t GROUP BY GROUPING SETS((a, b), (a), ())");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var bitmask_0_count: usize = 0;
+    var bitmask_1_count: usize = 0;
+    var bitmask_3_count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Column 3 should have GROUPING(a, b) value
+        try testing.expectEqual(@as(usize, 4), row.values.len);
+        try testing.expect(row.values[3] == .integer);
+
+        const grouping_value = row.values[3].integer;
+
+        // Classify rows by grouping bitmask
+        if (grouping_value == 0) {
+            bitmask_0_count += 1;
+            // Both columns should have values
+            try testing.expect(row.values[0] != .null_value);
+            try testing.expect(row.values[1] != .null_value);
+        } else if (grouping_value == 1) {
+            bitmask_1_count += 1;
+            // a has value, b is NULL
+            try testing.expect(row.values[0] != .null_value);
+            try testing.expect(row.values[1] == .null_value);
+        } else if (grouping_value == 3) {
+            bitmask_3_count += 1;
+            // Both columns are NULL (grand total)
+            try testing.expect(row.values[0] == .null_value);
+            try testing.expect(row.values[1] == .null_value);
+        }
+    }
+
+    // GROUPING SETS((a, b), (a), ()) should produce:
+    // - 2 rows with grouping value 0 (one for each (a,b) combination)
+    // - 2 rows with grouping value 1 (one for each distinct a value)
+    // - 1 row with grouping value 3 (grand total)
+    // Total: 5 rows
+    try testing.expectEqual(@as(usize, 5), row_count);
+    // Exactly 1 grand total row where GROUPING(a, b) = 3
+    try testing.expectEqual(@as(usize, 1), bitmask_3_count);
+    // At least 1 subtotal row where GROUPING(a, b) = 1
+    try testing.expect(bitmask_1_count >= 1);
+    // At least 2 detail rows where GROUPING(a, b) = 0
+    try testing.expect(bitmask_0_count >= 2);
+}
+
+test "GROUPING() returns 0 for regular GROUP BY" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_grouping_regular.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with one grouping column
+    var r1 = try db.execSQL("CREATE TABLE t (a TEXT, v INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('x', 10)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t VALUES ('y', 20)");
+    defer r3.close(testing.allocator);
+
+    // Query with regular GROUP BY (no ROLLUP/CUBE/GROUPING SETS)
+    // All rows should have GROUPING(a) = 0
+    var result = try db.execSQL("SELECT a, SUM(v), GROUPING(a) FROM t GROUP BY a");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Column 2 should have GROUPING(a) value
+        try testing.expectEqual(@as(usize, 3), row.values.len);
+        try testing.expect(row.values[2] == .integer);
+
+        // All rows should have GROUPING(a) = 0 (not a grand total)
+        try testing.expectEqual(@as(i64, 0), row.values[2].integer);
+    }
+
+    // Regular GROUP BY with 2 distinct values should produce 2 rows
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
