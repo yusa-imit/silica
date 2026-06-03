@@ -8427,10 +8427,59 @@ pub const AggregateOp = struct {
 
     fn computeAggregate(self: *AggregateOp, agg: planner_mod.PlanNode.AggregateExpr, group: []const Row) Value {
         switch (agg.func) {
-            .count_star => return .{ .integer = @intCast(group.len) },
+            .count_star => {
+                if (agg.filter_expr) |filter| {
+                    var count: i64 = 0;
+                    for (group) |*row| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv == .boolean and fv.boolean) count += 1;
+                    }
+                    return .{ .integer = count };
+                }
+                return .{ .integer = @intCast(group.len) };
+            },
             .count => {
+                if (agg.distinct) {
+                    var seen = std.StringHashMapUnmanaged(void){};
+                    defer {
+                        var it = seen.keyIterator();
+                        while (it.next()) |k| self.allocator.free(k.*);
+                        seen.deinit(self.allocator);
+                    }
+                    var count: i64 = 0;
+                    for (group) |*row| {
+                        if (agg.filter_expr) |filter| {
+                            const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                            defer fv.free(self.allocator);
+                            if (fv != .boolean or !fv.boolean) continue;
+                        }
+                        if (agg.arg) |arg_expr| {
+                            const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                            defer val.free(self.allocator);
+                            if (val == .null_value) continue;
+                            const key = serializeRow(self.allocator, &.{val}) catch continue;
+                            defer self.allocator.free(key);
+                            if (!seen.contains(key)) {
+                                const key_dup = self.allocator.dupe(u8, key) catch continue;
+                                seen.put(self.allocator, key_dup, {}) catch {
+                                    self.allocator.free(key_dup);
+                                    continue;
+                                };
+                                count += 1;
+                            }
+                        }
+                    }
+                    return .{ .integer = count };
+                }
                 var count: i64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8445,6 +8494,12 @@ pub const AggregateOp = struct {
                 var has_float = false;
                 var has_value = false;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8470,6 +8525,12 @@ pub const AggregateOp = struct {
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8485,6 +8546,12 @@ pub const AggregateOp = struct {
             .min => {
                 var min_val: ?Value = null;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val == .null_value) {
@@ -8515,6 +8582,12 @@ pub const AggregateOp = struct {
             .max => {
                 var max_val: ?Value = null;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val == .null_value) {
@@ -8551,6 +8624,12 @@ pub const AggregateOp = struct {
                 }
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val != .null_value) {
@@ -8625,6 +8704,12 @@ pub const AggregateOp = struct {
                 }
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val != .null_value) {
@@ -8699,6 +8784,12 @@ pub const AggregateOp = struct {
                 }
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         if (val == .null_value) {
@@ -8761,6 +8852,12 @@ pub const AggregateOp = struct {
                 // Return true if all non-NULL values are true, false if any is false, NULL if all NULL
                 var result: ?bool = null;
                 for (group) |*row_iter| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row_iter, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
@@ -8784,6 +8881,12 @@ pub const AggregateOp = struct {
                 // Return true if any non-NULL value is true, false if all false, NULL if all NULL
                 var result: ?bool = null;
                 for (group) |*row_iter| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row_iter, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
@@ -8807,6 +8910,12 @@ pub const AggregateOp = struct {
                 // Bitwise AND of integer values
                 var result: ?i64 = null;
                 for (group) |*row_iter| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row_iter, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
@@ -8829,6 +8938,12 @@ pub const AggregateOp = struct {
                 // Bitwise OR of integer values
                 var result: ?i64 = null;
                 for (group) |*row_iter| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row_iter, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
@@ -8853,6 +8968,12 @@ pub const AggregateOp = struct {
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8866,6 +8987,12 @@ pub const AggregateOp = struct {
                 const mean = sum / count;
                 var sq_sum: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8882,6 +9009,12 @@ pub const AggregateOp = struct {
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8895,6 +9028,12 @@ pub const AggregateOp = struct {
                 const mean = sum / count;
                 var sq_sum: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8912,6 +9051,12 @@ pub const AggregateOp = struct {
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8925,6 +9070,12 @@ pub const AggregateOp = struct {
                 const mean = sum / count;
                 var sq_sum: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8941,6 +9092,12 @@ pub const AggregateOp = struct {
                 var sum: f64 = 0;
                 var count: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8954,6 +9111,12 @@ pub const AggregateOp = struct {
                 const mean = sum / count;
                 var sq_sum: f64 = 0;
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
                         defer val.free(self.allocator);
@@ -8969,6 +9132,12 @@ pub const AggregateOp = struct {
                 // every(x) = bool_and(x): true if all non-NULL values are true, NULL if all NULL
                 var result: ?bool = null;
                 for (group) |*row_iter| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row_iter, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |arg_expr| {
                         const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
@@ -9003,6 +9172,12 @@ pub const AggregateOp = struct {
                 defer x_values.deinit(self.allocator);
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.arg) |y_expr| {
                         if (agg.arg2) |x_expr| {
                             const y_val = evalExpr(self.allocator, y_expr, row, null) catch continue;
@@ -9106,6 +9281,12 @@ pub const AggregateOp = struct {
                 }
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.order_exprs.len > 0) {
                         const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
                         if (val != .null_value) {
@@ -9169,6 +9350,12 @@ pub const AggregateOp = struct {
                 }
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.order_exprs.len > 0) {
                         const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
                         if (val != .null_value) {
@@ -9219,6 +9406,12 @@ pub const AggregateOp = struct {
                 }
 
                 for (group) |*row| {
+                    // Check FILTER clause
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
                     if (agg.order_exprs.len > 0) {
                         const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
                         if (val != .null_value) {

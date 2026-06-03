@@ -2793,6 +2793,15 @@ pub const Parser = struct {
             } }) catch return error.OutOfMemory;
         }
 
+        // Check for FILTER clause
+        var filter_clause: ?*const ast.Expr = null;
+        if (self.match(.kw_filter)) {
+            _ = try self.expect(.left_paren);
+            _ = try self.expect(.kw_where);
+            filter_clause = try self.parseExpr(0);
+            _ = try self.expect(.right_paren);
+        }
+
         // Check for OVER clause — converts to window function
         if (self.check(.kw_over)) {
             return self.parseWindowSpec(name, args.toOwnedSlice(a) catch return error.OutOfMemory, distinct);
@@ -2802,6 +2811,7 @@ pub const Parser = struct {
             .name = name,
             .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
             .distinct = distinct,
+            .filter_clause = filter_clause,
         } }) catch return error.OutOfMemory;
     }
 

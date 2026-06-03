@@ -24260,3 +24260,290 @@ test "row_to_json integration: filtered single row with WHERE" {
     try testing.expect(found_bob);
 }
 
+// ── FILTER Clause for Aggregate Functions Tests ──────────────────────────────
+
+test "FILTER — COUNT(*) FILTER (WHERE condition)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_count_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with salary data
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Alice', 60000), (2, 'Bob', 45000), (3, 'Charlie', 75000)");
+    defer r2.close(testing.allocator);
+
+    // SELECT COUNT(*) FILTER (WHERE salary > 50000) FROM employees
+    var r3 = try db.execSQL("SELECT COUNT(*) FILTER (WHERE salary > 50000) FROM employees");
+    defer r3.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var result_value: i64 = 0;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Should have 1 column (the count result)
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+
+        // Check that result is integer
+        try testing.expect(row.values[0] == .integer);
+        result_value = row.values[0].integer;
+    }
+
+    // Should have exactly 1 result row
+    try testing.expectEqual(@as(usize, 1), row_count);
+
+    // Should count only Alice (60000) and Charlie (75000), not Bob (45000) = 2
+    try testing.expectEqual(@as(i64, 2), result_value);
+}
+
+test "FILTER — COUNT(*) FILTER (WHERE false) returns 0" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_count_false.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with data
+    var r1 = try db.execSQL("CREATE TABLE t (x INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4), (5)");
+    defer r2.close(testing.allocator);
+
+    // SELECT COUNT(*) FILTER (WHERE false) FROM t should return 0
+    var r3 = try db.execSQL("SELECT COUNT(*) FILTER (WHERE false) FROM t");
+    defer r3.close(testing.allocator);
+
+    var result_value: i64 = -1;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+        try testing.expect(row.values[0] == .integer);
+        result_value = row.values[0].integer;
+    }
+
+    // Should be 0 (no rows match false condition)
+    try testing.expectEqual(@as(i64, 0), result_value);
+}
+
+test "FILTER — SUM(x) FILTER (WHERE x > 0)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_sum_positive.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with mixed positive/negative values
+    var r1 = try db.execSQL("CREATE TABLE t (x INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data: 10, -5, 20, -3, 15
+    var r2 = try db.execSQL("INSERT INTO t VALUES (10), (-5), (20), (-3), (15)");
+    defer r2.close(testing.allocator);
+
+    // SELECT SUM(x) FILTER (WHERE x > 0) should sum only positive values
+    var r3 = try db.execSQL("SELECT SUM(x) FILTER (WHERE x > 0) FROM t");
+    defer r3.close(testing.allocator);
+
+    var result_value: i64 = 0;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+        try testing.expect(row.values[0] == .integer);
+        result_value = row.values[0].integer;
+    }
+
+    // Should be 10 + 20 + 15 = 45
+    try testing.expectEqual(@as(i64, 45), result_value);
+}
+
+test "FILTER — AVG(x) FILTER (WHERE x IS NOT NULL)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_avg_not_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with NULLs
+    var r1 = try db.execSQL("CREATE TABLE t (x INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data: 10, NULL, 20, NULL, 30
+    var r2 = try db.execSQL("INSERT INTO t VALUES (10), (NULL), (20), (NULL), (30)");
+    defer r2.close(testing.allocator);
+
+    // SELECT AVG(x) FILTER (WHERE x IS NOT NULL) should average only non-NULL values
+    var r3 = try db.execSQL("SELECT AVG(x) FILTER (WHERE x IS NOT NULL) FROM t");
+    defer r3.close(testing.allocator);
+
+    var result_value: f64 = 0;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+        try testing.expect(row.values[0] == .real);
+        result_value = row.values[0].real;
+    }
+
+    // Should be (10 + 20 + 30) / 3 = 20.0
+    try testing.expectApproxEqAbs(@as(f64, 20.0), result_value, 0.0001);
+}
+
+test "FILTER — Multiple FILTER clauses in one SELECT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_multiple.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with mixed data
+    var r1 = try db.execSQL("CREATE TABLE sales (id INTEGER, amount INTEGER, active BOOLEAN)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO sales VALUES (1, 100, true), (2, 50, false), (3, 200, true), (4, 75, false)");
+    defer r2.close(testing.allocator);
+
+    // SELECT COUNT(*) FILTER (WHERE active=true), SUM(amount) FILTER (WHERE amount > 75) FROM sales
+    var r3 = try db.execSQL("SELECT COUNT(*) FILTER (WHERE active=true), SUM(amount) FILTER (WHERE amount > 75) FROM sales");
+    defer r3.close(testing.allocator);
+
+    var count_active: i64 = 0;
+    var sum_large: i64 = 0;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        // Should have 2 columns
+        try testing.expectEqual(@as(usize, 2), row.values.len);
+
+        // First column: count of active rows (2 rows)
+        try testing.expect(row.values[0] == .integer);
+        count_active = row.values[0].integer;
+
+        // Second column: sum of amounts > 75 (100 + 200 = 300)
+        try testing.expect(row.values[1] == .integer);
+        sum_large = row.values[1].integer;
+    }
+
+    try testing.expectEqual(@as(i64, 2), count_active);
+    try testing.expectEqual(@as(i64, 300), sum_large);
+}
+
+test "FILTER — with GROUP BY" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_group_by.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with department and salary data
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER, dept TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Sales', 60000), (2, 'Sales', 45000), (3, 'Engineering', 75000), (4, 'Engineering', 80000)");
+    defer r2.close(testing.allocator);
+
+    // SELECT dept, COUNT(*) FILTER (WHERE salary > 50000) FROM employees GROUP BY dept
+    var r3 = try db.execSQL("SELECT dept, COUNT(*) FILTER (WHERE salary > 50000) FROM employees GROUP BY dept");
+    defer r3.close(testing.allocator);
+
+    var rows = std.ArrayListUnmanaged([2][]const u8){};
+    defer {
+        for (rows.items) |row_pair| {
+            testing.allocator.free(row_pair[0]);
+            testing.allocator.free(row_pair[1]);
+        }
+        rows.deinit(testing.allocator);
+    }
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        // Should have 2 columns (dept and count)
+        try testing.expectEqual(@as(usize, 2), row.values.len);
+
+        try testing.expect(row.values[0] == .text);
+        try testing.expect(row.values[1] == .integer);
+
+        const dept = try testing.allocator.dupe(u8, row.values[0].text);
+        const count_str = try std.fmt.allocPrint(testing.allocator, "{d}", .{row.values[1].integer});
+
+        try rows.append(testing.allocator, .{ dept, count_str });
+    }
+
+    // Should have 2 rows (Sales and Engineering)
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+
+    // Verify both departments appear
+    var found_sales = false;
+    var found_engineering = false;
+
+    for (rows.items) |row_pair| {
+        if (std.mem.eql(u8, row_pair[0], "Sales")) {
+            // Sales dept: only 1 person with salary > 50000 (the one with 60000)
+            found_sales = std.mem.eql(u8, row_pair[1], "1");
+        } else if (std.mem.eql(u8, row_pair[0], "Engineering")) {
+            // Engineering dept: both employees have salary > 50000
+            found_engineering = std.mem.eql(u8, row_pair[1], "2");
+        }
+    }
+
+    try testing.expect(found_sales);
+    try testing.expect(found_engineering);
+}
+
+test "FILTER — COUNT(DISTINCT x) FILTER (WHERE x > 0)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_filter_count_distinct.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with duplicate values
+    var r1 = try db.execSQL("CREATE TABLE t (x INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data with duplicates: 5, 5, 10, -3, 10, -3, 15
+    var r2 = try db.execSQL("INSERT INTO t VALUES (5), (5), (10), (-3), (10), (-3), (15)");
+    defer r2.close(testing.allocator);
+
+    // SELECT COUNT(DISTINCT x) FILTER (WHERE x > 0) should count distinct positive values only
+    var r3 = try db.execSQL("SELECT COUNT(DISTINCT x) FILTER (WHERE x > 0) FROM t");
+    defer r3.close(testing.allocator);
+
+    var result_value: i64 = 0;
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        try testing.expectEqual(@as(usize, 1), row.values.len);
+        try testing.expect(row.values[0] == .integer);
+        result_value = row.values[0].integer;
+    }
+
+    // Should count distinct values > 0: 5, 10, 15 = 3 distinct values
+    try testing.expectEqual(@as(i64, 3), result_value);
+}
+

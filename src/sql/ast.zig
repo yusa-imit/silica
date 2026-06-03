@@ -199,6 +199,7 @@ pub const Expr = union(enum) {
         name: []const u8,
         args: []const *const Expr,
         distinct: bool = false,
+        filter_clause: ?*const Expr = null,
     },
     /// expr BETWEEN low AND high
     between: struct {

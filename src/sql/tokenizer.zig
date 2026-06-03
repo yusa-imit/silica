@@ -211,6 +211,7 @@ pub const TokenType = enum {
     // Keywords — Window functions
     kw_over,
     kw_partition,
+    kw_filter,
     kw_rows,
     kw_range,
     kw_groups,
@@ -918,6 +919,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         // Window functions
         .{ "over", .kw_over },
         .{ "partition", .kw_partition },
+        .{ "filter", .kw_filter },
         .{ "rows", .kw_rows },
         .{ "range", .kw_range },
         .{ "groups", .kw_groups },

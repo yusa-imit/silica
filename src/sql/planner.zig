@@ -244,6 +244,8 @@ pub const PlanNode = union(enum) {
         order_exprs: []const *const ast.Expr = &.{},
         /// For ordered-set aggregates: sort directions (asc/desc)
         order_dirs: []const ast.OrderDirection = &.{},
+        /// For FILTER clause: expressions to filter aggregate rows
+        filter_expr: ?*const ast.Expr = null,
     };
 
     pub const Limit = struct {
@@ -790,6 +792,7 @@ pub const Planner = struct {
                     .alias = alias,
                     .distinct = fc.distinct,
                     .separator = if (func == .string_agg and fc.args.len > 1) fc.args[1] else null,
+                    .filter_expr = fc.filter_clause,
                 };
             },
             .ordered_set_agg => |osa| {
