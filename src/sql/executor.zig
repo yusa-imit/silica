@@ -8334,6 +8334,7 @@ pub const AggregateOp = struct {
     result_rows: std.ArrayListUnmanaged(Row) = .{},
     index: usize = 0,
     materialized: bool = false,
+    grouping_sets: ?[]const []const *const ast.Expr = null,
 
     pub fn init(
         allocator: Allocator,
@@ -8360,6 +8361,40 @@ pub const AggregateOp = struct {
         while (true) {
             const row = try self.input.next() orelse break;
             input_rows.append(self.allocator, row) catch return ExecError.OutOfMemory;
+        }
+
+        // Multi-pass execution for ROLLUP / CUBE / GROUPING SETS
+        if (self.grouping_sets) |sets| {
+            for (sets) |active_set| {
+                if (input_rows.items.len == 0) {
+                    // Grand total () emits one default row even with no input
+                    if (active_set.len == 0) try self.emitGroupingSetRow(&.{}, active_set);
+                    continue;
+                }
+                if (active_set.len == 0) {
+                    // Grand total: all rows form one group
+                    try self.emitGroupingSetRow(input_rows.items, active_set);
+                } else {
+                    // Shallow-copy row headers so we can sort without affecting other passes
+                    const pass_rows = self.allocator.alloc(Row, input_rows.items.len) catch return ExecError.OutOfMemory;
+                    defer self.allocator.free(pass_rows);
+                    @memcpy(pass_rows, input_rows.items);
+
+                    const ctx = GroupContext{ .group_by = active_set, .allocator = self.allocator };
+                    std.sort.block(Row, pass_rows, ctx, GroupContext.lessThan);
+
+                    var group_start: usize = 0;
+                    for (pass_rows[1..], 1..) |_, i| {
+                        if (!groupKeysEqual(self.allocator, active_set, &pass_rows[group_start], &pass_rows[i])) {
+                            try self.emitGroupingSetRow(pass_rows[group_start..i], active_set);
+                            group_start = i;
+                        }
+                    }
+                    try self.emitGroupingSetRow(pass_rows[group_start..], active_set);
+                }
+            }
+            self.materialized = true;
+            return;
         }
 
         if (input_rows.items.len == 0 and self.group_by.len == 0) {
@@ -8411,6 +8446,42 @@ pub const AggregateOp = struct {
         }
 
         // Aggregate columns
+        for (self.aggregates, 0..) |agg, i| {
+            const idx = self.group_by.len + i;
+            vals[idx] = self.computeAggregate(agg, group);
+            inited += 1;
+            col_names[idx] = agg.alias orelse aggFuncName(agg.func);
+        }
+
+        self.result_rows.append(self.allocator, Row{
+            .columns = col_names,
+            .values = vals,
+            .allocator = self.allocator,
+        }) catch return ExecError.OutOfMemory;
+    }
+
+    fn emitGroupingSetRow(self: *AggregateOp, group: []const Row, active_set: []const *const ast.Expr) ExecError!void {
+        const total_cols = self.group_by.len + self.aggregates.len;
+        const vals = self.allocator.alloc(Value, total_cols) catch return ExecError.OutOfMemory;
+        var inited: usize = 0;
+        errdefer {
+            for (vals[0..inited]) |v| v.free(self.allocator);
+            self.allocator.free(vals);
+        }
+        const col_names = self.allocator.alloc([]const u8, total_cols) catch return ExecError.OutOfMemory;
+        errdefer self.allocator.free(col_names);
+
+        for (self.group_by, 0..) |gb_expr, i| {
+            const in_active = exprInGroupingSet(gb_expr, active_set);
+            if (in_active and group.len > 0) {
+                vals[i] = evalExpr(self.allocator, gb_expr, &group[0], null) catch .null_value;
+            } else {
+                vals[i] = .null_value;
+            }
+            inited += 1;
+            col_names[i] = exprColumnName(gb_expr);
+        }
+
         for (self.aggregates, 0..) |agg, i| {
             const idx = self.group_by.len + i;
             vals[idx] = self.computeAggregate(agg, group);
@@ -9515,6 +9586,31 @@ fn groupKeysEqual(allocator: Allocator, group_by: []const *const ast.Expr, a: *c
         if (!av.eql(bv)) return false;
     }
     return true;
+}
+
+/// Structural equality for AST expressions — used by grouping set membership check.
+fn groupingExprsEq(a: *const ast.Expr, b: *const ast.Expr) bool {
+    if (a == b) return true;
+    if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+    switch (a.*) {
+        .column_ref => |na| {
+            const nb = b.column_ref;
+            if (!std.mem.eql(u8, na.name, nb.name)) return false;
+            if ((na.prefix == null) != (nb.prefix == null)) return false;
+            if (na.prefix) |pa| return std.mem.eql(u8, pa, nb.prefix.?);
+            return true;
+        },
+        .integer_literal => |n| return n == b.integer_literal,
+        else => return false,
+    }
+}
+
+/// Returns true if `expr` is structurally equal to any expression in `set`.
+fn exprInGroupingSet(expr: *const ast.Expr, set: []const *const ast.Expr) bool {
+    for (set) |s| {
+        if (groupingExprsEq(expr, s)) return true;
+    }
+    return false;
 }
 
 fn aggFuncName(func: AggFunc) []const u8 {

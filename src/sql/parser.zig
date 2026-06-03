@@ -363,12 +363,74 @@ pub const Parser = struct {
 
         if (self.match(.kw_group)) {
             _ = try self.expect(.kw_by);
-            var exprs = std.ArrayListUnmanaged(*const ast.Expr){};
-            while (true) {
-                exprs.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
-                if (!self.match(.comma)) break;
+
+            // Check for ROLLUP, CUBE, or GROUPING SETS
+            if (self.check(.kw_rollup)) {
+                _ = self.advance();
+                _ = try self.expect(.left_paren);
+                var exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                while (true) {
+                    exprs.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                _ = try self.expect(.right_paren);
+
+                const spec = try a.create(ast.GroupBySpec);
+                const cols = exprs.toOwnedSlice(a) catch return error.OutOfMemory;
+                spec.* = .{ .rollup = cols };
+                stmt.group_by_spec = spec;
+            } else if (self.check(.kw_cube)) {
+                _ = self.advance();
+                _ = try self.expect(.left_paren);
+                var exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                while (true) {
+                    exprs.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                _ = try self.expect(.right_paren);
+
+                const spec = try a.create(ast.GroupBySpec);
+                spec.* = .{ .cube = exprs.toOwnedSlice(a) catch return error.OutOfMemory };
+                stmt.group_by_spec = spec;
+            } else if (self.check(.kw_grouping)) {
+                _ = self.advance();
+                _ = try self.expect(.kw_sets);
+                _ = try self.expect(.left_paren);
+                var grouping_sets = std.ArrayListUnmanaged([]const *const ast.Expr){};
+                while (true) {
+                    var set = std.ArrayListUnmanaged(*const ast.Expr){};
+                    // Each grouping set can be (expr, expr, ...), (), or just expr
+                    if (self.check(.left_paren)) {
+                        _ = self.advance();
+                        // Handle empty grouping set ()
+                        if (!self.check(.right_paren)) {
+                            while (true) {
+                                set.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                                if (!self.match(.comma)) break;
+                            }
+                        }
+                        _ = try self.expect(.right_paren);
+                    } else {
+                        // Single expression without parentheses
+                        set.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                    }
+                    grouping_sets.append(a, set.toOwnedSlice(a) catch return error.OutOfMemory) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                _ = try self.expect(.right_paren);
+
+                const spec = try a.create(ast.GroupBySpec);
+                spec.* = .{ .grouping_sets = grouping_sets.toOwnedSlice(a) catch return error.OutOfMemory };
+                stmt.group_by_spec = spec;
+            } else {
+                // Regular GROUP BY
+                var exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                while (true) {
+                    exprs.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+                stmt.group_by = exprs.toOwnedSlice(a) catch return error.OutOfMemory;
             }
-            stmt.group_by = exprs.toOwnedSlice(a) catch return error.OutOfMemory;
 
             if (self.match(.kw_having)) {
                 stmt.having = try self.parseExpr(0);

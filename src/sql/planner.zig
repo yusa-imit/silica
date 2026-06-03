@@ -231,6 +231,7 @@ pub const PlanNode = union(enum) {
         input: *const PlanNode,
         group_by: []const *const ast.Expr,
         aggregates: []const AggregateExpr = &.{},
+        grouping_sets: ?[]const []const *const ast.Expr = null,
     };
 
     pub const AggregateExpr = struct {
@@ -505,11 +506,22 @@ pub const Planner = struct {
 
         // 4. GROUP BY → Aggregate
         const aggs = try self.extractAggregates(stmt.columns);
-        if (stmt.group_by.len > 0 or aggs.len > 0) {
+        if (stmt.group_by.len > 0 or aggs.len > 0 or stmt.group_by_spec != null) {
+            const alloc = self.arena.allocator();
+            var gs_plan: ?[]const []const *const ast.Expr = null;
+            var effective_group_by = stmt.group_by;
+
+            if (stmt.group_by_spec) |spec| {
+                const expanded = try expandGroupBySpec(alloc, spec);
+                gs_plan = expanded.sets;
+                effective_group_by = expanded.all_cols;
+            }
+
             node = try self.createNode(.{ .aggregate = .{
                 .input = node,
-                .group_by = stmt.group_by,
+                .group_by = effective_group_by,
                 .aggregates = aggs,
+                .grouping_sets = gs_plan,
             } });
         }
 
@@ -1094,6 +1106,94 @@ fn parseAndPlan(alloc: Allocator, sql: []const u8, arena: *ast.AstArena, schema:
 
     var planner = Planner.init(arena, schema.provider());
     return planner.plan(stmt.?);
+}
+
+/// Structural equality for AST expressions (column refs and simple literals).
+fn astExprsEq(a: *const ast.Expr, b: *const ast.Expr) bool {
+    if (a == b) return true;
+    if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+    switch (a.*) {
+        .column_ref => |na| {
+            const nb = b.column_ref;
+            if (!std.mem.eql(u8, na.name, nb.name)) return false;
+            if ((na.prefix == null) != (nb.prefix == null)) return false;
+            if (na.prefix) |pa| return std.mem.eql(u8, pa, nb.prefix.?);
+            return true;
+        },
+        .integer_literal => |n| return n == b.integer_literal,
+        else => return false,
+    }
+}
+
+/// Expand a GroupBySpec (ROLLUP/CUBE/GROUPING SETS) into:
+/// - all_cols: the ordered union of all group-by column expressions
+/// - sets: the list of concrete grouping sets
+fn expandGroupBySpec(alloc: std.mem.Allocator, spec: *const ast.GroupBySpec) !struct {
+    all_cols: []const *const ast.Expr,
+    sets: []const []const *const ast.Expr,
+} {
+    switch (spec.*) {
+        .regular => |cols| {
+            var sets = std.ArrayListUnmanaged([]const *const ast.Expr){};
+            try sets.append(alloc, cols);
+            return .{
+                .all_cols = cols,
+                .sets = try sets.toOwnedSlice(alloc),
+            };
+        },
+        .rollup => |cols| {
+            // ROLLUP(c1,...,cn) → n+1 sets: (c1..cn), (c1..cn-1), ..., (c1), ()
+            var sets = std.ArrayListUnmanaged([]const *const ast.Expr){};
+            var i: usize = cols.len + 1;
+            while (i > 0) {
+                i -= 1;
+                try sets.append(alloc, cols[0..i]);
+            }
+            return .{
+                .all_cols = cols,
+                .sets = try sets.toOwnedSlice(alloc),
+            };
+        },
+        .cube => |cols| {
+            // CUBE(c1,...,cn) → 2^n sets (all subsets), largest first
+            const n = cols.len;
+            const num_sets: usize = @as(usize, 1) << @as(u6, @intCast(n));
+            var sets = std.ArrayListUnmanaged([]const *const ast.Expr){};
+            var m: usize = num_sets;
+            while (m > 0) : (m -= 1) {
+                const cur_mask = m - 1;
+                var subset = std.ArrayListUnmanaged(*const ast.Expr){};
+                for (cols, 0..) |col, j| {
+                    const shift = @as(u6, @intCast(j));
+                    if ((cur_mask >> shift) & 1 == 1) {
+                        try subset.append(alloc, col);
+                    }
+                }
+                try sets.append(alloc, try subset.toOwnedSlice(alloc));
+            }
+            return .{
+                .all_cols = cols,
+                .sets = try sets.toOwnedSlice(alloc),
+            };
+        },
+        .grouping_sets => |gsets| {
+            // Deduplicate columns across all sets using structural equality
+            var all_cols_list = std.ArrayListUnmanaged(*const ast.Expr){};
+            for (gsets) |gset| {
+                for (gset) |col| {
+                    var found = false;
+                    for (all_cols_list.items) |existing| {
+                        if (astExprsEq(existing, col)) { found = true; break; }
+                    }
+                    if (!found) try all_cols_list.append(alloc, col);
+                }
+            }
+            return .{
+                .all_cols = try all_cols_list.toOwnedSlice(alloc),
+                .sets = gsets,
+            };
+        },
+    }
 }
 
 test "plan simple SELECT" {

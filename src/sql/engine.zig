@@ -1418,6 +1418,7 @@ pub const Database = struct {
                 .input = try substituteParamsInNode(template_arena, execution_arena, a.input, params),
                 .group_by = a.group_by, // Could have bind parameters, but rare
                 .aggregates = a.aggregates, // Aggregate args could have bind parameters, but rare
+                .grouping_sets = a.grouping_sets,
             } },
             .limit => |l| .{ .limit = .{
                 .input = try substituteParamsInNode(template_arena, execution_arena, l.input, params),
@@ -3207,6 +3208,7 @@ pub const Database = struct {
         const input = try self.buildIterator(agg.input, ops);
         const agg_op = self.allocator.create(AggregateOp) catch return EngineError.OutOfMemory;
         agg_op.* = AggregateOp.init(self.allocator, input, agg.group_by, agg.aggregates);
+        if (agg.grouping_sets) |gs| agg_op.grouping_sets = gs;
         ops.aggregate = agg_op;
         return agg_op.iterator();
     }
@@ -24545,5 +24547,292 @@ test "FILTER — COUNT(DISTINCT x) FILTER (WHERE x > 0)" {
 
     // Should count distinct values > 0: 5, 10, 15 = 3 distinct values
     try testing.expectEqual(@as(i64, 3), result_value);
+}
+
+// ============================================================================
+// GROUP BY ROLLUP / CUBE / GROUPING SETS Tests (SQL:2003)
+// ============================================================================
+
+test "ROLLUP: basic two-column rollup" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_rollup_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with departments and job titles
+    var r1 = try db.execSQL("CREATE TABLE emp (dept TEXT, job TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 'Engineer', 100000)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 'Manager', 120000)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO emp VALUES ('Sales', 'Rep', 80000)");
+    defer r4.close(testing.allocator);
+
+    // Query with ROLLUP(dept, job) should produce 6 rows:
+    // - 3 detail rows (Engineering/Engineer, Engineering/Manager, Sales/Rep)
+    // - 2 dept subtotals (Engineering/NULL sum=220000, Sales/NULL sum=80000)
+    // - 1 grand total (NULL/NULL sum=300000)
+    var result = try db.execSQL("SELECT dept, job, SUM(salary) FROM emp GROUP BY ROLLUP(dept, job)");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var grand_total: i64 = 0;
+    var found_grand_total = false;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Check for grand total row (NULL, NULL, 300000)
+        if (row.values.len >= 3 and
+            row.values[0] == .null_value and
+            row.values[1] == .null_value and
+            row.values[2] == .integer) {
+            grand_total = row.values[2].integer;
+            found_grand_total = true;
+        }
+    }
+
+    // ROLLUP(dept, job) with 3 data rows should produce 6 rows
+    try testing.expectEqual(@as(usize, 6), row_count);
+    // Grand total should be 300000
+    try testing.expect(found_grand_total);
+    try testing.expectEqual(@as(i64, 300000), grand_total);
+}
+
+test "ROLLUP: one-column rollup" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_rollup_one_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with just department
+    var r1 = try db.execSQL("CREATE TABLE emp (dept TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 100000)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 120000)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO emp VALUES ('Sales', 80000)");
+    defer r4.close(testing.allocator);
+
+    // Query with ROLLUP(dept) should produce 3 rows:
+    // - 2 detail rows (Engineering sum=220000, Sales sum=80000)
+    // - 1 grand total (NULL sum=300000)
+    var result = try db.execSQL("SELECT dept, COUNT(*) FROM emp GROUP BY ROLLUP(dept)");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+
+    // ROLLUP(dept) with 3 data rows should produce 3 rows
+    try testing.expectEqual(@as(usize, 3), row_count);
+}
+
+test "CUBE: basic two-column cube" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cube_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with two dimensions
+    var r1 = try db.execSQL("CREATE TABLE t (a TEXT, b TEXT, v INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('x', 'p', 10)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t VALUES ('x', 'q', 20)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t VALUES ('y', 'p', 30)");
+    defer r4.close(testing.allocator);
+
+    // Query with CUBE(a, b) should produce 4 grouping combinations:
+    // (a, b), (a), (b), ()
+    // This yields up to 7 rows:
+    // - 3 detail rows (x/p=10, x/q=20, y/p=30)
+    // - 2 a-subtotals (x/NULL=30, y/NULL=30)
+    // - 1 b-subtotal (NULL/p=40, NULL/q=20)
+    // - 1 grand total (NULL/NULL=60)
+    // Total should be 7 rows (or fewer if deduplication occurs)
+    var result = try db.execSQL("SELECT a, b, SUM(v) FROM t GROUP BY CUBE(a, b)");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var found_grand_total = false;
+    var grand_total: i64 = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Check for grand total row (NULL, NULL, 60)
+        if (row.values.len >= 3 and
+            row.values[0] == .null_value and
+            row.values[1] == .null_value and
+            row.values[2] == .integer) {
+            grand_total = row.values[2].integer;
+            found_grand_total = true;
+        }
+    }
+
+    // CUBE(a, b) with 3 rows should produce at least 4 rows (4 grouping sets)
+    // In practice with the data, we expect 7 rows
+    try testing.expect(row_count >= 4);
+    try testing.expect(found_grand_total);
+    try testing.expectEqual(@as(i64, 60), grand_total);
+}
+
+test "GROUPING SETS: explicit three groupings" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_grouping_sets_explicit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a TEXT, b TEXT, v INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('x', 'p', 10)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t VALUES ('x', 'q', 20)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t VALUES ('y', 'p', 30)");
+    defer r4.close(testing.allocator);
+
+    // Query with explicit GROUPING SETS((a, b), (a), ())
+    // This should produce:
+    // - 3 detail rows (x/p=10, x/q=20, y/p=30)
+    // - 2 a-subtotals (x/NULL=30, y/NULL=30)
+    // - 1 grand total (NULL/NULL=60)
+    // Total: 6 rows
+    var result = try db.execSQL("SELECT a, b, SUM(v) FROM t GROUP BY GROUPING SETS((a, b), (a), ())");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+    var found_grand_total = false;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        // Check for grand total row
+        if (row.values.len >= 3 and
+            row.values[0] == .null_value and
+            row.values[1] == .null_value and
+            row.values[2] == .integer) {
+            found_grand_total = true;
+        }
+    }
+
+    // Should produce 6 rows
+    try testing.expectEqual(@as(usize, 6), row_count);
+    try testing.expect(found_grand_total);
+}
+
+test "GROUPING SETS: single grouping set" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_grouping_sets_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a TEXT, v INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t VALUES ('x', 10)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO t VALUES ('x', 20)");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO t VALUES ('y', 30)");
+    defer r4.close(testing.allocator);
+
+    // Query with GROUPING SETS((a), ()) - equivalent to ROLLUP(a)
+    // Should produce:
+    // - 2 detail rows (x=30, y=30)
+    // - 1 grand total (NULL=60)
+    // Total: 3 rows
+    var result = try db.execSQL("SELECT a, COUNT(*) FROM t GROUP BY GROUPING SETS((a), ())");
+    defer result.close(testing.allocator);
+
+    var row_count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+
+    // Should produce 3 rows
+    try testing.expectEqual(@as(usize, 3), row_count);
+}
+
+test "ROLLUP: NULL in non-grouped columns" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_rollup_null_columns.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE emp (dept TEXT, job TEXT, salary INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 'Engineer', 100000)");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO emp VALUES ('Engineering', 'Manager', 120000)");
+    defer r3.close(testing.allocator);
+
+    // Query with ROLLUP(dept, job)
+    // For the dept subtotal row (dept='Engineering', job should be NULL)
+    // For the grand total row (both should be NULL)
+    var result = try db.execSQL("SELECT dept, job, SUM(salary) FROM emp GROUP BY ROLLUP(dept, job)");
+    defer result.close(testing.allocator);
+
+    var found_dept_subtotal = false;
+    var found_grand_total = false;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        // Look for dept subtotal: dept is not NULL, job is NULL
+        if (row.values.len >= 2 and
+            row.values[0] != .null_value and
+            row.values[1] == .null_value) {
+            found_dept_subtotal = true;
+        }
+
+        // Look for grand total: both NULL
+        if (row.values.len >= 2 and
+            row.values[0] == .null_value and
+            row.values[1] == .null_value) {
+            found_grand_total = true;
+        }
+    }
+
+    try testing.expect(found_dept_subtotal);
+    try testing.expect(found_grand_total);
 }
 

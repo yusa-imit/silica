@@ -306,6 +306,7 @@ pub const Optimizer = struct {
             .input = opt_input,
             .group_by = agg.group_by,
             .aggregates = agg.aggregates,
+            .grouping_sets = agg.grouping_sets,
         } });
     }
 

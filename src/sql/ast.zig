@@ -392,6 +392,18 @@ pub const SetOperation = struct {
     right: *const SelectStmt,
 };
 
+/// GROUP BY specification supporting ROLLUP, CUBE, and GROUPING SETS.
+pub const GroupBySpec = union(enum) {
+    /// Regular GROUP BY — single grouping set
+    regular: []const *const Expr,
+    /// ROLLUP(e1, e2, ...) — hierarchical aggregation: (e1,e2), (e1), ()
+    rollup: []const *const Expr,
+    /// CUBE(e1, e2, ...) — all 2^n combinations: (e1,e2), (e1), (e2), ()
+    cube: []const *const Expr,
+    /// GROUPING SETS((e1,e2), (e1), ()) — explicit grouping list
+    grouping_sets: []const []const *const Expr,
+};
+
 /// SELECT statement.
 pub const SelectStmt = struct {
     /// Common Table Expressions (WITH ... AS clauses)
@@ -407,6 +419,9 @@ pub const SelectStmt = struct {
     joins: []const JoinClause = &.{},
     where: ?*const Expr = null,
     group_by: []const *const Expr = &.{},
+    /// GROUP BY specification (ROLLUP/CUBE/GROUPING SETS)
+    /// If non-null, overrides group_by with expanded grouping spec
+    group_by_spec: ?*const GroupBySpec = null,
     having: ?*const Expr = null,
     order_by: []const OrderByItem = &.{},
     limit: ?*const Expr = null,
