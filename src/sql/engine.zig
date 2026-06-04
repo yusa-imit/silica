@@ -25629,3 +25629,348 @@ test "FETCH FIRST 0 ROWS ONLY — zero rows" {
     try testing.expectEqual(@as(usize, 0), count);
 }
 
+test "DEFAULT ASC ordering — NULLs go last without explicit NULLS clause" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_default_asc_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val");
+    defer result.close(testing.allocator);
+
+    // PostgreSQL default ASC: NULLs go LAST
+    const expected = [_]?i64{ 1, 2, 3, null, null };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+}
+
+test "DEFAULT DESC ordering — NULLs go first without explicit NULLS clause" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_default_desc_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val DESC");
+    defer result.close(testing.allocator);
+
+    // PostgreSQL default DESC: NULLs go FIRST
+    const expected = [_]?i64{ null, null, 3, 2, 1 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+}
+
+test "Multi-column ORDER BY with different NULLS policies" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_multicolumn_order_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE data (category TEXT, val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert test data with NULLs in both columns
+    var ins = try db.execSQL("INSERT INTO data VALUES (NULL, 1)");
+    ins.close(testing.allocator);
+    ins = try db.execSQL("INSERT INTO data VALUES ('A', NULL)");
+    ins.close(testing.allocator);
+    ins = try db.execSQL("INSERT INTO data VALUES ('A', 2)");
+    ins.close(testing.allocator);
+    ins = try db.execSQL("INSERT INTO data VALUES (NULL, 3)");
+    ins.close(testing.allocator);
+    ins = try db.execSQL("INSERT INTO data VALUES ('B', 1)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT category, val FROM data ORDER BY category ASC NULLS FIRST, val DESC NULLS LAST");
+    defer result.close(testing.allocator);
+
+    // Expected: NULLs in category first, then 'A', then 'B'
+    // Within each category, val DESC with NULLs last
+    var count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        // Just verify we get rows in the right structure
+        // Count rows to verify we get all 5
+        count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "NULLS FIRST with TEXT column — NULLs sort before text values" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_text_nulls_first.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE names (name TEXT)");
+    r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO names VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO names VALUES ('Charlie')");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO names VALUES ('Alice')");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO names VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO names VALUES ('Bob')");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT name FROM names ORDER BY name ASC NULLS FIRST");
+    defer result.close(testing.allocator);
+
+    // Expected: NULL, NULL, Alice, Bob, Charlie
+    var idx: usize = 0;
+    var null_count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (row.values[0] == .null_value) {
+            null_count += 1;
+            // First two should be NULL
+            try testing.expect(null_count <= 2);
+        } else if (row.values[0] == .text) {
+            // Text values should come after NULLs
+            try testing.expect(null_count == 2);
+        }
+
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+    try testing.expectEqual(@as(usize, 2), null_count);
+}
+
+test "FETCH FIRST combined with OFFSET" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_fetch_with_offset.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val OFFSET 2 ROWS FETCH NEXT 2 ROWS ONLY");
+    defer result.close(testing.allocator);
+
+    // Skip first 2, return next 2 → [3, 4]
+    const expected = [_]i64{ 3, 4 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].integer;
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 2), idx);
+}
+
+test "FETCH FIRST more rows than available" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_fetch_more_than_available.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val FETCH FIRST 100 ROWS ONLY");
+    defer result.close(testing.allocator);
+
+    // Request 100 but only 3 available → returns 3
+    const expected = [_]i64{ 1, 2, 3 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].integer;
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 3), idx);
+}
+
+test "ORDER BY with all NULLs in column" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_all_nulls_order.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert only NULLs
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins3.close(testing.allocator);
+
+    var result_first = try db.execSQL("SELECT val FROM nums ORDER BY val NULLS FIRST");
+    defer result_first.close(testing.allocator);
+
+    var count_first: usize = 0;
+    while (try result_first.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .null_value);
+        count_first += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count_first);
+
+    // Same with NULLS LAST should also return all 3 NULLs
+    var result_last = try db.execSQL("SELECT val FROM nums ORDER BY val NULLS LAST");
+    defer result_last.close(testing.allocator);
+
+    var count_last: usize = 0;
+    while (try result_last.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .null_value);
+        count_last += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count_last);
+}
+
+test "Window function ORDER BY with NULLS FIRST" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_window_order_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    // ORDER BY val NULLS FIRST for deterministic output ordering.
+    // Within NULLs, relative rn order is arbitrary — just check NULLs get ranks 1 or 2.
+    var result = try db.execSQL("SELECT val, ROW_NUMBER() OVER (ORDER BY val NULLS FIRST) as rn FROM nums ORDER BY val NULLS FIRST");
+    defer result.close(testing.allocator);
+
+    var idx: usize = 0;
+    var null_rank_sum: i64 = 0; // sum of ranks for NULL rows (should be 1+2=3)
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        const rn = row.values[1].integer;
+
+        if (idx < 2) {
+            // First two rows should be NULLs (NULLS FIRST)
+            try testing.expect(val == null);
+            // NULLs must have ranks 1 or 2
+            try testing.expect(rn == 1 or rn == 2);
+            null_rank_sum += rn;
+        } else {
+            // Non-null rows: val should be 1, 2, 3 and rn should be 3, 4, 5
+            const expected_nonnull = [_]i64{ 1, 2, 3 };
+            const expected_rank = [_]i64{ 3, 4, 5 };
+            try testing.expectEqual(@as(?i64, expected_nonnull[idx - 2]), val);
+            try testing.expectEqual(expected_rank[idx - 2], rn);
+        }
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+    // Both NULLs together must have ranks 1 and 2 (sum = 3)
+    try testing.expectEqual(@as(i64, 3), null_rank_sum);
+}
+

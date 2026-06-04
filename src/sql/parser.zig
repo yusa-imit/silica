@@ -319,19 +319,28 @@ pub const Parser = struct {
             }
         }
 
+        // SQL standard: OFFSET n [ROW|ROWS] (before FETCH or standalone)
+        if (stmt.offset == null and self.match(.kw_offset)) {
+            stmt.offset = try self.parseExpr(0);
+            // consume optional ROW or ROWS (kw_row/kw_rows are real keywords, not identifiers)
+            if (self.peek().type == .kw_row or self.peek().type == .kw_rows) {
+                _ = self.advance();
+            }
+        }
+
         // Parse FETCH [FIRST|NEXT] n [ROW|ROWS] ONLY (SQL standard LIMIT alternative)
         if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "fetch")) {
             _ = self.advance(); // consume "fetch"
-            // consume FIRST or NEXT (contextual keywords)
+            // consume FIRST or NEXT (contextual keywords, tokenized as identifiers)
             if (self.peek().type == .identifier and (std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "first") or std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next"))) {
                 _ = self.advance();
             }
             stmt.limit = try self.parseExpr(0); // parse the count expression
-            // consume ROW or ROWS (contextual keywords)
-            if (self.peek().type == .identifier and (std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "row") or std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "rows"))) {
+            // consume ROW or ROWS (real keywords kw_row/kw_rows)
+            if (self.peek().type == .kw_row or self.peek().type == .kw_rows) {
                 _ = self.advance();
             }
-            // consume ONLY (contextual keyword)
+            // consume ONLY (contextual keyword, tokenized as identifier)
             if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "only")) {
                 _ = self.advance();
             }
