@@ -92,10 +92,14 @@ pub const TableConstraint = union(enum) {
 /// ORDER BY direction.
 pub const OrderDirection = enum { asc, desc };
 
+/// NULL ordering in ORDER BY.
+pub const NullsOrder = enum { first, last };
+
 /// A single ORDER BY item.
 pub const OrderByItem = struct {
     expr: *const Expr,
     direction: OrderDirection = .asc,
+    nulls: ?NullsOrder = null,
 };
 
 /// JOIN type.

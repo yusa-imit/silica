@@ -7772,6 +7772,28 @@ pub const SortOp = struct {
                 const bv = evalExpr(ctx.allocator, ob.expr, &b, null) catch Value.null_value;
                 defer bv.free(ctx.allocator);
 
+                // Handle NULL ordering
+                const a_null = av == .null_value;
+                const b_null = bv == .null_value;
+                if (a_null or b_null) {
+                    if (a_null and b_null) continue; // both null, equal
+
+                    // Determine NULL ordering for this sort item
+                    const nulls_first: bool = switch (ob.nulls orelse switch (ob.direction) {
+                        .asc => ast.NullsOrder.last,   // PostgreSQL default: ASC NULLS LAST
+                        .desc => ast.NullsOrder.first,  // PostgreSQL default: DESC NULLS FIRST
+                    }) {
+                        .first => true,
+                        .last => false,
+                    };
+
+                    // If a_null is true and nulls_first is true, a comes before b (return true)
+                    // If a_null is true and nulls_first is false, a comes after b (return false)
+                    // If a_null is false (meaning b_null is true) and nulls_first is true, a comes after b (return false)
+                    // If a_null is false (meaning b_null is true) and nulls_first is false, a comes before b (return true)
+                    return if (a_null) nulls_first else !nulls_first;
+                }
+
                 const order = av.compare(bv);
                 if (order == .eq) continue;
 
@@ -7967,6 +7989,25 @@ pub const WindowOp = struct {
                 defer av.free(ctx.allocator);
                 const bv = evalExpr(ctx.allocator, ob.expr, b, null) catch Value.null_value;
                 defer bv.free(ctx.allocator);
+
+                // Handle NULL ordering
+                const a_null = av == .null_value;
+                const b_null = bv == .null_value;
+                if (a_null or b_null) {
+                    if (a_null and b_null) continue; // both null, equal
+
+                    // Determine NULL ordering for this sort item
+                    const nulls_first: bool = switch (ob.nulls orelse switch (ob.direction) {
+                        .asc => ast.NullsOrder.last,   // PostgreSQL default: ASC NULLS LAST
+                        .desc => ast.NullsOrder.first,  // PostgreSQL default: DESC NULLS FIRST
+                    }) {
+                        .first => true,
+                        .last => false,
+                    };
+
+                    return if (a_null) nulls_first else !nulls_first;
+                }
+
                 const order = av.compare(bv);
                 if (order == .eq) continue;
                 return switch (ob.direction) {

@@ -25334,3 +25334,298 @@ test "GROUPING() returns 0 for regular GROUP BY" {
     try testing.expectEqual(@as(usize, 2), row_count);
 }
 
+test "ORDER BY ASC NULLS FIRST — NULLs appear before non-NULLs" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_order_nulls_first_asc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val ASC NULLS FIRST");
+    defer result.close(testing.allocator);
+
+    // Expected order: NULL, NULL, 1, 2, 3
+    const expected = [_]?i64{ null, null, 1, 2, 3 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+}
+
+test "ORDER BY ASC NULLS LAST — NULLs appear after non-NULLs" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_order_nulls_last_asc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val ASC NULLS LAST");
+    defer result.close(testing.allocator);
+
+    // Expected order: 1, 2, 3, NULL, NULL
+    const expected = [_]?i64{ 1, 2, 3, null, null };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+}
+
+test "ORDER BY DESC NULLS LAST — NULLs appear after non-NULLs in DESC sort" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_order_nulls_last_desc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val DESC NULLS LAST");
+    defer result.close(testing.allocator);
+
+    // Expected order: 3, 2, 1, NULL, NULL
+    const expected = [_]?i64{ 3, 2, 1, null, null };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+}
+
+test "ORDER BY DESC NULLS FIRST — NULLs appear before non-NULLs in DESC sort" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_order_nulls_first_desc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    // Insert: NULL, 3, 1, NULL, 2
+    var ins1 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO nums VALUES (3)");
+    ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO nums VALUES (1)");
+    ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO nums VALUES (NULL)");
+    ins4.close(testing.allocator);
+    var ins5 = try db.execSQL("INSERT INTO nums VALUES (2)");
+    ins5.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val DESC NULLS FIRST");
+    defer result.close(testing.allocator);
+
+    // Expected order: NULL, NULL, 3, 2, 1
+    const expected = [_]?i64{ null, null, 3, 2, 1 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].toInteger();
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), idx);
+}
+
+test "FETCH FIRST n ROWS ONLY — basic limit" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_fetch_first_n.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val FETCH FIRST 3 ROWS ONLY");
+    defer result.close(testing.allocator);
+
+    const expected = [_]i64{ 1, 2, 3 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].integer;
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 3), idx);
+}
+
+test "FETCH NEXT n ROWS ONLY — NEXT is alias for FIRST" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_fetch_next_n.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val FETCH NEXT 3 ROWS ONLY");
+    defer result.close(testing.allocator);
+
+    const expected = [_]i64{ 1, 2, 3 };
+    var idx: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].integer;
+        try testing.expectEqual(expected[idx], val);
+        idx += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 3), idx);
+}
+
+test "FETCH FIRST 1 ROW ONLY — singular ROW keyword" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_fetch_first_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val FETCH FIRST 1 ROW ONLY");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var first_val: i64 = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const val = row.values[0].integer;
+        if (count == 0) {
+            first_val = val;
+        }
+        count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(@as(i64, 1), first_val);
+}
+
+test "FETCH FIRST 0 ROWS ONLY — zero rows" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_fetch_first_0.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE nums (val INTEGER)");
+    r1.close(testing.allocator);
+
+    var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
+    ins.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT val FROM nums ORDER BY val FETCH FIRST 0 ROWS ONLY");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 0), count);
+}
+

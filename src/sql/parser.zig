@@ -289,7 +289,24 @@ pub const Parser = struct {
                 } else {
                     _ = self.match(.kw_asc);
                 }
-                items.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+
+                // Parse NULLS FIRST / NULLS LAST
+                var nulls: ?ast.NullsOrder = null;
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                    _ = self.advance(); // consume "nulls"
+                    if (self.peek().type == .identifier) {
+                        const kw = self.lexeme(self.peek());
+                        if (std.ascii.eqlIgnoreCase(kw, "first")) {
+                            _ = self.advance();
+                            nulls = .first;
+                        } else if (std.ascii.eqlIgnoreCase(kw, "last")) {
+                            _ = self.advance();
+                            nulls = .last;
+                        }
+                    }
+                }
+
+                items.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
             stmt.order_by = items.toOwnedSlice(a) catch return error.OutOfMemory;
@@ -299,6 +316,24 @@ pub const Parser = struct {
             stmt.limit = try self.parseExpr(0);
             if (self.match(.kw_offset)) {
                 stmt.offset = try self.parseExpr(0);
+            }
+        }
+
+        // Parse FETCH [FIRST|NEXT] n [ROW|ROWS] ONLY (SQL standard LIMIT alternative)
+        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "fetch")) {
+            _ = self.advance(); // consume "fetch"
+            // consume FIRST or NEXT (contextual keywords)
+            if (self.peek().type == .identifier and (std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "first") or std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next"))) {
+                _ = self.advance();
+            }
+            stmt.limit = try self.parseExpr(0); // parse the count expression
+            // consume ROW or ROWS (contextual keywords)
+            if (self.peek().type == .identifier and (std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "row") or std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "rows"))) {
+                _ = self.advance();
+            }
+            // consume ONLY (contextual keyword)
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "only")) {
+                _ = self.advance();
             }
         }
 
@@ -2948,7 +2983,24 @@ pub const Parser = struct {
                 } else {
                     _ = self.match(.kw_asc);
                 }
-                order_by.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+
+                // Parse NULLS FIRST / NULLS LAST
+                var nulls: ?ast.NullsOrder = null;
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                    _ = self.advance(); // consume "nulls"
+                    if (self.peek().type == .identifier) {
+                        const kw = self.lexeme(self.peek());
+                        if (std.ascii.eqlIgnoreCase(kw, "first")) {
+                            _ = self.advance();
+                            nulls = .first;
+                        } else if (std.ascii.eqlIgnoreCase(kw, "last")) {
+                            _ = self.advance();
+                            nulls = .last;
+                        }
+                    }
+                }
+
+                order_by.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
         }
