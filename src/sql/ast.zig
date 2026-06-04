@@ -133,6 +133,10 @@ pub const TableRef = union(enum) {
         args: []const *const Expr,
         alias: ?[]const u8 = null,
         is_lateral: bool = false,
+        /// WITH ORDINALITY appends a 1-based integer column named "ordinality".
+        with_ordinality: bool = false,
+        /// Column name aliases from AS t(col1, col2) syntax. When non-empty, overrides default names.
+        column_names: []const []const u8 = &.{},
     },
 };
 

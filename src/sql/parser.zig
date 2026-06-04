@@ -617,9 +617,38 @@ pub const Parser = struct {
             }
             _ = try self.expect(.right_paren);
 
+            // Check for WITH ORDINALITY before the alias
+            var with_ordinality = false;
+            if (self.check(.kw_with)) {
+                // Peek ahead: WITH followed by identifier "ordinality"
+                const saved_pos = self.pos;
+                _ = self.advance(); // consume kw_with
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ordinality"))
+                {
+                    _ = self.advance(); // consume "ordinality"
+                    with_ordinality = true;
+                } else {
+                    // Not WITH ORDINALITY — backtrack
+                    self.pos = saved_pos;
+                }
+            }
+
             var alias: ?[]const u8 = null;
+            var column_names: []const []const u8 = &.{};
             if (self.match(.kw_as)) {
                 alias = try self.expectIdentifier();
+                // Parse optional column name list: (col1, col2, ...)
+                if (self.match(.left_paren)) {
+                    var cols = std.ArrayListUnmanaged([]const u8){};
+                    while (true) {
+                        const col_name = try self.expectIdentifier();
+                        cols.append(a, col_name) catch return error.OutOfMemory;
+                        if (!self.match(.comma)) break;
+                    }
+                    _ = try self.expect(.right_paren);
+                    column_names = cols.toOwnedSlice(a) catch return error.OutOfMemory;
+                }
             } else if (self.peek().type == .identifier and !self.peekIsClauseKeyword()) {
                 alias = self.lexeme(self.advance());
             }
@@ -630,6 +659,8 @@ pub const Parser = struct {
                     .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
                     .alias = alias,
                     .is_lateral = is_lateral,
+                    .with_ordinality = with_ordinality,
+                    .column_names = column_names,
                 },
             }) catch return error.OutOfMemory;
         }

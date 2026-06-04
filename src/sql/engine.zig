@@ -720,6 +720,12 @@ const OperatorChain = struct {
 /// Used by LEFT JOIN LATERAL when the right side produces zero rows — we still need
 /// the column schema to emit properly NULL-filled right columns.
 /// Caller owns the returned slice and must free each element and the slice itself.
+/// Return the column name at `idx` from the table function's explicit column_names list,
+/// falling back to `default` when no override was provided.
+fn tfsColName(tfs: PlanNode.TableFunctionScan, idx: usize, default: []const u8) []const u8 {
+    return if (idx < tfs.column_names.len) tfs.column_names[idx] else default;
+}
+
 fn tvfDefaultColumnNames(allocator: Allocator, func_name: []const u8) Allocator.Error![]const []const u8 {
     const static_names: []const []const u8 = blk: {
         if (std.mem.eql(u8, func_name, "json_each") or
@@ -1910,15 +1916,16 @@ pub const Database = struct {
                 return EngineError.ExecutionError;
             }
 
-            const col_name = try std.fmt.allocPrint(self.allocator, "unnest", .{});
-
-            const col_names = try self.allocator.alloc([]const u8, 1);
-            col_names[0] = col_name;
+            const unnest_ctx_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
+            const col_names = try self.allocator.alloc([]const u8, unnest_ctx_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "unnest"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
-            for (array_value.array) |elem| {
-                const vals = try self.allocator.alloc(executor_mod.Value, 1);
+            for (array_value.array, 1..) |elem, ord| {
+                const vals = try self.allocator.alloc(executor_mod.Value, unnest_ctx_n_cols);
                 vals[0] = try elem.dupe(self.allocator);
+                if (tfs.with_ordinality) vals[1] = .{ .integer = @intCast(ord) };
                 try rows.append(self.allocator, vals);
             }
 
@@ -1956,10 +1963,10 @@ pub const Database = struct {
                 null;
             defer if (step_val) |sv| sv.free(self.allocator);
 
-            const col_name = try std.fmt.allocPrint(self.allocator, "generate_series", .{});
-
-            const col_names = try self.allocator.alloc([]const u8, 1);
-            col_names[0] = col_name;
+            const gs_ctx_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
+            const col_names = try self.allocator.alloc([]const u8, gs_ctx_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "generate_series"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
 
@@ -1991,12 +1998,14 @@ pub const Database = struct {
                     // Empty result
                 } else {
                     var v = start;
+                    var ord: i64 = 1;
                     const max_rows = 10_000_000;
                     var count: usize = 0;
                     while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
                         if (count >= max_rows) break;
-                        const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                        const vals = try self.allocator.alloc(executor_mod.Value, gs_ctx_n_cols);
                         vals[0] = .{ .real = v };
+                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
                         try rows.append(self.allocator, vals);
                         v += step;
                     }
@@ -2024,12 +2033,14 @@ pub const Database = struct {
                     // Empty result
                 } else {
                     var v = start;
+                    var ord: i64 = 1;
                     const max_rows = 10_000_000;
                     var count: usize = 0;
                     while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
                         if (count >= max_rows) break;
-                        const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                        const vals = try self.allocator.alloc(executor_mod.Value, gs_ctx_n_cols);
                         vals[0] = .{ .integer = v };
+                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
                         try rows.append(self.allocator, vals);
                         if (step > 0) {
                             v +|= @as(i64, @intCast(step));
@@ -2068,11 +2079,15 @@ pub const Database = struct {
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
+            // Build column names (2 or 3 if WITH ORDINALITY)
+            const je_ctx_n_cols: usize = if (tfs.with_ordinality) 3 else 2;
+
             // NULL → empty result
             if (json_val == .null_value) {
-                const col_names = try self.allocator.alloc([]const u8, 2);
-                col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
-                col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+                const col_names = try self.allocator.alloc([]const u8, je_ctx_n_cols);
+                col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
+                col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
+                if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
                 const mat_op = try self.allocator.create(MaterializedOp);
                 mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
                 ops.materialized = mat_op;
@@ -2085,9 +2100,10 @@ pub const Database = struct {
                 else => return EngineError.ExecutionError,
             };
 
-            const col_names = try self.allocator.alloc([]const u8, 2);
-            col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
-            col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+            const col_names = try self.allocator.alloc([]const u8, je_ctx_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
+            col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
+            if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
 
@@ -2098,8 +2114,9 @@ pub const Database = struct {
                 switch (parsed.value) {
                     .object => |obj| {
                         var iter = obj.iterator();
+                        var ord: i64 = 1;
                         while (iter.next()) |entry| {
-                            const vals = try self.allocator.alloc(executor_mod.Value, 2);
+                            const vals = try self.allocator.alloc(executor_mod.Value, je_ctx_n_cols);
                             vals[0] = .{ .text = try self.allocator.dupe(u8, entry.key_ptr.*) };
                             vals[1] = blk: {
                                 const v = entry.value_ptr.*;
@@ -2126,6 +2143,7 @@ pub const Database = struct {
                                     break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                 }
                             };
+                            if (tfs.with_ordinality) { vals[2] = .{ .integer = ord }; ord += 1; }
                             try rows.append(self.allocator, vals);
                         }
                     },
@@ -2161,11 +2179,14 @@ pub const Database = struct {
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
+            // Build column names (1 or 2 if WITH ORDINALITY)
+            const jae_ctx_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
+
             // NULL → empty result
             if (json_val == .null_value) {
-                const col_name = try std.fmt.allocPrint(self.allocator, "value", .{});
-                const col_names = try self.allocator.alloc([]const u8, 1);
-                col_names[0] = col_name;
+                const col_names = try self.allocator.alloc([]const u8, jae_ctx_n_cols);
+                col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "value"));
+                if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
                 const mat_op = try self.allocator.create(MaterializedOp);
                 mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
                 ops.materialized = mat_op;
@@ -2178,9 +2199,9 @@ pub const Database = struct {
                 else => return EngineError.ExecutionError,
             };
 
-            const col_name = try std.fmt.allocPrint(self.allocator, "value", .{});
-            const col_names = try self.allocator.alloc([]const u8, 1);
-            col_names[0] = col_name;
+            const col_names = try self.allocator.alloc([]const u8, jae_ctx_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "value"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
 
@@ -2190,8 +2211,9 @@ pub const Database = struct {
 
                 switch (parsed.value) {
                     .array => |arr| {
+                        var ord: i64 = 1;
                         for (arr.items) |elem| {
-                            const vals = try self.allocator.alloc(executor_mod.Value, 1);
+                            const vals = try self.allocator.alloc(executor_mod.Value, jae_ctx_n_cols);
                             vals[0] = blk: {
                                 if (as_text) {
                                     switch (elem) {
@@ -2214,6 +2236,7 @@ pub const Database = struct {
                                     break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                 }
                             };
+                            if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
                             try rows.append(self.allocator, vals);
                         }
                     },
@@ -2263,17 +2286,20 @@ pub const Database = struct {
                 return EngineError.ExecutionError; // Type mismatch
             }
 
-            // Build column name (always "unnest", not the table alias)
-            const col_name = try std.fmt.allocPrint(self.allocator, "unnest", .{});
+            // Build column names (1 or 2 if WITH ORDINALITY)
+            const unnest_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
+            const col_names = try self.allocator.alloc([]const u8, unnest_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "unnest"));
+            if (tfs.with_ordinality) {
+                col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+            }
 
-            const col_names = try self.allocator.alloc([]const u8, 1);
-            col_names[0] = col_name;
-
-            // Convert array elements into rows
+            // Convert array elements into rows (with 1-based ordinality if requested)
             var rows = std.ArrayListUnmanaged([]Value){};
-            for (array_value.array) |elem| {
-                const vals = try self.allocator.alloc(Value, 1);
+            for (array_value.array, 1..) |elem, ord| {
+                const vals = try self.allocator.alloc(Value, unnest_n_cols);
                 vals[0] = try elem.dupe(self.allocator);
+                if (tfs.with_ordinality) vals[1] = .{ .integer = @intCast(ord) };
                 try rows.append(self.allocator, vals);
             }
 
@@ -2321,11 +2347,13 @@ pub const Database = struct {
                 null;
             defer if (step_val) |sv| sv.free(self.allocator);
 
-            // Build column name (always "generate_series", not the table alias)
-            const col_name = try std.fmt.allocPrint(self.allocator, "generate_series", .{});
-
-            const col_names = try self.allocator.alloc([]const u8, 1);
-            col_names[0] = col_name;
+            // Build column names (1 or 2 if WITH ORDINALITY)
+            const gs_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
+            const col_names = try self.allocator.alloc([]const u8, gs_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "generate_series"));
+            if (tfs.with_ordinality) {
+                col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+            }
 
             var rows = std.ArrayListUnmanaged([]Value){};
 
@@ -2359,12 +2387,14 @@ pub const Database = struct {
                     // Empty result
                 } else {
                     var v = start;
+                    var ord: i64 = 1;
                     const max_rows = 10_000_000;
                     var count: usize = 0;
                     while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
                         if (count >= max_rows) break;
-                        const vals = try self.allocator.alloc(Value, 1);
+                        const vals = try self.allocator.alloc(Value, gs_n_cols);
                         vals[0] = .{ .real = v };
+                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
                         try rows.append(self.allocator, vals);
                         v += step;
                     }
@@ -2393,12 +2423,14 @@ pub const Database = struct {
                     // Empty result
                 } else {
                     var v = start;
+                    var ord: i64 = 1;
                     const max_rows = 10_000_000;
                     var count: usize = 0;
                     while ((step > 0 and v <= stop) or (step < 0 and v >= stop)) : (count += 1) {
                         if (count >= max_rows) break;
-                        const vals = try self.allocator.alloc(Value, 1);
+                        const vals = try self.allocator.alloc(Value, gs_n_cols);
                         vals[0] = .{ .integer = v };
+                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
                         try rows.append(self.allocator, vals);
                         v += step;
                     }
@@ -2432,11 +2464,15 @@ pub const Database = struct {
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
+            // Build column names (2 or 3 if WITH ORDINALITY)
+            const je_n_cols: usize = if (tfs.with_ordinality) 3 else 2;
+
             // NULL → empty result
             if (json_val == .null_value) {
-                const col_names = try self.allocator.alloc([]const u8, 2);
-                col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
-                col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+                const col_names = try self.allocator.alloc([]const u8, je_n_cols);
+                col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
+                col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
+                if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
                 const mat_op = try self.allocator.create(MaterializedOp);
                 mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
                 ops.materialized = mat_op;
@@ -2449,9 +2485,10 @@ pub const Database = struct {
                 else => return EngineError.ExecutionError,
             };
 
-            const col_names = try self.allocator.alloc([]const u8, 2);
-            col_names[0] = try std.fmt.allocPrint(self.allocator, "key", .{});
-            col_names[1] = try std.fmt.allocPrint(self.allocator, "value", .{});
+            const col_names = try self.allocator.alloc([]const u8, je_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
+            col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
+            if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
 
             var rows = std.ArrayListUnmanaged([]Value){};
 
@@ -2462,8 +2499,9 @@ pub const Database = struct {
                 switch (parsed.value) {
                     .object => |obj| {
                         var iter = obj.iterator();
+                        var ord: i64 = 1;
                         while (iter.next()) |entry| {
-                            const vals = try self.allocator.alloc(Value, 2);
+                            const vals = try self.allocator.alloc(Value, je_n_cols);
                             vals[0] = .{ .text = try self.allocator.dupe(u8, entry.key_ptr.*) };
                             vals[1] = blk: {
                                 const v = entry.value_ptr.*;
@@ -2490,6 +2528,7 @@ pub const Database = struct {
                                     break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                 }
                             };
+                            if (tfs.with_ordinality) { vals[2] = .{ .integer = ord }; ord += 1; }
                             try rows.append(self.allocator, vals);
                         }
                     },
@@ -2524,9 +2563,11 @@ pub const Database = struct {
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
-            const col_name = try std.fmt.allocPrint(self.allocator, "value", .{});
-            const col_names = try self.allocator.alloc([]const u8, 1);
-            col_names[0] = col_name;
+            // Build column names (1 or 2 if WITH ORDINALITY)
+            const jae_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
+            const col_names = try self.allocator.alloc([]const u8, jae_n_cols);
+            col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "value"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
 
             var rows = std.ArrayListUnmanaged([]Value){};
 
@@ -2536,8 +2577,7 @@ pub const Database = struct {
                     .text => |t| t,
                     .blob => |b| b,
                     else => {
-                        // Free col_names and return error
-                        self.allocator.free(col_name);
+                        for (col_names) |cn| self.allocator.free(cn);
                         self.allocator.free(col_names);
                         return EngineError.ExecutionError;
                     },
@@ -2548,8 +2588,9 @@ pub const Database = struct {
 
                     switch (parsed.value) {
                         .array => |arr| {
+                            var ord: i64 = 1;
                             for (arr.items) |item| {
-                                const vals = try self.allocator.alloc(Value, 1);
+                                const vals = try self.allocator.alloc(Value, jae_n_cols);
                                 vals[0] = blk: {
                                     if (as_text) {
                                         switch (item) {
@@ -2572,6 +2613,7 @@ pub const Database = struct {
                                         break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                     }
                                 };
+                                if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
                                 try rows.append(self.allocator, vals);
                             }
                         },
@@ -18075,6 +18117,283 @@ test "unnest() with ORDER BY" {
     defer row3.deinit();
     try testing.expectEqual(@as(i64, 1), row3.values[0].integer);
 
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+// ── WITH ORDINALITY Table Function Tests ──────────────────────────────────────
+
+test "unnest() WITH ORDINALITY — integer array, default column names" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[10, 20, 30]) WITH ORDINALITY");
+    defer r.close(testing.allocator);
+
+    // Should have 2 columns: unnest + ordinality
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(usize, 2), row1.values.len);
+    try testing.expectEqual(@as(i64, 10), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() WITH ORDINALITY AS t(val, ord) — column aliases" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT val, ord FROM unnest(ARRAY[100, 200]) WITH ORDINALITY AS t(val, ord)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 100), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 200), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() WITH ORDINALITY — text array" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT val, ord FROM unnest(ARRAY['apple', 'banana', 'cherry']) WITH ORDINALITY AS t(val, ord)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqualStrings("apple", row1.values[0].text);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqualStrings("banana", row2.values[0].text);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqualStrings("cherry", row3.values[0].text);
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() WITH ORDINALITY — single element" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[999]) WITH ORDINALITY");
+    defer r.close(testing.allocator);
+
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 999), row.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() WITH ORDINALITY — column name 'ordinality' accessible" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    // Reference column by its default name "ordinality"
+    var r = try db.exec("SELECT unnest, ordinality FROM unnest(ARRAY[5, 6]) WITH ORDINALITY");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 5), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 6), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() WITH ORDINALITY — WHERE filter on ordinality column" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT val, ord FROM unnest(ARRAY[10, 20, 30, 40, 50]) WITH ORDINALITY AS t(val, ord) WHERE ord > 2");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 30), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 3), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 40), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 4), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 50), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 5), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() WITH ORDINALITY — ORDER BY ordinality DESC reverses output" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT val FROM unnest(ARRAY[10, 20, 30]) WITH ORDINALITY AS t(val, ord) ORDER BY ord DESC");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 30), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 10), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series() WITH ORDINALITY" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT n, rn FROM generate_series(1, 4) WITH ORDINALITY AS t(n, rn)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 4), row4.values[0].integer);
+    try testing.expectEqual(@as(i64, 4), row4.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "generate_series() WITH ORDINALITY — step 2" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    // generate_series(1, 5, 2) → 1, 3, 5; ordinality → 1, 2, 3
+    var r = try db.exec("SELECT n, o FROM generate_series(1, 5, 2) WITH ORDINALITY AS t(n, o)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 5), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "json_array_elements() WITH ORDINALITY" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT val, ord FROM json_array_elements('[\"a\",\"b\",\"c\"]') WITH ORDINALITY AS t(val, ord)");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    // json_array_elements returns JSON text (quoted)
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "unnest() without ORDINALITY still works (no regression)" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    var db = try Database.open(testing.allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.exec("SELECT * FROM unnest(ARRAY[7, 8, 9])");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(usize, 1), row1.values.len); // Only 1 column, no ordinality
+    try testing.expectEqual(@as(i64, 7), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
     try testing.expect((try r.rows.?.next()) == null);
 }
 
