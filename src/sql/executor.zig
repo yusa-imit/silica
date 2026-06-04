@@ -7043,7 +7043,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy", "grouping" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -7091,6 +7091,7 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "regr_sxx")) return "regr_sxx";
     if (std.ascii.eqlIgnoreCase(fc.name, "regr_syy")) return "regr_syy";
     if (std.ascii.eqlIgnoreCase(fc.name, "regr_sxy")) return "regr_sxy";
+    if (std.ascii.eqlIgnoreCase(fc.name, "grouping")) return "grouping";
     return fc.name;
 }
 
