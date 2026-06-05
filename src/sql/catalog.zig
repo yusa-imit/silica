@@ -116,7 +116,8 @@ pub const ConstraintFlags = packed struct(u8) {
     unique: bool = false,
     autoincrement: bool = false,
     has_default: bool = false,
-    _padding: u3 = 0,
+    is_generated: bool = false,
+    _padding: u2 = 0,
 };
 
 /// Extract constraint flags from AST column constraints.
@@ -146,6 +147,7 @@ pub const ColumnInfo = struct {
     name: []const u8,
     column_type: ColumnType,
     flags: ConstraintFlags,
+    generated_expr: []const u8 = "",
 };
 
 /// Composite table-level constraint stored in the catalog.
@@ -206,7 +208,10 @@ pub const TableInfo = struct {
             }
         }
         allocator.free(self.table_constraints);
-        for (self.columns) |col| allocator.free(col.name);
+        for (self.columns) |col| {
+            allocator.free(col.name);
+            if (col.generated_expr.len > 0) allocator.free(col.generated_expr);
+        }
         allocator.free(self.columns);
         allocator.free(self.name);
     }
@@ -395,6 +400,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
         pos += 1;
         col.flags = @bitCast(data[pos]);
         pos += 1;
+        col.generated_expr = ""; // Initialize to empty string; populated by getTable if needed
         cols_initialized += 1;
     }
 
@@ -652,6 +658,11 @@ pub const Catalog = struct {
                     flags.not_null = true;
                 }
             }
+            // Check for GENERATED ALWAYS AS
+            if (col_def.generated_expr_sql != null) {
+                flags.is_generated = true;
+                flags.not_null = true; // Generated columns are always non-null
+            }
             columns[i] = .{
                 .name = col_def.name,
                 .column_type = columnTypeFromAst(col_def.data_type),
@@ -719,6 +730,13 @@ pub const Catalog = struct {
         }
 
         try self.createTableWithIndexes(stmt.name, columns, tc_list.items, idx_list.items, data_root_id);
+
+        // Store generated column expressions in catalog
+        for (stmt.columns) |col_def| {
+            if (col_def.generated_expr_sql) |expr_sql| {
+                try self.storeGeneratedExpr(stmt.name, col_def.name, expr_sql);
+            }
+        }
     }
 
     /// Drop a table from the catalog.
@@ -746,7 +764,25 @@ pub const Catalog = struct {
             return CatalogError.TableNotFound;
         defer self.allocator.free(value);
 
-        return deserializeTable(self.allocator, name, value);
+        const result = try deserializeTable(self.allocator, name, value);
+
+        // Populate generated_expr for generated columns
+        // Need to cast away const since we're populating the generated_expr field
+        const cols: []ColumnInfo = @constCast(result.columns);
+        for (cols) |*col| {
+            if (col.flags.is_generated) {
+                if (self.getGeneratedExpr(result.name, col.name)) |maybe_expr| {
+                    if (maybe_expr) |expr_sql| {
+                        // tree.get returns an allocated result that we need to free
+                        defer self.allocator.free(expr_sql);
+                        // Dupe the expression so we own it for freeing in deinit
+                        col.generated_expr = try self.allocator.dupe(u8, expr_sql);
+                    }
+                } else |_| {}
+            }
+        }
+
+        return result;
     }
 
     /// Check if a table exists.
@@ -1037,6 +1073,31 @@ pub const Catalog = struct {
         }
 
         return names.toOwnedSlice(allocator);
+    }
+
+    // ── Generated Columns ────────────────────────────────────────────────
+
+    fn makeGeneratedKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "generated:{s}:{s}", .{ table, col });
+    }
+
+    pub fn storeGeneratedExpr(self: *Catalog, table: []const u8, col: []const u8, expr_sql: []const u8) !void {
+        const key = try self.makeGeneratedKey(table, col);
+        defer self.allocator.free(key);
+        // tree.insert copies the value, so we don't need to dupe it
+        try self.tree.insert(key, expr_sql);
+    }
+
+    pub fn getGeneratedExpr(self: *Catalog, table: []const u8, col: []const u8) !?[]u8 {
+        const key = try self.makeGeneratedKey(table, col);
+        defer self.allocator.free(key);
+        return self.tree.get(self.allocator, key);
+    }
+
+    pub fn deleteGeneratedExprs(self: *Catalog, table: []const u8) void {
+        _ = self;
+        _ = table;
+        // TODO: implement when DROP TABLE is implemented with generated cols
     }
 
     // ── ENUM Types ──────────────────────────────────────────────────────

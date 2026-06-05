@@ -67,6 +67,7 @@ pub const ColumnDef = struct {
     name: []const u8,
     data_type: ?DataType = null,
     constraints: []const ColumnConstraint = &.{},
+    generated_expr_sql: ?[]const u8 = null,
 };
 
 /// Table constraint in a CREATE TABLE statement.

@@ -1050,6 +1050,33 @@ pub const Parser = struct {
             constraints.append(a, try self.parseColumnConstraint()) catch return error.OutOfMemory;
         }
 
+        // Check for GENERATED ALWAYS AS (expr) STORED
+        var generated_expr_sql: ?[]const u8 = null;
+        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "generated")) {
+            _ = self.advance(); // consume "generated"
+            // Consume "ALWAYS"
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "always")) {
+                _ = self.advance();
+            }
+            // Expect AS
+            _ = try self.expect(.kw_as);
+            // Expect (
+            _ = try self.expect(.left_paren);
+            // Record start position for expr SQL extraction
+            const expr_start = self.tokens[self.pos].start;
+            // Parse the expression
+            _ = try self.parseExpr(0);
+            // Extract source text — expr_end is the start of the current token (which should be ))
+            const expr_end = self.tokens[self.pos].start;
+            generated_expr_sql = self.source[expr_start..expr_end];
+            // Expect )
+            _ = try self.expect(.right_paren);
+            // Consume "STORED"
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "stored")) {
+                _ = self.advance();
+            }
+        }
+
         return .{
             .name = name,
             .data_type = data_type,
@@ -1057,6 +1084,7 @@ pub const Parser = struct {
                 constraints.toOwnedSlice(a) catch return error.OutOfMemory
             else
                 &.{},
+            .generated_expr_sql = generated_expr_sql,
         };
     }
 
@@ -2605,7 +2633,7 @@ pub const Parser = struct {
 
     // ── Expression parser (Pratt / precedence climbing) ──────────
 
-    fn parseExpr(self: *Parser, min_prec: u8) Error!*const ast.Expr {
+    pub fn parseExpr(self: *Parser, min_prec: u8) Error!*const ast.Expr {
         var left = try self.parsePrimary();
 
         // Postfix subscript: expr[index]

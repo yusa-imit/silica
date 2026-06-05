@@ -486,6 +486,7 @@ pub const EngineError = error{
     ViewNotUpdatable,
     UniqueConstraintViolation,
     UnboundParameter,
+    GeneratedColumnViolation,
 };
 
 /// A named savepoint within a transaction.
@@ -3439,16 +3440,95 @@ pub const Database = struct {
 
         for (values_node.rows) |row_exprs| {
             // Evaluate value expressions
-            const vals = self.allocator.alloc(Value, row_exprs.len) catch return EngineError.OutOfMemory;
-            var inited: usize = 0;
+            const user_vals = self.allocator.alloc(Value, row_exprs.len) catch return EngineError.OutOfMemory;
+            var user_inited: usize = 0;
             defer {
-                for (vals[0..inited]) |v| v.free(self.allocator);
-                self.allocator.free(vals);
+                for (user_vals[0..user_inited]) |v| v.free(self.allocator);
+                self.allocator.free(user_vals);
             }
 
             for (row_exprs, 0..) |expr, i| {
-                vals[i] = evalExpr(self.allocator, expr, &empty_row, null) catch return EngineError.ExecutionError;
-                inited += 1;
+                user_vals[i] = evalExpr(self.allocator, expr, &empty_row, null) catch return EngineError.ExecutionError;
+                user_inited += 1;
+            }
+
+            // Check if any generated columns are specified in INSERT and reject
+            if (values_node.columns) |spec_cols| {
+                for (spec_cols) |sc| {
+                    for (table_info.columns) |tc| {
+                        if (tc.flags.is_generated and std.ascii.eqlIgnoreCase(sc, tc.name)) {
+                            return EngineError.GeneratedColumnViolation;
+                        }
+                    }
+                }
+            }
+
+            // Build full row with generated columns evaluated
+            var vals: []Value = undefined;
+            var full_row_allocated = false;
+            defer {
+                if (full_row_allocated) {
+                    for (vals) |v| v.free(self.allocator);
+                    self.allocator.free(vals);
+                }
+            }
+
+            const has_generated = blk: {
+                for (table_info.columns) |col| {
+                    if (col.flags.is_generated) break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (has_generated) {
+                // Build full row for all table columns
+                vals = self.allocator.alloc(Value, table_info.columns.len) catch return EngineError.OutOfMemory;
+                full_row_allocated = true;
+                for (vals) |*v| v.* = .null_value;
+
+                // Map user-provided values into their positions
+                if (values_node.columns) |spec_cols| {
+                    // Column list specified — map by name
+                    for (spec_cols, 0..) |sc, si| {
+                        if (si >= user_vals.len) break;
+                        for (table_info.columns, 0..) |tc, ti| {
+                            if (std.ascii.eqlIgnoreCase(sc, tc.name)) {
+                                vals[ti].free(self.allocator);
+                                vals[ti] = user_vals[si].dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // No column list — values correspond to non-generated columns in order
+                    var vi: usize = 0;
+                    for (table_info.columns, 0..) |tc, ti| {
+                        if (tc.flags.is_generated) continue;
+                        if (vi < user_vals.len) {
+                            vals[ti].free(self.allocator);
+                            vals[ti] = user_vals[vi].dupe(self.allocator) catch return EngineError.OutOfMemory;
+                            vi += 1;
+                        }
+                    }
+                }
+
+                // Build column names for row context
+                const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+                defer self.allocator.free(col_names);
+                for (table_info.columns, 0..) |col, ci| col_names[ci] = col.name;
+
+                // Evaluate generated columns
+                const gen_row = Row{ .columns = col_names, .values = vals, .allocator = self.allocator };
+                for (table_info.columns, 0..) |tc, ti| {
+                    if (!tc.flags.is_generated) continue;
+                    if (tc.generated_expr.len == 0) continue;
+                    const gen_val = try self.evalGeneratedExpr(tc.generated_expr, &gen_row);
+                    vals[ti].free(self.allocator);
+                    vals[ti] = gen_val;
+                }
+            } else {
+                // No generated columns — use user values directly
+                vals = user_vals;
             }
 
             // WITH CHECK OPTION: validate that the inserted row satisfies the view's WHERE
@@ -4272,6 +4352,15 @@ pub const Database = struct {
                     }
                 }
                 if (!found) new_val.free(self.allocator);
+            }
+
+            // Re-evaluate generated columns after applying SET assignments
+            for (table_info.columns, 0..) |tc, ti| {
+                if (!tc.flags.is_generated) continue;
+                if (tc.generated_expr.len == 0) continue;
+                const gen_val = self.evalGeneratedExpr(tc.generated_expr, &row) catch continue;
+                row.values[ti].free(self.allocator);
+                row.values[ti] = gen_val;
             }
 
             // WITH CHECK OPTION: validate updated row still satisfies view's WHERE
@@ -6733,6 +6822,17 @@ pub const Database = struct {
 
     /// Evaluate the view's WHERE clause against a set of values to check WITH CHECK OPTION.
     /// Returns true if the row satisfies the view's WHERE, false otherwise.
+    fn evalGeneratedExpr(self: *Database, expr_sql: []const u8, row: *const Row) EngineError!Value {
+        var gen_arena = ast_mod.AstArena.init(self.allocator);
+        defer gen_arena.deinit();
+        var infra = std.heap.ArenaAllocator.init(self.allocator);
+        defer infra.deinit();
+        var p = parser_mod.Parser.init(infra.allocator(), expr_sql, &gen_arena) catch return .null_value;
+        defer p.deinit();
+        const expr_ptr = p.parseExpr(0) catch return .null_value;
+        return evalExpr(self.allocator, expr_ptr, row, null) catch .null_value;
+    }
+
     fn checkViewCondition(self: *Database, where_expr: *const ast_mod.Expr, col_names: []const []const u8, values: []Value) bool {
         const row = Row{
             .columns = col_names,
@@ -25972,5 +26072,257 @@ test "Window function ORDER BY with NULLS FIRST" {
     try testing.expectEqual(@as(usize, 5), idx);
     // Both NULLs together must have ranks 1 and 2 (sum = 3)
     try testing.expectEqual(@as(i64, 3), null_rank_sum);
+}
+
+test "GENERATED ALWAYS AS — basic string concatenation" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_generated_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with generated column
+    var r1 = try db.execSQL(
+        \\CREATE TABLE employees (
+        \\    id INTEGER PRIMARY KEY,
+        \\    first_name TEXT NOT NULL,
+        \\    last_name TEXT NOT NULL,
+        \\    full_name TEXT GENERATED ALWAYS AS (first_name || ' ' || last_name) STORED
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    // Insert row with only base columns
+    var r2 = try db.execSQL("INSERT INTO employees (id, first_name, last_name) VALUES (1, 'Alice', 'Smith')");
+    defer r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r2.rows_affected);
+
+    // Select and verify generated column
+    var r3 = try db.execSQL("SELECT id, first_name, last_name, full_name FROM employees WHERE id = 1");
+    defer r3.close(testing.allocator);
+
+    var found = false;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        found = true;
+
+        try testing.expectEqual(@as(?i64, 1), row.values[0].toInteger());
+        try testing.expectEqualStrings("Alice", row.values[1].text);
+        try testing.expectEqualStrings("Smith", row.values[2].text);
+        try testing.expectEqualStrings("Alice Smith", row.values[3].text);
+    }
+
+    try testing.expect(found);
+}
+
+test "GENERATED ALWAYS AS — arithmetic expression" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_generated_arith.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with arithmetic generated column
+    var r1 = try db.execSQL(
+        \\CREATE TABLE products (
+        \\    id INTEGER PRIMARY KEY,
+        \\    price INTEGER NOT NULL,
+        \\    quantity INTEGER NOT NULL,
+        \\    total INTEGER GENERATED ALWAYS AS (price * quantity) STORED
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    // Insert row
+    var r2 = try db.execSQL("INSERT INTO products (id, price, quantity) VALUES (10, 100, 5)");
+    defer r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r2.rows_affected);
+
+    // Select and verify generated value
+    var r3 = try db.execSQL("SELECT id, price, quantity, total FROM products WHERE id = 10");
+    defer r3.close(testing.allocator);
+
+    var found = false;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        found = true;
+
+        try testing.expectEqual(@as(?i64, 10), row.values[0].toInteger());
+        try testing.expectEqual(@as(?i64, 100), row.values[1].toInteger());
+        try testing.expectEqual(@as(?i64, 5), row.values[2].toInteger());
+        try testing.expectEqual(@as(?i64, 500), row.values[3].toInteger());
+    }
+
+    try testing.expect(found);
+}
+
+test "GENERATED ALWAYS AS — generated column survives UPDATE of base columns" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_generated_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with generated column
+    var r1 = try db.execSQL(
+        \\CREATE TABLE items (
+        \\    id INTEGER PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    desc TEXT NOT NULL,
+        \\    display TEXT GENERATED ALWAYS AS (name || ': ' || desc) STORED
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    // Insert initial row
+    var r2 = try db.execSQL("INSERT INTO items (id, name, desc) VALUES (100, 'Widget', 'A useful widget')");
+    defer r2.close(testing.allocator);
+
+    // Update base columns
+    var r3 = try db.execSQL("UPDATE items SET name = 'Gadget', desc = 'A super gadget' WHERE id = 100");
+    defer r3.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r3.rows_affected);
+
+    // Select and verify generated column reflects updated values
+    var r4 = try db.execSQL("SELECT id, name, desc, display FROM items WHERE id = 100");
+    defer r4.close(testing.allocator);
+
+    var found = false;
+    while (try r4.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        found = true;
+
+        try testing.expectEqual(@as(?i64, 100), row.values[0].toInteger());
+        try testing.expectEqualStrings("Gadget", row.values[1].text);
+        try testing.expectEqualStrings("A super gadget", row.values[2].text);
+        try testing.expectEqualStrings("Gadget: A super gadget", row.values[3].text);
+    }
+
+    try testing.expect(found);
+}
+
+test "GENERATED ALWAYS AS — error when inserting into generated column" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_generated_no_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with generated column
+    var r1 = try db.execSQL(
+        \\CREATE TABLE records (
+        \\    id INTEGER PRIMARY KEY,
+        \\    val TEXT NOT NULL,
+        \\    computed TEXT GENERATED ALWAYS AS (val || '_computed') STORED
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    // Attempt to insert into generated column should fail
+    const r2 = db.execSQL("INSERT INTO records (id, val, computed) VALUES (1, 'test', 'should_fail')");
+
+    // Expect error when trying to insert into generated column
+    // Before feature implementation, this may fail at parse or execution stage
+    try testing.expectError(EngineError.GeneratedColumnViolation, r2);
+}
+
+test "GENERATED ALWAYS AS — generated column is selectable like any other" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_generated_select.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with generated column
+    var r1 = try db.execSQL(
+        \\CREATE TABLE data (
+        \\    id INTEGER PRIMARY KEY,
+        \\    x INTEGER NOT NULL,
+        \\    y INTEGER NOT NULL,
+        \\    sum_xy INTEGER GENERATED ALWAYS AS (x + y) STORED
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    // Insert multiple rows
+    var r2 = try db.execSQL("INSERT INTO data (id, x, y) VALUES (1, 10, 20), (2, 30, 40), (3, 50, 60)");
+    defer r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 3), r2.rows_affected);
+
+    // Select generated column with WHERE clause
+    var r3 = try db.execSQL("SELECT id, x, y, sum_xy FROM data WHERE sum_xy > 50 ORDER BY id");
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    const expected_sums = [_]i64{ 70, 110 };
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        const id = row.values[0].toInteger();
+        const sum_val = row.values[3].toInteger();
+
+        try testing.expect(count < 2);
+        try testing.expect(id != null);
+        try testing.expect(sum_val != null);
+        try testing.expectEqual(expected_sums[count], sum_val.?);
+        count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "GENERATED ALWAYS AS — multiple generated columns" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_eng_generated_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with multiple generated columns
+    var r1 = try db.execSQL(
+        \\CREATE TABLE stats (
+        \\    id INTEGER PRIMARY KEY,
+        \\    a INTEGER NOT NULL,
+        \\    b INTEGER NOT NULL,
+        \\    sum_ab INTEGER GENERATED ALWAYS AS (a + b) STORED,
+        \\    product_ab INTEGER GENERATED ALWAYS AS (a * b) STORED
+        \\)
+    );
+    defer r1.close(testing.allocator);
+
+    // Insert row
+    var r2 = try db.execSQL("INSERT INTO stats (id, a, b) VALUES (7, 12, 8)");
+    defer r2.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r2.rows_affected);
+
+    // Select and verify both generated columns
+    var r3 = try db.execSQL("SELECT id, a, b, sum_ab, product_ab FROM stats WHERE id = 7");
+    defer r3.close(testing.allocator);
+
+    var found = false;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        found = true;
+
+        try testing.expectEqual(@as(?i64, 7), row.values[0].toInteger());
+        try testing.expectEqual(@as(?i64, 12), row.values[1].toInteger());
+        try testing.expectEqual(@as(?i64, 8), row.values[2].toInteger());
+        try testing.expectEqual(@as(?i64, 20), row.values[3].toInteger()); // 12 + 8
+        try testing.expectEqual(@as(?i64, 96), row.values[4].toInteger()); // 12 * 8
+    }
+
+    try testing.expect(found);
 }
 
