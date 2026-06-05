@@ -26743,3 +26743,125 @@ test "CHECK: text comparison constraint" {
     try testing.expectError(error.CheckConstraintViolation, result);
 }
 
+test "CHECK: constraint persisted across db reopen" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_persist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create table with CHECK constraint, insert valid data
+    {
+        var db = try createTestDb(testing.allocator, path);
+        _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0))");
+        _ = try db.exec("INSERT INTO t VALUES (1, 5)");
+        db.close();
+    }
+
+    // Reopen database
+    var db = try Database.open(testing.allocator, path, .{});
+    defer cleanupTestDb(&db, path);
+
+    // Verify constraint is still enforced
+    const result = db.execSQL("INSERT INTO t VALUES (2, -1)");
+    try testing.expectError(error.CheckConstraintViolation, result);
+
+    // Verify valid insert still works
+    _ = try db.exec("INSERT INTO t VALUES (3, 10)");
+}
+
+test "CHECK: BETWEEN expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_between.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with BETWEEN CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val BETWEEN 1 AND 100))");
+
+    // Insert middle value (should succeed)
+    _ = try db.exec("INSERT INTO t VALUES (1, 50)");
+
+    // Insert boundary value 1 (should succeed)
+    _ = try db.exec("INSERT INTO t VALUES (2, 1)");
+
+    // Insert boundary value 100 (should succeed)
+    _ = try db.exec("INSERT INTO t VALUES (3, 100)");
+
+    // Insert below range (should fail)
+    const result1 = db.execSQL("INSERT INTO t VALUES (4, 0)");
+    try testing.expectError(error.CheckConstraintViolation, result1);
+
+    // Insert above range (should fail)
+    const result2 = db.execSQL("INSERT INTO t VALUES (5, 101)");
+    try testing.expectError(error.CheckConstraintViolation, result2);
+}
+
+test "CHECK: IN expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_in.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with IN CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, status TEXT CHECK (status IN ('active', 'inactive', 'pending')))");
+
+    // Insert valid values
+    _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
+    _ = try db.exec("INSERT INTO t VALUES (2, 'inactive')");
+    _ = try db.exec("INSERT INTO t VALUES (3, 'pending')");
+
+    // Insert invalid value (should fail)
+    const result = db.execSQL("INSERT INTO t VALUES (4, 'unknown')");
+    try testing.expectError(error.CheckConstraintViolation, result);
+}
+
+test "CHECK: arithmetic expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_arithmetic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with arithmetic CHECK constraint (price * 2 > 20 means price > 10)
+    _ = try db.exec("CREATE TABLE t (id INTEGER, price INTEGER CHECK (price * 2 > 20))");
+
+    // Insert value that satisfies (12 * 2 = 24 > 20)
+    _ = try db.exec("INSERT INTO t VALUES (1, 12)");
+
+    // Insert boundary value (11 * 2 = 22 > 20)
+    _ = try db.exec("INSERT INTO t VALUES (2, 11)");
+
+    // Insert value that fails (5 * 2 = 10 <= 20)
+    const result = db.execSQL("INSERT INTO t VALUES (3, 5)");
+    try testing.expectError(error.CheckConstraintViolation, result);
+}
+
+test "CHECK: multiple CHECK constraints on one column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_multiple.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with combined CHECK constraint (val > 0 AND val < 100)
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0 AND val < 100))");
+
+    // Insert valid value in range
+    _ = try db.exec("INSERT INTO t VALUES (1, 50)");
+
+    // Insert boundary value 1
+    _ = try db.exec("INSERT INTO t VALUES (2, 1)");
+
+    // Insert boundary value 99
+    _ = try db.exec("INSERT INTO t VALUES (3, 99)");
+
+    // Insert value that fails first constraint (val <= 0)
+    const result1 = db.execSQL("INSERT INTO t VALUES (4, -1)");
+    try testing.expectError(error.CheckConstraintViolation, result1);
+
+    // Insert value that fails second constraint (val >= 100)
+    const result2 = db.execSQL("INSERT INTO t VALUES (5, 150)");
+    try testing.expectError(error.CheckConstraintViolation, result2);
+}
+
