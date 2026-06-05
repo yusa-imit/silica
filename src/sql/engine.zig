@@ -487,6 +487,7 @@ pub const EngineError = error{
     UniqueConstraintViolation,
     UnboundParameter,
     GeneratedColumnViolation,
+    CheckConstraintViolation,
 };
 
 /// A named savepoint within a transaction.
@@ -3566,6 +3567,19 @@ pub const Database = struct {
                 vals = user_vals;
             }
 
+            // Enforce column-level CHECK constraints
+            {
+                const has_any_check: bool = for (table_info.columns) |col| {
+                    if (col.flags.has_check) break true;
+                } else false;
+                if (has_any_check) {
+                    const check_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+                    defer self.allocator.free(check_names);
+                    for (table_info.columns, 0..) |col, i| check_names[i] = col.name;
+                    try self.evalCheckConstraints(&table_info, check_names, vals);
+                }
+            }
+
             // WITH CHECK OPTION: validate that the inserted row satisfies the view's WHERE
             if (view_check_where) |where_expr| {
                 if (check_col_names) |col_names| {
@@ -4396,6 +4410,22 @@ pub const Database = struct {
                 const gen_val = self.evalGeneratedExpr(tc.generated_expr, &row) catch continue;
                 row.values[ti].free(self.allocator);
                 row.values[ti] = gen_val;
+            }
+
+            // Enforce column-level CHECK constraints on updated row
+            {
+                const has_any_check: bool = for (table_info.columns) |col| {
+                    if (col.flags.has_check) break true;
+                } else false;
+                if (has_any_check) {
+                    self.evalCheckConstraints(&table_info, col_names, row.values) catch |err| {
+                        for (old_values) |ov| ov.free(self.allocator);
+                        self.allocator.free(old_values);
+                        for (row.values) |v| v.free(self.allocator);
+                        self.allocator.free(row.values);
+                        return err;
+                    };
+                }
             }
 
             // WITH CHECK OPTION: validate updated row still satisfies view's WHERE
@@ -6866,6 +6896,38 @@ pub const Database = struct {
         defer p.deinit();
         const expr_ptr = p.parseExpr(0) catch return .null_value;
         return evalExpr(self.allocator, expr_ptr, row, null) catch .null_value;
+    }
+
+    /// Evaluate all column-level CHECK constraints for a row.
+    /// Returns CheckConstraintViolation if any constraint fails.
+    /// NULL values pass CHECK (SQL standard behavior).
+    fn evalCheckConstraints(self: *Database, table_info: *const TableInfo, col_names: []const []const u8, values: []const Value) EngineError!void {
+        const row = Row{ .columns = col_names, .values = @constCast(values), .allocator = self.allocator };
+        for (table_info.columns) |col| {
+            if (!col.flags.has_check or col.check_expr.len == 0) continue;
+            // Find column value — NULL passes CHECK unconditionally
+            const col_val: Value = for (col_names, values) |name, val| {
+                if (std.ascii.eqlIgnoreCase(name, col.name)) break val;
+            } else .null_value;
+            if (col_val == .null_value) continue;
+            // Parse and evaluate the expression
+            var check_arena = ast_mod.AstArena.init(self.allocator);
+            defer check_arena.deinit();
+            var infra = std.heap.ArenaAllocator.init(self.allocator);
+            defer infra.deinit();
+            var p = parser_mod.Parser.init(infra.allocator(), col.check_expr, &check_arena) catch continue;
+            defer p.deinit();
+            const expr_ptr = p.parseExpr(0) catch continue;
+            const result = evalExpr(self.allocator, expr_ptr, &row, null) catch continue;
+            defer result.free(self.allocator);
+            const passed = switch (result) {
+                .boolean => |b| b,
+                .null_value => true,
+                .integer => |i| i != 0,
+                else => false,
+            };
+            if (!passed) return EngineError.CheckConstraintViolation;
+        }
     }
 
     fn checkViewCondition(self: *Database, where_expr: *const ast_mod.Expr, col_names: []const []const u8, values: []Value) bool {
@@ -26547,5 +26609,137 @@ test "SERIAL: auto-increment with NULL omitted from column list" {
     try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
 
     try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "CHECK: basic constraint enforced on INSERT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0))");
+
+    // Valid insert should succeed
+    _ = try db.exec("INSERT INTO t VALUES (1, 5)");
+
+    // Invalid insert should fail
+    const result = db.execSQL("INSERT INTO t VALUES (2, -1)");
+    try testing.expectError(error.CheckConstraintViolation, result);
+}
+
+test "CHECK: NULL value passes constraint" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0))");
+
+    // NULL should pass CHECK (SQL standard behavior)
+    _ = try db.exec("INSERT INTO t VALUES (1, NULL)");
+
+    // Verify the NULL was inserted
+    var r = try db.exec("SELECT val FROM t WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expect(row.values[0].toInteger() == null);
+}
+
+test "CHECK: zero fails strictly-greater constraint" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_zero.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with CHECK constraint (val > 0, not >= 0)
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0))");
+
+    // Zero should fail (strictly greater than 0)
+    const result = db.execSQL("INSERT INTO t VALUES (1, 0)");
+    try testing.expectError(error.CheckConstraintViolation, result);
+}
+
+test "CHECK: UPDATE enforces constraint" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_update_fail.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0))");
+
+    // Insert valid row
+    _ = try db.exec("INSERT INTO t VALUES (1, 5)");
+
+    // UPDATE to invalid value should fail
+    const result = db.execSQL("UPDATE t SET val = -3 WHERE id = 1");
+    try testing.expectError(error.CheckConstraintViolation, result);
+}
+
+test "CHECK: UPDATE to valid value succeeds" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_update_pass.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val INTEGER CHECK (val > 0))");
+
+    // Insert valid row
+    _ = try db.exec("INSERT INTO t VALUES (1, 5)");
+
+    // UPDATE to valid value should succeed
+    _ = try db.exec("UPDATE t SET val = 10 WHERE id = 1");
+
+    // Verify the update worked
+    var r = try db.exec("SELECT val FROM t WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 10), row.values[0].integer);
+}
+
+test "CHECK: multi-column expression references column by name" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with multi-column CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, min_val INTEGER, max_val INTEGER CHECK (max_val >= min_val))");
+
+    // Valid row (max >= min)
+    _ = try db.exec("INSERT INTO t VALUES (1, 5, 10)");
+
+    // Invalid row (max < min)
+    const result = db.execSQL("INSERT INTO t VALUES (2, 10, 5)");
+    try testing.expectError(error.CheckConstraintViolation, result);
+}
+
+test "CHECK: text comparison constraint" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_check_text.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with text CHECK constraint
+    _ = try db.exec("CREATE TABLE t (id INTEGER, status TEXT CHECK (status = 'active' OR status = 'inactive'))");
+
+    // Valid value 'active'
+    _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
+
+    // Invalid value 'pending'
+    const result = db.execSQL("INSERT INTO t VALUES (2, 'pending')");
+    try testing.expectError(error.CheckConstraintViolation, result);
 }
 

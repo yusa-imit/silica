@@ -1198,9 +1198,11 @@ pub const Parser = struct {
 
         if (self.match(.kw_check)) {
             _ = try self.expect(.left_paren);
+            const expr_start = self.tokens[self.pos].start;
             const expr = try self.parseExpr(0);
+            const expr_end = self.tokens[self.pos].start;
             _ = try self.expect(.right_paren);
-            return .{ .check = expr };
+            return .{ .check = .{ .expr = expr, .sql = self.source[expr_start..expr_end] } };
         }
 
         if (self.match(.kw_references)) {
@@ -1287,9 +1289,11 @@ pub const Parser = struct {
 
         if (self.match(.kw_check)) {
             _ = try self.expect(.left_paren);
+            const expr_start = self.tokens[self.pos].start;
             const expr = try self.parseExpr(0);
+            const expr_end = self.tokens[self.pos].start;
             _ = try self.expect(.right_paren);
-            return .{ .check = .{ .expr = expr } };
+            return .{ .check = .{ .expr = expr, .sql = self.source[expr_start..expr_end] } };
         }
 
         if (self.match(.kw_foreign)) {

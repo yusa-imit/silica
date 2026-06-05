@@ -45,7 +45,10 @@ pub const ColumnConstraint = union(enum) {
     not_null,
     unique,
     default: *const Expr,
-    check: *const Expr,
+    check: struct {
+        expr: *const Expr,
+        sql: []const u8 = "",
+    },
     foreign_key: struct {
         table: []const u8,
         column: ?[]const u8 = null,
@@ -80,6 +83,7 @@ pub const TableConstraint = union(enum) {
     },
     check: struct {
         expr: *const Expr,
+        sql: []const u8 = "",
     },
     foreign_key: struct {
         columns: []const []const u8,

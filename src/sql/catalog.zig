@@ -117,7 +117,8 @@ pub const ConstraintFlags = packed struct(u8) {
     autoincrement: bool = false,
     has_default: bool = false,
     is_generated: bool = false,
-    _padding: u2 = 0,
+    has_check: bool = false,
+    _padding: u1 = 0,
 };
 
 /// Extract constraint flags from AST column constraints.
@@ -134,7 +135,8 @@ pub fn constraintFlagsFromAst(constraints: []const ast.ColumnConstraint) Constra
             .not_null => flags.not_null = true,
             .unique => flags.unique = true,
             .default => flags.has_default = true,
-            .check, .foreign_key => {},
+            .check => flags.has_check = true,
+            .foreign_key => {},
         }
     }
     return flags;
@@ -148,6 +150,7 @@ pub const ColumnInfo = struct {
     column_type: ColumnType,
     flags: ConstraintFlags,
     generated_expr: []const u8 = "",
+    check_expr: []const u8 = "",
 };
 
 /// Composite table-level constraint stored in the catalog.
@@ -211,6 +214,7 @@ pub const TableInfo = struct {
         for (self.columns) |col| {
             allocator.free(col.name);
             if (col.generated_expr.len > 0) allocator.free(col.generated_expr);
+            if (col.check_expr.len > 0) allocator.free(col.check_expr);
         }
         allocator.free(self.columns);
         allocator.free(self.name);
@@ -401,6 +405,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
         col.flags = @bitCast(data[pos]);
         pos += 1;
         col.generated_expr = ""; // Initialize to empty string; populated by getTable if needed
+        col.check_expr = ""; // Initialize to empty string; populated by getTable if needed
         cols_initialized += 1;
     }
 
@@ -692,7 +697,8 @@ pub const Catalog = struct {
                     const cols = try self.allocator.dupe([]const u8, uq.columns);
                     try tc_list.append(self.allocator, .{ .unique = cols });
                 },
-                .check, .foreign_key => {}, // Skip for now
+                .check => {}, // Stored separately below
+                .foreign_key => {},
             }
         }
 
@@ -737,6 +743,18 @@ pub const Catalog = struct {
                 try self.storeGeneratedExpr(stmt.name, col_def.name, expr_sql);
             }
         }
+
+        // Store column-level CHECK expressions in catalog
+        for (stmt.columns) |col_def| {
+            for (col_def.constraints) |c| {
+                switch (c) {
+                    .check => |ch| if (ch.sql.len > 0) {
+                        try self.storeCheckExpr(stmt.name, col_def.name, ch.sql);
+                    },
+                    else => {},
+                }
+            }
+        }
     }
 
     /// Drop a table from the catalog.
@@ -766,17 +784,23 @@ pub const Catalog = struct {
 
         const result = try deserializeTable(self.allocator, name, value);
 
-        // Populate generated_expr for generated columns
-        // Need to cast away const since we're populating the generated_expr field
+        // Populate generated_expr and check_expr for columns
+        // Need to cast away const since we're populating the fields
         const cols: []ColumnInfo = @constCast(result.columns);
         for (cols) |*col| {
             if (col.flags.is_generated) {
                 if (self.getGeneratedExpr(result.name, col.name)) |maybe_expr| {
                     if (maybe_expr) |expr_sql| {
-                        // tree.get returns an allocated result that we need to free
                         defer self.allocator.free(expr_sql);
-                        // Dupe the expression so we own it for freeing in deinit
                         col.generated_expr = try self.allocator.dupe(u8, expr_sql);
+                    }
+                } else |_| {}
+            }
+            if (col.flags.has_check) {
+                if (self.getCheckExpr(result.name, col.name)) |maybe_expr| {
+                    if (maybe_expr) |expr_sql| {
+                        defer self.allocator.free(expr_sql);
+                        col.check_expr = try self.allocator.dupe(u8, expr_sql);
                     }
                 } else |_| {}
             }
@@ -1098,6 +1122,24 @@ pub const Catalog = struct {
         _ = self;
         _ = table;
         // TODO: implement when DROP TABLE is implemented with generated cols
+    }
+
+    // ── CHECK Constraints ────────────────────────────────────────────────
+
+    fn makeCheckKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "check:{s}:{s}", .{ table, col });
+    }
+
+    pub fn storeCheckExpr(self: *Catalog, table: []const u8, col: []const u8, expr_sql: []const u8) !void {
+        const key = try self.makeCheckKey(table, col);
+        defer self.allocator.free(key);
+        try self.tree.insert(key, expr_sql);
+    }
+
+    pub fn getCheckExpr(self: *Catalog, table: []const u8, col: []const u8) !?[]u8 {
+        const key = try self.makeCheckKey(table, col);
+        defer self.allocator.free(key);
+        return self.tree.get(self.allocator, key);
     }
 
     // ── Sequences (SERIAL / BIGSERIAL) ──────────────────────────────────
