@@ -9,7 +9,29 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 352 - FEATURE MODE)
+### Last Session (Session 367 - FEATURE MODE)
+- **Date**: 2026-06-05
+- **Mode**: FEATURE MODE (Session 367)
+- **Focus**: GENERATED ALWAYS AS (expr) STORED — computed columns
+- **Outcome**: ✅ Full generated column support, 6 TDD tests, all passing
+- **Details**:
+  - **CI Status**: ✅ GREEN
+  - **GitHub Issues**: 0 open
+  - **Work Done**:
+    - AST: `generated_expr_sql` field on ColumnDef
+    - Parser: GENERATED ALWAYS AS (expr) STORED syntax; `parseExpr` made public
+    - Catalog: `is_generated` ConstraintFlags bit; `generated_expr` on ColumnInfo;
+      B+Tree-backed storage/retrieval of generation expressions (key: "generated:table:col")
+    - Engine: reject INSERT into generated cols (GeneratedColumnViolation),
+      evaluate generated expressions at INSERT, re-evaluate after UPDATE
+  - **Tests**: 6 new TDD tests (string concat, arithmetic, UPDATE propagation,
+    insert rejection, SELECT filtering, multiple generated columns)
+  - **Commits**: 9b4aa1c
+  - **Fixes applied**: UPDATE re-evaluates generated cols; test expected error corrected to
+    GeneratedColumnViolation; test expected sum corrected (50+60=110)
+- **Project State**: v1.0.1 stable, computed columns implemented
+
+### Previous Session (Session 352 - FEATURE MODE)
 - **Date**: 2026-06-01
 - **Mode**: FEATURE MODE (Session 352)
 - **Focus**: INSERT ON CONFLICT (upsert) — DO NOTHING and DO UPDATE SET
