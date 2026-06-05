@@ -3480,7 +3480,14 @@ pub const Database = struct {
                 break :blk false;
             };
 
-            if (has_generated) {
+            const has_autoincrement = blk: {
+                for (table_info.columns) |col| {
+                    if (col.flags.autoincrement) break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (has_generated or has_autoincrement) {
                 // Build full row for all table columns
                 vals = self.allocator.alloc(Value, table_info.columns.len) catch return EngineError.OutOfMemory;
                 full_row_allocated = true;
@@ -3500,10 +3507,23 @@ pub const Database = struct {
                         }
                     }
                 } else {
-                    // No column list — values correspond to non-generated columns in order
+                    // No column list — determine whether user provided values for ALL columns
+                    // (including SERIAL) or only for non-SERIAL columns.
+                    const non_autoinc_cols: usize = blk: {
+                        var n: usize = 0;
+                        for (table_info.columns) |tc| {
+                            if (!tc.flags.is_generated and !tc.flags.autoincrement) n += 1;
+                        }
+                        break :blk n;
+                    };
+                    const all_cols = table_info.columns.len;
+                    // If values count matches total columns, user provides explicit SERIAL values too
+                    const skip_autoinc = user_vals.len < all_cols;
+                    _ = non_autoinc_cols;
                     var vi: usize = 0;
                     for (table_info.columns, 0..) |tc, ti| {
                         if (tc.flags.is_generated) continue;
+                        if (skip_autoinc and tc.flags.autoincrement) continue;
                         if (vi < user_vals.len) {
                             vals[ti].free(self.allocator);
                             vals[ti] = user_vals[vi].dupe(self.allocator) catch return EngineError.OutOfMemory;
@@ -3512,7 +3532,7 @@ pub const Database = struct {
                     }
                 }
 
-                // Build column names for row context
+                // Build column names for row context (needed for generated col evaluation)
                 const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
                 defer self.allocator.free(col_names);
                 for (table_info.columns, 0..) |col, ci| col_names[ci] = col.name;
@@ -3526,8 +3546,23 @@ pub const Database = struct {
                     vals[ti].free(self.allocator);
                     vals[ti] = gen_val;
                 }
+
+                // Fill autoincrement columns: auto-generate if not provided, advance seq if provided
+                for (table_info.columns, 0..) |tc, ti| {
+                    if (!tc.flags.autoincrement) continue;
+                    if (vals[ti] == .null_value) {
+                        // Column not provided — auto-generate next value
+                        const next_val = self.catalog.getSeqNextVal(actual_table, tc.name) catch
+                            return EngineError.ExecutionError;
+                        vals[ti] = .{ .integer = next_val };
+                    } else if (vals[ti] == .integer) {
+                        // Explicit value provided — advance sequence if it exceeds current max
+                        self.catalog.advanceSeqIfGreater(actual_table, tc.name, vals[ti].integer) catch
+                            return EngineError.ExecutionError;
+                    }
+                }
             } else {
-                // No generated columns — use user values directly
+                // No generated columns or autoincrement — use user values directly
                 vals = user_vals;
             }
 
@@ -26324,5 +26359,193 @@ test "GENERATED ALWAYS AS — multiple generated columns" {
     }
 
     try testing.expect(found);
+}
+
+test "SERIAL: auto-increment when column omitted" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_serial_autoinc.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)");
+    _ = try db.exec("INSERT INTO t (name) VALUES ('Alice')");
+    _ = try db.exec("INSERT INTO t (name) VALUES ('Bob')");
+
+    var r = try db.exec("SELECT id, name FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("Alice", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("Bob", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "BIGSERIAL: auto-increment when column omitted" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_bigserial_autoinc.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE events (id BIGSERIAL PRIMARY KEY, payload TEXT)");
+    _ = try db.exec("INSERT INTO events (payload) VALUES ('first')");
+    _ = try db.exec("INSERT INTO events (payload) VALUES ('second')");
+    _ = try db.exec("INSERT INTO events (payload) VALUES ('third')");
+
+    var r = try db.exec("SELECT id, payload FROM events ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("first", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("second", row2.values[1].text);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+    try testing.expectEqualStrings("third", row3.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "SERIAL: explicit value skips auto-increment" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_serial_explicit.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id SERIAL PRIMARY KEY, name TEXT)");
+    _ = try db.exec("INSERT INTO t (id, name) VALUES (5, 'Alice')");
+    _ = try db.exec("INSERT INTO t (name) VALUES ('Bob')");
+
+    var r = try db.exec("SELECT id, name FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 5), row1.values[0].integer);
+    try testing.expectEqualStrings("Alice", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 6), row2.values[0].integer);
+    try testing.expectEqualStrings("Bob", row2.values[1].text);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "SERIAL: INSERT without column list auto-increments" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_serial_no_cols.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id SERIAL, val TEXT)");
+    _ = try db.exec("INSERT INTO t VALUES ('a')");
+    _ = try db.exec("INSERT INTO t VALUES ('b')");
+    _ = try db.exec("INSERT INTO t VALUES ('c')");
+
+    var r = try db.exec("SELECT COUNT(*) FROM t");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+
+    var r2 = try db.exec("SELECT id FROM t ORDER BY id");
+    defer r2.close(testing.allocator);
+
+    var row1 = (try r2.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    var row3 = (try r2.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+
+    try testing.expect((try r2.rows.?.next()) == null);
+}
+
+test "SERIAL: multiple auto-increments in sequence" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_serial_sequence.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id SERIAL PRIMARY KEY, val INTEGER)");
+    _ = try db.exec("INSERT INTO t (val) VALUES (10)");
+    _ = try db.exec("INSERT INTO t (val) VALUES (20)");
+    _ = try db.exec("INSERT INTO t (val) VALUES (30)");
+    _ = try db.exec("INSERT INTO t (val) VALUES (40)");
+    _ = try db.exec("INSERT INTO t (val) VALUES (50)");
+
+    var r = try db.exec("SELECT id FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    for (1..6) |expected_id| {
+        var row = (try r.rows.?.next()).?;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, @intCast(expected_id)), row.values[0].integer);
+    }
+
+    try testing.expect((try r.rows.?.next()) == null);
+
+    // Now insert with explicit value 10, next auto should be 11
+    _ = try db.exec("INSERT INTO t (id, val) VALUES (10, 100)");
+    _ = try db.exec("INSERT INTO t (val) VALUES (110)");
+
+    var r2 = try db.exec("SELECT id FROM t WHERE id >= 10 ORDER BY id");
+    defer r2.close(testing.allocator);
+
+    var row10 = (try r2.rows.?.next()).?;
+    defer row10.deinit();
+    try testing.expectEqual(@as(i64, 10), row10.values[0].integer);
+
+    var row11 = (try r2.rows.?.next()).?;
+    defer row11.deinit();
+    try testing.expectEqual(@as(i64, 11), row11.values[0].integer);
+
+    try testing.expect((try r2.rows.?.next()) == null);
+}
+
+test "SERIAL: auto-increment with NULL omitted from column list" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_serial_multi_row.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (id SERIAL, name TEXT NOT NULL)");
+    _ = try db.exec("INSERT INTO t (name) VALUES ('A'), ('B'), ('C')");
+
+    var r = try db.exec("SELECT id FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
 }
 

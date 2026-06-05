@@ -1100,6 +1100,50 @@ pub const Catalog = struct {
         // TODO: implement when DROP TABLE is implemented with generated cols
     }
 
+    // ── Sequences (SERIAL / BIGSERIAL) ──────────────────────────────────
+
+    fn makeSeqKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "seq:{s}:{s}", .{ table, col });
+    }
+
+    /// Atomically increment the sequence for (table, col) and return the new value.
+    /// Sequence starts at 1 on first call.
+    pub fn getSeqNextVal(self: *Catalog, table: []const u8, col: []const u8) !i64 {
+        const key = try self.makeSeqKey(table, col);
+        defer self.allocator.free(key);
+        const existing = try self.tree.get(self.allocator, key);
+        const current: i64 = if (existing) |bytes| blk: {
+            defer self.allocator.free(bytes);
+            if (bytes.len < 8) break :blk 0;
+            break :blk std.mem.readInt(i64, bytes[0..8], .big);
+        } else 0;
+        const next = current + 1;
+        var buf: [8]u8 = undefined;
+        std.mem.writeInt(i64, &buf, next, .big);
+        _ = self.tree.delete(key) catch {};
+        try self.tree.insert(key, &buf);
+        return next;
+    }
+
+    /// If val > current sequence value, advance the sequence to val.
+    /// Called when user explicitly provides a value for a SERIAL column.
+    pub fn advanceSeqIfGreater(self: *Catalog, table: []const u8, col: []const u8, val: i64) !void {
+        const key = try self.makeSeqKey(table, col);
+        defer self.allocator.free(key);
+        const existing = try self.tree.get(self.allocator, key);
+        const current: i64 = if (existing) |bytes| blk: {
+            defer self.allocator.free(bytes);
+            if (bytes.len < 8) break :blk 0;
+            break :blk std.mem.readInt(i64, bytes[0..8], .big);
+        } else 0;
+        if (val > current) {
+            var buf: [8]u8 = undefined;
+            std.mem.writeInt(i64, &buf, val, .big);
+            _ = self.tree.delete(key) catch {};
+            try self.tree.insert(key, &buf);
+        }
+    }
+
     // ── ENUM Types ──────────────────────────────────────────────────────
 
     fn makeTypeKey(self: *Catalog, name: []const u8) ![]u8 {

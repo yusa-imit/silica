@@ -550,8 +550,16 @@ pub const Analyzer = struct {
             }
         } else {
             // No column list — value count must match table column count
+            // OR the count of non-autoincrement columns (SERIAL values are auto-generated)
+            const non_auto_count: usize = blk: {
+                var n: usize = 0;
+                for (table_info.columns) |tc| {
+                    if (!tc.flags.autoincrement and !tc.flags.is_generated) n += 1;
+                }
+                break :blk n;
+            };
             for (stmt.values) |row| {
-                if (row.len != table_info.columns.len) {
+                if (row.len != table_info.columns.len and row.len != non_auto_count) {
                     self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ table_info.columns.len, row.len });
                 }
             }
