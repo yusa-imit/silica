@@ -9,7 +9,25 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 367 - FEATURE MODE)
+### Last Session (Session 368 - FEATURE MODE)
+- **Date**: 2026-06-05
+- **Mode**: FEATURE MODE (Session 368)
+- **Focus**: SERIAL/BIGSERIAL auto-increment + sailor v2.14.0 migration
+- **Outcome**: ✅ Full SERIAL auto-increment support, 6 TDD tests, all passing
+- **Details**:
+  - **CI Status**: ✅ GREEN
+  - **GitHub Issues**: 0 open
+  - **Work Done**:
+    - sailor v2.14.0 migration (Fuzzy Search & Command Palette)
+    - Catalog: `getSeqNextVal(table, col)`, `advanceSeqIfGreater(table, col, val)` — sequence state stored as "seq:table:col" in B+Tree
+    - Engine: `has_autoincrement` check in executeInsert; auto-generate when column omitted; advance seq on explicit value; positional mapping skips SERIAL when user provides fewer values
+    - Analyzer: allow INSERT without column list to have `non_auto_count` values (skip SERIAL columns)
+  - **Tests**: 6 new TDD tests (basic auto-inc, BIGSERIAL, explicit override, no-col-list, multi-row, sequence)
+  - **Commits**: b092167 (sailor), fc0e5ba (SERIAL)
+  - **Architecture**: Sequence counter key = "seq:{table}:{col}"; `skip_autoinc = user_vals.len < all_cols` for positional mapping
+- **Project State**: v1.0.1 stable, SERIAL/BIGSERIAL now fully auto-increments
+
+### Previous Session (Session 367 - FEATURE MODE)
 - **Date**: 2026-06-05
 - **Mode**: FEATURE MODE (Session 367)
 - **Focus**: GENERATED ALWAYS AS (expr) STORED — computed columns
