@@ -27289,3 +27289,290 @@ test "ALTER TABLE DROP COLUMN IF EXISTS — no error on missing column" {
     try testing.expectEqual(@as(i64, 1), row.values[0].integer);
 }
 
+test "percentile_cont(0.5) WITHIN GROUP (ORDER BY v) — odd count — median" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_odd.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v REAL)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (1.0), (2.0), (3.0), (4.0), (5.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 3.0), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 3.0, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(0.5) WITHIN GROUP (ORDER BY v) — even count — interpolated" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_even.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v REAL)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (1.0), (2.0), (3.0), (4.0)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 2.5), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 2.5, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont(0.0) and percentile_cont(1.0) — min and max" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_minmax.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v REAL)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (10.0), (20.0), (30.0)");
+    ins1.close(testing.allocator);
+
+    // Test percentile_cont(0.0) = min
+    var result1 = try db.execSQL("SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result1.close(testing.allocator);
+
+    if (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 10.0), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 10.0, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Test percentile_cont(1.0) = max
+    var result2 = try db.execSQL("SELECT percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result2.close(testing.allocator);
+
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 30.0), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 30.0, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc(0.5) WITHIN GROUP (ORDER BY v) — discrete percentile" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v INTEGER)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .integer => |i| try testing.expectEqual(@as(i64, 2), i),
+            .real => |r| try testing.expectEqual(@as(i64, 2), @as(i64, @intFromFloat(r))),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc(0.25) and percentile_disc(0.75) — quartiles" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_quartiles.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v INTEGER)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4)");
+    ins1.close(testing.allocator);
+
+    // percentile_disc(0.25) = ceil(0.25*4) = 1st element = 1
+    var result1 = try db.execSQL("SELECT percentile_disc(0.25) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result1.close(testing.allocator);
+
+    if (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .integer => |i| try testing.expectEqual(@as(i64, 1), i),
+            .real => |r| try testing.expectEqual(@as(i64, 1), @as(i64, @intFromFloat(r))),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // percentile_disc(0.75) = ceil(0.75*4) = 3rd element = 3
+    var result2 = try db.execSQL("SELECT percentile_disc(0.75) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result2.close(testing.allocator);
+
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .integer => |i| try testing.expectEqual(@as(i64, 3), i),
+            .real => |r| try testing.expectEqual(@as(i64, 3), @as(i64, @intFromFloat(r))),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont — NULL handling (skips NULLs)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_nulls.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v REAL)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (1.0), (NULL), (3.0), (NULL), (5.0)");
+    ins1.close(testing.allocator);
+
+    // NULLs should be skipped, leaving [1.0, 3.0, 5.0] — median = 3.0
+    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM t");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 3.0), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 3.0, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_cont ORDER BY DESC — reverses sort order" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_cont_desc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (v REAL)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO t VALUES (1.0), (2.0), (3.0), (4.0), (5.0)");
+    ins1.close(testing.allocator);
+
+    // ORDER BY DESC reverses: [5.0,4.0,3.0,2.0,1.0], percentile_cont(0.0) = 5.0 (min in DESC = max value)
+    var result = try db.execSQL("SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v DESC) FROM t");
+    defer result.close(testing.allocator);
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.values[0];
+        switch (val) {
+            .real => |r| try testing.expectApproxEqAbs(@as(f64, 5.0), r, 0.001),
+            .integer => |i| try testing.expectApproxEqAbs(@as(f64, @floatFromInt(i)), 5.0, 0.001),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "percentile_disc WITH GROUP BY — aggregate per group" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_percentile_disc_groupby.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE emp (dept TEXT, salary INTEGER)");
+    r1.close(testing.allocator);
+    var ins1 = try db.execSQL("INSERT INTO emp VALUES ('A', 100), ('A', 200), ('A', 300), ('B', 50), ('B', 150)");
+    ins1.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT dept, percentile_disc(0.5) WITHIN GROUP (ORDER BY salary) FROM emp GROUP BY dept ORDER BY dept");
+    defer result.close(testing.allocator);
+
+    // Row 1: dept='A', percentile_disc(0.5) of [100,200,300] = ceil(0.5*3)=2nd = 200
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("A", row.values[0].text);
+        const val = row.values[1];
+        switch (val) {
+            .integer => |i| try testing.expectEqual(@as(i64, 200), i),
+            .real => |r| try testing.expectEqual(@as(i64, 200), @as(i64, @intFromFloat(r))),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Row 2: dept='B', percentile_disc(0.5) of [50,150] = ceil(0.5*2)=1st = 50
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("B", row.values[0].text);
+        const val = row.values[1];
+        switch (val) {
+            .integer => |i| try testing.expectEqual(@as(i64, 50), i),
+            .real => |r| try testing.expectEqual(@as(i64, 50), @as(i64, @intFromFloat(r))),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
