@@ -1957,10 +1957,91 @@ pub const Parser = struct {
         _ = try self.expect(.kw_table);
         const table_name = try self.expectIdentifier();
 
-        // Check for ROW LEVEL SECURITY keywords
-        if (self.match(.kw_enable)) {
+        // Check for structural mutations (ADD/DROP/RENAME COLUMN)
+        if (self.match(.kw_add)) {
+            // Optional COLUMN keyword
+            _ = self.match(.kw_column);
+            // Parse column definition
+            const col_def = try self.parseColumnDef();
+            var if_not_exists = false;
+            // Note: IF NOT EXISTS can come after the column definition in some dialects
+            if (self.match(.kw_if)) {
+                _ = try self.expect(.kw_not);
+                _ = try self.expect(.kw_exists);
+                if_not_exists = true;
+            }
+            return .{ .alter_table = .{
+                .table_name = table_name,
+                .action = .{ .add_column = .{
+                    .col_def = col_def,
+                    .if_not_exists = if_not_exists,
+                } },
+            } };
+        } else if (self.match(.kw_drop)) {
+            // Optional COLUMN keyword
+            _ = self.match(.kw_column);
+            // IF EXISTS must come before the column name
+            var if_exists = false;
+            if (self.match(.kw_if)) {
+                _ = try self.expect(.kw_exists);
+                if_exists = true;
+            }
+            const col_name = try self.expectIdentifier();
+            var cascade = false;
+            // Optional CASCADE or RESTRICT
+            if (self.match(.kw_cascade)) {
+                cascade = true;
+            } else {
+                _ = self.match(.kw_restrict);
+            }
+            return .{ .alter_table = .{
+                .table_name = table_name,
+                .action = .{ .drop_column = .{
+                    .name = col_name,
+                    .if_exists = if_exists,
+                    .cascade = cascade,
+                } },
+            } };
+        } else if (self.match(.kw_rename)) {
+            // Check if COLUMN keyword follows
+            if (self.match(.kw_column)) {
+                // RENAME COLUMN old_name TO new_name
+                const old_name = try self.expectIdentifier();
+                _ = try self.expect(.kw_to);
+                const new_name = try self.expectIdentifier();
+                return .{ .alter_table = .{
+                    .table_name = table_name,
+                    .action = .{ .rename_column = .{
+                        .old_name = old_name,
+                        .new_name = new_name,
+                    } },
+                } };
+            } else if (self.check(.kw_to)) {
+                // RENAME TO new_name (no COLUMN keyword)
+                _ = try self.expect(.kw_to);
+                const new_name = try self.expectIdentifier();
+                return .{ .alter_table = .{
+                    .table_name = table_name,
+                    .action = .{ .rename_to = new_name },
+                } };
+            } else {
+                // Try parsing as RENAME col_name TO new_name (without COLUMN keyword)
+                const old_name = try self.expectIdentifier();
+                _ = try self.expect(.kw_to);
+                const new_name = try self.expectIdentifier();
+                return .{ .alter_table = .{
+                    .table_name = table_name,
+                    .action = .{ .rename_column = .{
+                        .old_name = old_name,
+                        .new_name = new_name,
+                    } },
+                } };
+            }
+        } else if (self.match(.kw_enable)) {
+            // ROW LEVEL SECURITY
             return try self.parseAlterTableRLS(table_name, true);
         } else if (self.match(.kw_disable)) {
+            // ROW LEVEL SECURITY
             return try self.parseAlterTableRLS(table_name, false);
         } else if (self.match(.kw_force)) {
             _ = try self.expect(.kw_row);
@@ -1983,7 +2064,7 @@ pub const Parser = struct {
             } };
         }
 
-        try self.addError(self.peek(), "expected ENABLE, DISABLE, FORCE, or NO after ALTER TABLE");
+        try self.addError(self.peek(), "expected ADD, DROP, RENAME, ENABLE, DISABLE, FORCE, or NO after ALTER TABLE");
         return error.ParseFailed;
     }
 

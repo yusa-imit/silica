@@ -327,6 +327,7 @@ pub const Analyzer = struct {
             .create_policy => |s| self.analyzeCreatePolicy(&s),
             .drop_policy => |s| self.analyzeDropPolicy(&s),
             .alter_table_rls => |s| self.analyzeAlterTableRLS(&s),
+            .alter_table => {}, // ALTER TABLE needs no semantic analysis at this stage
             .reindex => {},
             .explain => |s| self.analyze(s.stmt.*),
         }

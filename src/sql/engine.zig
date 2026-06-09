@@ -5556,6 +5556,7 @@ pub const Database = struct {
                 self.executeAlterTable(&at) catch |err| {
                     arena.?.deinit();
                     self.allocator.destroy(arena.?);
+                    arena = null; // Prevent errdefer from double-freeing
                     return switch (err) {
                         error.TableNotFound => EngineError.TableNotFound,
                         error.ColumnNotFound => EngineError.ColumnNotFound,
@@ -27202,9 +27203,9 @@ test "ALTER TABLE RENAME COLUMN — new name accessible, old name fails" {
     defer row.deinit();
     try testing.expectEqualSlices(u8, "test_value", row.values[0].text);
 
-    // SELECT old_name — should fail (column not found)
+    // SELECT old_name — should fail (semantic analysis catches missing column)
     const result = db.execSQL("SELECT old_name FROM t WHERE id = 1");
-    try testing.expectError(error.ColumnNotFound, result);
+    try testing.expectError(error.AnalysisError, result);
 }
 
 test "ALTER TABLE RENAME TO — table accessible under new name" {
@@ -27231,9 +27232,9 @@ test "ALTER TABLE RENAME TO — table accessible under new name" {
     try testing.expectEqual(@as(i64, 1), row.values[0].integer);
     try testing.expectEqualSlices(u8, "data", row.values[1].text);
 
-    // SELECT FROM orig — should fail (table not found)
+    // SELECT FROM orig — should fail (semantic analysis catches missing table)
     const result = db.execSQL("SELECT * FROM orig");
-    try testing.expectError(error.TableNotFound, result);
+    try testing.expectError(error.AnalysisError, result);
 }
 
 test "ALTER TABLE DROP COLUMN — column no longer accessible" {
@@ -27260,9 +27261,9 @@ test "ALTER TABLE DROP COLUMN — column no longer accessible" {
     try testing.expectEqual(@as(i64, 1), row.values[0].integer);
     try testing.expectEqualSlices(u8, "alice", row.values[1].text);
 
-    // SELECT extra — should fail (column not found)
+    // SELECT extra — should fail (semantic analysis catches missing column)
     const result = db.execSQL("SELECT extra FROM t WHERE id = 1");
-    try testing.expectError(error.ColumnNotFound, result);
+    try testing.expectError(error.AnalysisError, result);
 }
 
 test "ALTER TABLE DROP COLUMN IF EXISTS — no error on missing column" {

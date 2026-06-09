@@ -570,6 +570,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
 pub const CatalogError = error{
     TableAlreadyExists,
     TableNotFound,
+    ColumnNotFound,
     InvalidSchemaData,
     OutOfMemory,
     ViewAlreadyExists,
@@ -774,6 +775,230 @@ pub const Catalog = struct {
                 else => err,
             };
         };
+    }
+
+    /// Add a column to an existing table.
+    pub fn addColumn(self: *Catalog, table_name: []const u8, col: ColumnInfo, default_expr: ?[]const u8) !void {
+        var table_info = try self.getTable(table_name);
+
+        // Build new columns slice = old columns + new col
+        const new_cols = try self.allocator.alloc(ColumnInfo, table_info.columns.len + 1);
+        defer self.allocator.free(new_cols);
+
+        for (table_info.columns, 0..) |oc, i| {
+            new_cols[i] = oc;
+        }
+        new_cols[table_info.columns.len] = col;
+
+        // Delete old table entry
+        try self.tree.delete(table_name);
+
+        // Re-insert with new schema (must do this before deinit)
+        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        defer self.allocator.free(value);
+
+        try self.tree.insert(table_name, value);
+
+        // Now we can deinit the old table_info (it held pointers to the old schema data)
+        table_info.deinit(self.allocator);
+
+        // Store default expression if provided
+        if (default_expr) |expr_sql| {
+            try self.storeDefaultExpr(table_name, col.name, expr_sql);
+        }
+    }
+
+    /// Drop a column from an existing table.
+    pub fn dropColumn(self: *Catalog, table_name: []const u8, col_name: []const u8, if_exists: bool) !void {
+        var table_info = try self.getTable(table_name);
+
+        // Find column index (case-insensitive)
+        var col_index: ?usize = null;
+        for (table_info.columns, 0..) |col, i| {
+            if (std.ascii.eqlIgnoreCase(col.name, col_name)) {
+                col_index = i;
+                break;
+            }
+        }
+
+        if (col_index == null) {
+            table_info.deinit(self.allocator);
+            if (if_exists) return;
+            return CatalogError.ColumnNotFound;
+        }
+
+        const idx = col_index.?;
+
+        // Build new columns slice without the dropped column
+        const new_cols = try self.allocator.alloc(ColumnInfo, table_info.columns.len - 1);
+        defer self.allocator.free(new_cols);
+
+        var new_i: usize = 0;
+        for (table_info.columns, 0..) |col, i| {
+            if (i != idx) {
+                new_cols[new_i] = col;
+                new_i += 1;
+            }
+        }
+
+        // Delete old table entry
+        try self.tree.delete(table_name);
+
+        // Re-insert with new schema (must do this before deinit)
+        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        defer self.allocator.free(value);
+
+        try self.tree.insert(table_name, value);
+
+        // Now we can deinit the old table_info
+        table_info.deinit(self.allocator);
+
+        // Delete associated metadata keys
+        {
+            const k = try self.makeDefaultKey(table_name, col_name);
+            defer self.allocator.free(k);
+            self.tree.delete(k) catch {};
+        }
+        {
+            const k = try self.makeGeneratedKey(table_name, col_name);
+            defer self.allocator.free(k);
+            self.tree.delete(k) catch {};
+        }
+        {
+            const k = try self.makeCheckKey(table_name, col_name);
+            defer self.allocator.free(k);
+            self.tree.delete(k) catch {};
+        }
+    }
+
+    /// Rename a column in an existing table.
+    pub fn renameColumn(self: *Catalog, table_name: []const u8, old_name: []const u8, new_name: []const u8) !void {
+        var table_info = try self.getTable(table_name);
+
+        // Find old column (case-insensitive)
+        var col_index: ?usize = null;
+        for (table_info.columns, 0..) |col, i| {
+            if (std.ascii.eqlIgnoreCase(col.name, old_name)) {
+                col_index = i;
+                break;
+            }
+        }
+
+        if (col_index == null) {
+            table_info.deinit(self.allocator);
+            return CatalogError.ColumnNotFound;
+        }
+
+        const idx = col_index.?;
+
+        // Build new columns with renamed column
+        const new_cols = try self.allocator.alloc(ColumnInfo, table_info.columns.len);
+        defer self.allocator.free(new_cols);
+
+        for (table_info.columns, 0..) |col, i| {
+            if (i == idx) {
+                new_cols[i] = col;
+                new_cols[i].name = new_name;
+            } else {
+                new_cols[i] = col;
+            }
+        }
+
+        // Delete old table entry
+        try self.tree.delete(table_name);
+
+        // Re-insert with new schema (must do this before deinit)
+        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        defer self.allocator.free(value);
+
+        try self.tree.insert(table_name, value);
+
+        // Now we can deinit the old table_info
+        table_info.deinit(self.allocator);
+
+        // Rename associated metadata keys
+        if (self.getDefaultExpr(table_name, old_name)) |maybe_expr| {
+            if (maybe_expr) |expr_sql| {
+                defer self.allocator.free(expr_sql);
+                const k = try self.makeDefaultKey(table_name, old_name);
+                defer self.allocator.free(k);
+                self.tree.delete(k) catch {};
+                try self.storeDefaultExpr(table_name, new_name, expr_sql);
+            }
+        } else |_| {}
+
+        if (self.getGeneratedExpr(table_name, old_name)) |maybe_expr| {
+            if (maybe_expr) |expr_sql| {
+                defer self.allocator.free(expr_sql);
+                const k = try self.makeGeneratedKey(table_name, old_name);
+                defer self.allocator.free(k);
+                self.tree.delete(k) catch {};
+                try self.storeGeneratedExpr(table_name, new_name, expr_sql);
+            }
+        } else |_| {}
+
+        if (self.getCheckExpr(table_name, old_name)) |maybe_expr| {
+            if (maybe_expr) |expr_sql| {
+                defer self.allocator.free(expr_sql);
+                const k = try self.makeCheckKey(table_name, old_name);
+                defer self.allocator.free(k);
+                self.tree.delete(k) catch {};
+                try self.storeCheckExpr(table_name, new_name, expr_sql);
+            }
+        } else |_| {}
+    }
+
+    /// Rename a table.
+    pub fn renameTable(self: *Catalog, old_name: []const u8, new_name: []const u8) !void {
+        const value = (try self.tree.get(self.allocator, old_name)) orelse
+            return CatalogError.TableNotFound;
+        defer self.allocator.free(value);
+
+        // Insert new table entry with same data
+        try self.tree.insert(new_name, value);
+
+        // Delete old table entry
+        try self.tree.delete(old_name);
+
+        // Rename metadata keys (default, generated, check)
+        var table_info = try self.getTable(new_name);
+
+        for (table_info.columns) |col| {
+            // Handle DEFAULT metadata
+            if (self.getDefaultExpr(old_name, col.name)) |maybe_expr| {
+                if (maybe_expr) |expr_sql| {
+                    defer self.allocator.free(expr_sql);
+                    const k = try self.makeDefaultKey(old_name, col.name);
+                    defer self.allocator.free(k);
+                    self.tree.delete(k) catch {};
+                    try self.storeDefaultExpr(new_name, col.name, expr_sql);
+                }
+            } else |_| {}
+
+            // Handle GENERATED metadata
+            if (self.getGeneratedExpr(old_name, col.name)) |maybe_expr| {
+                if (maybe_expr) |expr_sql| {
+                    defer self.allocator.free(expr_sql);
+                    const k = try self.makeGeneratedKey(old_name, col.name);
+                    defer self.allocator.free(k);
+                    self.tree.delete(k) catch {};
+                    try self.storeGeneratedExpr(new_name, col.name, expr_sql);
+                }
+            } else |_| {}
+
+            // Handle CHECK metadata
+            if (self.getCheckExpr(old_name, col.name)) |maybe_expr| {
+                if (maybe_expr) |expr_sql| {
+                    defer self.allocator.free(expr_sql);
+                    const k = try self.makeCheckKey(old_name, col.name);
+                    defer self.allocator.free(k);
+                    self.tree.delete(k) catch {};
+                    try self.storeCheckExpr(new_name, col.name, expr_sql);
+                }
+            } else |_| {}
+        }
+
+        table_info.deinit(self.allocator);
     }
 
     /// Look up a table by name. Caller must call TableInfo.deinit() on the result.
@@ -1122,6 +1347,24 @@ pub const Catalog = struct {
         _ = self;
         _ = table;
         // TODO: implement when DROP TABLE is implemented with generated cols
+    }
+
+    // ── DEFAULT Values ──────────────────────────────────────────────────
+
+    fn makeDefaultKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "default:{s}:{s}", .{ table, col });
+    }
+
+    pub fn storeDefaultExpr(self: *Catalog, table: []const u8, col: []const u8, expr_sql: []const u8) !void {
+        const key = try self.makeDefaultKey(table, col);
+        defer self.allocator.free(key);
+        try self.tree.insert(key, expr_sql);
+    }
+
+    pub fn getDefaultExpr(self: *Catalog, table: []const u8, col: []const u8) !?[]u8 {
+        const key = try self.makeDefaultKey(table, col);
+        defer self.allocator.free(key);
+        return self.tree.get(self.allocator, key);
     }
 
     // ── CHECK Constraints ────────────────────────────────────────────────

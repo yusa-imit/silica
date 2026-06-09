@@ -841,6 +841,33 @@ pub const AlterTableRLSStmt = struct {
     force: bool = false, // FORCE ROW LEVEL SECURITY (applies even to table owner)
 };
 
+/// ALTER TABLE structural mutations (ADD/DROP/RENAME COLUMN)
+pub const AlterTableAction = union(enum) {
+    /// ADD [COLUMN] col_def
+    add_column: struct {
+        col_def: ColumnDef,
+        if_not_exists: bool = false,
+    },
+    /// DROP [COLUMN] [IF EXISTS] col_name [CASCADE|RESTRICT]
+    drop_column: struct {
+        name: []const u8,
+        if_exists: bool = false,
+        cascade: bool = false,
+    },
+    /// RENAME [COLUMN] old_name TO new_name
+    rename_column: struct {
+        old_name: []const u8,
+        new_name: []const u8,
+    },
+    /// RENAME TO new_name
+    rename_to: []const u8,
+};
+
+pub const AlterTableStmt = struct {
+    table_name: []const u8,
+    action: AlterTableAction,
+};
+
 /// SET statement: SET parameter_name = value | SET parameter_name TO value
 pub const SetStmt = struct {
     parameter: []const u8,
@@ -893,6 +920,7 @@ pub const Stmt = union(enum) {
     create_policy: CreatePolicyStmt,
     drop_policy: DropPolicyStmt,
     alter_table_rls: AlterTableRLSStmt,
+    alter_table: AlterTableStmt,
     set: SetStmt,
     show: ShowStmt,
     reset: ResetStmt,

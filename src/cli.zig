@@ -942,6 +942,9 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .alter_table_rls => |a| {
             writer.print("Parsed: ALTER TABLE {s} (RLS)\n", .{a.table_name}) catch {};
         },
+        .alter_table => |a| {
+            writer.print("Parsed: ALTER TABLE {s}\n", .{a.table_name}) catch {};
+        },
         .reindex => |r| {
             switch (r) {
                 .index => |idx| writer.print("Parsed: REINDEX INDEX {s}\n", .{idx}) catch {},

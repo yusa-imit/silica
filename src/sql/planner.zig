@@ -382,6 +382,7 @@ pub const Planner = struct {
             .create_policy => self.planTransaction(),  // handled early in engine
             .drop_policy => self.planTransaction(),    // handled early in engine
             .alter_table_rls => self.planTransaction(), // handled early in engine
+            .alter_table => self.planTransaction(),    // handled early in engine
             .reindex => self.planTransaction(), // handled early in engine
             .explain => |s| self.planExplain(s),
         };
