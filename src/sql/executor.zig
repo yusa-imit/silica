@@ -1400,9 +1400,15 @@ pub const Row = struct {
     }
 
     /// Look up a column value by name (case-insensitive).
+    /// Returns NULL if column doesn't exist or if the row doesn't have enough values
+    /// (this handles ALTER TABLE ADD COLUMN where existing rows are shorter).
     pub fn getColumn(self: *const Row, name: []const u8) ?Value {
         for (self.columns, 0..) |col, i| {
-            if (std.ascii.eqlIgnoreCase(col, name)) return self.values[i];
+            if (std.ascii.eqlIgnoreCase(col, name)) {
+                // Return NULL if row doesn't have enough values (e.g., added column)
+                if (i >= self.values.len) return .null_value;
+                return self.values[i];
+            }
         }
         return null;
     }
@@ -1416,6 +1422,8 @@ pub const Row = struct {
                 const col_table = col[0..dot_pos];
                 const col_name = col[dot_pos + 1 ..];
                 if (std.ascii.eqlIgnoreCase(col_table, table) and std.ascii.eqlIgnoreCase(col_name, column)) {
+                    // Return NULL if row doesn't have enough values (e.g., added column)
+                    if (i >= self.values.len) return .null_value;
                     return self.values[i];
                 }
             }
@@ -7258,6 +7266,7 @@ pub const ScanOp = struct {
     tree: BTree,
     cursor: ?Cursor = null,
     col_names: []const []const u8,
+    col_defaults: ?[]const Value = null,
     opened: bool = false,
     /// MVCC context for visibility filtering (null = all rows visible).
     mvcc_ctx: ?MvccContext = null,
@@ -7312,9 +7321,23 @@ pub const ScanOp = struct {
                         self.allocator.free(values);
                     }
 
+                    // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
+                    const padded_values = if (values.len < self.col_names.len) blk: {
+                        const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                        for (values, 0..) |v, i| extended[i] = v;
+                        for (values.len..self.col_names.len) |i| {
+                            extended[i] = if (self.col_defaults) |defs|
+                                try defs[i].dupe(self.allocator)
+                            else
+                                .null_value;
+                        }
+                        self.allocator.free(values);
+                        break :blk extended;
+                    } else values;
+
                     const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
                     for (self.col_names, 0..) |c, i| cols[i] = c;
-                    return Row{ .columns = cols, .values = values, .allocator = self.allocator };
+                    return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
                 }
             }
 
@@ -7332,13 +7355,27 @@ pub const ScanOp = struct {
                 self.allocator.free(values);
             }
 
+            // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
+            const padded_values = if (values.len < self.col_names.len) blk: {
+                const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                for (values, 0..) |v, i| extended[i] = v;
+                for (values.len..self.col_names.len) |i| {
+                    extended[i] = if (self.col_defaults) |defs|
+                        try defs[i].dupe(self.allocator)
+                    else
+                        .null_value;
+                }
+                self.allocator.free(values);
+                break :blk extended;
+            } else values;
+
             // Build column names
             const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
             for (self.col_names, 0..) |c, i| cols[i] = c;
 
             return Row{
                 .columns = cols,
-                .values = values,
+                .values = padded_values,
                 .allocator = self.allocator,
             };
         }
@@ -7372,6 +7409,7 @@ pub const IndexScanOp = struct {
     index_type: catalog_mod.IndexType,
     lookup_key: []const u8,
     col_names: []const []const u8,
+    col_defaults: ?[]const Value = null,
     exhausted: bool = false,
     /// MVCC context for visibility filtering (null = all rows visible).
     mvcc_ctx: ?MvccContext = null,
@@ -7443,9 +7481,22 @@ pub const IndexScanOp = struct {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
                 }
+                // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
+                const padded_values = if (values.len < self.col_names.len) blk: {
+                    const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                    for (values, 0..) |v, i| extended[i] = v;
+                    for (values.len..self.col_names.len) |i| {
+                        extended[i] = if (self.col_defaults) |defs|
+                            try defs[i].dupe(self.allocator)
+                        else
+                            .null_value;
+                    }
+                    self.allocator.free(values);
+                    break :blk extended;
+                } else values;
                 const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
                 for (self.col_names, 0..) |c, i| cols[i] = c;
-                return Row{ .columns = cols, .values = values, .allocator = self.allocator };
+                return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
             }
         }
 
@@ -7460,12 +7511,26 @@ pub const IndexScanOp = struct {
             self.allocator.free(values);
         }
 
+        // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
+        const padded_values = if (values.len < self.col_names.len) blk: {
+            const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+            for (values, 0..) |v, i| extended[i] = v;
+            for (values.len..self.col_names.len) |i| {
+                extended[i] = if (self.col_defaults) |defs|
+                    try defs[i].dupe(self.allocator)
+                else
+                    .null_value;
+            }
+            self.allocator.free(values);
+            break :blk extended;
+        } else values;
+
         const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{
             .columns = cols,
-            .values = values,
+            .values = padded_values,
             .allocator = self.allocator,
         };
     }

@@ -475,6 +475,7 @@ pub const EngineError = error{
     StorageError,
     TableNotFound,
     TableAlreadyExists,
+    ColumnNotFound,
     IndexNotFound,
     InvalidData,
     TransactionError,
@@ -654,6 +655,10 @@ const OperatorChain = struct {
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
         allocator.free(s.col_names);
+        if (s.col_defaults) |defaults| {
+            for (defaults) |val| val.free(allocator);
+            allocator.free(defaults);
+        }
     }
 
     fn deinit(self: *OperatorChain, allocator: Allocator) void {
@@ -672,6 +677,10 @@ const OperatorChain = struct {
         if (self.index_scan) |is| {
             for (is.col_names) |name| allocator.free(@constCast(name));
             allocator.free(is.col_names);
+            if (is.col_defaults) |defaults| {
+                for (defaults) |val| val.free(allocator);
+                allocator.free(defaults);
+            }
             allocator.free(is.lookup_key);
             allocator.destroy(is);
         }
@@ -3101,6 +3110,43 @@ pub const Database = struct {
         return mat_op.iterator();
     }
 
+    /// Parse a default expression string into a Value.
+    /// Handles: integers, floats, quoted strings, true, false, NULL.
+    fn evalDefaultExprToValue(expr: []const u8, allocator: std.mem.Allocator) executor_mod.Value {
+        // Try parsing as integer
+        if (std.fmt.parseInt(i64, expr, 10)) |n| {
+            return .{ .integer = n };
+        } else |_| {}
+
+        // Try parsing as float
+        if (std.fmt.parseFloat(f64, expr)) |f| {
+            return .{ .real = f };
+        } else |_| {}
+
+        // Try parsing as quoted string: 'text'
+        if (expr.len >= 2 and expr[0] == '\'' and expr[expr.len - 1] == '\'') {
+            const inner = expr[1 .. expr.len - 1];
+            const text = allocator.dupe(u8, inner) catch return .null_value;
+            return .{ .text = text };
+        }
+
+        // Try parsing as boolean
+        if (std.ascii.eqlIgnoreCase(expr, "true")) {
+            return .{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(expr, "false")) {
+            return .{ .boolean = false };
+        }
+
+        // Try parsing as NULL
+        if (std.ascii.eqlIgnoreCase(expr, "null")) {
+            return .null_value;
+        }
+
+        // Default to null if unrecognized
+        return .null_value;
+    }
+
     fn buildTableScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, table_info: *catalog_mod.TableInfo) EngineError!RowIterator {
         defer table_info.deinit(self.allocator);
 
@@ -3117,8 +3163,19 @@ pub const Database = struct {
             }
         }
 
+        // Build default values for columns (needed when old rows have fewer columns than schema)
+        const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return EngineError.OutOfMemory;
+        for (col_defaults) |*d| d.* = .null_value;
+        for (table_info.columns, 0..) |col, i| {
+            if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
+                defer self.allocator.free(expr_sql);
+                col_defaults[i] = evalDefaultExprToValue(expr_sql, self.allocator);
+            }
+        }
+
         const scan_op = self.allocator.create(ScanOp) catch return EngineError.OutOfMemory;
         scan_op.* = ScanOp.init(self.allocator, self.pool, table_info.data_root_page_id, col_names);
+        scan_op.col_defaults = col_defaults;
         // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
         scan_op.mvcc_ctx = try self.getMvccContextWithOps(ops);
         scan_op.initCursor(); // Must be called after heap placement
@@ -3182,6 +3239,16 @@ pub const Database = struct {
             }
         }
 
+        // Build default values for columns (needed when old rows have fewer columns than schema)
+        const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return null;
+        for (col_defaults) |*d| d.* = .null_value;
+        for (table_info.columns, 0..) |col, i| {
+            if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
+                defer self.allocator.free(expr_sql);
+                col_defaults[i] = evalDefaultExprToValue(expr_sql, self.allocator);
+            }
+        }
+
         const idx_op = self.allocator.create(IndexScanOp) catch return null;
         idx_op.* = IndexScanOp.init(
             self.allocator,
@@ -3192,6 +3259,7 @@ pub const Database = struct {
             idx_key,
             col_names,
         );
+        idx_op.col_defaults = col_defaults;
         // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
         idx_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
         ops.index_scan = idx_op;
@@ -4976,6 +5044,62 @@ pub const Database = struct {
         return .{ .message = "OK" };
     }
 
+    fn executeAlterTable(self: *Database, stmt: *const ast_mod.AlterTableStmt) !void {
+        switch (stmt.action) {
+            .add_column => |ac| {
+                // Convert ColumnDef to ColumnInfo
+                var flags = catalog_mod.constraintFlagsFromAst(ac.col_def.constraints);
+
+                // Handle SERIAL/BIGSERIAL
+                if (ac.col_def.data_type) |dt| {
+                    if (dt == .type_serial or dt == .type_bigserial) {
+                        flags.autoincrement = true;
+                        flags.not_null = true;
+                    }
+                }
+
+                // Dupe the column name to persist it beyond the arena lifetime
+                const col_name = try self.allocator.dupe(u8, ac.col_def.name);
+                defer self.allocator.free(col_name);
+
+                const col_info = catalog_mod.ColumnInfo{
+                    .name = col_name,
+                    .column_type = catalog_mod.columnTypeFromAst(ac.col_def.data_type),
+                    .flags = flags,
+                };
+
+                // Extract default expression if present
+                var default_expr: ?[]const u8 = null;
+                for (ac.col_def.constraints) |constraint| {
+                    switch (constraint) {
+                        .default => |default_val| {
+                            // Store the expression source text (if available)
+                            // For now, we'll extract it from the parsed expression
+                            if (default_val.* == .integer_literal) {
+                                default_expr = try std.fmt.allocPrint(self.allocator, "{d}", .{default_val.integer_literal});
+                            } else if (default_val.* == .string_literal) {
+                                default_expr = try std.fmt.allocPrint(self.allocator, "'{s}'", .{default_val.string_literal});
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                defer if (default_expr) |de| self.allocator.free(de);
+
+                try self.catalog.addColumn(stmt.table_name, col_info, default_expr);
+            },
+            .drop_column => |dc| {
+                try self.catalog.dropColumn(stmt.table_name, dc.name, dc.if_exists);
+            },
+            .rename_column => |rc| {
+                try self.catalog.renameColumn(stmt.table_name, rc.old_name, rc.new_name);
+            },
+            .rename_to => |new_name| {
+                try self.catalog.renameTable(stmt.table_name, new_name);
+            },
+        }
+    }
+
     /// Execute a full SQL statement including DDL. This is the primary entry point.
     pub fn execSQL(self: *Database, sql: []const u8) EngineError!QueryResult {
         // Reset schema arena from previous exec call
@@ -5412,6 +5536,33 @@ pub const Database = struct {
                 // TODO: Implement RLS enable/disable state in catalog
                 // For now, just acknowledge the command
                 _ = rls;
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "ALTER TABLE" };
+            },
+            .alter_table => |at| {
+                // Check if write operations are allowed (standby mode check)
+                self.standby_coordinator.checkWriteAllowed() catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    arena = null; // Prevent errdefer from double-freeing
+                    return switch (err) {
+                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        else => EngineError.ExecutionError,
+                    };
+                };
+
+                self.executeAlterTable(&at) catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    return switch (err) {
+                        error.TableNotFound => EngineError.TableNotFound,
+                        error.ColumnNotFound => EngineError.ColumnNotFound,
+                        error.OutOfMemory => EngineError.OutOfMemory,
+                        else => EngineError.StorageError,
+                    };
+                };
                 arena.?.deinit();
                 self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
@@ -26937,5 +27088,203 @@ test "GENERATED ALWAYS AS — expression persists across db reopen" {
         try testing.expectEqual(e[1], row.values[2].integer); // tax
     }
     try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "ALTER TABLE ADD COLUMN — new column appears with NULL for existing rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_add_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with id and name
+    _ = try db.exec("CREATE TABLE t (id INTEGER, name TEXT)");
+
+    // Insert 2 rows
+    _ = try db.exec("INSERT INTO t VALUES (1, 'alice')");
+    _ = try db.exec("INSERT INTO t VALUES (2, 'bob')");
+
+    // ALTER TABLE to add new column
+    _ = try db.exec("ALTER TABLE t ADD COLUMN score INTEGER");
+
+    // SELECT all columns — existing rows should have NULL for score
+    var r = try db.exec("SELECT id, name, score FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    var row_a = (try r.rows.?.next()).?;
+    defer row_a.deinit();
+    try testing.expectEqual(@as(i64, 1), row_a.values[0].integer);
+    try testing.expectEqualSlices(u8, "alice", row_a.values[1].text);
+    try testing.expect(row_a.values[2] == .null_value);
+
+    var row_b = (try r.rows.?.next()).?;
+    defer row_b.deinit();
+    try testing.expectEqual(@as(i64, 2), row_b.values[0].integer);
+    try testing.expectEqualSlices(u8, "bob", row_b.values[1].text);
+    try testing.expect(row_b.values[2] == .null_value);
+
+    // Verify no more rows
+    try testing.expect((try r.rows.?.next()) == null);
+
+    // Insert new row with score
+    _ = try db.exec("INSERT INTO t (id, name, score) VALUES (3, 'charlie', 100)");
+
+    var r2 = try db.exec("SELECT id, name, score FROM t WHERE id = 3");
+    defer r2.close(testing.allocator);
+    var row_c = (try r2.rows.?.next()).?;
+    defer row_c.deinit();
+    try testing.expectEqual(@as(i64, 3), row_c.values[0].integer);
+    try testing.expectEqualSlices(u8, "charlie", row_c.values[1].text);
+    try testing.expectEqual(@as(i64, 100), row_c.values[2].integer);
+}
+
+test "ALTER TABLE ADD COLUMN with DEFAULT — existing rows get default value" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_add_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with id and val
+    _ = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+
+    // Insert 2 rows
+    _ = try db.exec("INSERT INTO t VALUES (1, 'x')");
+    _ = try db.exec("INSERT INTO t VALUES (2, 'y')");
+
+    // ALTER TABLE to add new column with DEFAULT
+    _ = try db.exec("ALTER TABLE t ADD COLUMN active INTEGER DEFAULT 1");
+
+    // SELECT active FROM first row — should be 1
+    var r = try db.exec("SELECT active FROM t WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+
+    // SELECT active FROM second row — should also be 1
+    var r2 = try db.exec("SELECT active FROM t WHERE id = 2");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 1), row2.values[0].integer);
+
+    // Insert new row without providing active — should default to 1
+    _ = try db.exec("INSERT INTO t (id, val) VALUES (3, 'z')");
+
+    var r3 = try db.exec("SELECT active FROM t WHERE id = 3");
+    defer r3.close(testing.allocator);
+    var row3 = (try r3.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 1), row3.values[0].integer);
+}
+
+test "ALTER TABLE RENAME COLUMN — new name accessible, old name fails" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_rename_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with id and old_name
+    _ = try db.exec("CREATE TABLE t (id INTEGER, old_name TEXT)");
+
+    // Insert 1 row
+    _ = try db.exec("INSERT INTO t VALUES (1, 'test_value')");
+
+    // ALTER TABLE to rename column
+    _ = try db.exec("ALTER TABLE t RENAME COLUMN old_name TO new_name");
+
+    // SELECT new_name — should work
+    var r = try db.exec("SELECT new_name FROM t WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualSlices(u8, "test_value", row.values[0].text);
+
+    // SELECT old_name — should fail (column not found)
+    const result = db.execSQL("SELECT old_name FROM t WHERE id = 1");
+    try testing.expectError(error.ColumnNotFound, result);
+}
+
+test "ALTER TABLE RENAME TO — table accessible under new name" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_rename_table.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table named 'orig'
+    _ = try db.exec("CREATE TABLE orig (id INTEGER, val TEXT)");
+
+    // Insert 1 row
+    _ = try db.exec("INSERT INTO orig VALUES (1, 'data')");
+
+    // ALTER TABLE to rename table
+    _ = try db.exec("ALTER TABLE orig RENAME TO renamed");
+
+    // SELECT FROM renamed — should work
+    var r = try db.exec("SELECT id, val FROM renamed WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    try testing.expectEqualSlices(u8, "data", row.values[1].text);
+
+    // SELECT FROM orig — should fail (table not found)
+    const result = db.execSQL("SELECT * FROM orig");
+    try testing.expectError(error.TableNotFound, result);
+}
+
+test "ALTER TABLE DROP COLUMN — column no longer accessible" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_drop_col.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with id, name, and extra
+    _ = try db.exec("CREATE TABLE t (id INTEGER, name TEXT, extra INTEGER)");
+
+    // Insert 1 row with all values
+    _ = try db.exec("INSERT INTO t VALUES (1, 'alice', 999)");
+
+    // ALTER TABLE to drop extra column
+    _ = try db.exec("ALTER TABLE t DROP COLUMN extra");
+
+    // SELECT id, name — should work
+    var r = try db.exec("SELECT id, name FROM t WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    try testing.expectEqualSlices(u8, "alice", row.values[1].text);
+
+    // SELECT extra — should fail (column not found)
+    const result = db.execSQL("SELECT extra FROM t WHERE id = 1");
+    try testing.expectError(error.ColumnNotFound, result);
+}
+
+test "ALTER TABLE DROP COLUMN IF EXISTS — no error on missing column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_drop_if_exists.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with just id
+    _ = try db.exec("CREATE TABLE t (id INTEGER)");
+
+    // ALTER TABLE to drop non-existent column (IF EXISTS) — should NOT error
+    _ = try db.exec("ALTER TABLE t DROP COLUMN IF EXISTS nonexistent");
+
+    // Table should still work normally
+    _ = try db.exec("INSERT INTO t VALUES (1)");
+
+    var r = try db.exec("SELECT id FROM t WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
 }
 
