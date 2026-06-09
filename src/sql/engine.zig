@@ -26865,3 +26865,77 @@ test "CHECK: multiple CHECK constraints on one column" {
     try testing.expectError(error.CheckConstraintViolation, result2);
 }
 
+test "SERIAL: counter persists across db reopen" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_serial_persist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // First session: insert 3 rows
+    {
+        var db = try createTestDb(testing.allocator, path);
+        _ = try db.exec("CREATE TABLE t (id SERIAL PRIMARY KEY, val TEXT)");
+        _ = try db.exec("INSERT INTO t (val) VALUES ('a')");
+        _ = try db.exec("INSERT INTO t (val) VALUES ('b')");
+        _ = try db.exec("INSERT INTO t (val) VALUES ('c')");
+        db.close();
+    }
+
+    // Second session: counter should continue from 4
+    var db = try Database.open(testing.allocator, path, .{});
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("INSERT INTO t (val) VALUES ('d')");
+    _ = try db.exec("INSERT INTO t (val) VALUES ('e')");
+
+    var r = try db.exec("SELECT id FROM t ORDER BY id");
+    defer r.close(testing.allocator);
+
+    const expected_ids = [_]i64{ 1, 2, 3, 4, 5 };
+    for (expected_ids) |expected| {
+        var row = (try r.rows.?.next()).?;
+        defer row.deinit();
+        try testing.expectEqual(expected, row.values[0].integer);
+    }
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "GENERATED ALWAYS AS — expression persists across db reopen" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_generated_persist.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // First session: create table and insert
+    {
+        var db = try createTestDb(testing.allocator, path);
+        _ = try db.exec(
+            \\CREATE TABLE products (
+            \\    id INTEGER PRIMARY KEY,
+            \\    price INTEGER NOT NULL,
+            \\    tax INTEGER GENERATED ALWAYS AS (price / 10) STORED
+            \\)
+        );
+        _ = try db.exec("INSERT INTO products (id, price) VALUES (1, 100)");
+        _ = try db.exec("INSERT INTO products (id, price) VALUES (2, 200)");
+        db.close();
+    }
+
+    // Second session: generated column must still compute correctly
+    var db = try Database.open(testing.allocator, path, .{});
+    defer cleanupTestDb(&db, path);
+
+    // Insert a new row — generated expression must be evaluated from catalog
+    _ = try db.exec("INSERT INTO products (id, price) VALUES (3, 300)");
+
+    var r = try db.exec("SELECT id, price, tax FROM products ORDER BY id");
+    defer r.close(testing.allocator);
+
+    const expected = [_][2]i64{ .{ 100, 10 }, .{ 200, 20 }, .{ 300, 30 } };
+    for (expected) |e| {
+        var row = (try r.rows.?.next()).?;
+        defer row.deinit();
+        try testing.expectEqual(e[0], row.values[1].integer); // price
+        try testing.expectEqual(e[1], row.values[2].integer); // tax
+    }
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
