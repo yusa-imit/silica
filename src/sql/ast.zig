@@ -232,6 +232,13 @@ pub const Expr = union(enum) {
         expr: *const Expr,
         negated: bool = false,
     },
+    /// expr IS [NOT] DISTINCT FROM expr
+    is_distinct_from: struct {
+        left: *const Expr,
+        right: *const Expr,
+        /// true = IS NOT DISTINCT FROM, false = IS DISTINCT FROM
+        negated: bool = false,
+    },
     /// expr LIKE pattern
     like: struct {
         expr: *const Expr,

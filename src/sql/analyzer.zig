@@ -1094,6 +1094,10 @@ pub const Analyzer = struct {
             .is_null => |isn| {
                 self.analyzeExpr(isn.expr);
             },
+            .is_distinct_from => |idf| {
+                self.analyzeExpr(idf.left);
+                self.analyzeExpr(idf.right);
+            },
             .like => |l| {
                 self.analyzeExpr(l.expr);
                 self.analyzeExpr(l.pattern);

@@ -3294,6 +3294,17 @@ pub const Parser = struct {
     fn parseIsExpr(self: *Parser, left: *const ast.Expr) Error!*const ast.Expr {
         _ = try self.expect(.kw_is);
         const negated = self.match(.kw_not);
+        // IS [NOT] DISTINCT FROM expr
+        if (self.match(.kw_distinct)) {
+            _ = try self.expect(.kw_from);
+            const right = try self.parseExpr(0);
+            return self.arena.create(ast.Expr, .{ .is_distinct_from = .{
+                .left = left,
+                .right = right,
+                .negated = negated,
+            } }) catch return error.OutOfMemory;
+        }
+        // IS [NOT] NULL (original behavior)
         _ = try self.expect(.kw_null);
         return self.arena.create(ast.Expr, .{ .is_null = .{
             .expr = left,

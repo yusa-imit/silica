@@ -1825,6 +1825,25 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             return .{ .boolean = if (is.negated) !result else result };
         },
 
+        .is_distinct_from => |idf| {
+            const lv = try evalExpr(allocator, idf.left, row, catalog);
+            defer lv.free(allocator);
+            const rv = try evalExpr(allocator, idf.right, row, catalog);
+            defer rv.free(allocator);
+            const l_null = lv == .null_value;
+            const r_null = rv == .null_value;
+            const result: bool = if (l_null and r_null)
+                // both NULL: they ARE NOT distinct (same), so IS DISTINCT FROM = false
+                false
+            else if (l_null or r_null)
+                // one NULL: they ARE distinct, so IS DISTINCT FROM = true
+                true
+            else
+                // both non-NULL: distinct if not equal
+                !lv.eql(rv);
+            return .{ .boolean = if (idf.negated) !result else result };
+        },
+
         .between => |bt| {
             const val = try evalExpr(allocator, bt.expr, row, catalog);
             defer val.free(allocator);

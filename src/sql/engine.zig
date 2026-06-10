@@ -28061,3 +28061,351 @@ test "CREATE TABLE IF NOT EXISTS AS SELECT — succeeds then no-op on second att
     }
 }
 
+// ── IS DISTINCT FROM / IS NOT DISTINCT FROM tests ──────────────────────────
+
+test "IS DISTINCT FROM: NULL IS DISTINCT FROM NULL returns FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT NULL IS DISTINCT FROM NULL as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS DISTINCT FROM: NULL IS DISTINCT FROM 1 returns TRUE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT NULL IS DISTINCT FROM 1 as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS DISTINCT FROM: 1 IS DISTINCT FROM 1 returns FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT 1 IS DISTINCT FROM 1 as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS DISTINCT FROM: 1 IS DISTINCT FROM 2 returns TRUE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT 1 IS DISTINCT FROM 2 as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS DISTINCT FROM: string literals" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // 'hello' IS DISTINCT FROM 'hello' → FALSE
+    var result1 = try db.execSQL("SELECT 'hello' IS DISTINCT FROM 'hello' as result");
+    defer result1.close(allocator);
+    if (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // 'hello' IS DISTINCT FROM 'world' → TRUE
+    var result2 = try db.execSQL("SELECT 'hello' IS DISTINCT FROM 'world' as result");
+    defer result2.close(allocator);
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: NULL IS NOT DISTINCT FROM NULL returns TRUE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT NULL IS NOT DISTINCT FROM NULL as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: NULL IS NOT DISTINCT FROM 1 returns FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT NULL IS NOT DISTINCT FROM 1 as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: 1 IS NOT DISTINCT FROM 1 returns TRUE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT 1 IS NOT DISTINCT FROM 1 as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: 1 IS NOT DISTINCT FROM 2 returns FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT 1 IS NOT DISTINCT FROM 2 as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: string literals" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // 'foo' IS NOT DISTINCT FROM 'foo' → TRUE
+    var result1 = try db.execSQL("SELECT 'foo' IS NOT DISTINCT FROM 'foo' as result");
+    defer result1.close(allocator);
+    if (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // 'foo' IS NOT DISTINCT FROM 'bar' → FALSE
+    var result2 = try db.execSQL("SELECT 'foo' IS NOT DISTINCT FROM 'bar' as result");
+    defer result2.close(allocator);
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS DISTINCT FROM: with table columns" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    std.fs.cwd().deleteFile(":memory:") catch {};
+    defer std.fs.cwd().deleteFile(":memory:") catch {};
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE test_vals (id INTEGER, val INTEGER)");
+    _ = try db.execSQL("INSERT INTO test_vals VALUES (1, NULL), (2, 42), (3, 42)");
+
+    // Retrieve row with NULL value and check IS DISTINCT FROM
+    var result1 = try db.execSQL("SELECT id, val IS DISTINCT FROM NULL as is_distinct FROM test_vals WHERE id = 1");
+    defer result1.close(allocator);
+    if (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const is_distinct = row.getColumn("is_distinct").?;
+        // NULL IS DISTINCT FROM NULL → FALSE
+        try testing.expectEqual(false, is_distinct.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Retrieve row with non-NULL value and check IS DISTINCT FROM
+    var result2 = try db.execSQL("SELECT id, val IS DISTINCT FROM NULL as is_distinct FROM test_vals WHERE id = 2");
+    defer result2.close(allocator);
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const is_distinct = row.getColumn("is_distinct").?;
+        // 42 IS DISTINCT FROM NULL → TRUE
+        try testing.expectEqual(true, is_distinct.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: in WHERE clause" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    std.fs.cwd().deleteFile(":memory:") catch {};
+    defer std.fs.cwd().deleteFile(":memory:") catch {};
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE nullable_vals (id INTEGER, note TEXT)");
+    _ = try db.execSQL("INSERT INTO nullable_vals VALUES (1, NULL), (2, 'data'), (3, NULL), (4, 'more')");
+
+    // SELECT rows WHERE note IS NOT DISTINCT FROM NULL (i.e., note IS NULL)
+    var result = try db.execSQL("SELECT id FROM nullable_vals WHERE note IS NOT DISTINCT FROM NULL ORDER BY id");
+    defer result.close(allocator);
+
+    var count: usize = 0;
+    var ids: [4]i64 = undefined;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        ids[count] = row.getColumn("id").?.integer;
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(i64, 1), ids[0]);
+    try testing.expectEqual(@as(i64, 3), ids[1]);
+}
+
+test "IS DISTINCT FROM: in WHERE clause with non-NULL values" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    std.fs.cwd().deleteFile(":memory:") catch {};
+    defer std.fs.cwd().deleteFile(":memory:") catch {};
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE cmp_vals (id INTEGER, val INTEGER)");
+    _ = try db.execSQL("INSERT INTO cmp_vals VALUES (1, 10), (2, 20), (3, 10), (4, 30)");
+
+    // SELECT rows WHERE val IS DISTINCT FROM 10 (i.e., val != 10)
+    var result = try db.execSQL("SELECT id FROM cmp_vals WHERE val IS DISTINCT FROM 10 ORDER BY id");
+    defer result.close(allocator);
+
+    var count: usize = 0;
+    var ids: [4]i64 = undefined;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        ids[count] = row.getColumn("id").?.integer;
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(i64, 2), ids[0]);
+    try testing.expectEqual(@as(i64, 4), ids[1]);
+}
+
+test "IS DISTINCT FROM: with both operands NULL via expressions" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Both operands evaluate to NULL
+    var result = try db.execSQL("SELECT CAST(NULL AS INTEGER) IS DISTINCT FROM CAST(NULL AS INTEGER) as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS NOT DISTINCT FROM: with both operands NULL via expressions" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Both operands evaluate to NULL
+    var result = try db.execSQL("SELECT CAST(NULL AS INTEGER) IS NOT DISTINCT FROM CAST(NULL AS INTEGER) as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
