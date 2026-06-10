@@ -1784,6 +1784,25 @@ pub const EvalError = error{
     UnsupportedExpression,
 };
 
+/// Vtable for executing subqueries at the engine level.
+/// Stored as opaque pointer in Catalog to avoid circular imports.
+pub const SubqueryEvaluator = struct {
+    ptr: *anyopaque,
+    eval_scalar_fn: *const fn (ptr: *anyopaque, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!Value,
+    eval_exists_fn: *const fn (ptr: *anyopaque, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!bool,
+    eval_contains_fn: *const fn (ptr: *anyopaque, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row, needle: Value) EvalError!bool,
+
+    pub fn evalScalar(self: *const SubqueryEvaluator, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!Value {
+        return self.eval_scalar_fn(self.ptr, allocator, stmt, row);
+    }
+    pub fn evalExists(self: *const SubqueryEvaluator, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!bool {
+        return self.eval_exists_fn(self.ptr, allocator, stmt, row);
+    }
+    pub fn evalContains(self: *const SubqueryEvaluator, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row, needle: Value) EvalError!bool {
+        return self.eval_contains_fn(self.ptr, allocator, stmt, row, needle);
+    }
+};
+
 /// Evaluate an AST expression against a row, producing a Value.
 pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, catalog: ?*Catalog) EvalError!Value {
     switch (expr.*) {
@@ -1858,6 +1877,14 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
         .in_list => |il| {
             const val = try evalExpr(allocator, il.expr, row, catalog);
             defer val.free(allocator);
+            // Special case: IN (subquery) — single-item list containing a subquery
+            if (il.list.len == 1 and il.list[0].* == .subquery) {
+                const cat = catalog orelse return .{ .boolean = il.negated };
+                const ev_ptr = cat.subquery_evaluator orelse return .{ .boolean = il.negated };
+                const evaluator: *SubqueryEvaluator = @ptrCast(@alignCast(ev_ptr));
+                const found = evaluator.evalContains(allocator, il.list[0].subquery, row, val) catch return .{ .boolean = il.negated };
+                return .{ .boolean = if (il.negated) !found else found };
+            }
             var found = false;
             for (il.list) |item| {
                 const item_val = try evalExpr(allocator, item, row, catalog);
@@ -1997,10 +2024,23 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             return Value{ .boolean = true };
         },
 
+        .subquery => |sel| {
+            const cat = catalog orelse return EvalError.UnsupportedExpression;
+            const ev_ptr = cat.subquery_evaluator orelse return EvalError.UnsupportedExpression;
+            const evaluator: *SubqueryEvaluator = @ptrCast(@alignCast(ev_ptr));
+            return evaluator.evalScalar(allocator, sel, row) catch return EvalError.UnsupportedExpression;
+        },
+
+        .exists => |ex| {
+            const cat = catalog orelse return EvalError.UnsupportedExpression;
+            const ev_ptr = cat.subquery_evaluator orelse return EvalError.UnsupportedExpression;
+            const evaluator: *SubqueryEvaluator = @ptrCast(@alignCast(ev_ptr));
+            const found = evaluator.evalExists(allocator, ex.subquery, row) catch return EvalError.UnsupportedExpression;
+            return .{ .boolean = if (ex.negated) !found else found };
+        },
+
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
-        .subquery,
-        .exists,
         .bind_parameter,
         .ordered_set_agg,
         => return EvalError.UnsupportedExpression,
@@ -7574,6 +7614,8 @@ pub const FilterOp = struct {
     allocator: Allocator,
     input: RowIterator,
     predicate: *const ast.Expr,
+    catalog: ?*Catalog = null,
+    outer_row: ?*const Row = null,
 
     pub fn init(allocator: Allocator, input: RowIterator, predicate: *const ast.Expr) FilterOp {
         return .{
@@ -7586,7 +7628,16 @@ pub const FilterOp = struct {
     pub fn next(self: *FilterOp) ExecError!?Row {
         while (true) {
             var row = try self.input.next() orelse return null;
-            const val = evalExpr(self.allocator, self.predicate, &row, null) catch |err| {
+            // For correlated subqueries, combine inner row with outer row so both are visible
+            var eval_row: Row = if (self.outer_row) |outer|
+                combineRows(self.allocator, &row, outer) catch {
+                    row.deinit();
+                    return ExecError.OutOfMemory;
+                }
+            else
+                row;
+            const val = evalExpr(self.allocator, self.predicate, &eval_row, self.catalog) catch |err| {
+                if (self.outer_row != null) eval_row.deinit();
                 row.deinit();
                 return switch (err) {
                     error.OutOfMemory => ExecError.OutOfMemory,
@@ -7596,6 +7647,7 @@ pub const FilterOp = struct {
                     error.UnsupportedExpression => ExecError.UnsupportedExpression,
                 };
             };
+            if (self.outer_row != null) eval_row.deinit();
             defer val.free(self.allocator);
 
             if (val.isTruthy()) return row;

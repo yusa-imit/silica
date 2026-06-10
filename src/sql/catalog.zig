@@ -588,6 +588,8 @@ pub const Catalog = struct {
     allocator: Allocator,
     tree: BTree,
     pool: *BufferPool,
+    /// Opaque pointer to SubqueryEvaluator vtable (set by Database after construction).
+    subquery_evaluator: ?*anyopaque = null,
 
     /// Initialize the schema catalog. If `is_new_db` is true, the schema
     /// root page will be initialized as an empty B+Tree leaf.

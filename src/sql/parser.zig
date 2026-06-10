@@ -3345,6 +3345,20 @@ pub const Parser = struct {
         _ = try self.expect(.kw_in);
         _ = try self.expect(.left_paren);
 
+        // IN (SELECT ...) — subquery in list
+        if (self.check(.kw_select)) {
+            const sel = try self.parseSelect();
+            _ = try self.expect(.right_paren);
+            const sel_ptr = try self.arena.create(ast.SelectStmt, sel);
+            const subq_expr = try self.arena.create(ast.Expr, .{ .subquery = sel_ptr });
+            const list_slice = try self.arena.dupeSlice(*const ast.Expr, &[_]*const ast.Expr{subq_expr});
+            return self.arena.create(ast.Expr, .{ .in_list = .{
+                .expr = expr,
+                .list = list_slice,
+                .negated = negated,
+            } }) catch return error.OutOfMemory;
+        }
+
         var list = std.ArrayListUnmanaged(*const ast.Expr){};
         if (!self.check(.right_paren)) {
             while (true) {

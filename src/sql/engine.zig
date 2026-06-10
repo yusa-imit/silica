@@ -651,6 +651,8 @@ const OperatorChain = struct {
     locks_scan: ?*executor_mod.LocksScanOp = null,
     /// LATERAL join operator.
     lateral_join: ?*LateralJoinOp = null,
+    /// Outer row for correlated subquery evaluation (non-owning reference).
+    outer_row: ?*const executor_mod.Row = null,
 
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
@@ -962,6 +964,8 @@ pub const Database = struct {
     standby_coordinator: StandbyCoordinator,
     /// Runtime configuration manager for session parameters.
     config: ConfigManager,
+    /// Vtable for subquery evaluation (self-referential, initialized lazily on first exec).
+    subquery_evaluator_vtable: executor_mod.SubqueryEvaluator = undefined,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
 
@@ -3444,6 +3448,8 @@ pub const Database = struct {
         const input = try self.buildIterator(filter.input, ops);
         const filter_op = self.allocator.create(FilterOp) catch return EngineError.OutOfMemory;
         filter_op.* = FilterOp.init(self.allocator, input, filter.predicate);
+        filter_op.catalog = &self.catalog;
+        filter_op.outer_row = ops.outer_row;
         ops.filter = filter_op;
         return filter_op.iterator();
     }
@@ -5343,10 +5349,134 @@ pub const Database = struct {
         }
     }
 
+    fn ensureSubqueryEvaluator(self: *Database) void {
+        if (self.catalog.subquery_evaluator != null) return;
+        self.subquery_evaluator_vtable = .{
+            .ptr = self,
+            .eval_scalar_fn = &Database.sqEvalScalar,
+            .eval_exists_fn = &Database.sqEvalExists,
+            .eval_contains_fn = &Database.sqEvalContains,
+        };
+        self.catalog.subquery_evaluator = &self.subquery_evaluator_vtable;
+    }
+
+    fn sqEvalScalar(ptr: *anyopaque, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) executor_mod.EvalError!executor_mod.Value {
+        const self: *Database = @ptrCast(@alignCast(ptr));
+        return self.runSubqueryScalar(allocator, stmt, outer_row) catch return executor_mod.EvalError.UnsupportedExpression;
+    }
+
+    fn sqEvalExists(ptr: *anyopaque, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) executor_mod.EvalError!bool {
+        const self: *Database = @ptrCast(@alignCast(ptr));
+        return self.runSubqueryExists(allocator, stmt, outer_row) catch return executor_mod.EvalError.UnsupportedExpression;
+    }
+
+    fn sqEvalContains(ptr: *anyopaque, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row, needle: executor_mod.Value) executor_mod.EvalError!bool {
+        const self: *Database = @ptrCast(@alignCast(ptr));
+        return self.runSubqueryContains(allocator, stmt, outer_row, needle) catch return executor_mod.EvalError.UnsupportedExpression;
+    }
+
+    fn runSubqueryScalar(self: *Database, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) !executor_mod.Value {
+        var sq_arena = try self.allocator.create(AstArena);
+        sq_arena.* = AstArena.init(self.allocator);
+        defer {
+            sq_arena.deinit();
+            self.allocator.destroy(sq_arena);
+        }
+
+        const provider = self.schemaProvider();
+        var plnr = Planner.init(sq_arena, provider);
+        const plan = try plnr.plan(.{ .select = stmt.* });
+        var opt = Optimizer.init(sq_arena);
+        const optimized = try opt.optimize(plan);
+
+        var ops = try self.allocator.create(OperatorChain);
+        ops.* = .{};
+        ops.outer_row = outer_row;
+        defer ops.deinit(self.allocator); // deinit() calls destroy(self) internally
+
+        var iter = try self.buildIterator(optimized.root, ops);
+        defer iter.close();
+
+        if (try iter.next()) |*result_row| {
+            var rr = result_row.*;
+            defer rr.deinit();
+            if (rr.values.len > 0) {
+                return rr.values[0].dupe(allocator);
+            }
+        }
+        return .null_value;
+    }
+
+    fn runSubqueryExists(self: *Database, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) !bool {
+        _ = allocator;
+        var sq_arena = try self.allocator.create(AstArena);
+        sq_arena.* = AstArena.init(self.allocator);
+        defer {
+            sq_arena.deinit();
+            self.allocator.destroy(sq_arena);
+        }
+
+        const provider = self.schemaProvider();
+        var plnr = Planner.init(sq_arena, provider);
+        const plan = try plnr.plan(.{ .select = stmt.* });
+        var opt = Optimizer.init(sq_arena);
+        const optimized = try opt.optimize(plan);
+
+        var ops = try self.allocator.create(OperatorChain);
+        ops.* = .{};
+        ops.outer_row = outer_row;
+        defer ops.deinit(self.allocator); // deinit() calls destroy(self) internally
+
+        var iter = try self.buildIterator(optimized.root, ops);
+        defer iter.close();
+
+        if (try iter.next()) |*rr| {
+            @constCast(rr).deinit();
+            return true;
+        }
+        return false;
+    }
+
+    fn runSubqueryContains(self: *Database, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row, needle: executor_mod.Value) !bool {
+        var sq_arena = try self.allocator.create(AstArena);
+        sq_arena.* = AstArena.init(self.allocator);
+        defer {
+            sq_arena.deinit();
+            self.allocator.destroy(sq_arena);
+        }
+
+        const provider = self.schemaProvider();
+        var plnr = Planner.init(sq_arena, provider);
+        const plan = try plnr.plan(.{ .select = stmt.* });
+        var opt = Optimizer.init(sq_arena);
+        const optimized = try opt.optimize(plan);
+
+        var ops = try self.allocator.create(OperatorChain);
+        ops.* = .{};
+        ops.outer_row = outer_row;
+        defer ops.deinit(self.allocator); // deinit() calls destroy(self) internally
+
+        var iter = try self.buildIterator(optimized.root, ops);
+        defer iter.close();
+
+        while (try iter.next()) |*rr_ptr| {
+            var rr = rr_ptr.*;
+            defer rr.deinit();
+            if (rr.values.len > 0) {
+                const col_val = rr.values[0].dupe(allocator) catch break;
+                defer col_val.free(allocator);
+                if (needle.eql(col_val)) return true;
+            }
+        }
+        return false;
+    }
+
     /// Execute a full SQL statement including DDL. This is the primary entry point.
     pub fn execSQL(self: *Database, sql: []const u8) EngineError!QueryResult {
         // Reset schema arena from previous exec call
         _ = self.schema_arena.reset(.retain_capacity);
+        // Set up subquery evaluation (lazy self-referential init)
+        self.ensureSubqueryEvaluator();
 
         // Parse first to determine statement type
         var arena: ?*AstArena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
@@ -28404,6 +28534,226 @@ test "IS NOT DISTINCT FROM: with both operands NULL via expressions" {
         defer row.deinit();
         const val = row.getColumn("result").?;
         try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "scalar subquery: SELECT (SELECT 42) AS val" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT (SELECT 42) AS val");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("val").?;
+        try testing.expectEqual(@as(i64, 42), val.integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "scalar subquery: returns first column of first row from table" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE scores (s INTEGER)");
+    _ = try db.execSQL("INSERT INTO scores VALUES (10), (20), (30)");
+
+    var result = try db.execSQL("SELECT (SELECT MAX(s) FROM scores) AS m");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("m").?;
+        try testing.expectEqual(@as(i64, 30), val.integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "scalar subquery: returns NULL when subquery has no rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE empty_tbl (id INTEGER)");
+
+    var result = try db.execSQL("SELECT (SELECT id FROM empty_tbl) AS val");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("val").?;
+        try testing.expect(val == .null_value);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "EXISTS: returns TRUE when subquery has rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE t (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO t VALUES (1)");
+
+    var result = try db.execSQL("SELECT EXISTS(SELECT 1 FROM t WHERE id = 1) AS result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "EXISTS: returns FALSE when subquery has no matching rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE t (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO t VALUES (1)");
+
+    var result = try db.execSQL("SELECT EXISTS(SELECT 1 FROM t WHERE id = 999) AS result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(false, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "NOT EXISTS: returns TRUE when subquery empty" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE t (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO t VALUES (1)");
+
+    var result = try db.execSQL("SELECT NOT EXISTS(SELECT 1 FROM t WHERE id = 999) AS result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(true, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "WHERE EXISTS: filters rows based on subquery" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT)");
+    _ = try db.execSQL("CREATE TABLE orders (user_id INTEGER, amount INTEGER)");
+    _ = try db.execSQL("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
+    _ = try db.execSQL("INSERT INTO orders VALUES (1, 100), (1, 200), (2, 150)");
+
+    // Select users who have orders
+    var result = try db.execSQL("SELECT id FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id) ORDER BY id");
+    defer result.close(allocator);
+
+    var count: usize = 0;
+    var ids: [3]i64 = undefined;
+    while (try result.rows.?.next()) |*row_ptr| : (count += 1) {
+        var row = row_ptr.*;
+        defer row.deinit();
+        ids[count] = row.getColumn("id").?.integer;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(i64, 1), ids[0]);
+    try testing.expectEqual(@as(i64, 2), ids[1]);
+}
+
+test "IN (subquery): matches rows from subquery result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE t2 (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO t1 VALUES (1), (2), (3), (4), (5)");
+    _ = try db.execSQL("INSERT INTO t2 VALUES (2), (4)");
+
+    var result = try db.execSQL("SELECT id FROM t1 WHERE id IN (SELECT id FROM t2) ORDER BY id");
+    defer result.close(allocator);
+
+    var count: usize = 0;
+    var ids: [5]i64 = undefined;
+    while (try result.rows.?.next()) |*row_ptr| : (count += 1) {
+        var row = row_ptr.*;
+        defer row.deinit();
+        ids[count] = row.getColumn("id").?.integer;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(i64, 2), ids[0]);
+    try testing.expectEqual(@as(i64, 4), ids[1]);
+}
+
+test "NOT IN (subquery): excludes rows from subquery result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
+    _ = try db.execSQL("CREATE TABLE t2 (id INTEGER)");
+    _ = try db.execSQL("INSERT INTO t1 VALUES (1), (2), (3), (4), (5)");
+    _ = try db.execSQL("INSERT INTO t2 VALUES (2), (4)");
+
+    var result = try db.execSQL("SELECT id FROM t1 WHERE id NOT IN (SELECT id FROM t2) ORDER BY id");
+    defer result.close(allocator);
+
+    var count: usize = 0;
+    var ids: [5]i64 = undefined;
+    while (try result.rows.?.next()) |*row_ptr| : (count += 1) {
+        var row = row_ptr.*;
+        defer row.deinit();
+        ids[count] = row.getColumn("id").?.integer;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+    try testing.expectEqual(@as(i64, 1), ids[0]);
+    try testing.expectEqual(@as(i64, 3), ids[1]);
+    try testing.expectEqual(@as(i64, 5), ids[2]);
+}
+
+test "scalar subquery in arithmetic expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT (SELECT 10) + 5 AS result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expectEqual(@as(i64, 15), val.integer);
     } else {
         return error.TestUnexpectedResult;
     }
