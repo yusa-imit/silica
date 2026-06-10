@@ -995,6 +995,25 @@ pub const Parser = struct {
         }
 
         const name = try self.expectIdentifier();
+
+        // Check for CREATE TABLE AS SELECT
+        if (self.match(.kw_as)) {
+            // This is CREATE TABLE ... AS SELECT
+            const select_stmt = try self.parseSelect();
+            const select_ptr = try a.create(ast.SelectStmt);
+            select_ptr.* = select_stmt;
+            return .{
+                .if_not_exists = if_not_exists,
+                .name = name,
+                .columns = &.{},
+                .table_constraints = &.{},
+                .without_rowid = false,
+                .strict = false,
+                .as_select = select_ptr,
+            };
+        }
+
+        // Regular CREATE TABLE with column definitions
         _ = try self.expect(.left_paren);
 
         var columns = std.ArrayListUnmanaged(ast.ColumnDef){};
@@ -1033,6 +1052,7 @@ pub const Parser = struct {
             .table_constraints = table_constraints.toOwnedSlice(a) catch return error.OutOfMemory,
             .without_rowid = without_rowid,
             .strict = strict,
+            .as_select = null,
         };
     }
 

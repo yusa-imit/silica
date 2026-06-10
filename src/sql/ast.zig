@@ -493,6 +493,8 @@ pub const CreateTableStmt = struct {
     table_constraints: []const TableConstraint = &.{},
     without_rowid: bool = false,
     strict: bool = false,
+    /// Optional SELECT statement for CREATE TABLE AS SELECT
+    as_select: ?*const SelectStmt = null,
 };
 
 /// DROP TABLE statement.

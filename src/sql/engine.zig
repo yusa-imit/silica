@@ -1772,6 +1772,249 @@ pub const Database = struct {
         return self.execSQL(sql);
     }
 
+    /// Execute CREATE TABLE AS SELECT (CTAS)
+    fn executeCTAS(self: *Database, arena: *AstArena, ctas: *const ast_mod.CreateTableStmt) EngineError!QueryResult {
+        defer {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
+
+        const select_stmt = ctas.as_select orelse return EngineError.ExecutionError;
+
+        // Check if table already exists
+        if (!ctas.if_not_exists) {
+            if (self.catalog.getTable(ctas.name)) |table| {
+                table.deinit(self.allocator);
+                return EngineError.TableAlreadyExists;
+            } else |_| {
+                // Expected: table does not exist
+            }
+        } else {
+            if (self.catalog.getTable(ctas.name)) |table| {
+                table.deinit(self.allocator);
+                // Table exists and IF NOT EXISTS was specified, so this is a no-op
+                return .{ .message = "CREATE TABLE" };
+            } else |_| {
+                // Expected: table does not exist
+            }
+        }
+
+        // Analyze the SELECT statement
+        const provider = self.schemaProvider();
+        var an = Analyzer.init(self.allocator, provider);
+        defer an.deinit();
+        an.analyze(.{ .select = select_stmt.* });
+        if (an.hasErrors()) return EngineError.AnalysisError;
+
+        // Plan the SELECT query
+        var plnr = Planner.init(arena, provider);
+        const plan = plnr.plan(.{ .select = select_stmt.* }) catch return EngineError.PlanError;
+
+        var opt = Optimizer.init(arena);
+        const optimized = opt.optimize(plan) catch return EngineError.PlanError;
+
+        // Execute the SELECT query to get result rows
+        const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+        ops.* = .{};
+        defer ops.deinit(self.allocator);
+
+        const iter = self.buildIterator(optimized.root, ops) catch return EngineError.ExecutionError;
+
+        // Collect all rows from the SELECT and capture column names
+        var result_rows = std.ArrayListUnmanaged([]Value){};
+        defer {
+            for (result_rows.items) |row_vals| {
+                for (row_vals) |v| v.free(self.allocator);
+                self.allocator.free(row_vals);
+            }
+            result_rows.deinit(self.allocator);
+        }
+
+        var captured_names: ?[][]const u8 = null;
+        defer if (captured_names) |names| {
+            for (names) |n| self.allocator.free(n);
+            self.allocator.free(names);
+        };
+
+        while ((iter.next() catch |err| {
+            return switch (err) {
+                error.ColumnNotFound => EngineError.ExecutionError,
+                error.ExecutionError => EngineError.ExecutionError,
+                error.OutOfMemory => EngineError.OutOfMemory,
+                error.StorageError => EngineError.StorageError,
+                error.TableNotFound => EngineError.TableNotFound,
+                error.DivisionByZero => EngineError.ExecutionError,
+                error.TypeError => EngineError.ExecutionError,
+                error.UnsupportedExpression => EngineError.ExecutionError,
+                error.InvalidRowData => EngineError.ExecutionError,
+            };
+        })) |row| {
+            var mutable_row = row;
+
+            // Capture column names from the first row (dupe the strings)
+            if (captured_names == null and mutable_row.columns.len > 0) {
+                const names = self.allocator.alloc([]const u8, mutable_row.columns.len) catch return EngineError.OutOfMemory;
+                var duped: usize = 0;
+                errdefer {
+                    for (names[0..duped]) |n| self.allocator.free(n);
+                    self.allocator.free(names);
+                }
+                for (mutable_row.columns) |cn| {
+                    names[duped] = self.allocator.dupe(u8, cn) catch return EngineError.OutOfMemory;
+                    duped += 1;
+                }
+                captured_names = names;
+            }
+
+            const vals = self.allocator.alloc(Value, mutable_row.values.len) catch return EngineError.OutOfMemory;
+            for (mutable_row.values, 0..) |v, i| {
+                vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+            }
+            mutable_row.deinit();
+            result_rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+        }
+
+        iter.close();
+
+        // Build column schema for the new table.
+        // Prefer captured_names (from actual execution) for correctness with SELECT *.
+        // Fall back to AST-based names when result was empty (named columns only).
+        var columns = std.ArrayListUnmanaged(ast_mod.ColumnDef){};
+        defer {
+            for (columns.items) |col| self.allocator.free(col.name);
+            columns.deinit(self.allocator);
+        }
+
+        if (captured_names) |names| {
+            // Use names from executed result (correct for SELECT *, aliases, etc.)
+            for (names, 0..) |name, col_idx| {
+                var inferred_type = ast_mod.DataType.type_text;
+                if (result_rows.items.len > 0 and col_idx < result_rows.items[0].len) {
+                    inferred_type = switch (result_rows.items[0][col_idx]) {
+                        .null_value => ast_mod.DataType.type_text,
+                        .integer => ast_mod.DataType.type_integer,
+                        .real => ast_mod.DataType.type_real,
+                        .text => ast_mod.DataType.type_text,
+                        .blob => ast_mod.DataType.type_blob,
+                        .boolean => ast_mod.DataType.type_boolean,
+                        .array => ast_mod.DataType.type_array,
+                        .date => ast_mod.DataType.type_date,
+                        .time => ast_mod.DataType.type_time,
+                        .timestamp => ast_mod.DataType.type_timestamp,
+                        .uuid => ast_mod.DataType.type_uuid,
+                        .interval => ast_mod.DataType.type_interval,
+                        .numeric => ast_mod.DataType.type_numeric,
+                        .tsvector => ast_mod.DataType.type_tsvector,
+                        .tsquery => ast_mod.DataType.type_tsquery,
+                    };
+                }
+                columns.append(self.allocator, .{
+                    .name = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory,
+                    .data_type = inferred_type,
+                    .constraints = &.{},
+                    .generated_expr_sql = null,
+                }) catch return EngineError.OutOfMemory;
+            }
+        } else {
+            // Empty result set: fall back to AST-based column names (named columns only).
+            // SELECT * with empty result is not supported for schema inference.
+            for (select_stmt.columns, 0..) |result_col, col_idx| {
+                const col_name: []const u8 = switch (result_col) {
+                    .expr => |e| if (e.alias) |alias|
+                        self.allocator.dupe(u8, alias) catch return EngineError.OutOfMemory
+                    else switch (e.value.*) {
+                        .column_ref => |cr| self.allocator.dupe(u8, cr.name) catch return EngineError.OutOfMemory,
+                        else => self.allocator.dupe(u8, "?column?") catch return EngineError.OutOfMemory,
+                    },
+                    .all_columns, .table_all_columns => self.allocator.dupe(u8, "?column?") catch return EngineError.OutOfMemory,
+                };
+                errdefer self.allocator.free(col_name);
+                _ = col_idx;
+                columns.append(self.allocator, .{
+                    .name = col_name,
+                    .data_type = ast_mod.DataType.type_text,
+                    .constraints = &.{},
+                    .generated_expr_sql = null,
+                }) catch return EngineError.OutOfMemory;
+            }
+        }
+
+        // Create the table with inferred schema
+        const new_ctas = ast_mod.CreateTableStmt{
+            .if_not_exists = ctas.if_not_exists,
+            .name = ctas.name,
+            .columns = columns.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory,
+            .table_constraints = &.{},
+            .without_rowid = false,
+            .strict = false,
+            .as_select = null,
+        };
+
+        self.catalog.createTableFromAst(&new_ctas) catch |err| {
+            for (new_ctas.columns) |col| {
+                self.allocator.free(col.name);
+            }
+            self.allocator.free(new_ctas.columns);
+            return switch (err) {
+                error.TableAlreadyExists => EngineError.TableAlreadyExists,
+                error.OutOfMemory => EngineError.OutOfMemory,
+                else => EngineError.StorageError,
+            };
+        };
+
+        // Free the inferred columns (catalog made copies)
+        for (new_ctas.columns) |col| {
+            self.allocator.free(col.name);
+        }
+        self.allocator.free(new_ctas.columns);
+
+        // Insert all collected rows into the new table
+        if (result_rows.items.len > 0) {
+            var table_info = self.catalog.getTable(ctas.name) catch return EngineError.TableNotFound;
+            defer table_info.deinit(self.allocator);
+
+            var tx_created = false;
+            if (self.current_txn == null) {
+                try self.beginTransaction(.read_committed);
+                tx_created = true;
+            }
+            defer {
+                if (tx_created) {
+                    self.commitTransaction() catch {};
+                }
+            }
+
+            try self.ssiRegisterWrite(table_info.data_root_page_id);
+
+            var tree = BTree.init(self.pool, table_info.data_root_page_id);
+            var next_key: u64 = self.findNextRowKey(&tree) catch return EngineError.StorageError;
+
+            for (result_rows.items) |row_vals| {
+                // Serialize the row
+                const row_data = serializeRow(self.allocator, row_vals) catch return EngineError.OutOfMemory;
+                defer self.allocator.free(row_data);
+
+                // Generate key: 8-byte big-endian u64
+                var key_buf: [8]u8 = undefined;
+                std.mem.writeInt(u64, &key_buf, next_key, .big);
+                const key = self.allocator.dupe(u8, &key_buf) catch return EngineError.OutOfMemory;
+                defer self.allocator.free(key);
+
+                // Insert into the tree
+                tree.insert(key, row_data) catch return EngineError.StorageError;
+                next_key += 1;
+            }
+
+            // Update root page ID in case of B+Tree split
+            if (tree.root_page_id != table_info.data_root_page_id) {
+                self.updateTableRootPage(ctas.name, tree.root_page_id) catch return EngineError.StorageError;
+            }
+        }
+
+        self.commitWal() catch {};
+        return .{ .message = "CREATE TABLE" };
+    }
+
     fn executePlan(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
         // Determine if this is a DML statement that needs implicit transaction in auto-commit mode
         const is_dml = switch (plan.plan_type) {
@@ -5135,6 +5378,21 @@ pub const Database = struct {
                         else => EngineError.ExecutionError,
                     };
                 };
+
+                // Handle CREATE TABLE AS SELECT
+                if (ct.as_select != null) {
+                    const result = self.executeCTAS(arena.?, &ct) catch |err| {
+                        arena = null; // executeCTAS already freed the arena; prevent errdefer double-free
+                        return switch (err) {
+                            EngineError.TableAlreadyExists => EngineError.TableAlreadyExists,
+                            EngineError.OutOfMemory => EngineError.OutOfMemory,
+                            EngineError.TableNotFound => EngineError.TableNotFound,
+                            else => EngineError.ExecutionError,
+                        };
+                    };
+                    arena = null; // executeCTAS already freed the arena
+                    return result;
+                }
 
                 self.catalog.createTableFromAst(&ct) catch |err| {
                     return switch (err) {
@@ -27571,6 +27829,233 @@ test "percentile_disc WITH GROUP BY — aggregate per group" {
             .real => |r| try testing.expectEqual(@as(i64, 50), @as(i64, @intFromFloat(r))),
             else => return error.TestUnexpectedResult,
         }
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "CREATE TABLE AS SELECT — basic copy of all columns from source table" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_ctas_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create source table with test data
+    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT, salary INTEGER)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice', 50000), (2, 'Bob', 60000), (3, 'Charlie', 70000)");
+    r2.close(testing.allocator);
+
+    // Create new table from SELECT
+    var r3 = try db.execSQL("CREATE TABLE emp_copy AS SELECT * FROM emp");
+    r3.close(testing.allocator);
+
+    // Verify new table has same schema and data
+    var result = try db.execSQL("SELECT id, name, salary FROM emp_copy ORDER BY id");
+    defer result.close(testing.allocator);
+
+    const expected = [_][2]i64{ .{ 1, 50000 }, .{ 2, 60000 }, .{ 3, 70000 } };
+    var idx: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| : (idx += 1) {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(expected[idx][0], row.values[0].integer); // id
+        try testing.expectEqualStrings(if (idx == 0) "Alice" else if (idx == 1) "Bob" else "Charlie", row.values[1].text); // Verify we iterate
+        try testing.expectEqual(expected[idx][1], row.values[2].integer); // salary
+    }
+    try testing.expectEqual(@as(usize, 3), idx);
+}
+
+test "CREATE TABLE AS SELECT — with column selection and WHERE filter" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_ctas_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create source table
+    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT, age INTEGER, salary INTEGER)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice', 25, 50000), (2, 'Bob', 35, 60000), (3, 'Charlie', 28, 70000), (4, 'Dave', 45, 80000)");
+    r2.close(testing.allocator);
+
+    // Create new table selecting only some columns and filtering
+    var r3 = try db.execSQL("CREATE TABLE young_emp AS SELECT id, name, salary FROM emp WHERE age < 35");
+    r3.close(testing.allocator);
+
+    // Verify new table has filtered data
+    var result = try db.execSQL("SELECT id, name, salary FROM young_emp ORDER BY id");
+    defer result.close(testing.allocator);
+
+    // Should have Alice (25) and Charlie (28), not Bob (35) or Dave (45)
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer); // Alice id
+        try testing.expectEqualStrings("Alice", row.values[1].text);
+        try testing.expectEqual(@as(i64, 50000), row.values[2].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 3), row.values[0].integer); // Charlie id
+        try testing.expectEqualStrings("Charlie", row.values[1].text);
+        try testing.expectEqual(@as(i64, 70000), row.values[2].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try result.rows.?.next()) == null); // No more rows
+}
+
+test "CREATE TABLE AS SELECT — with computed/aliased column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_ctas_computed.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create source table
+    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT, salary INTEGER)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Charlie', 300)");
+    r2.close(testing.allocator);
+
+    // Create new table with computed column (salary * 2 as doubled)
+    var r3 = try db.execSQL("CREATE TABLE emp_bonus AS SELECT id, name, salary, salary * 2 AS doubled FROM emp");
+    r3.close(testing.allocator);
+
+    // Verify new table has computed column
+    var result = try db.execSQL("SELECT id, name, salary, doubled FROM emp_bonus ORDER BY id");
+    defer result.close(testing.allocator);
+
+    const expected = [_][3]i64{ .{ 1, 100, 200 }, .{ 2, 200, 400 }, .{ 3, 300, 600 } };
+    var idx: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| : (idx += 1) {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(expected[idx][0], row.values[0].integer); // id
+        try testing.expectEqual(expected[idx][1], row.values[2].integer); // salary
+        try testing.expectEqual(expected[idx][2], row.values[3].integer); // doubled
+    }
+    try testing.expectEqual(@as(usize, 3), idx);
+}
+
+test "CREATE TABLE AS SELECT — with aggregation and GROUP BY" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_ctas_agg.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create source table
+    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, dept TEXT, salary INTEGER)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Sales', 50000), (2, 'Sales', 60000), (3, 'IT', 70000), (4, 'IT', 80000), (5, 'HR', 55000)");
+    r2.close(testing.allocator);
+
+    // Create summary table with aggregates
+    var r3 = try db.execSQL("CREATE TABLE dept_stats AS SELECT dept, COUNT(*) AS cnt, AVG(salary) AS avg_sal FROM emp GROUP BY dept");
+    r3.close(testing.allocator);
+
+    // Verify summary table
+    var result = try db.execSQL("SELECT dept, cnt, avg_sal FROM dept_stats ORDER BY dept");
+    defer result.close(testing.allocator);
+
+    // Should have 3 departments with correct counts and averages
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("HR", row.values[0].text);
+        try testing.expectEqual(@as(i64, 1), row.values[1].integer); // count
+        // avg_sal could be integer or real
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("IT", row.values[0].text);
+        try testing.expectEqual(@as(i64, 2), row.values[1].integer); // count
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqualStrings("Sales", row.values[0].text);
+        try testing.expectEqual(@as(i64, 2), row.values[1].integer); // count
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    try testing.expect((try result.rows.?.next()) == null); // No more rows
+}
+
+test "CREATE TABLE AS SELECT — fails if target table already exists" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_ctas_exists.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create source and target table
+    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE TABLE emp_copy (id INTEGER, name TEXT)");
+    r2.close(testing.allocator);
+
+    // Try to create table that already exists
+    const result = db.execSQL("CREATE TABLE emp_copy AS SELECT * FROM emp");
+    try testing.expectError(EngineError.TableAlreadyExists, result);
+}
+
+test "CREATE TABLE IF NOT EXISTS AS SELECT — succeeds then no-op on second attempt" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_ctas_if_not_exists.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create source table with data
+    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT)");
+    r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice'), (2, 'Bob')");
+    r2.close(testing.allocator);
+
+    // First CTAS IF NOT EXISTS should succeed
+    var r3 = try db.execSQL("CREATE TABLE IF NOT EXISTS emp_copy AS SELECT * FROM emp");
+    r3.close(testing.allocator);
+
+    // Verify first creation worked
+    var result1 = try db.execSQL("SELECT id, name FROM emp_copy ORDER BY id");
+    defer result1.close(testing.allocator);
+    if (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("Alice", row.values[1].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Second CTAS IF NOT EXISTS should be no-op (not error)
+    var r4 = try db.execSQL("CREATE TABLE IF NOT EXISTS emp_copy AS SELECT id, name FROM emp WHERE id = 1");
+    r4.close(testing.allocator);
+
+    // Verify data is unchanged (still has 2 rows, not 1)
+    var result2 = try db.execSQL("SELECT COUNT(*) FROM emp_copy");
+    defer result2.close(testing.allocator);
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer); // Should still have 2 rows
     } else {
         return error.TestUnexpectedResult;
     }
