@@ -346,7 +346,7 @@ pub const Wal = struct {
         try pager.flushHeader();
 
         // fsync main DB
-        pager.file.sync() catch {};
+        pager.sync() catch {};
 
         // Reset WAL — truncate and write fresh header
         try file.setEndPos(0);

@@ -1025,7 +1025,7 @@ fn showDbInfo(db: *Database, db_path: []const u8, stdout: anytype, stderr: anyty
     const pager = db.pager;
 
     // Get file size
-    const file_size = pager.file.getEndPos() catch |err| {
+    const file_size = pager.getEndPos() catch |err| {
         const msg = switch (err) {
             else => "Failed to get file size.",
         };

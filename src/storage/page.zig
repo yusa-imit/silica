@@ -141,8 +141,14 @@ pub const DatabaseHeader = struct {
 
 // ── Pager ──────────────────────────────────────────────────────────────
 
-pub const Pager = struct {
+/// Backing store for pager — either file-based or in-memory.
+pub const Backing = union(enum) {
     file: std.fs.File,
+    memory: std.ArrayList(u8),
+};
+
+pub const Pager = struct {
+    backing: Backing,
     page_size: u32,
     page_count: u32,
     freelist_head: u32,
@@ -154,8 +160,14 @@ pub const Pager = struct {
     };
 
     /// Open or create a database file. If the file is empty, initialize it.
+    /// Special case: path == ":memory:" creates an in-memory database.
     pub fn init(allocator: std.mem.Allocator, path: []const u8, opts: InitOptions) !Pager {
         if (!isValidPageSize(opts.page_size)) return error.InvalidPageSize;
+
+        // Check if this is an in-memory database
+        if (std.mem.eql(u8, path, ":memory:")) {
+            return try initMemory(allocator, opts);
+        }
 
         const file = try std.fs.cwd().createFile(path, .{
             .read = true,
@@ -168,7 +180,7 @@ pub const Pager = struct {
         if (stat.size == 0) {
             // New database — write header page
             var self = Pager{
-                .file = file,
+                .backing = .{ .file = file },
                 .page_size = opts.page_size,
                 .page_count = 2, // page 0 (header) + page 1 (schema root)
                 .freelist_head = 0,
@@ -190,7 +202,7 @@ pub const Pager = struct {
         const db_header = try DatabaseHeader.deserialize(&header_buf);
 
         return Pager{
-            .file = file,
+            .backing = .{ .file = file },
             .page_size = db_header.page_size,
             .page_count = db_header.page_count,
             .freelist_head = db_header.freelist_head,
@@ -199,8 +211,31 @@ pub const Pager = struct {
         };
     }
 
+    /// Initialize an in-memory database.
+    fn initMemory(allocator: std.mem.Allocator, opts: InitOptions) !Pager {
+        var data = try std.ArrayList(u8).initCapacity(allocator, opts.page_size * 2);
+        try data.resize(allocator, opts.page_size * 2);
+        @memset(data.items, 0);
+
+        var self = Pager{
+            .backing = .{ .memory = data },
+            .page_size = opts.page_size,
+            .page_count = 2,
+            .freelist_head = 0,
+            .schema_version = 0,
+            .allocator = allocator,
+        };
+
+        try self.writeHeaderPage();
+        try self.writeEmptyPage(SCHEMA_ROOT_PAGE_ID, .leaf);
+        return self;
+    }
+
     pub fn deinit(self: *Pager) void {
-        self.file.close();
+        switch (self.backing) {
+            .file => |f| f.close(),
+            .memory => |*m| m.deinit(self.allocator),
+        }
     }
 
     /// Allocate a page buffer. Caller must free with `freePage`.
@@ -219,8 +254,19 @@ pub const Pager = struct {
         if (buf.len < self.page_size) return error.BufferTooSmall;
 
         const offset: u64 = @as(u64, page_id) * @as(u64, self.page_size);
-        const bytes_read = try self.file.preadAll(buf[0..self.page_size], offset);
-        if (bytes_read < self.page_size) return error.IncompleteRead;
+
+        switch (self.backing) {
+            .file => |f| {
+                const bytes_read = try f.preadAll(buf[0..self.page_size], offset);
+                if (bytes_read < self.page_size) return error.IncompleteRead;
+            },
+            .memory => |*m| {
+                const start = @as(usize, @intCast(offset));
+                const end = start + self.page_size;
+                if (end > m.items.len) return error.IncompleteRead;
+                @memcpy(buf[0..self.page_size], m.items[start..end]);
+            },
+        }
 
         // Skip checksum verification for header page (it uses DB header format)
         if (page_id == HEADER_PAGE_ID) return;
@@ -248,7 +294,20 @@ pub const Pager = struct {
         }
 
         const offset: u64 = @as(u64, page_id) * @as(u64, self.page_size);
-        try self.file.pwriteAll(buf[0..self.page_size], offset);
+
+        switch (self.backing) {
+            .file => |f| try f.pwriteAll(buf[0..self.page_size], offset),
+            .memory => |*m| {
+                const start = @as(usize, @intCast(offset));
+                const end = start + self.page_size;
+                if (end > m.items.len) {
+                    const old_len = m.items.len;
+                    try m.resize(self.allocator, end);
+                    @memset(m.items[old_len..end], 0);
+                }
+                @memcpy(m.items[start..end], buf[0..self.page_size]);
+            },
+        }
     }
 
     /// Allocate a new page, reusing a freelist page if available.
@@ -278,7 +337,20 @@ pub const Pager = struct {
         defer self.freePageBuf(buf);
         @memset(buf, 0);
         const offset: u64 = @as(u64, page_id) * @as(u64, self.page_size);
-        try self.file.pwriteAll(buf[0..self.page_size], offset);
+
+        switch (self.backing) {
+            .file => |f| try f.pwriteAll(buf[0..self.page_size], offset),
+            .memory => |*m| {
+                const start = @as(usize, @intCast(offset));
+                const end = start + self.page_size;
+                if (end > m.items.len) {
+                    const old_len = m.items.len;
+                    try m.resize(self.allocator, end);
+                    @memset(m.items[old_len..end], 0);
+                }
+                @memcpy(m.items[start..end], buf[0..self.page_size]);
+            },
+        }
 
         return page_id;
     }
@@ -321,6 +393,22 @@ pub const Pager = struct {
         try self.writeHeaderPage();
     }
 
+    /// Synchronize the pager's backing store to disk (no-op for memory backing).
+    pub fn sync(self: *Pager) !void {
+        switch (self.backing) {
+            .file => |f| try f.sync(),
+            .memory => {}, // No-op for in-memory backing
+        }
+    }
+
+    /// Get the end position (size) of the backing store.
+    pub fn getEndPos(self: *Pager) !u64 {
+        switch (self.backing) {
+            .file => |f| return f.getEndPos(),
+            .memory => |*m| return @as(u64, m.items.len),
+        }
+    }
+
     fn writeHeaderPage(self: *Pager) !void {
         const buf = try self.allocPageBuf();
         defer self.freePageBuf(buf);
@@ -334,7 +422,17 @@ pub const Pager = struct {
         };
         db_header.serialize(buf[0..DB_HEADER_SIZE]);
 
-        try self.file.pwriteAll(buf[0..self.page_size], 0);
+        switch (self.backing) {
+            .file => |f| try f.pwriteAll(buf[0..self.page_size], 0),
+            .memory => |*m| {
+                if (self.page_size > m.items.len) {
+                    const old_len = m.items.len;
+                    try m.resize(self.allocator, self.page_size);
+                    @memset(m.items[old_len..], 0);
+                }
+                @memcpy(m.items[0..self.page_size], buf[0..self.page_size]);
+            },
+        }
     }
 
     fn updateHeaderPage(self: *Pager) !void {
@@ -565,7 +663,15 @@ test "Pager detects checksum corruption" {
 
     // Corrupt a byte in the content area directly on disk
     const offset: u64 = @as(u64, page_id) * @as(u64, pager.page_size) + PAGE_HEADER_SIZE + 10;
-    try pager.file.pwriteAll(&[_]u8{0xFF}, offset);
+    switch (pager.backing) {
+        .file => |f| try f.pwriteAll(&[_]u8{0xFF}, offset),
+        .memory => |*m| {
+            const start = @as(usize, @intCast(offset));
+            if (start < m.items.len) {
+                m.items[start] = 0xFF;
+            }
+        },
+    }
 
     // Read should detect corruption
     const read_buf = try pager.allocPageBuf();
