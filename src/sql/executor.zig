@@ -7400,8 +7400,13 @@ pub const ScanOp = struct {
                         self.allocator.free(entry.?.value);
                         continue;
                     }
-                    // Row is visible — try to acquire lock if locking is active
-                    if (!try self.acquireLock(entry.?.key)) {
+                    // Row is visible — try to acquire lock if locking is active.
+                    // Explicit catch ensures entry.value is freed on LockConflict (NOWAIT).
+                    const locked = self.acquireLock(entry.?.key) catch |err| {
+                        self.allocator.free(entry.?.value);
+                        return err;
+                    };
+                    if (!locked) {
                         self.allocator.free(entry.?.value);
                         continue; // SKIP LOCKED
                     }
