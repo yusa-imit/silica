@@ -46,6 +46,8 @@ const AggFunc = planner_mod.AggFunc;
 const TupleHeader = mvcc_mod.TupleHeader;
 const Snapshot = mvcc_mod.Snapshot;
 const LockManager = lock_mod.LockManager;
+const LockMode = lock_mod.LockMode;
+const LockTarget = lock_mod.LockTarget;
 
 // ── Date/Time Constants & Utilities ───────────────────────────────────────
 
@@ -7210,6 +7212,7 @@ pub const ExecError = error{
     InvalidRowData,
     StorageError,
     ExecutionError,
+    LockConflict,
 };
 
 /// The Volcano-model iterator interface.
@@ -7329,6 +7332,13 @@ pub const ScanOp = struct {
     opened: bool = false,
     /// MVCC context for visibility filtering (null = all rows visible).
     mvcc_ctx: ?MvccContext = null,
+    /// Row-level lock acquisition for SELECT FOR UPDATE/SHARE (null = no locking).
+    lock_manager: ?*LockManager = null,
+    lock_xid: u32 = 0,
+    lock_table_page_id: u32 = 0,
+    lock_mode: ?LockMode = null,
+    /// When true, skip rows that cannot be locked (SKIP LOCKED behavior).
+    lock_skip_locked: bool = false,
 
     /// Create a ScanOp. After placement on the heap, call initCursor() to
     /// set up the cursor with a stable pointer to the tree.
@@ -7351,6 +7361,27 @@ pub const ScanOp = struct {
         self.opened = true;
     }
 
+    /// Attempt to acquire a row lock for SELECT FOR UPDATE/SHARE.
+    /// Returns false if lock conflicts and skip_locked is set (caller should skip row).
+    /// Returns ExecError.LockConflict if lock conflicts and skip_locked is not set.
+    fn acquireLock(self: *ScanOp, row_key_bytes: []const u8) ExecError!bool {
+        const lm = self.lock_manager orelse return true;
+        const mode = self.lock_mode orelse return true;
+        const row_key: u64 = if (row_key_bytes.len >= 8)
+            std.mem.readInt(u64, row_key_bytes[0..8], .big)
+        else
+            0;
+        const target = LockTarget{
+            .table_page_id = self.lock_table_page_id,
+            .row_key = row_key,
+        };
+        lm.acquireRowLock(self.lock_xid, target, mode) catch {
+            if (self.lock_skip_locked) return false;
+            return ExecError.LockConflict;
+        };
+        return true;
+    }
+
     pub fn next(self: *ScanOp) ExecError!?Row {
         if (!self.opened) try self.open();
 
@@ -7368,6 +7399,11 @@ pub const ScanOp = struct {
                         // Tuple not visible — skip it
                         self.allocator.free(entry.?.value);
                         continue;
+                    }
+                    // Row is visible — try to acquire lock if locking is active
+                    if (!try self.acquireLock(entry.?.key)) {
+                        self.allocator.free(entry.?.value);
+                        continue; // SKIP LOCKED
                     }
                     // Visible: deserialize column data (skip MVCC header)
                     const values = deserializeRow(self.allocator, entry.?.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
@@ -7401,6 +7437,11 @@ pub const ScanOp = struct {
             }
 
             defer self.allocator.free(entry.?.value);
+
+            // Row is visible (no MVCC filtering) — try to acquire lock if locking is active
+            if (!try self.acquireLock(entry.?.key)) {
+                continue; // SKIP LOCKED (value freed by defer above)
+            }
 
             // No MVCC context or legacy row: return all rows.
             // Still need to detect MVCC format and skip the overhead for committed rows.

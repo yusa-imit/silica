@@ -309,6 +309,8 @@ pub const LogicalPlan = struct {
     ctes: []const CtePlan = &.{},
     /// RETURNING clause for DML statements (INSERT/UPDATE/DELETE)
     returning: ?[]const ast.ResultColumn = null,
+    /// Row-level locking clauses (FOR UPDATE / FOR SHARE ...)
+    locking_clauses: []const ast.LockingClause = &.{},
 };
 
 pub const PlanType = enum {
@@ -480,6 +482,7 @@ pub const Planner = struct {
                 cte_plans.toOwnedSlice(alloc) catch return error.OutOfMemory
             else
                 &.{},
+            .locking_clauses = stmt.locking_clauses,
         };
     }
 

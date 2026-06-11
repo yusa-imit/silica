@@ -450,6 +450,31 @@ pub const SelectStmt = struct {
     window_defs: []const WindowDef = &.{},
     /// Optional set operation chaining (UNION, INTERSECT, EXCEPT)
     set_operation: ?*const SetOperation = null,
+    /// Row-level locking clauses (FOR UPDATE / FOR SHARE ...)
+    locking_clauses: []const LockingClause = &.{},
+};
+
+/// Strength of a row-level locking clause.
+pub const LockStrength = enum {
+    update,        // FOR UPDATE — exclusive lock
+    no_key_update, // FOR NO KEY UPDATE — exclusive lock (weaker, not used in key)
+    share,         // FOR SHARE — shared lock
+    key_share,     // FOR KEY SHARE — shared lock (weaker)
+};
+
+/// Wait policy when a row lock cannot be immediately acquired.
+pub const LockWaitPolicy = enum {
+    wait,         // Default: block until lock acquired (single-threaded: same as nowait)
+    nowait,       // Return error if lock cannot be acquired immediately
+    skip_locked,  // Skip rows that are currently locked
+};
+
+/// A single FOR UPDATE/SHARE locking clause.
+pub const LockingClause = struct {
+    strength: LockStrength,
+    /// Optional table list: FOR UPDATE OF t1, t2 — empty means all tables
+    tables: []const []const u8 = &.{},
+    wait_policy: LockWaitPolicy = .wait,
 };
 
 pub const OnConflictAction = enum { nothing, update };

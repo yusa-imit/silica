@@ -346,6 +346,54 @@ pub const Parser = struct {
             }
         }
 
+        // Parse FOR UPDATE / FOR SHARE / FOR NO KEY UPDATE / FOR KEY SHARE
+        var locking_clauses = std.ArrayListUnmanaged(ast.LockingClause){};
+        while (self.peek().type == .kw_for) {
+            _ = self.advance(); // consume FOR
+            const strength: ast.LockStrength = blk: {
+                if (self.match(.kw_update)) break :blk .update;
+                if (self.match(.kw_share)) break :blk .share;
+                if (self.peek().type == .kw_no) {
+                    _ = self.advance(); // consume NO
+                    _ = try self.expect(.kw_key);
+                    _ = try self.expect(.kw_update);
+                    break :blk .no_key_update;
+                }
+                if (self.peek().type == .kw_key) {
+                    _ = self.advance(); // consume KEY
+                    if (self.match(.kw_share)) break :blk .key_share;
+                    return error.ParseFailed;
+                }
+                return error.ParseFailed;
+            };
+            // Optional OF table1, table2, ...
+            var tables = std.ArrayListUnmanaged([]const u8){};
+            if (self.match(.kw_of)) {
+                while (true) {
+                    const tbl = try self.expectIdentifier();
+                    tables.append(a, tbl) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+            }
+            // Optional NOWAIT or SKIP LOCKED
+            const wait_policy: ast.LockWaitPolicy = blk: {
+                if (self.match(.kw_nowait)) break :blk .nowait;
+                if (self.match(.kw_skip)) {
+                    _ = try self.expect(.kw_locked);
+                    break :blk .skip_locked;
+                }
+                break :blk .wait;
+            };
+            locking_clauses.append(a, .{
+                .strength = strength,
+                .tables = tables.toOwnedSlice(a) catch return error.OutOfMemory,
+                .wait_policy = wait_policy,
+            }) catch return error.OutOfMemory;
+        }
+        if (locking_clauses.items.len > 0) {
+            stmt.locking_clauses = locking_clauses.toOwnedSlice(a) catch return error.OutOfMemory;
+        }
+
         return stmt;
     }
 

@@ -290,6 +290,12 @@ pub const TokenType = enum {
     kw_tsvector,
     kw_tsquery,
 
+    // Keywords — Row locking
+    kw_share,
+    kw_nowait,
+    kw_skip,
+    kw_locked,
+
     // Keywords — Values
     kw_true,
     kw_false,
@@ -999,6 +1005,10 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "tsvector", .kw_tsvector },
         .{ "tsquery", .kw_tsquery },
         // Values
+        .{ "share", .kw_share },
+        .{ "nowait", .kw_nowait },
+        .{ "skip", .kw_skip },
+        .{ "locked", .kw_locked },
         .{ "true", .kw_true },
         .{ "false", .kw_false },
     });
