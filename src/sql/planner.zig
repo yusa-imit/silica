@@ -355,6 +355,7 @@ pub const Planner = struct {
             .insert => |s| self.planInsert(s),
             .update => |s| self.planUpdate(s),
             .delete => |s| self.planDelete(s),
+            .merge => self.planTransaction(), // handled early in engine
             .create_table => |s| self.planCreateTable(s),
             .drop_table => |s| self.planDropTable(s),
             .create_index => |s| self.planCreateIndex(s),

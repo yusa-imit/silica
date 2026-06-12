@@ -969,6 +969,12 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
                 writer.writeAll("Parsed: RESET ALL\n") catch {};
             }
         },
+        .merge => |m| {
+            writer.print("Parsed: MERGE INTO {s} USING {s} ({d} WHEN clause(s))\n", .{ m.target, (switch (m.source) {
+                .table => |t| t.name,
+                .subquery => "subquery",
+            }), m.when_clauses.len }) catch {};
+        },
     }
 }
 

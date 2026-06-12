@@ -197,6 +197,7 @@ pub const Parser = struct {
             .kw_insert => .{ .insert = try self.parseInsert() },
             .kw_update => .{ .update = try self.parseUpdate() },
             .kw_delete => .{ .delete = try self.parseDelete() },
+            .kw_merge => .{ .merge = try self.parseMerge() },
             .kw_create => try self.parseCreate(),
             .kw_drop => try self.parseDrop(),
             .kw_alter => try self.parseAlter(),
@@ -968,6 +969,155 @@ pub const Parser = struct {
         }
 
         return .{ .table = table, .where = where, .returning = returning };
+    }
+
+    // ── MERGE ─────────────────────────────────────────────────────
+
+    fn parseMerge(self: *Parser) Error!ast.MergeStmt {
+        const a = self.alloc();
+
+        // MERGE INTO target_table [AS alias]
+        _ = try self.expect(.kw_merge);
+        _ = try self.expect(.kw_into);
+        const target = try self.expectIdentifier();
+
+        var target_alias: ?[]const u8 = null;
+        if (self.match(.kw_as)) {
+            target_alias = try self.expectIdentifier();
+        } else if (self.peek().type == .identifier) {
+            const t = self.advance();
+            target_alias = self.lexeme(t);
+        }
+
+        // USING source [AS alias]
+        _ = try self.expect(.kw_using);
+        const source: ast.MergeSource = blk: {
+            if (self.match(.left_paren)) {
+                // Subquery
+                const select_stmt = try self.parseSelect();
+                const sub_ptr = try self.arena.create(ast.SelectStmt, select_stmt);
+                _ = try self.expect(.right_paren);
+                var alias: []const u8 = "src";
+                if (self.match(.kw_as)) {
+                    alias = try self.expectIdentifier();
+                } else if (self.peek().type == .identifier) {
+                    const t = self.advance();
+                    alias = self.lexeme(t);
+                }
+                break :blk .{ .subquery = .{ .select = sub_ptr, .alias = alias } };
+            } else {
+                const name = try self.expectIdentifier();
+                var alias: ?[]const u8 = null;
+                if (self.match(.kw_as)) {
+                    alias = try self.expectIdentifier();
+                } else if (self.peek().type == .identifier) {
+                    const t = self.advance();
+                    alias = self.lexeme(t);
+                }
+                break :blk .{ .table = .{ .name = name, .alias = alias } };
+            }
+        };
+
+        // ON condition
+        _ = try self.expect(.kw_on);
+        const on_ptr = try self.parseExpr(0);
+
+        // WHEN clauses
+        var when_clauses = std.ArrayListUnmanaged(ast.MergeWhenClause){};
+        while (self.match(.kw_when)) {
+            var cond: ast.MergeMatchCondition = undefined;
+            var extra_cond: ?*const ast.Expr = null;
+
+            if (self.match(.kw_not)) {
+                // NOT MATCHED [BY TARGET] or NOT MATCHED BY SOURCE
+                _ = try self.expect(.kw_matched);
+                if (self.match(.kw_by)) {
+                    if (self.match(.kw_source)) {
+                        cond = .not_matched_source;
+                    } else {
+                        _ = try self.expect(.kw_target);
+                        cond = .not_matched;
+                    }
+                } else {
+                    cond = .not_matched;
+                }
+            } else {
+                _ = try self.expect(.kw_matched);
+                cond = .matched;
+            }
+
+            // Optional AND extra_condition
+            if (self.match(.kw_and)) {
+                extra_cond = try self.parseExpr(0);
+            }
+
+            _ = try self.expect(.kw_then);
+
+            // Action: UPDATE SET ... | DELETE | INSERT
+            const action: ast.MergeAction = if (self.match(.kw_update)) blk: {
+                _ = try self.expect(.kw_set);
+                var assignments = std.ArrayListUnmanaged(ast.Assignment){};
+                while (true) {
+                    const col = try self.expectIdentifier();
+                    _ = try self.expect(.equals);
+                    const upd_ptr = try self.parseExpr(0);
+                    try assignments.append(a, .{ .column = col, .value = upd_ptr });
+                    if (!self.match(.comma)) break;
+                }
+                const assigns = try self.arena.dupeSlice(ast.Assignment, assignments.items);
+                break :blk .{ .update = .{ .assignments = assigns } };
+            } else if (self.match(.kw_delete)) blk: {
+                break :blk .{ .delete = {} };
+            } else if (self.match(.kw_insert)) blk: {
+                // INSERT [(col_list)] VALUES (expr_list)
+                var columns: ?[]const []const u8 = null;
+                if (self.match(.left_paren)) {
+                    // Check if this is column list or VALUES list
+                    var cols = std.ArrayListUnmanaged([]const u8){};
+                    while (true) {
+                        const col = try self.expectIdentifier();
+                        try cols.append(a, col);
+                        if (!self.match(.comma)) break;
+                    }
+                    _ = try self.expect(.right_paren);
+                    columns = try self.arena.dupeSlice([]const u8, cols.items);
+                }
+                _ = try self.expect(.kw_values);
+                _ = try self.expect(.left_paren);
+                var vals = std.ArrayListUnmanaged(*const ast.Expr){};
+                while (true) {
+                    const ins_ptr = try self.parseExpr(0);
+                    try vals.append(a, ins_ptr);
+                    if (!self.match(.comma)) break;
+                }
+                _ = try self.expect(.right_paren);
+                const values_slice = try self.arena.dupeSlice(*const ast.Expr, vals.items);
+                break :blk .{ .insert = .{ .columns = columns, .values = values_slice } };
+            } else {
+                try self.addError(self.peek(), "expected UPDATE, DELETE, or INSERT after THEN");
+                return error.ParseFailed;
+            };
+
+            try when_clauses.append(a, .{
+                .condition = cond,
+                .extra_cond = extra_cond,
+                .action = action,
+            });
+        }
+
+        if (when_clauses.items.len == 0) {
+            try self.addError(self.peek(), "MERGE must have at least one WHEN clause");
+            return error.ParseFailed;
+        }
+
+        const clauses = try self.arena.dupeSlice(ast.MergeWhenClause, when_clauses.items);
+        return .{
+            .target = target,
+            .target_alias = target_alias,
+            .source = source,
+            .on = on_ptr,
+            .when_clauses = clauses,
+        };
     }
 
     // ── CREATE ────────────────────────────────────────────────────

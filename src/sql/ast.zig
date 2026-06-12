@@ -488,6 +488,53 @@ pub const OnConflictClause = struct {
     assignments: []const Assignment = &.{},
 };
 
+/// MERGE match condition type
+pub const MergeMatchCondition = enum {
+    matched,                 // WHEN MATCHED
+    not_matched,             // WHEN NOT MATCHED [BY TARGET]
+    not_matched_source,      // WHEN NOT MATCHED BY SOURCE
+};
+
+/// MERGE action type
+pub const MergeAction = union(enum) {
+    update: struct {
+        assignments: []const Assignment,
+    },
+    delete: void,
+    insert: struct {
+        columns: ?[]const []const u8 = null,
+        values: []const *const Expr,
+    },
+};
+
+/// MERGE WHEN clause
+pub const MergeWhenClause = struct {
+    condition: MergeMatchCondition,
+    extra_cond: ?*const Expr = null,
+    action: MergeAction,
+};
+
+/// MERGE source (table or subquery)
+pub const MergeSource = union(enum) {
+    table: struct {
+        name: []const u8,
+        alias: ?[]const u8 = null,
+    },
+    subquery: struct {
+        select: *const SelectStmt,
+        alias: []const u8,
+    },
+};
+
+/// MERGE statement
+pub const MergeStmt = struct {
+    target: []const u8,
+    target_alias: ?[]const u8 = null,
+    source: MergeSource,
+    on: *const Expr,
+    when_clauses: []const MergeWhenClause,
+};
+
 /// INSERT statement.
 pub const InsertStmt = struct {
     table: []const u8,
@@ -924,6 +971,7 @@ pub const Stmt = union(enum) {
     insert: InsertStmt,
     update: UpdateStmt,
     delete: DeleteStmt,
+    merge: MergeStmt,
     create_table: CreateTableStmt,
     drop_table: DropTableStmt,
     create_index: CreateIndexStmt,

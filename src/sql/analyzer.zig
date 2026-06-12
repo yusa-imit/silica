@@ -298,6 +298,7 @@ pub const Analyzer = struct {
             .insert => |s| self.analyzeInsert(&s),
             .update => |s| self.analyzeUpdate(&s),
             .delete => |s| self.analyzeDelete(&s),
+            .merge => {}, // MERGE needs semantic analysis (TODO)
             .create_table => |s| self.analyzeCreateTable(&s),
             .set, .show, .reset => {}, // Config commands need no semantic analysis
             .drop_table => |s| self.analyzeDropTable(&s),

@@ -5296,6 +5296,514 @@ pub const Database = struct {
         };
     }
 
+    // ── MERGE execution ──────────────────────────────────────────────
+
+    /// Execute a MERGE statement.
+    /// MERGE INTO target USING source ON condition
+    ///   WHEN MATCHED THEN UPDATE/DELETE
+    ///   WHEN NOT MATCHED THEN INSERT
+    ///   WHEN NOT MATCHED BY SOURCE THEN UPDATE/DELETE
+    /// NOTE: Ownership of arena is NOT transferred — calling code (execSQL) frees it.
+    fn executeMerge(self: *Database, arena: *AstArena, merge: *const ast_mod.MergeStmt) EngineError!QueryResult {
+        _ = arena; // Arena is owned by caller (execSQL)
+
+        self.standby_coordinator.checkWriteAllowed() catch |err| {
+            return switch (err) {
+                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                else => EngineError.ExecutionError,
+            };
+        };
+
+        const implicit_txn = self.current_txn == null;
+        if (implicit_txn) {
+            try self.beginTransaction(.read_committed);
+        }
+        errdefer {
+            if (implicit_txn) {
+                self.rollbackTransaction() catch {};
+            }
+        }
+
+        var target_info = self.catalog.getTable(merge.target) catch return EngineError.TableNotFound;
+        defer target_info.deinit(self.allocator);
+
+        const tgt_alias = merge.target_alias orelse merge.target;
+        const tgt_cnt = target_info.columns.len;
+
+        // Build target column names ("tgt_alias.colname")
+        const tgt_col_names = self.allocator.alloc([]const u8, tgt_cnt) catch return EngineError.OutOfMemory;
+        defer {
+            for (tgt_col_names) |n| self.allocator.free(n);
+            self.allocator.free(tgt_col_names);
+        }
+        for (target_info.columns, 0..) |col, i| {
+            tgt_col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ tgt_alias, col.name }) catch
+                return EngineError.OutOfMemory;
+        }
+
+        // Collect source row values and column names. Each element is an owned []Value slice.
+        var source_row_vals_list = std.ArrayListUnmanaged([]Value){};
+        defer {
+            for (source_row_vals_list.items) |vals| {
+                for (vals) |v| v.free(self.allocator);
+                self.allocator.free(vals);
+            }
+            source_row_vals_list.deinit(self.allocator);
+        }
+        var src_col_names: [][]const u8 = &.{};
+        var src_cnt: usize = 0;
+
+        // Two paths: table source vs subquery source
+        switch (merge.source) {
+            .table => |t| {
+                var source_info = self.catalog.getTable(t.name) catch return EngineError.TableNotFound;
+                defer source_info.deinit(self.allocator);
+
+                const src_alias = t.alias orelse t.name;
+                src_cnt = source_info.columns.len;
+
+                // Pre-build qualified column name arrays ("alias.colname")
+                const sc_names = self.allocator.alloc([]const u8, src_cnt) catch return EngineError.OutOfMemory;
+                for (source_info.columns, 0..) |col, i| {
+                    sc_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ src_alias, col.name }) catch {
+                        for (sc_names[0..i]) |n| self.allocator.free(n);
+                        self.allocator.free(sc_names);
+                        return EngineError.OutOfMemory;
+                    };
+                }
+                src_col_names = sc_names;
+
+                // Collect source rows from B+tree
+                var src_tree = BTree.init(self.pool, source_info.data_root_page_id);
+                var src_cursor = btree_mod.Cursor.init(self.allocator, &src_tree);
+                defer src_cursor.deinit();
+                src_cursor.seekFirst() catch return EngineError.StorageError;
+
+                while (src_cursor.next() catch null) |entry| {
+                    defer self.allocator.free(entry.key);
+                    defer self.allocator.free(entry.value);
+
+                    const src_raw_bytes = if (mvcc_mod.isVersionedRow(entry.value))
+                        entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                    else
+                        entry.value;
+                    const raw_vals = deserializeRow(self.allocator, src_raw_bytes) catch return EngineError.ExecutionError;
+                    defer {
+                        for (raw_vals) |v| v.free(self.allocator);
+                        self.allocator.free(raw_vals);
+                    }
+
+                    const cloned_vals = self.allocator.alloc(Value, src_cnt) catch return EngineError.OutOfMemory;
+                    var cloned_inited: usize = 0;
+                    errdefer {
+                        for (cloned_vals[0..cloned_inited]) |v| v.free(self.allocator);
+                        self.allocator.free(cloned_vals);
+                    }
+                    for (raw_vals, 0..) |v, i| {
+                        cloned_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        cloned_inited += 1;
+                    }
+                    source_row_vals_list.append(self.allocator, cloned_vals) catch return EngineError.OutOfMemory;
+                }
+            },
+            .subquery => |sub| {
+                // Execute the subquery and collect rows
+                const sub_arena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
+                sub_arena.* = AstArena.init(self.allocator);
+                defer {
+                    sub_arena.deinit();
+                    self.allocator.destroy(sub_arena);
+                }
+
+                const sub_stmt = ast_mod.Stmt{ .select = sub.select.* };
+                const provider = self.schemaProvider();
+                var sub_plnr = Planner.init(sub_arena, provider);
+                const sub_plan = sub_plnr.plan(sub_stmt) catch return EngineError.PlanError;
+
+                var sub_opt = Optimizer.init(sub_arena);
+                const sub_optimized = sub_opt.optimize(sub_plan) catch return EngineError.PlanError;
+
+                const sub_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+                sub_ops.* = .{};
+                defer sub_ops.deinit(self.allocator);
+
+                var sub_iter = self.buildIterator(sub_optimized.root, sub_ops) catch return EngineError.ExecutionError;
+                defer sub_iter.close();
+
+                var first_row = true;
+                var sub_col_names_buf: [][]const u8 = undefined;
+
+                while (sub_iter.next() catch return EngineError.ExecutionError) |row_data| {
+                    var row = row_data;
+                    defer row.deinit();
+
+                    if (first_row) {
+                        // Extract column names from first row and qualify with alias
+                        src_cnt = row.columns.len;
+                        sub_col_names_buf = self.allocator.alloc([]const u8, src_cnt) catch return EngineError.OutOfMemory;
+                        for (row.columns, 0..) |col_name, i| {
+                            sub_col_names_buf[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ sub.alias, col_name }) catch {
+                                for (sub_col_names_buf[0..i]) |n| self.allocator.free(n);
+                                self.allocator.free(sub_col_names_buf);
+                                return EngineError.OutOfMemory;
+                            };
+                        }
+                        src_col_names = sub_col_names_buf;
+                        first_row = false;
+                    }
+
+                    // Clone row values
+                    const cloned_vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                    var cloned_inited: usize = 0;
+                    errdefer {
+                        for (cloned_vals[0..cloned_inited]) |v| v.free(self.allocator);
+                        self.allocator.free(cloned_vals);
+                    }
+                    for (row.values, 0..) |v, i| {
+                        cloned_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        cloned_inited += 1;
+                    }
+                    source_row_vals_list.append(self.allocator, cloned_vals) catch return EngineError.OutOfMemory;
+                }
+            },
+        }
+
+        // Clean up source column names after switch (works for both paths)
+        defer {
+            if (src_col_names.len > 0) {
+                for (src_col_names) |n| self.allocator.free(n);
+                self.allocator.free(src_col_names);
+            }
+        }
+
+        // Combined column names for ON condition evaluation (tgt columns first, then src).
+        // Borrows strings from tgt_col_names and src_col_names — only free the outer slice.
+        const combined_col_names = self.allocator.alloc([]const u8, tgt_cnt + src_cnt) catch return EngineError.OutOfMemory;
+        defer self.allocator.free(combined_col_names);
+        for (tgt_col_names, 0..) |n, i| combined_col_names[i] = n;
+        for (src_col_names, 0..) |n, i| combined_col_names[tgt_cnt + i] = n;
+
+        try self.ssiRegisterRead(target_info.data_root_page_id);
+        try self.ssiRegisterWrite(target_info.data_root_page_id);
+
+        // Track matched target row keys for WHEN NOT MATCHED BY SOURCE processing.
+        var target_matched = std.StringHashMapUnmanaged(void){};
+        defer {
+            var it = target_matched.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            target_matched.deinit(self.allocator);
+        }
+
+        var rows_affected: u64 = 0;
+        var target_tree = BTree.init(self.pool, target_info.data_root_page_id);
+
+        // Process each source row against all target rows.
+        for (source_row_vals_list.items) |src_vals| {
+            const src_row = Row{
+                .columns = src_col_names, // borrowed — do NOT call deinit on src_row
+                .values = src_vals, // borrowed — owned by source_row_vals_list
+                .allocator = self.allocator,
+            };
+
+            var target_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
+            defer target_cursor.deinit();
+            target_cursor.seekFirst() catch return EngineError.StorageError;
+
+            var found_match = false;
+            var matched_key: ?[]u8 = null;
+            // Saved target values for the matched row (used in WHEN MATCHED extra_cond).
+            var matched_tgt_vals: ?[]Value = null;
+            defer if (matched_tgt_vals) |mtv| {
+                for (mtv) |v| v.free(self.allocator);
+                self.allocator.free(mtv);
+            };
+
+            // Find matching target row using ON condition.
+            while (target_cursor.next() catch null) |tgt_entry| {
+                defer self.allocator.free(tgt_entry.key);
+                defer self.allocator.free(tgt_entry.value);
+
+                const tgt_raw_bytes = if (mvcc_mod.isVersionedRow(tgt_entry.value))
+                    tgt_entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                else
+                    tgt_entry.value;
+                const tgt_vals = deserializeRow(self.allocator, tgt_raw_bytes) catch return EngineError.ExecutionError;
+                defer {
+                    for (tgt_vals) |v| v.free(self.allocator);
+                    self.allocator.free(tgt_vals);
+                }
+
+                // Build combined values array for ON evaluation.
+                const combined_vals = self.allocator.alloc(Value, tgt_cnt + src_cnt) catch return EngineError.OutOfMemory;
+                defer {
+                    for (combined_vals) |v| v.free(self.allocator);
+                    self.allocator.free(combined_vals);
+                }
+                for (tgt_vals, 0..) |v, i| {
+                    combined_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                }
+                for (src_vals, 0..) |v, i| {
+                    combined_vals[tgt_cnt + i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                }
+
+                const combined_row = Row{
+                    .columns = combined_col_names,
+                    .values = combined_vals,
+                    .allocator = self.allocator,
+                };
+                // Do NOT call combined_row.deinit() — memory managed by defers above.
+
+                const on_result = evalExpr(self.allocator, merge.on, &combined_row, null) catch
+                    return EngineError.ExecutionError;
+                defer on_result.free(self.allocator);
+
+                if (on_result.isTruthy()) {
+                    matched_key = self.allocator.dupe(u8, tgt_entry.key) catch return EngineError.OutOfMemory;
+                    // Save target values for WHEN MATCHED extra_cond evaluation.
+                    const saved_tgt = self.allocator.alloc(Value, tgt_cnt) catch return EngineError.OutOfMemory;
+                    for (tgt_vals, 0..) |v, vi| {
+                        saved_tgt[vi] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                    }
+                    matched_tgt_vals = saved_tgt;
+                    found_match = true;
+                    break;
+                }
+            }
+
+            if (found_match) {
+                const key = matched_key.?;
+                defer self.allocator.free(key);
+
+                const key_copy = self.allocator.dupe(u8, key) catch return EngineError.OutOfMemory;
+                target_matched.put(self.allocator, key_copy, {}) catch {
+                    self.allocator.free(key_copy);
+                    return EngineError.OutOfMemory;
+                };
+
+                // Apply first matching WHEN MATCHED clause.
+                for (merge.when_clauses) |clause| {
+                    if (clause.condition != .matched) continue;
+
+                    if (clause.extra_cond) |cond| {
+                        // Build combined row for extra_cond (needs both target and source).
+                        const combined_ec_vals = self.allocator.alloc(Value, tgt_cnt + src_cnt) catch return EngineError.OutOfMemory;
+                        defer {
+                            for (combined_ec_vals) |v| v.free(self.allocator);
+                            self.allocator.free(combined_ec_vals);
+                        }
+                        const mtv = matched_tgt_vals.?;
+                        for (mtv, 0..) |v, i| {
+                            combined_ec_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        }
+                        for (src_vals, 0..) |v, i| {
+                            combined_ec_vals[tgt_cnt + i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        }
+                        const combined_ec_row = Row{
+                            .columns = combined_col_names,
+                            .values = combined_ec_vals,
+                            .allocator = self.allocator,
+                        };
+                        const cond_result = evalExpr(self.allocator, cond, &combined_ec_row, null) catch
+                            return EngineError.ExecutionError;
+                        defer cond_result.free(self.allocator);
+                        if (!cond_result.isTruthy()) continue;
+                    }
+
+                    switch (clause.action) {
+                        .delete => {
+                            target_tree.delete(key) catch return EngineError.StorageError;
+                            rows_affected += 1;
+                        },
+                        .update => |upd| {
+                            // Read current target row.
+                            var cur_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
+                            defer cur_cursor.deinit();
+                            cur_cursor.seek(key) catch return EngineError.StorageError;
+                            const cur_entry = (cur_cursor.current() catch return EngineError.StorageError) orelse
+                                return EngineError.ExecutionError;
+                            defer self.allocator.free(cur_entry.key);
+                            defer self.allocator.free(cur_entry.value);
+
+                            const upd_raw_bytes = if (mvcc_mod.isVersionedRow(cur_entry.value))
+                                cur_entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                            else
+                                cur_entry.value;
+                            const tgt_vals = deserializeRow(self.allocator, upd_raw_bytes) catch
+                                return EngineError.ExecutionError;
+                            defer {
+                                for (tgt_vals) |v| v.free(self.allocator);
+                                self.allocator.free(tgt_vals);
+                            }
+
+                            var updated = self.allocator.alloc(Value, tgt_vals.len) catch return EngineError.OutOfMemory;
+                            var updated_inited: usize = 0;
+                            errdefer {
+                                for (updated[0..updated_inited]) |v| v.free(self.allocator);
+                                self.allocator.free(updated);
+                            }
+                            for (tgt_vals, 0..) |v, vi| {
+                                updated[vi] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                updated_inited += 1;
+                            }
+                            defer {
+                                for (updated) |v| v.free(self.allocator);
+                                self.allocator.free(updated);
+                            }
+
+                            for (upd.assignments) |assign| {
+                                var col_idx: ?usize = null;
+                                for (target_info.columns, 0..) |col, i| {
+                                    if (std.ascii.eqlIgnoreCase(col.name, assign.column)) {
+                                        col_idx = i;
+                                        break;
+                                    }
+                                }
+                                if (col_idx) |ci| {
+                                    const new_val = evalExpr(self.allocator, assign.value, &src_row, null) catch
+                                        return EngineError.ExecutionError;
+                                    updated[ci].free(self.allocator);
+                                    updated[ci] = new_val;
+                                }
+                            }
+
+                            const new_data = if (self.current_txn) |txn| blk: {
+                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const hdr = TupleHeader.forInsert(txn.xid, cid);
+                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, hdr, updated) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, updated) catch return EngineError.OutOfMemory;
+                            defer self.allocator.free(new_data);
+                            target_tree.delete(key) catch return EngineError.StorageError;
+                            target_tree.insert(key, new_data) catch return EngineError.StorageError;
+                            rows_affected += 1;
+                        },
+                        .insert => {}, // INSERT is not valid for WHEN MATCHED
+                    }
+                    break;
+                }
+            } else {
+                // Apply first matching WHEN NOT MATCHED clause.
+                for (merge.when_clauses) |clause| {
+                    if (clause.condition != .not_matched) continue;
+
+                    if (clause.extra_cond) |cond| {
+                        const cond_result = evalExpr(self.allocator, cond, &src_row, null) catch
+                            return EngineError.ExecutionError;
+                        defer cond_result.free(self.allocator);
+                        if (!cond_result.isTruthy()) continue;
+                    }
+
+                    switch (clause.action) {
+                        .insert => |ins| {
+                            const next_key_num = self.findNextRowKey(&target_tree) catch return EngineError.StorageError;
+
+                            var row_vals = std.ArrayListUnmanaged(Value){};
+                            defer {
+                                for (row_vals.items) |v| v.free(self.allocator);
+                                row_vals.deinit(self.allocator);
+                            }
+
+                            if (ins.columns) |cols| {
+                                // Create full row with NULLs, then fill in specified columns
+                                try row_vals.ensureTotalCapacity(self.allocator, tgt_cnt);
+                                for (0..tgt_cnt) |_| {
+                                    row_vals.appendAssumeCapacity(.null_value);
+                                }
+                                for (cols, 0..) |col_name, i| {
+                                    var col_idx: ?usize = null;
+                                    for (target_info.columns, 0..) |col, j| {
+                                        if (std.ascii.eqlIgnoreCase(col.name, col_name)) {
+                                            col_idx = j;
+                                            break;
+                                        }
+                                    }
+                                    if (col_idx) |ci| {
+                                        const val = evalExpr(self.allocator, ins.values[i], &src_row, null) catch
+                                            return EngineError.ExecutionError;
+                                        row_vals.items[ci].free(self.allocator);
+                                        row_vals.items[ci] = val;
+                                    }
+                                }
+                            } else {
+                                // No columns specified - assume values are in column order
+                                for (ins.values) |expr| {
+                                    const val = evalExpr(self.allocator, expr, &src_row, null) catch
+                                        return EngineError.ExecutionError;
+                                    row_vals.append(self.allocator, val) catch return EngineError.OutOfMemory;
+                                }
+                            }
+
+                            const row_data = if (self.current_txn) |txn| blk: {
+                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const hdr = TupleHeader.forInsert(txn.xid, cid);
+                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, hdr, row_vals.items) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, row_vals.items) catch return EngineError.OutOfMemory;
+                            defer self.allocator.free(row_data);
+
+                            var key_buf: [8]u8 = undefined;
+                            std.mem.writeInt(u64, &key_buf, next_key_num, .big);
+                            const ins_key = self.allocator.dupe(u8, &key_buf) catch return EngineError.OutOfMemory;
+                            defer self.allocator.free(ins_key);
+
+                            target_tree.insert(ins_key, row_data) catch return EngineError.StorageError;
+                            rows_affected += 1;
+                        },
+                        else => {}, // UPDATE/DELETE not valid for WHEN NOT MATCHED
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Process WHEN NOT MATCHED BY SOURCE — target rows not matched by any source row.
+        {
+            var cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
+            defer cursor.deinit();
+            cursor.seekFirst() catch return EngineError.StorageError;
+
+            var unmatched_keys = std.ArrayListUnmanaged([]u8){};
+            defer {
+                for (unmatched_keys.items) |k| self.allocator.free(k);
+                unmatched_keys.deinit(self.allocator);
+            }
+
+            while (cursor.next() catch null) |entry| {
+                defer self.allocator.free(entry.key);
+                defer self.allocator.free(entry.value);
+                if (!target_matched.contains(entry.key)) {
+                    const k_copy = self.allocator.dupe(u8, entry.key) catch return EngineError.OutOfMemory;
+                    unmatched_keys.append(self.allocator, k_copy) catch {
+                        self.allocator.free(k_copy);
+                        return EngineError.OutOfMemory;
+                    };
+                }
+            }
+
+            for (unmatched_keys.items) |key| {
+                for (merge.when_clauses) |clause| {
+                    if (clause.condition != .not_matched_source) continue;
+                    if (clause.extra_cond != null) continue; // conditions not yet supported here
+
+                    switch (clause.action) {
+                        .delete => {
+                            target_tree.delete(key) catch return EngineError.StorageError;
+                            rows_affected += 1;
+                        },
+                        .update => {}, // TODO
+                        .insert => {}, // not valid
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (implicit_txn) {
+            try self.commitTransaction();
+        }
+        self.commitWal() catch {};
+
+        return .{ .rows_affected = rows_affected, .message = "MERGE" };
+    }
+
     // ── DDL execution ────────────────────────────────────────────────
 
     fn executeCreateTable(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
@@ -6498,6 +7006,14 @@ pub const Database = struct {
 
                 // Keep arena alive - will be freed in QueryResult.close()
                 return .{ .message = plan_str, ._arena = arena };
+            },
+            .merge => |m| {
+                // MERGE is executed directly as a special DML operation
+                const result = try self.executeMerge(arena.?, &m);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                arena = null; // prevent errdefer from double-freeing
+                return result;
             },
             else => {},
         }
@@ -29099,3 +29615,517 @@ test "SELECT FOR UPDATE returns rows correctly and acquires locks" {
     try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
 }
 
+
+// ── MERGE Tests ──
+
+test "MERGE basic: insert when not matched" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_basic_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table (initially empty)
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert source data
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 'hello'), (2, 'world')");
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // MERGE: insert rows from source into target
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify target table has the 2 rows
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            switch (row_count) {
+                0 => {
+                    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                    try testing.expectEqualStrings("hello", row.values[1].text);
+                },
+                1 => {
+                    try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+                    try testing.expectEqualStrings("world", row.values[1].text);
+                },
+                else => {},
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+    }
+}
+
+test "MERGE basic: update when matched" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_basic_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with initial data
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'old'), (2, 'stale')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert source data with matching keys
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 'new'), (2, 'fresh')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: update matching rows
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED THEN UPDATE SET val = s.val
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify target table has updated values
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqualStrings("new", row.values[1].text);
+            } else if (row_count == 1) {
+                try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+                try testing.expectEqualStrings("fresh", row.values[1].text);
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+    }
+}
+
+test "MERGE: insert and update in same statement" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_insert_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with some initial data
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'existing')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Source has one matching row (id=1) and one new row (id=2)
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 'updated'), (2, 'new')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE with both WHEN MATCHED and WHEN NOT MATCHED
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED THEN UPDATE SET val = s.val
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify: row 1 updated, row 2 inserted
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqualStrings("updated", row.values[1].text);
+            } else if (row_count == 1) {
+                try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+                try testing.expectEqualStrings("new", row.values[1].text);
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+    }
+}
+
+test "MERGE: delete when matched" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert target data
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'remove'), (2, 'keep'), (3, 'remove')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table with matching keys to delete
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1), (3)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: delete matching rows
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED THEN DELETE
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify only row 2 remains
+    {
+        var r = try db.execSQL("SELECT id, val FROM t");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+            try testing.expectEqualStrings("keep", row.values[1].text);
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 1), row_count);
+    }
+}
+
+test "MERGE: when matched with additional condition" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_when_cond.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'old1'), (2, 'old2')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 'new1'), (2, 'new2')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE with condition: only update if target.val != source.val
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED AND t.val != s.val THEN UPDATE SET val = s.val
+        );
+        defer r.close(testing.allocator);
+        // Both rows match id and have different vals, so both should be updated
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify values updated
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                try testing.expectEqualStrings("new1", row.values[1].text);
+            } else if (row_count == 1) {
+                try testing.expectEqualStrings("new2", row.values[1].text);
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+    }
+}
+
+test "MERGE: not matched by source delete" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_not_matched_src.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Target has 3 rows
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Source only has rows 1 and 2 (not 3)
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 'x'), (2, 'y')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: delete target rows that have no match in source
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN NOT MATCHED BY SOURCE THEN DELETE
+        );
+        defer r.close(testing.allocator);
+        // Only row 3 should be deleted
+        try testing.expectEqual(@as(u64, 1), r.rows_affected);
+    }
+
+    // Verify only rows 1 and 2 remain
+    {
+        var r = try db.execSQL("SELECT id FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        var ids: [2]i64 = undefined;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count < 2) {
+                ids[row_count] = row.values[0].integer;
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+        try testing.expectEqual(@as(i64, 1), ids[0]);
+        try testing.expectEqual(@as(i64, 2), ids[1]);
+    }
+}
+
+test "MERGE: using subquery as source" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_subquery.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'old')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table (base for subquery)
+    {
+        var r = try db.execSQL("CREATE TABLE data (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO data VALUES (1, 'updated'), (2, 'new')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE using subquery as source
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING (SELECT id, val FROM data WHERE id > 0) AS s ON t.id = s.id
+            \\WHEN MATCHED THEN UPDATE SET val = s.val
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify: row 1 updated, row 2 inserted
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqualStrings("updated", row.values[1].text);
+            } else if (row_count == 1) {
+                try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+                try testing.expectEqualStrings("new", row.values[1].text);
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+    }
+}
+
+test "MERGE: no rows affected when no match and no clause" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_no_match.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'existing')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Source has no matching keys
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (99, 'nomatch')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE with only WHEN MATCHED (no WHEN NOT MATCHED)
+    // Since source row doesn't match any target row, nothing happens
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED THEN UPDATE SET val = s.val
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 0), r.rows_affected);
+    }
+
+    // Verify target unchanged
+    {
+        var r = try db.execSQL("SELECT id, val FROM t");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+            try testing.expectEqualStrings("existing", row.values[1].text);
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 1), row_count);
+    }
+}

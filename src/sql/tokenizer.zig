@@ -204,6 +204,10 @@ pub const TokenType = enum {
     kw_else,
     kw_end,
     kw_cast,
+    kw_merge,
+    kw_matched,
+    kw_source,
+    kw_target,
 
     // Keywords — Aggregate functions
     kw_count,
@@ -924,6 +928,10 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "else", .kw_else },
         .{ "end", .kw_end },
         .{ "cast", .kw_cast },
+        .{ "merge", .kw_merge },
+        .{ "matched", .kw_matched },
+        .{ "source", .kw_source },
+        .{ "target", .kw_target },
         // Aggregates
         .{ "count", .kw_count },
         .{ "sum", .kw_sum },
