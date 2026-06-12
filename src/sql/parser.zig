@@ -680,6 +680,55 @@ pub const Parser = struct {
         const is_lateral = self.match(.kw_lateral);
 
         if (self.match(.left_paren)) {
+            // Check for VALUES table expression first
+            if (self.check(.kw_values)) {
+                _ = self.advance(); // consume kw_values
+                const a = self.arena.allocator();
+                var rows = std.ArrayListUnmanaged([]const *const ast.Expr){};
+
+                // Parse rows: (expr, expr), (expr, expr), ...
+                while (true) {
+                    _ = try self.expect(.left_paren);
+                    var row_exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                    if (!self.check(.right_paren)) {
+                        while (true) {
+                            const expr = try self.parseExpr(0);
+                            row_exprs.append(a, expr) catch return error.OutOfMemory;
+                            if (!self.match(.comma)) break;
+                        }
+                    }
+                    _ = try self.expect(.right_paren);
+                    rows.append(a, row_exprs.toOwnedSlice(a) catch return error.OutOfMemory) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+
+                // Closing ) for the subquery wrapper
+                _ = try self.expect(.right_paren);
+
+                // Parse AS alias(col1, col2, ...)
+                _ = self.match(.kw_as);
+                const alias = try self.expectIdentifier();
+                var column_names: []const []const u8 = &.{};
+                if (self.match(.left_paren)) {
+                    var cols = std.ArrayListUnmanaged([]const u8){};
+                    while (true) {
+                        const col = try self.expectIdentifier();
+                        cols.append(a, col) catch return error.OutOfMemory;
+                        if (!self.match(.comma)) break;
+                    }
+                    _ = try self.expect(.right_paren);
+                    column_names = cols.toOwnedSlice(a) catch return error.OutOfMemory;
+                }
+
+                return self.arena.create(ast.TableRef, .{
+                    .values_table = .{
+                        .rows = rows.toOwnedSlice(a) catch return error.OutOfMemory,
+                        .alias = alias,
+                        .column_names = column_names,
+                    },
+                }) catch return error.OutOfMemory;
+            }
+
             if (self.check(.kw_select)) {
                 const select = try self.parseSelect();
                 _ = try self.expect(.right_paren);
@@ -690,7 +739,7 @@ pub const Parser = struct {
                     .subquery = .{ .select = sel_ptr, .alias = alias, .is_lateral = is_lateral },
                 }) catch return error.OutOfMemory;
             }
-            try self.addError(self.peek(), "expected SELECT in subquery");
+            try self.addError(self.peek(), "expected SELECT or VALUES in subquery");
             return error.ParseFailed;
         }
 

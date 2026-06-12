@@ -203,6 +203,7 @@ fn extractPlanColumns(node: *const PlanNode) []const ColumnRef {
     return switch (node.*) {
         .scan => |s| s.columns,
         .table_function_scan => &.{}, // Table functions determine columns at execution time
+        .values_table_scan => &.{}, // Values table expressions determine columns at execution time
         .filter => |f| extractPlanColumns(f.input),
         .project => |p| extractPlanColumns(p.input),
         .sort => |s| extractPlanColumns(s.input),
@@ -1393,6 +1394,22 @@ pub const Database = struct {
         const new_node = try execution_arena.allocator().create(PlanNode);
         new_node.* = switch (node.*) {
             .scan, .empty, .table_function_scan => node.*, // No expressions to substitute
+            .values_table_scan => |vts| blk: {
+                // Substitute bind parameters in VALUES table expressions
+                var new_rows = try execution_arena.allocator().alloc([]const *const ast_mod.Expr, vts.rows.len);
+                for (vts.rows, 0..) |row, i| {
+                    var new_row = try execution_arena.allocator().alloc(*const ast_mod.Expr, row.len);
+                    for (row, 0..) |expr, j| {
+                        new_row[j] = try substituteExpr(template_arena, execution_arena, expr, params);
+                    }
+                    new_rows[i] = new_row;
+                }
+                break :blk .{ .values_table_scan = .{
+                    .rows = new_rows,
+                    .alias = vts.alias,
+                    .column_names = vts.column_names,
+                } };
+            },
             .values => |v| blk: {
                 // Substitute bind parameters in VALUES expressions
                 var new_rows = try execution_arena.allocator().alloc([]const *const ast_mod.Expr, v.rows.len);
@@ -2115,6 +2132,7 @@ pub const Database = struct {
         return switch (node.*) {
             .scan => |s| self.buildScan(s, ops),
             .table_function_scan => |tfs| self.buildTableFunctionScan(tfs, ops),
+            .values_table_scan => |vts| self.buildValuesTableScan(vts, ops),
             .filter => |f| self.buildFilter(f, ops),
             .project => |p| self.buildProject(p, ops),
             .limit => |l| self.buildLimit(l, ops),
@@ -2898,6 +2916,57 @@ pub const Database = struct {
 
         // Unknown table function
         return EngineError.ExecutionError;
+    }
+
+    fn buildValuesTableScan(self: *Database, vts: PlanNode.ValuesTableScan, ops: *OperatorChain) EngineError!RowIterator {
+        const alloc = self.allocator;
+
+        // Determine number of columns
+        const n_cols = if (vts.rows.len > 0) vts.rows[0].len else 0;
+
+        // Build column names from vts.column_names or generate defaults
+        const col_names = try alloc.alloc([]const u8, n_cols);
+        for (0..n_cols) |i| {
+            if (i < vts.column_names.len) {
+                col_names[i] = try alloc.dupe(u8, vts.column_names[i]);
+            } else {
+                col_names[i] = try std.fmt.allocPrint(alloc, "column{d}", .{i + 1});
+            }
+        }
+
+        // Materialize all rows by evaluating their expressions
+        var materialized = std.ArrayListUnmanaged([]Value){};
+
+        // Create empty row context (VALUES table has no input rows to reference)
+        var empty_row = Row{
+            .columns = &.{},
+            .values = &.{},
+            .allocator = alloc,
+        };
+
+        for (vts.rows) |row_exprs| {
+            const vals = try alloc.alloc(Value, row_exprs.len);
+            for (row_exprs, 0..) |expr, i| {
+                vals[i] = executor_mod.evalExpr(alloc, expr, &empty_row, null) catch {
+                    // On error, free allocated values and return error
+                    for (vals[0..i]) |v| v.free(alloc);
+                    alloc.free(vals);
+                    return EngineError.ExecutionError;
+                };
+            }
+            try materialized.append(alloc, vals);
+        }
+
+        // Create MaterializedOp to hold the rows
+        const mat_op = try alloc.create(MaterializedOp);
+        mat_op.* = MaterializedOp.init(
+            alloc,
+            col_names,
+            try materialized.toOwnedSlice(alloc),
+        );
+
+        ops.materialized = mat_op;
+        return mat_op.iterator();
     }
 
     fn buildViewScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, view_info: catalog_mod.Catalog.ViewInfo) EngineError!RowIterator {
@@ -7904,6 +7973,7 @@ pub const Database = struct {
             .table_name => |tn| tn.name,
             .subquery => return null,
             .table_function => return null, // Table functions not supported in updatable views
+            .values_table => return null, // VALUES tables not supported in updatable views
         };
 
         // Verify the base table actually exists (not another view — for simplicity)
@@ -30464,4 +30534,204 @@ test "SELECT FOR UPDATE: multiple rows acquire multiple locks" {
 
     // All locks should be released
     try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+// ── VALUES Table Expression Tests ──
+
+test "VALUES table expr: basic select all columns" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT * FROM (VALUES (1, 'Alice'), (2, 'Bob')) AS t(id, name)");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "VALUES table expr: with WHERE filter" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT id FROM (VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')) AS t(id, name) WHERE id > 1");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "VALUES table expr: column access by name" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT name FROM (VALUES ('hello'), ('world')) AS t(name)");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    const names = [_][]const u8{ "hello", "world" };
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (row_count < names.len) {
+            try testing.expectEqualStrings(names[row_count], row.values[0].text);
+        }
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "VALUES table expr: numeric expressions in values" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT a, b FROM (VALUES (1+2, 3*4), (5-1, 6/2)) AS t(a, b)");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    const expected_a = [_]i64{ 3, 4 };
+    const expected_b = [_]i64{ 12, 3 };
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (row_count < expected_a.len) {
+            try testing.expectEqual(expected_a[row_count], row.values[0].integer);
+            try testing.expectEqual(expected_b[row_count], row.values[1].integer);
+        }
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "VALUES table expr: single column" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT x FROM (VALUES (10), (20), (30)) AS t(x)");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    const expected_x = [_]i64{ 10, 20, 30 };
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (row_count < expected_x.len) {
+            try testing.expectEqual(expected_x[row_count], row.values[0].integer);
+        }
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), row_count);
+}
+
+test "VALUES table expr: JOIN with real table" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_values_join.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(std.testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create employees table
+    {
+        var r = try db.execSQL("CREATE TABLE employees (id INTEGER, dept TEXT)");
+        defer r.close(std.testing.allocator);
+    }
+
+    // Insert employee data
+    {
+        var r = try db.execSQL("INSERT INTO employees VALUES (1, 'eng'), (2, 'mkt'), (3, 'hr')");
+        defer r.close(std.testing.allocator);
+    }
+
+    // JOIN employees with VALUES table
+    var r = try db.execSQL("SELECT e.id, e.dept, v.bonus FROM employees e JOIN (VALUES (1, 100), (2, 200)) AS v(id, bonus) ON e.id = v.id");
+    defer r.close(std.testing.allocator);
+
+    var row_count: usize = 0;
+    const expected_ids = [_]i64{ 1, 2 };
+    const expected_bonuses = [_]i64{ 100, 200 };
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (row_count < expected_ids.len) {
+            try testing.expectEqual(expected_ids[row_count], row.values[0].integer);
+            try testing.expectEqual(expected_bonuses[row_count], row.values[2].integer);
+        }
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "VALUES table expr: single row" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT id, name FROM (VALUES (1, 'only')) AS t(id, name)");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("only", row.values[1].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Should be only one row
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "VALUES table expr: NULL in values" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT id, val FROM (VALUES (1, NULL), (2, 'hi'), (3, NULL)) AS t(id, val)");
+    defer r.close(allocator);
+
+    var row_count: usize = 0;
+    const expected_ids = [_]i64{ 1, 2, 3 };
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        try testing.expectEqual(expected_ids[row_count], row.values[0].integer);
+        if (row_count == 1) {
+            try testing.expectEqualStrings("hi", row.values[1].text);
+        } else if (row_count == 0 or row_count == 2) {
+            try testing.expect(row.values[1] == .null_value);
+        }
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), row_count);
 }

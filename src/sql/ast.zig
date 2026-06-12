@@ -147,6 +147,12 @@ pub const TableRef = union(enum) {
         /// Column name aliases from AS t(col1, col2) syntax. When non-empty, overrides default names.
         column_names: []const []const u8 = &.{},
     },
+    /// VALUES table expression in FROM clause: (VALUES (r1c1, r1c2), (r2c1, r2c2)) AS alias(col1, col2)
+    values_table: struct {
+        rows: []const []const *const Expr,
+        alias: []const u8,
+        column_names: []const []const u8 = &.{},
+    },
 };
 
 /// SELECT result column.

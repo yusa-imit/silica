@@ -238,6 +238,50 @@ pub const Analyzer = struct {
         }
     }
 
+    fn addValuesTableToScope(self: *Analyzer, ref: *const ast.TableRef) void {
+        const vt = ref.values_table;
+
+        // Check for duplicate alias
+        for (self.scope_tables.items) |st| {
+            if (std.ascii.eqlIgnoreCase(st.alias, vt.alias)) {
+                self.addError(.duplicate_alias, "duplicate table alias: '{s}'", .{vt.alias});
+                return;
+            }
+        }
+
+        // Determine number of columns from first row
+        const n_cols = if (vt.rows.len > 0) vt.rows[0].len else 0;
+
+        const arena = self.arena.allocator();
+        const cols = arena.alloc(ColumnInfo, n_cols) catch {
+            self.addError(.invalid_expression, "out of memory", .{});
+            return;
+        };
+
+        // Build columns: use provided column_names or generate defaults
+        for (0..n_cols) |i| {
+            const col_name = if (i < vt.column_names.len)
+                vt.column_names[i]
+            else
+                std.fmt.allocPrint(arena, "column{d}", .{i + 1}) catch {
+                    self.addError(.invalid_expression, "out of memory", .{});
+                    return;
+                };
+
+            cols[i] = .{
+                .name = col_name,
+                .column_type = .text, // Default type for VALUES; could be inferred from expressions
+                .flags = .{},
+            };
+        }
+
+        self.scope_tables.append(self.allocator, .{
+            .alias = vt.alias,
+            .table_name = vt.alias, // Use alias as the table_name for scope tracking
+            .columns = cols,
+        }) catch {};
+    }
+
     /// Resolve a column reference to the table it belongs to.
     fn resolveColumn(self: *Analyzer, name: ast.Name) ?ResolvedColumn {
         if (name.prefix) |prefix| {
@@ -1040,6 +1084,16 @@ pub const Analyzer = struct {
                 }
                 // Register table function columns in scope
                 self.addTableFunctionToScope(ref);
+            },
+            .values_table => |vt| {
+                // VALUES table expression — analyze all expressions in rows
+                for (vt.rows) |row| {
+                    for (row) |expr| {
+                        self.analyzeExpr(expr);
+                    }
+                }
+                // Register values table columns in scope
+                self.addValuesTableToScope(ref);
             },
         }
     }

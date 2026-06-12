@@ -146,6 +146,8 @@ pub const PlanNode = union(enum) {
     scan: Scan,
     /// Table function scan — generate rows from a table-valued function (e.g., unnest).
     table_function_scan: TableFunctionScan,
+    /// Values table scan — emit rows from an inline VALUES expression in FROM clause.
+    values_table_scan: ValuesTableScan,
     /// Filter — apply a predicate (WHERE clause).
     filter: Filter,
     /// Project — select/compute output columns.
@@ -189,6 +191,12 @@ pub const PlanNode = union(enum) {
         alias: ?[]const u8 = null,
         is_lateral: bool = false,
         with_ordinality: bool = false,
+        column_names: []const []const u8 = &.{},
+    };
+
+    pub const ValuesTableScan = struct {
+        rows: []const []const *const ast.Expr,
+        alias: []const u8,
         column_names: []const []const u8 = &.{},
     };
 
@@ -674,6 +682,13 @@ pub const Planner = struct {
                     .column_names = tf.column_names,
                 } });
             },
+            .values_table => |vt| {
+                return self.createNode(.{ .values_table_scan = .{
+                    .rows = vt.rows,
+                    .alias = vt.alias,
+                    .column_names = vt.column_names,
+                } });
+            },
         };
     }
 
@@ -1036,6 +1051,9 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
             try writer.print("TableFunction: {s}({d} args)", .{ tfs.function_name, tfs.args.len });
             if (tfs.alias) |a| try writer.print(" AS {s}", .{a});
             try writer.writeAll("\n");
+        },
+        .values_table_scan => |vts| {
+            try writer.print("ValuesTable: {s} ({d} rows)\n", .{ vts.alias, vts.rows.len });
         },
         .filter => |f| {
             try writer.writeAll("Filter\n");
