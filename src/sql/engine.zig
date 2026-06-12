@@ -30129,3 +30129,339 @@ test "MERGE: no rows affected when no match and no clause" {
         try testing.expectEqual(@as(usize, 1), row_count);
     }
 }
+
+test "MERGE: error when target table does not exist" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_err_notarget.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create only the source table, not the target
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 'data')");
+        defer r.close(testing.allocator);
+    }
+
+    // Try to MERGE into non-existent target table
+    const result = db.execSQL(
+        \\MERGE INTO nonexistent
+        \\USING s ON nonexistent.id = s.id
+        \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
+    );
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "MERGE: error when source table does not exist" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_err_nosrc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create only the target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Try to MERGE using non-existent source table
+    const result = db.execSQL(
+        \\MERGE INTO t
+        \\USING nonexistent ON t.id = nonexistent.id
+        \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (nonexistent.id, nonexistent.val)
+    );
+    try testing.expectError(EngineError.TableNotFound, result);
+}
+
+test "MERGE: handles NULL values in match column correctly" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_null_match.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'existing')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table with NULL id
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (NULL, 'null_id'), (1, 'match'), (2, 'new')");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: NULL in ON clause should not match anything
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED THEN UPDATE SET val = s.val
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
+        );
+        defer r.close(testing.allocator);
+        // Should match id=1 (1 update) and id=2 (1 insert); NULL should be treated as NOT MATCHED
+        try testing.expectEqual(@as(u64, 3), r.rows_affected);
+    }
+
+    // Verify: target now has 3 rows (1 updated, 2 inserted with NULL and 2)
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY val");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            // Just verify we have 3 rows
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 3), row_count);
+    }
+}
+
+test "MERGE: with conditional WHEN MATCHED clause filters correctly" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_cond_filter.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, val INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'active', 10), (2, 'inactive', 20), (3, 'active', 30)");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER, val INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1, 100), (2, 200), (3, 300)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE with conditional: only update rows where status='active'
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED AND t.status = 'active' THEN UPDATE SET val = s.val
+        );
+        defer r.close(testing.allocator);
+        // Only ids 1 and 3 have status='active', so 2 rows affected
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify: rows 1 and 3 updated, row 2 unchanged
+    {
+        var r = try db.execSQL("SELECT id, val FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        var vals: [3]i64 = undefined;
+
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count < 3) {
+                vals[row_count] = row.values[1].integer;
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 3), row_count);
+        try testing.expectEqual(@as(i64, 100), vals[0]); // id=1 updated
+        try testing.expectEqual(@as(i64, 20), vals[1]);  // id=2 unchanged
+        try testing.expectEqual(@as(i64, 300), vals[2]); // id=3 updated
+    }
+}
+
+test "MERGE DELETE action: rows_affected count is accurate" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_delete_count.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with many rows
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, cat TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1, 'A'), (2, 'B'), (3, 'A'), (4, 'C'), (5, 'A')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE s (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO s VALUES (1), (3), (5)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE with DELETE: should delete 3 rows (1, 3, 5)
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO t
+            \\USING s ON t.id = s.id
+            \\WHEN MATCHED THEN DELETE
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 3), r.rows_affected);
+    }
+
+    // Verify: only rows 2 and 4 remain
+    {
+        var r = try db.execSQL("SELECT id FROM t ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        var remaining_ids: [2]i64 = undefined;
+
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count < 2) {
+                remaining_ids[row_count] = row.values[0].integer;
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 2), row_count);
+        try testing.expectEqual(@as(i64, 2), remaining_ids[0]);
+        try testing.expectEqual(@as(i64, 4), remaining_ids[1]);
+    }
+}
+
+test "SELECT FOR UPDATE on non-existent table returns error" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try db.beginTransaction(.read_committed);
+
+    // Try to SELECT FOR UPDATE on table that doesn't exist
+    // Analysis phase returns AnalysisError for unknown tables
+    const result = db.execSQL("SELECT * FROM nonexistent FOR UPDATE");
+    try testing.expectError(EngineError.AnalysisError, result);
+
+    try db.commitTransaction();
+}
+
+test "SELECT FOR UPDATE: locks released on ROLLBACK" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Create table and insert test data
+    {
+        var r = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+        r.close(allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO items VALUES (1, 'item1'), (2, 'item2')");
+        r.close(allocator);
+    }
+
+    // Start transaction, lock rows, then rollback
+    try db.beginTransaction(.read_committed);
+    {
+        var result = try db.execSQL("SELECT id, name FROM items WHERE id = 1 FOR UPDATE");
+        defer result.close(allocator);
+
+        var row_count: usize = 0;
+        while (try result.rows.?.next()) |*row_ptr| : (row_count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        try testing.expectEqual(@as(usize, 1), row_count);
+    }
+
+    // Verify locks are held during transaction
+    try testing.expect(db.lock_manager.activeRowLockCount() > 0);
+
+    // Rollback should release locks
+    try db.rollbackTransaction();
+
+    // Locks should be released after rollback
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
+
+test "SELECT FOR UPDATE: multiple rows acquire multiple locks" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Create table and insert test data
+    {
+        var r = try db.execSQL("CREATE TABLE items (id INTEGER, val TEXT)");
+        r.close(allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO items VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+        r.close(allocator);
+    }
+
+    // Start transaction and lock multiple rows
+    try db.beginTransaction(.read_committed);
+    {
+        var result = try db.execSQL("SELECT id FROM items WHERE id <= 3 FOR UPDATE");
+        defer result.close(allocator);
+
+        var row_count: usize = 0;
+        while (try result.rows.?.next()) |*row_ptr| : (row_count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+        try testing.expectEqual(@as(usize, 3), row_count);
+    }
+
+    // Should have locks for all 3 rows
+    const lock_count = db.lock_manager.activeRowLockCount();
+    try testing.expect(lock_count >= 3);
+
+    try db.commitTransaction();
+
+    // All locks should be released
+    try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
+}
