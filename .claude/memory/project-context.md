@@ -9,7 +9,23 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 368 - FEATURE MODE)
+### Last Session (Session 386 - FEATURE MODE)
+- **Date**: 2026-06-13
+- **Mode**: FEATURE MODE (Session 386)
+- **Focus**: VALUES table expression in FROM clause + MERGE/SELECT FOR UPDATE edge-case tests
+
+### Session 386 Details
+- **CI Status**: ✅ GREEN
+- **GitHub Issues**: 0 open
+- **Work Done**:
+  - Committed 336-line uncommitted test batch from prev session (MERGE/SELECT FOR UPDATE edge cases)
+  - Implemented `FROM (VALUES (...)) AS t(cols)` — SQL standard VALUES table expression
+  - Changes: ast.zig (`values_table` variant in `TableRef`), parser.zig (parseTableRef), planner.zig (`values_table_scan` PlanNode), optimizer.zig (leaf passthrough), engine.zig (`buildValuesTableScan`), analyzer.zig (scope resolution)
+  - 8 new TDD tests: basic select, WHERE filter, column by name, arithmetic in values, single-col, JOIN with real table, single row, NULLs
+- **Commits**: 312f43c (MERGE tests), 8476480 (VALUES table expr)
+- **Tests**: All passing
+
+### Previous Session (Session 368 - FEATURE MODE)
 - **Date**: 2026-06-05
 - **Mode**: FEATURE MODE (Session 368)
 - **Focus**: SERIAL/BIGSERIAL auto-increment + sailor v2.14.0 migration
