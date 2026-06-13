@@ -2484,6 +2484,53 @@ pub const Catalog = struct {
         return names.toOwnedSlice(allocator);
     }
 
+    /// List all triggers matching (table_name, event, timing) criteria.
+    /// Returns owned slice of TriggerInfo; caller must free each with .deinit() and free the slice.
+    pub fn listTriggersForTable(
+        self: *Catalog,
+        allocator: Allocator,
+        table_name: []const u8,
+        event: ast.TriggerEvent,
+        timing: ast.TriggerTiming,
+    ) ![]TriggerInfo {
+        // Get all trigger names
+        const names = try self.listTriggers(allocator);
+        defer {
+            for (names) |n| allocator.free(n);
+            allocator.free(names);
+        }
+
+        // Sort alphabetically
+        std.sort.block([]const u8, names, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+
+        var triggers = std.ArrayListUnmanaged(TriggerInfo){};
+        errdefer {
+            for (triggers.items) |t| t.deinit();
+            triggers.deinit(allocator);
+        }
+
+        for (names) |name| {
+            const info = try self.getTrigger(name);
+            errdefer info.deinit();
+
+            // Filter by table_name, event, and timing
+            if (std.mem.eql(u8, info.table_name, table_name) and
+                info.event == event and
+                info.timing == timing)
+            {
+                try triggers.append(allocator, info);
+            } else {
+                info.deinit();
+            }
+        }
+
+        return triggers.toOwnedSlice(allocator);
+    }
+
     // ── Row-Level Security Policy Management ───────────────────────────
 
     /// RLS policy metadata stored in catalog.
@@ -5880,6 +5927,88 @@ test "Catalog getTrigger — nonexistent trigger" {
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getTrigger("does_not_exist"));
+}
+
+test "Catalog listTriggersForTable — filter by table/event/timing" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_trig_list_for_table.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create multiple triggers
+    const stmt1 = ast.CreateTriggerStmt{
+        .name = "trig_a",
+        .table_name = "t1",
+        .timing = .after,
+        .event = .insert,
+        .update_columns = &.{},
+        .level = .row,
+        .when_condition = null,
+        .body = "INSERT INTO log VALUES ('a')",
+        .or_replace = false,
+    };
+    const stmt2 = ast.CreateTriggerStmt{
+        .name = "trig_b",
+        .table_name = "t1",
+        .timing = .before,
+        .event = .insert,
+        .update_columns = &.{},
+        .level = .row,
+        .when_condition = null,
+        .body = "INSERT INTO log VALUES ('b')",
+        .or_replace = false,
+    };
+    const stmt3 = ast.CreateTriggerStmt{
+        .name = "trig_c",
+        .table_name = "t2",
+        .timing = .after,
+        .event = .insert,
+        .update_columns = &.{},
+        .level = .row,
+        .when_condition = null,
+        .body = "INSERT INTO log VALUES ('c')",
+        .or_replace = false,
+    };
+
+    try tc.catalog.createTrigger(stmt1);
+    try tc.catalog.createTrigger(stmt2);
+    try tc.catalog.createTrigger(stmt3);
+
+    // Query for AFTER INSERT on t1 (should return trig_a)
+    const after_insert = try tc.catalog.listTriggersForTable(allocator, "t1", .insert, .after);
+    defer {
+        for (after_insert) |ti| ti.deinit();
+        allocator.free(after_insert);
+    }
+    try std.testing.expectEqual(@as(usize, 1), after_insert.len);
+    try std.testing.expectEqualStrings("trig_a", after_insert[0].name);
+
+    // Query for BEFORE INSERT on t1 (should return trig_b)
+    const before_insert = try tc.catalog.listTriggersForTable(allocator, "t1", .insert, .before);
+    defer {
+        for (before_insert) |ti| ti.deinit();
+        allocator.free(before_insert);
+    }
+    try std.testing.expectEqual(@as(usize, 1), before_insert.len);
+    try std.testing.expectEqualStrings("trig_b", before_insert[0].name);
+
+    // Query for AFTER INSERT on t2 (should return trig_c)
+    const t2_after_insert = try tc.catalog.listTriggersForTable(allocator, "t2", .insert, .after);
+    defer {
+        for (t2_after_insert) |ti| ti.deinit();
+        allocator.free(t2_after_insert);
+    }
+    try std.testing.expectEqual(@as(usize, 1), t2_after_insert.len);
+    try std.testing.expectEqualStrings("trig_c", t2_after_insert[0].name);
+
+    // Query for UPDATE on t1 (should return nothing)
+    const t1_update = try tc.catalog.listTriggersForTable(allocator, "t1", .update, .after);
+    defer {
+        for (t1_update) |ti| ti.deinit();
+        allocator.free(t1_update);
+    }
+    try std.testing.expectEqual(@as(usize, 0), t1_update.len);
 }
 
 // ── RLS Policy Catalog Tests ────────────────────────────────────────────
