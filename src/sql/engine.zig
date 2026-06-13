@@ -30735,3 +30735,264 @@ test "VALUES table expr: NULL in values" {
     }
     try testing.expectEqual(@as(usize, 3), row_count);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// System Information Functions: version, current_user, current_schema,
+// current_database, clock_timestamp, txid_current, num_nulls, num_nonnulls,
+// setseed, pg_table_size, pg_total_relation_size, pg_database_size
+// ────────────────────────────────────────────────────────────────────────────
+
+test "version() returns Silica version string in SELECT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT version()");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        try testing.expect(std.mem.startsWith(u8, row.values[0].text, "Silica"));
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "current_user() returns 'silica' in SELECT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT current_user()");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        try testing.expectEqualStrings("silica", row.values[0].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "current_schema() returns 'public' in SELECT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT current_schema()");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        try testing.expectEqualStrings("public", row.values[0].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "current_database() returns 'silica' in SELECT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT current_database()");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        try testing.expectEqualStrings("silica", row.values[0].text);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "clock_timestamp() returns non-NULL timestamp" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT clock_timestamp()");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .timestamp);
+        try testing.expect(row.values[0].timestamp > 0);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "txid_current() returns positive integer" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT txid_current()");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[0].integer > 0);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "num_nulls with mixed NULL and non-NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT num_nulls(1, NULL, 2, NULL)");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "num_nonnulls with mixed NULL and non-NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT num_nonnulls(1, NULL, 2, NULL)");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "setseed with valid seed returns NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT setseed(0.5)");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .null_value);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "pg_table_size returns positive integer after inserting rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_pg_table_size.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create and populate table
+    {
+        var r = try db.execSQL("CREATE TABLE test_tbl (id INTEGER, val TEXT)");
+        r.close(allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO test_tbl VALUES (1, 'hello'), (2, 'world')");
+        r.close(allocator);
+    }
+
+    // Query table size
+    var r = try db.execSQL("SELECT pg_table_size('test_tbl')");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[0].integer > 0);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "pg_total_relation_size returns value >= pg_table_size" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "test_pg_total_size.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create and populate table
+    {
+        var r = try db.execSQL("CREATE TABLE test_tbl (id INTEGER, val TEXT)");
+        r.close(allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO test_tbl VALUES (1, 'hello'), (2, 'world')");
+        r.close(allocator);
+    }
+
+    // Query total size (should be >= table size)
+    var r = try db.execSQL("SELECT pg_total_relation_size('test_tbl')");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[0].integer > 0);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "pg_database_size returns positive integer" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var r = try db.execSQL("SELECT pg_database_size('silica')");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[0].integer > 0);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}

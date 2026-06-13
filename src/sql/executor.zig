@@ -3838,6 +3838,32 @@ fn toNumber(text: []const u8, fmt: []const u8) ?f64 {
     return result;
 }
 
+/// Count the number of leaf pages allocated for a B+Tree rooted at root_page_id.
+fn countBTreeLeafPages(
+    allocator: Allocator,
+    pool: *buffer_pool_mod.BufferPool,
+    root_page_id: u32,
+) EvalError!i64 {
+    var tree = btree_mod.BTree.init(pool, root_page_id);
+    var cursor = btree_mod.Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+
+    cursor.seekFirst() catch return 1;
+    var leaf_count: i64 = 1; // Always at least 1 allocated leaf page
+    var last_page_id = cursor.page_id;
+
+    while (cursor.next() catch null) |entry| {
+        allocator.free(entry.key);
+        allocator.free(entry.value);
+        if (cursor.page_id != last_page_id and cursor.page_id != 0) {
+            leaf_count += 1;
+            last_page_id = cursor.page_id;
+        }
+    }
+
+    return leaf_count;
+}
+
 fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog: ?*Catalog) EvalError!Value {
     // Aggregate functions: look up result by column name from the aggregate output row.
     // When an Aggregate operator has already computed COUNT/SUM/etc., the result is
@@ -4018,6 +4044,132 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
     if (std.ascii.eqlIgnoreCase(fc.name, "current_timestamp") or std.ascii.eqlIgnoreCase(fc.name, "now")) {
         const now = std.time.timestamp();
         return Value{ .timestamp = now * MICROS_PER_SECOND };
+    }
+
+    // System information functions
+    if (std.ascii.eqlIgnoreCase(fc.name, "version")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        return Value{ .text = try allocator.dupe(u8, "Silica 1.0.1 on Zig 0.15") };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_user")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        return Value{ .text = try allocator.dupe(u8, "silica") };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_schema")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        return Value{ .text = try allocator.dupe(u8, "public") };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_database")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        return Value{ .text = try allocator.dupe(u8, "silica") };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "clock_timestamp")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        const now = std.time.timestamp();
+        return Value{ .timestamp = now * MICROS_PER_SECOND };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "txid_current")) {
+        if (fc.args.len != 0) return EvalError.TypeError;
+        return Value{ .integer = 1 };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "num_nulls")) {
+        var count: i64 = 0;
+        for (fc.args) |arg| {
+            const v = try evalExpr(allocator, arg, row, catalog);
+            defer v.free(allocator);
+            if (v == .null_value) count += 1;
+        }
+        return Value{ .integer = count };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "num_nonnulls")) {
+        var count: i64 = 0;
+        for (fc.args) |arg| {
+            const v = try evalExpr(allocator, arg, row, catalog);
+            defer v.free(allocator);
+            if (v != .null_value) count += 1;
+        }
+        return Value{ .integer = count };
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "setseed")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const seed_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer seed_val.free(allocator);
+        const seed: f64 = switch (seed_val) {
+            .real => |f| f,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            .null_value => return Value.null_value,
+            else => return EvalError.TypeError,
+        };
+        if (seed < -1.0 or seed > 1.0) return EvalError.TypeError;
+        return Value.null_value;
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "pg_table_size")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const name_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer name_val.free(allocator);
+        if (name_val == .null_value) return Value.null_value;
+        const table_name = switch (name_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        if (catalog) |cat| {
+            const table_info = cat.getTable(table_name) catch return Value.null_value;
+            defer table_info.deinit(allocator);
+            if (table_info.data_root_page_id == 0) return Value{ .integer = 0 };
+            const leaf_pages = try countBTreeLeafPages(allocator, cat.pool, table_info.data_root_page_id);
+            const page_size: i64 = @intCast(cat.pool.pager.page_size);
+            return Value{ .integer = leaf_pages * page_size };
+        }
+        return Value.null_value;
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "pg_total_relation_size")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const name_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer name_val.free(allocator);
+        if (name_val == .null_value) return Value.null_value;
+        const table_name = switch (name_val) {
+            .text => |s| s,
+            else => return Value.null_value,
+        };
+        if (catalog) |cat| {
+            const table_info = cat.getTable(table_name) catch return Value.null_value;
+            defer table_info.deinit(allocator);
+            const page_size: i64 = @intCast(cat.pool.pager.page_size);
+            var total_pages: i64 = 0;
+            if (table_info.data_root_page_id != 0) {
+                total_pages += try countBTreeLeafPages(allocator, cat.pool, table_info.data_root_page_id);
+            }
+            for (table_info.indexes) |idx| {
+                if (idx.root_page_id != 0) {
+                    total_pages += countBTreeLeafPages(allocator, cat.pool, idx.root_page_id) catch 0;
+                }
+            }
+            return Value{ .integer = total_pages * page_size };
+        }
+        return Value.null_value;
+    }
+
+    if (std.ascii.eqlIgnoreCase(fc.name, "pg_database_size")) {
+        if (fc.args.len != 1) return EvalError.TypeError;
+        const name_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer name_val.free(allocator);
+        // argument is ignored; always returns current database size
+        if (catalog) |cat| {
+            const page_size: i64 = @intCast(cat.pool.pager.page_size);
+            const page_count: i64 = @intCast(cat.pool.pager.page_count);
+            return Value{ .integer = page_count * page_size };
+        }
+        return Value.null_value;
     }
 
     // UUID generation
@@ -29982,4 +30134,231 @@ test "row_to_json with mixed data types" {
     try std.testing.expect(std.mem.indexOf(u8, result.text, "\"c\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.text, "\"d\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.text, "\"e\"") != null);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// System Information Functions: version, current_user, current_schema,
+// current_database, clock_timestamp, txid_current, num_nulls, num_nonnulls,
+// setseed, pg_table_size, pg_total_relation_size, pg_database_size
+// ────────────────────────────────────────────────────────────────────────────
+
+test "version() returns text starting with 'Silica'" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const fc = .{ .name = "version", .args = &.{}, .distinct = false };
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.startsWith(u8, result.text, "Silica"));
+}
+
+test "version() with arguments should fail" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const arg = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{&arg};
+    const fc = .{ .name = "version", .args = &args, .distinct = false };
+
+    const result = evalFunctionCall(allocator, fc, &empty_row, null);
+    try std.testing.expect(result == error.TypeError);
+}
+
+test "current_user() returns 'silica'" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const fc = .{ .name = "current_user", .args = &.{}, .distinct = false };
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("silica", result.text);
+}
+
+test "current_schema() returns 'public'" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const fc = .{ .name = "current_schema", .args = &.{}, .distinct = false };
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("public", result.text);
+}
+
+test "current_database() returns 'silica'" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const fc = .{ .name = "current_database", .args = &.{}, .distinct = false };
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("silica", result.text);
+}
+
+test "clock_timestamp() returns timestamp value (not null)" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const fc = .{ .name = "clock_timestamp", .args = &.{}, .distinct = false };
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .timestamp);
+    try std.testing.expect(result.timestamp > 0);
+}
+
+test "txid_current() returns positive integer" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const fc = .{ .name = "txid_current", .args = &.{}, .distinct = false };
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expect(result.integer > 0);
+}
+
+test "num_nulls counts NULL arguments correctly" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const lit1 = ast.Expr{ .integer_literal = 1 };
+    const null1 = ast.Expr{ .null_literal = {} };
+    const lit2 = ast.Expr{ .integer_literal = 2 };
+    const null2 = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &lit1, &null1, &lit2, &null2 };
+    const fc = .{ .name = "num_nulls", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "num_nulls with zero NULL values" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const lit1 = ast.Expr{ .integer_literal = 1 };
+    const lit2 = ast.Expr{ .integer_literal = 2 };
+    const lit3 = ast.Expr{ .integer_literal = 3 };
+    const args = [_]*const ast.Expr{ &lit1, &lit2, &lit3 };
+    const fc = .{ .name = "num_nulls", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "num_nulls with all NULL values" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const null1 = ast.Expr{ .null_literal = {} };
+    const null2 = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &null1, &null2 };
+    const fc = .{ .name = "num_nulls", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "num_nonnulls counts non-NULL arguments correctly" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const lit1 = ast.Expr{ .integer_literal = 1 };
+    const null1 = ast.Expr{ .null_literal = {} };
+    const lit2 = ast.Expr{ .integer_literal = 2 };
+    const null2 = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &lit1, &null1, &lit2, &null2 };
+    const fc = .{ .name = "num_nonnulls", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "num_nonnulls with all NULL values" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const null1 = ast.Expr{ .null_literal = {} };
+    const null2 = ast.Expr{ .null_literal = {} };
+    const args = [_]*const ast.Expr{ &null1, &null2 };
+    const fc = .{ .name = "num_nonnulls", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "setseed accepts valid seed value and returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const seed = ast.Expr{ .float_literal = 0.5 };
+    const args = [_]*const ast.Expr{&seed};
+    const fc = .{ .name = "setseed", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "setseed accepts seed in range [-1.0, 1.0]" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const seed = ast.Expr{ .float_literal = -0.999 };
+    const args = [_]*const ast.Expr{&seed};
+    const fc = .{ .name = "setseed", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .null_value);
+}
+
+test "setseed rejects seed outside valid range" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const seed = ast.Expr{ .float_literal = 1.5 };
+    const args = [_]*const ast.Expr{&seed};
+    const fc = .{ .name = "setseed", .args = &args, .distinct = false };
+
+    const result = evalFunctionCall(allocator, fc, &empty_row, null);
+    try std.testing.expect(result == error.TypeError);
+}
+
+test "setseed rejects negative seed outside valid range" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    const seed = ast.Expr{ .float_literal = -1.5 };
+    const args = [_]*const ast.Expr{&seed};
+    const fc = .{ .name = "setseed", .args = &args, .distinct = false };
+
+    const result = evalFunctionCall(allocator, fc, &empty_row, null);
+    try std.testing.expect(result == error.TypeError);
 }
