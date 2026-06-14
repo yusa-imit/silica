@@ -490,6 +490,7 @@ pub const EngineError = error{
     UnboundParameter,
     GeneratedColumnViolation,
     CheckConstraintViolation,
+    RlsPolicyViolation,
 };
 
 /// A named savepoint within a transaction.
@@ -2206,6 +2207,115 @@ pub const Database = struct {
             .project => |p| getPrimaryTableFromPlan(p.input),
             else => null,
         };
+    }
+
+    /// Build an OR of all USING expressions from PERMISSIVE policies matching `command` for the table.
+    /// Returns null if RLS is disabled or no matching USING expressions exist.
+    fn buildRlsUsingExpr(
+        self: *Database,
+        arena: *AstArena,
+        table_name: []const u8,
+        command: ast_mod.PolicyCommand,
+    ) EngineError!?*const ast_mod.Expr {
+        const rls_enabled = self.catalog.isRLSEnabled(table_name) catch false;
+        if (!rls_enabled) return null;
+
+        const policy_names = self.catalog.listPoliciesForTable(self.allocator, table_name) catch return null;
+        defer {
+            for (policy_names) |name| self.allocator.free(name);
+            self.allocator.free(policy_names);
+        }
+
+        var conditions: std.ArrayListUnmanaged(*const ast_mod.Expr) = .{};
+        defer conditions.deinit(self.allocator);
+
+        for (policy_names) |policy_name| {
+            const policy_info = self.catalog.getPolicy(table_name, policy_name) catch continue;
+            defer policy_info.deinit();
+
+            if (policy_info.policy_type != .permissive) continue;
+            const matches = policy_info.command == command or policy_info.command == .all;
+            if (!matches) continue;
+
+            if (policy_info.using_expr) |using_expr_str| {
+                // Dupe the SQL into the query arena so column name slices
+                // in the parsed AST remain valid after policy_info is freed.
+                const owned_sql = arena.arena.allocator().dupe(u8, using_expr_str) catch continue;
+
+                var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
+                defer infra_alloc.deinit();
+
+                var p = Parser.init(infra_alloc.allocator(), owned_sql, arena) catch continue;
+                defer p.deinit();
+
+                if (p.parseExpr(0) catch null) |expr| {
+                    conditions.append(self.allocator, expr) catch continue;
+                }
+            }
+        }
+
+        if (conditions.items.len == 0) return null;
+
+        var result: *const ast_mod.Expr = conditions.items[0];
+        for (conditions.items[1..]) |cond| {
+            const or_expr = arena.create(ast_mod.Expr, .{
+                .binary_op = .{ .left = result, .right = cond, .op = .@"or" },
+            }) catch return EngineError.OutOfMemory;
+            result = or_expr;
+        }
+        return result;
+    }
+
+    /// Evaluate all PERMISSIVE policies' WITH CHECK expressions for INSERT/UPDATE on a candidate row.
+    /// Returns EngineError.RlsPolicyViolation if any WITH CHECK expression evaluates to false.
+    fn checkRlsWithCheck(
+        self: *Database,
+        arena: *AstArena,
+        table_name: []const u8,
+        col_names: []const []const u8,
+        vals: []Value,
+        command: ast_mod.PolicyCommand,
+    ) EngineError!void {
+        const rls_enabled = self.catalog.isRLSEnabled(table_name) catch false;
+        if (!rls_enabled) return;
+
+        const policy_names = self.catalog.listPoliciesForTable(self.allocator, table_name) catch return;
+        defer {
+            for (policy_names) |name| self.allocator.free(name);
+            self.allocator.free(policy_names);
+        }
+
+        for (policy_names) |policy_name| {
+            const policy_info = self.catalog.getPolicy(table_name, policy_name) catch continue;
+            defer policy_info.deinit();
+
+            if (policy_info.policy_type != .permissive) continue;
+            const matches = policy_info.command == command or policy_info.command == .all;
+            if (!matches) continue;
+
+            if (policy_info.with_check_expr) |with_check_sql| {
+                const owned_sql = arena.arena.allocator().dupe(u8, with_check_sql) catch continue;
+
+                var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
+                defer infra_alloc.deinit();
+
+                var p = Parser.init(infra_alloc.allocator(), owned_sql, arena) catch continue;
+                defer p.deinit();
+
+                if (p.parseExpr(0) catch null) |expr| {
+                    const row = Row{
+                        .columns = col_names,
+                        .values = vals,
+                        .allocator = self.allocator,
+                    };
+                    const result = evalExpr(self.allocator, expr, &row, &self.catalog) catch continue;
+                    defer result.free(self.allocator);
+                    if (!result.isTruthy()) {
+                        return EngineError.RlsPolicyViolation;
+                    }
+                }
+            }
+        }
     }
 
     /// Recursively translate a PlanNode tree into an executor RowIterator chain.
@@ -4088,6 +4198,14 @@ pub const Database = struct {
                 }
             }
 
+            // RLS WITH CHECK: validate the candidate row against INSERT policies
+            {
+                const rls_col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+                defer self.allocator.free(rls_col_names);
+                for (table_info.columns, 0..) |col, ci| rls_col_names[ci] = col.name;
+                try self.checkRlsWithCheck(arena, actual_table, rls_col_names, vals, .insert);
+            }
+
             // Serialize the row (with MVCC header if in a transaction)
             const row_data = if (self.current_txn) |txn| blk: {
                 const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
@@ -4724,6 +4842,19 @@ pub const Database = struct {
             }
         }
 
+        // Apply RLS USING filter for UPDATE
+        if (try self.buildRlsUsingExpr(arena, actual_table, .update)) |rls_using| {
+            if (predicate) |existing| {
+                predicate = try arena.create(ast_mod.Expr, .{ .binary_op = .{
+                    .op = .@"and",
+                    .left = existing,
+                    .right = rls_using,
+                } });
+            } else {
+                predicate = rls_using;
+            }
+        }
+
         // Look up table
         var table_info = self.catalog.getTable(actual_table) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
@@ -5284,6 +5415,19 @@ pub const Database = struct {
                 }
             } else {
                 return EngineError.TableNotFound;
+            }
+        }
+
+        // Apply RLS USING filter for DELETE
+        if (try self.buildRlsUsingExpr(arena, actual_table, .delete)) |rls_using| {
+            if (predicate) |existing| {
+                predicate = try arena.create(ast_mod.Expr, .{ .binary_op = .{
+                    .op = .@"and",
+                    .left = existing,
+                    .right = rls_using,
+                } });
+            } else {
+                predicate = rls_using;
             }
         }
 
@@ -31804,4 +31948,232 @@ test "RLS USING expression with FALSE suppresses all rows" {
 
     // CRITICAL: With RLS USING (1 = 2), SELECT should return 0 rows
     try testing.expectEqual(@as(i64, 0), count);
+}
+
+test "RLS DELETE USING — only deletes rows matching policy" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_rls_delete_using.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with status column
+    var r1 = try db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT)");
+    defer r1.close(allocator);
+
+    // Insert test data: mix of 'active' and 'inactive' rows
+    var r2 = try db.exec("INSERT INTO items VALUES (1, 'active')");
+    defer r2.close(allocator);
+
+    var r3 = try db.exec("INSERT INTO items VALUES (2, 'inactive')");
+    defer r3.close(allocator);
+
+    var r4 = try db.exec("INSERT INTO items VALUES (3, 'active')");
+    defer r4.close(allocator);
+
+    // Create RLS policy that only allows DELETE on 'active' rows
+    var r5 = try db.exec("CREATE POLICY active_only ON items FOR DELETE USING (status = 'active')");
+    defer r5.close(allocator);
+
+    // Enable RLS on the table
+    var r6 = try db.exec("ALTER TABLE items ENABLE ROW LEVEL SECURITY");
+    defer r6.close(allocator);
+
+    // Execute DELETE without WHERE clause — RLS USING should filter to only 'active' rows
+    var r7 = try db.exec("DELETE FROM items");
+    defer r7.close(allocator);
+
+    // Verify only inactive row remains (id=2, status='inactive')
+    var r8 = try db.exec("SELECT id, status FROM items");
+    defer r8.close(allocator);
+
+    var count: i64 = 0;
+
+    while (try r8.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[1] == .text);
+        // Assert while row is alive to avoid use-after-free on text slice
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        try testing.expectEqualStrings("inactive", row.values[1].text);
+    }
+
+    // CRITICAL: Only 1 row should remain (the inactive one)
+    try testing.expectEqual(@as(i64, 1), count);
+}
+
+test "RLS UPDATE USING — only updates rows matching policy" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_rls_update_using.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with category and price
+    var r1 = try db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, price INTEGER)");
+    defer r1.close(allocator);
+
+    // Insert test data: mix of 'electronics' and 'clothing' rows
+    var r2 = try db.exec("INSERT INTO products VALUES (1, 'electronics', 100)");
+    defer r2.close(allocator);
+
+    var r3 = try db.exec("INSERT INTO products VALUES (2, 'clothing', 50)");
+    defer r3.close(allocator);
+
+    var r4 = try db.exec("INSERT INTO products VALUES (3, 'electronics', 200)");
+    defer r4.close(allocator);
+
+    // Create RLS policy that only allows UPDATE on 'electronics' rows
+    var r5 = try db.exec("CREATE POLICY electronics_only ON products FOR UPDATE USING (category = 'electronics')");
+    defer r5.close(allocator);
+
+    // Enable RLS on the table
+    var r6 = try db.exec("ALTER TABLE products ENABLE ROW LEVEL SECURITY");
+    defer r6.close(allocator);
+
+    // Execute UPDATE without WHERE clause — RLS USING should filter to only 'electronics' rows
+    var r7 = try db.exec("UPDATE products SET price = 999");
+    defer r7.close(allocator);
+
+    // Verify results: electronics rows have price=999, clothing row still has price=50
+    var r8 = try db.exec("SELECT id, category, price FROM products ORDER BY id");
+    defer r8.close(allocator);
+
+    var row_count: i64 = 0;
+    var electronics_count: i64 = 0;
+    var clothing_price: ?i64 = null;
+
+    while (try r8.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        row_count += 1;
+
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[1] == .text);
+        try testing.expect(row.values[2] == .integer);
+
+        const category = row.values[1].text;
+        const price = row.values[2].integer;
+
+        if (std.mem.eql(u8, category, "electronics")) {
+            electronics_count += 1;
+            // Electronics rows should have price=999
+            try testing.expectEqual(@as(i64, 999), price);
+        } else if (std.mem.eql(u8, category, "clothing")) {
+            // Clothing row should still have original price=50 (not updated due to RLS)
+            clothing_price = price;
+        }
+    }
+
+    // CRITICAL: 3 rows total, 2 electronics (updated to 999), 1 clothing (unchanged at 50)
+    try testing.expectEqual(@as(i64, 3), row_count);
+    try testing.expectEqual(@as(i64, 2), electronics_count);
+    try testing.expectEqual(@as(i64, 50), clothing_price.?);
+}
+
+test "RLS INSERT WITH CHECK — blocks violating inserts" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_rls_insert_with_check_block.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with salary column
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)");
+    defer r1.close(allocator);
+
+    // Create RLS policy with WITH CHECK to enforce salary <= 100000
+    var r2 = try db.exec("CREATE POLICY salary_cap ON employees FOR INSERT WITH CHECK (salary <= 100000)");
+    defer r2.close(allocator);
+
+    // Enable RLS on the table
+    var r3 = try db.exec("ALTER TABLE employees ENABLE ROW LEVEL SECURITY");
+    defer r3.close(allocator);
+
+    // Try to insert a row that violates the WITH CHECK (salary > 100000)
+    // This should return EngineError.RlsPolicyViolation
+    var insert_high = db.exec("INSERT INTO employees VALUES (1, 'eng', 200000)");
+
+    // We expect this to fail with RlsPolicyViolation error
+    if (insert_high) |*result| {
+        defer result.close(allocator);
+        // If we get here, the insert succeeded when it should have failed
+        try testing.expect(false); // Force test failure
+    } else |err| {
+        // We expect an RLS policy violation error
+        try testing.expect(err == EngineError.RlsPolicyViolation);
+    }
+
+    // Verify the invalid row was NOT inserted by checking row count
+    var r4 = try db.exec("SELECT COUNT(*) FROM employees");
+    defer r4.close(allocator);
+
+    if (try r4.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    }
+}
+
+test "RLS INSERT WITH CHECK — allows valid inserts" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_rls_insert_with_check_allow.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table with salary column
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)");
+    defer r1.close(allocator);
+
+    // Create RLS policy with WITH CHECK to enforce salary <= 100000
+    var r2 = try db.exec("CREATE POLICY salary_cap ON employees FOR INSERT WITH CHECK (salary <= 100000)");
+    defer r2.close(allocator);
+
+    // Enable RLS on the table
+    var r3 = try db.exec("ALTER TABLE employees ENABLE ROW LEVEL SECURITY");
+    defer r3.close(allocator);
+
+    // Insert a valid row (salary <= 100000) — should succeed
+    var r4 = try db.exec("INSERT INTO employees VALUES (1, 'eng', 50000)");
+    defer r4.close(allocator);
+
+    // Verify the valid row was inserted
+    var r5 = try db.exec("SELECT id, dept, salary FROM employees");
+    defer r5.close(allocator);
+
+    var count: i64 = 0;
+
+    while (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[1] == .text);
+        try testing.expect(row.values[2] == .integer);
+
+        // Assert while row is alive to avoid use-after-free on text slice
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("eng", row.values[1].text);
+        try testing.expectEqual(@as(i64, 50000), row.values[2].integer);
+    }
+
+    // CRITICAL: Valid insert should succeed, 1 row should be present
+    try testing.expectEqual(@as(i64, 1), count);
 }
