@@ -2172,20 +2172,28 @@ pub const Parser = struct {
 
         // Optional USING (qual)
         var using_expr: ?ast.Expr = null;
+        var using_expr_sql: ?[]const u8 = null;
         if (self.match(.kw_using)) {
             _ = try self.expect(.left_paren);
+            const using_start = self.peek().start;
             const expr = try self.parseExpr(0);
             using_expr = expr.*;
+            const using_end = self.peek().start; // position of closing ')'
+            using_expr_sql = std.mem.trim(u8, self.source[using_start..using_end], " \t\n\r");
             _ = try self.expect(.right_paren);
         }
 
         // Optional WITH CHECK (with_check)
         var with_check_expr: ?ast.Expr = null;
+        var with_check_expr_sql: ?[]const u8 = null;
         if (self.match(.kw_with)) {
             _ = try self.expect(.kw_check);
             _ = try self.expect(.left_paren);
+            const with_check_start = self.peek().start;
             const expr = try self.parseExpr(0);
             with_check_expr = expr.*;
+            const with_check_end = self.peek().start; // position of closing ')'
+            with_check_expr_sql = std.mem.trim(u8, self.source[with_check_start..with_check_end], " \t\n\r");
             _ = try self.expect(.right_paren);
         }
 
@@ -2196,6 +2204,8 @@ pub const Parser = struct {
             .command = command,
             .using_expr = using_expr,
             .with_check_expr = with_check_expr,
+            .using_expr_sql = using_expr_sql,
+            .with_check_expr_sql = with_check_expr_sql,
         };
     }
 

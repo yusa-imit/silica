@@ -2119,11 +2119,92 @@ pub const Database = struct {
             try self.materializeCtes(plan.ctes, ops);
         }
 
-        const iter = self.buildIterator(plan.root, ops) catch return EngineError.ExecutionError;
+        // Apply RLS filtering if enabled
+        var mutable_plan = plan;
+        const primary_table = getPrimaryTableFromPlan(plan.root);
+        if (primary_table) |table_name| {
+            const rls_enabled = self.catalog.isRLSEnabled(table_name) catch false;
+            if (rls_enabled) {
+                const policies = self.catalog.listPoliciesForTable(self.allocator, table_name) catch null;
+                if (policies) |policy_names| {
+                    defer {
+                        for (policy_names) |name| self.allocator.free(name);
+                        self.allocator.free(policy_names);
+                    }
+                    // Build OR condition from all USING expressions for PERMISSIVE policies
+                    var rls_conditions: std.ArrayListUnmanaged(*const ast_mod.Expr) = .{};
+                    defer rls_conditions.deinit(self.allocator);
+
+                    for (policy_names) |policy_name| {
+                        const policy_info = self.catalog.getPolicy(table_name, policy_name) catch continue;
+                        defer policy_info.deinit();
+
+                        if (policy_info.command != .select) continue;
+                        if (policy_info.policy_type != .permissive) continue;
+                        if (policy_info.using_expr) |using_expr_str| {
+                            // Dupe the SQL into the query arena so column name slices
+                            // in the parsed AST remain valid after policy_info is freed.
+                            const owned_sql = arena.arena.allocator().dupe(u8, using_expr_str) catch continue;
+
+                            var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
+                            defer infra_alloc.deinit();
+
+                            var p = Parser.init(infra_alloc.allocator(), owned_sql, arena) catch continue;
+                            defer p.deinit();
+
+                            if (p.parseExpr(0) catch null) |expr| {
+                                rls_conditions.append(self.allocator, expr) catch continue;
+                            }
+                        }
+                    }
+
+                    // If there are RLS conditions, add them to the plan
+                    if (rls_conditions.items.len > 0) {
+                        // Build an OR expression from all conditions
+                        var rls_filter: ?*const ast_mod.Expr = rls_conditions.items[0];
+                        for (rls_conditions.items[1..]) |cond| {
+                            const or_expr = arena.arena.allocator().create(ast_mod.Expr) catch continue;
+                            or_expr.* = .{
+                                .binary_op = .{
+                                    .left = rls_filter.?,
+                                    .right = cond,
+                                    .op = .@"or",
+                                },
+                            };
+                            rls_filter = or_expr;
+                        }
+
+                        // Wrap plan in a Filter node if needed
+                        if (rls_filter) |filter_expr| {
+                            const filter_node = arena.arena.allocator().create(PlanNode) catch return EngineError.OutOfMemory;
+                            filter_node.* = .{
+                                .filter = .{
+                                    .input = plan.root,
+                                    .predicate = filter_expr,
+                                },
+                            };
+                            mutable_plan.root = filter_node;
+                        }
+                    }
+                }
+            }
+        }
+
+        const iter = self.buildIterator(mutable_plan.root, ops) catch return EngineError.ExecutionError;
         return .{
             .rows = iter,
             ._arena = arena,
             ._ops = ops,
+        };
+    }
+
+    /// Extract the primary table name from a plan node (if it's a simple scan).
+    fn getPrimaryTableFromPlan(node: *const PlanNode) ?[]const u8 {
+        return switch (node.*) {
+            .scan => |s| s.table,
+            .filter => |f| getPrimaryTableFromPlan(f.input),
+            .project => |p| getPrimaryTableFromPlan(p.input),
+            else => null,
         };
     }
 
@@ -6632,9 +6713,11 @@ pub const Database = struct {
                 return .{ .message = "DROP POLICY" };
             },
             .alter_table_rls => |rls| {
-                // TODO: Implement RLS enable/disable state in catalog
-                // For now, just acknowledge the command
-                _ = rls;
+                if (rls.enable) {
+                    try self.catalog.enableRLS(rls.table_name);
+                } else {
+                    try self.catalog.disableRLS(rls.table_name);
+                }
                 arena.?.deinit();
                 self.allocator.destroy(arena.?);
                 self.commitWal() catch {};
@@ -31607,4 +31690,118 @@ test "TRIGGER WHEN condition with arithmetic" {
     } else {
         return error.TestUnexpectedResult;
     }
+}
+
+// ============================================================================
+// RLS (Row-Level Security) Policy Tests
+// ============================================================================
+
+test "RLS USING expression filters rows in SELECT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_rls_using_filter.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.exec("CREATE TABLE users (id INTEGER, name TEXT, role TEXT)");
+    defer r1.close(allocator);
+
+    // Insert test data
+    var r2 = try db.exec("INSERT INTO users VALUES (1, 'alice', 'admin')");
+    defer r2.close(allocator);
+
+    var r3 = try db.exec("INSERT INTO users VALUES (2, 'bob', 'user')");
+    defer r3.close(allocator);
+
+    var r4 = try db.exec("INSERT INTO users VALUES (3, 'charlie', 'admin')");
+    defer r4.close(allocator);
+
+    // Create RLS policy that filters to only 'admin' role
+    var r5 = try db.exec("CREATE POLICY admin_only ON users FOR SELECT USING (role = 'admin')");
+    defer r5.close(allocator);
+
+    // Enable RLS on the table
+    var r6 = try db.exec("ALTER TABLE users ENABLE ROW LEVEL SECURITY");
+    defer r6.close(allocator);
+
+    // Select with RLS enabled — should only return rows where role = 'admin'
+    var r7 = try db.exec("SELECT id, name, role FROM users");
+    defer r7.close(allocator);
+
+    var count: i64 = 0;
+    var admin_count: i64 = 0;
+
+    while (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        count += 1;
+
+        // Verify row has expected structure
+        try testing.expect(row.values[0] == .integer);
+        try testing.expect(row.values[1] == .text);
+        try testing.expect(row.values[2] == .text);
+
+        // Count only rows with 'admin' role
+        if (std.mem.eql(u8, row.values[2].text, "admin")) {
+            admin_count += 1;
+        }
+    }
+
+    // CRITICAL: With RLS USING (role = 'admin'), SELECT should return only 2 rows (alice, charlie)
+    // not all 3 rows (alice, bob, charlie)
+    try testing.expectEqual(@as(i64, 2), count);
+    try testing.expectEqual(@as(i64, 2), admin_count);
+}
+
+test "RLS USING expression with FALSE suppresses all rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_rls_using_false.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    var r1 = try db.exec("CREATE TABLE sensitive (id INTEGER, secret TEXT)");
+    defer r1.close(allocator);
+
+    // Insert test data
+    var r2 = try db.exec("INSERT INTO sensitive VALUES (1, 'secret1')");
+    defer r2.close(allocator);
+
+    var r3 = try db.exec("INSERT INTO sensitive VALUES (2, 'secret2')");
+    defer r3.close(allocator);
+
+    var r4 = try db.exec("INSERT INTO sensitive VALUES (3, 'secret3')");
+    defer r4.close(allocator);
+
+    // Create RLS policy that always returns FALSE (deny all)
+    var r5 = try db.exec("CREATE POLICY deny_all ON sensitive FOR SELECT USING (1 = 2)");
+    defer r5.close(allocator);
+
+    // Enable RLS on the table
+    var r6 = try db.exec("ALTER TABLE sensitive ENABLE ROW LEVEL SECURITY");
+    defer r6.close(allocator);
+
+    // Select with RLS enabled — should return 0 rows because USING (1 = 2) is always false
+    var r7 = try db.exec("SELECT id, secret FROM sensitive");
+    defer r7.close(allocator);
+
+    var count: i64 = 0;
+
+    while (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+
+    // CRITICAL: With RLS USING (1 = 2), SELECT should return 0 rows
+    try testing.expectEqual(@as(i64, 0), count);
 }

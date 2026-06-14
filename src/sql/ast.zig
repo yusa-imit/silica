@@ -914,6 +914,8 @@ pub const CreatePolicyStmt = struct {
     command: PolicyCommand = .all,
     using_expr: ?Expr = null, // USING clause (for SELECT, UPDATE, DELETE)
     with_check_expr: ?Expr = null, // WITH CHECK clause (for INSERT, UPDATE)
+    using_expr_sql: ?[]const u8 = null, // Serialized SQL text of USING expression
+    with_check_expr_sql: ?[]const u8 = null, // Serialized SQL text of WITH CHECK expression
 };
 
 /// DROP POLICY statement: DROP POLICY [IF EXISTS] name ON table

@@ -2605,16 +2605,14 @@ pub const Catalog = struct {
 
         // USING expression
         total_size += 1; // has_using flag
-        if (stmt.using_expr) |_| {
-            // For now, serialize as empty (executor not implemented yet)
-            total_size += 4; // using_len (0 for now)
+        if (stmt.using_expr_sql) |sql| {
+            total_size += 4 + sql.len;
         }
 
         // WITH CHECK expression
         total_size += 1; // has_with_check flag
-        if (stmt.with_check_expr) |_| {
-            // For now, serialize as empty (executor not implemented yet)
-            total_size += 4; // with_check_len (0 for now)
+        if (stmt.with_check_expr_sql) |sql| {
+            total_size += 4 + sql.len;
         }
 
         const value_buf = try self.allocator.alloc(u8, total_size);
@@ -2637,22 +2635,26 @@ pub const Catalog = struct {
         offset += 1;
 
         // USING expression
-        if (stmt.using_expr) |_| {
+        if (stmt.using_expr_sql) |sql| {
             value_buf[offset] = 1;
             offset += 1;
-            std.mem.writeInt(u32, value_buf[offset..][0..4], 0, .little);
+            std.mem.writeInt(u32, value_buf[offset..][0..4], @intCast(sql.len), .little);
             offset += 4;
+            @memcpy(value_buf[offset..][0..sql.len], sql);
+            offset += sql.len;
         } else {
             value_buf[offset] = 0;
             offset += 1;
         }
 
         // WITH CHECK expression
-        if (stmt.with_check_expr) |_| {
+        if (stmt.with_check_expr_sql) |sql| {
             value_buf[offset] = 1;
             offset += 1;
-            std.mem.writeInt(u32, value_buf[offset..][0..4], 0, .little);
+            std.mem.writeInt(u32, value_buf[offset..][0..4], @intCast(sql.len), .little);
             offset += 4;
+            @memcpy(value_buf[offset..][0..sql.len], sql);
+            offset += sql.len;
         } else {
             value_buf[offset] = 0;
             offset += 1;
@@ -2790,6 +2792,47 @@ pub const Catalog = struct {
         }
 
         return names.toOwnedSlice(allocator);
+    }
+
+    /// Enable RLS for a specific table.
+    pub fn enableRLS(self: *Catalog, table_name: []const u8) error{OutOfMemory,StorageError}!void {
+        const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
+        defer self.allocator.free(key);
+
+        // Delete existing value first (upsert)
+        const existing = self.tree.get(self.allocator, key) catch return error.StorageError;
+        if (existing) |v| {
+            self.allocator.free(v);
+            self.tree.delete(key) catch return error.StorageError;
+        }
+
+        // Store "1" to indicate RLS is enabled (tree.insert copies the value)
+        self.tree.insert(key, "1") catch return error.StorageError;
+    }
+
+    /// Disable RLS for a specific table.
+    pub fn disableRLS(self: *Catalog, table_name: []const u8) error{OutOfMemory,StorageError}!void {
+        const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
+        defer self.allocator.free(key);
+
+        const existing = self.tree.get(self.allocator, key) catch return error.StorageError;
+        if (existing) |v| {
+            self.allocator.free(v);
+            self.tree.delete(key) catch return error.StorageError;
+        }
+    }
+
+    /// Check if RLS is enabled for a specific table.
+    pub fn isRLSEnabled(self: *Catalog, table_name: []const u8) error{OutOfMemory,StorageError}!bool {
+        const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
+        defer self.allocator.free(key);
+
+        const value = self.tree.get(self.allocator, key) catch return error.StorageError;
+        if (value) |v| {
+            defer self.allocator.free(v);
+            return std.mem.eql(u8, v, "1");
+        }
+        return false;
     }
 
     // ── Statistics Catalog ──────────────────────────────────────────────
@@ -6333,6 +6376,122 @@ test "Catalog createPolicy — DELETE policy" {
     defer info.deinit();
 
     try std.testing.expectEqual(ast.PolicyCommand.delete, info.command);
+}
+
+test "Catalog createPolicy — USING expression is stored and retrieved" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_using_expr.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    // Create a policy with a USING expression SQL string
+    // For now, create a dummy AST expression (it will be serialized as the SQL string)
+    const using_expr = ast.Expr{
+        .boolean_literal = true,
+    };
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "user_select_policy",
+        .table_name = "users",
+        .policy_type = .permissive,
+        .command = .select,
+        .using_expr = using_expr,
+        .with_check_expr = null,
+        .using_expr_sql = "user_id = 1",
+        .with_check_expr_sql = null,
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("users", "user_select_policy");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("user_select_policy", info.policy_name);
+    try std.testing.expectEqualStrings("users", info.table_name);
+    try std.testing.expectEqual(ast.PolicyCommand.select, info.command);
+
+    // CRITICAL: USING expression must be stored and retrieved (not null)
+    // This test will FAIL until createPolicy() serializes using_expr_sql into the catalog
+    try std.testing.expect(info.using_expr != null);
+    try std.testing.expectEqualStrings("user_id = 1", info.using_expr.?);
+    try std.testing.expect(info.with_check_expr == null);
+}
+
+test "Catalog createPolicy — WITH CHECK expression is stored and retrieved" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_with_check_expr.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const with_check_expr = ast.Expr{
+        .boolean_literal = true,
+    };
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "insert_active_only",
+        .table_name = "items",
+        .policy_type = .permissive,
+        .command = .insert,
+        .using_expr = null,
+        .with_check_expr = with_check_expr,
+        .using_expr_sql = null,
+        .with_check_expr_sql = "status = 'active'",
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("items", "insert_active_only");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("insert_active_only", info.policy_name);
+    try std.testing.expectEqualStrings("items", info.table_name);
+    try std.testing.expectEqual(ast.PolicyCommand.insert, info.command);
+
+    // CRITICAL: WITH CHECK expression must be stored and retrieved (not null)
+    // This test will FAIL until createPolicy() serializes with_check_expr_sql into the catalog
+    try std.testing.expect(info.with_check_expr != null);
+    try std.testing.expectEqualStrings("status = 'active'", info.with_check_expr.?);
+    try std.testing.expect(info.using_expr == null);
+}
+
+test "Catalog createPolicy — both USING and WITH CHECK expressions stored" {
+    const allocator = std.testing.allocator;
+    const path = "test_catalog_policy_both_expr.db";
+
+    var tc = try TestCatalog.setup(allocator, path);
+    defer tc.teardown(allocator);
+
+    const using_expr = ast.Expr{ .boolean_literal = true };
+    const with_check_expr = ast.Expr{ .boolean_literal = false };
+
+    const stmt = ast.CreatePolicyStmt{
+        .policy_name = "update_own_rows",
+        .table_name = "posts",
+        .policy_type = .permissive,
+        .command = .update,
+        .using_expr = using_expr,
+        .with_check_expr = with_check_expr,
+        .using_expr_sql = "author_id = current_user_id()",
+        .with_check_expr_sql = "is_published = false",
+    };
+
+    try tc.catalog.createPolicy(stmt);
+
+    const info = try tc.catalog.getPolicy("posts", "update_own_rows");
+    defer info.deinit();
+
+    try std.testing.expectEqualStrings("update_own_rows", info.policy_name);
+    try std.testing.expectEqualStrings("posts", info.table_name);
+    try std.testing.expectEqual(ast.PolicyCommand.update, info.command);
+
+    // CRITICAL: Both expressions must be stored and retrieved
+    try std.testing.expect(info.using_expr != null);
+    try std.testing.expectEqualStrings("author_id = current_user_id()", info.using_expr.?);
+
+    try std.testing.expect(info.with_check_expr != null);
+    try std.testing.expectEqualStrings("is_published = false", info.with_check_expr.?);
 }
 
 // ── Role Catalog Tests ──────────────────────────────────────────────────
