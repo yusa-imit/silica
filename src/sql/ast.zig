@@ -792,6 +792,8 @@ pub const CreateTriggerStmt = struct {
     level: TriggerLevel = .row,
     /// WHEN (condition) clause
     when_condition: ?*const Expr = null,
+    /// Source text of WHEN condition
+    when_condition_sql: ?[]const u8 = null,
     /// Trigger body (SQL statements to execute)
     body: []const u8,
     or_replace: bool = false,

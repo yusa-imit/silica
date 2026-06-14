@@ -4510,6 +4510,30 @@ pub const Database = struct {
         for (triggers) |trigger| {
             if (!trigger.enabled) continue;
 
+            // Evaluate WHEN condition if present.
+            // Conditions referencing NEW/OLD require row context (not available here),
+            // so skip evaluation for those — they always fire.
+            if (trigger.when_condition) |cond| {
+                const has_row_ref = containsIgnoreCaseSubstring(cond, "new.") or
+                    containsIgnoreCaseSubstring(cond, "old.");
+                if (!has_row_ref) {
+                    const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{cond}) catch continue;
+                    defer self.allocator.free(when_sql);
+                    var cond_result = self.exec(when_sql) catch continue;
+                    defer cond_result.close(self.allocator);
+                    const is_truthy = blk: {
+                        if (cond_result.rows == null) break :blk false;
+                        const first_row = cond_result.rows.?.next() catch break :blk false;
+                        if (first_row == null) break :blk false;
+                        var row = first_row.?;
+                        defer row.deinit();
+                        if (row.values.len == 0) break :blk false;
+                        break :blk row.values[0].isTruthy();
+                    };
+                    if (!is_truthy) continue;
+                }
+            }
+
             const fire_count: u64 = switch (trigger.level) {
                 .statement => 1,
                 .row => if (row_count > 0) row_count else 1,
@@ -4520,6 +4544,16 @@ pub const Database = struct {
                 result.close(self.allocator);
             }
         }
+    }
+
+    /// Helper function: case-insensitive substring search.
+    fn containsIgnoreCaseSubstring(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len > haystack.len) return false;
+        var i: usize = 0;
+        while (i + needle.len <= haystack.len) : (i += 1) {
+            if (std.ascii.eqlIgnoreCase(haystack[i..][0..needle.len], needle)) return true;
+        }
+        return false;
     }
 
     // ── UPDATE execution ──────────────────────────────────────────────
@@ -31422,6 +31456,153 @@ test "trigger: AFTER INSERT STATEMENT trigger fires once for multi-row insert" {
         defer row.deinit();
         try testing.expect(row.values[0] == .integer);
         // Expected: 1 (one audit log entry because trigger is STATEMENT-level, not ROW-level)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "TRIGGER WHEN condition TRUE fires trigger" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_true.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table
+    var r1 = try db.exec("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the log table to record trigger fires
+    var r2 = try db.exec("CREATE TABLE log (entry INTEGER)");
+    defer r2.close(testing.allocator);
+
+    // Create an AFTER INSERT ROW trigger with WHEN condition (1 = 1, always true)
+    var r3 = try db.exec(
+        \\CREATE TRIGGER trig
+        \\AFTER INSERT ON t
+        \\FOR EACH ROW
+        \\WHEN (1 = 1)
+        \\AS 'INSERT INTO log VALUES (99)'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row — trigger should fire because WHEN condition is TRUE
+    var r4 = try db.exec("INSERT INTO t VALUES (1)");
+    defer r4.close(testing.allocator);
+
+    // Verify the trigger fired by checking log has an entry with value 99
+    var r5 = try db.exec("SELECT COUNT(*) FROM log WHERE entry = 99");
+    defer r5.close(testing.allocator);
+
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (trigger fired because WHEN condition was true)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "TRIGGER WHEN condition FALSE suppresses trigger" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_false.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table
+    var r1 = try db.exec("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the log table
+    var r2 = try db.exec("CREATE TABLE log (entry INTEGER)");
+    defer r2.close(testing.allocator);
+
+    // Create an AFTER INSERT ROW trigger with WHEN condition (1 = 2, always false)
+    var r3 = try db.exec(
+        \\CREATE TRIGGER trig
+        \\AFTER INSERT ON t
+        \\FOR EACH ROW
+        \\WHEN (1 = 2)
+        \\AS 'INSERT INTO log VALUES (99)'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row — trigger should NOT fire because WHEN condition is FALSE
+    var r4 = try db.exec("INSERT INTO t VALUES (1)");
+    defer r4.close(testing.allocator);
+
+    // Verify the trigger did NOT fire by checking log is empty
+    var r5 = try db.exec("SELECT COUNT(*) FROM log");
+    defer r5.close(testing.allocator);
+
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 0 (trigger was suppressed because WHEN condition was false)
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "TRIGGER WHEN condition with arithmetic" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_arithmetic.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table
+    var r1 = try db.exec("CREATE TABLE t (val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the log table
+    var r2 = try db.exec("CREATE TABLE log (entry INTEGER)");
+    defer r2.close(testing.allocator);
+
+    // Create an AFTER INSERT ROW trigger with WHEN condition (2 + 3 > 4, evaluates to true)
+    var r3 = try db.exec(
+        \\CREATE TRIGGER trig
+        \\AFTER INSERT ON t
+        \\FOR EACH ROW
+        \\WHEN (2 + 3 > 4)
+        \\AS 'INSERT INTO log VALUES (42)'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row — trigger should fire because WHEN condition (2+3=5 > 4) is TRUE
+    var r4 = try db.exec("INSERT INTO t VALUES (1)");
+    defer r4.close(testing.allocator);
+
+    // Verify the trigger fired by checking log has an entry with value 42
+    var r5 = try db.exec("SELECT COUNT(*) FROM log WHERE entry = 42");
+    defer r5.close(testing.allocator);
+
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (trigger fired because WHEN condition (2+3>4) was true)
         try testing.expectEqual(@as(i64, 1), row.values[0].integer);
     } else {
         return error.TestUnexpectedResult;

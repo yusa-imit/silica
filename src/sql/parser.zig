@@ -2727,9 +2727,13 @@ pub const Parser = struct {
 
         // Parse WHEN (condition) clause (optional)
         var when_condition: ?*const ast.Expr = null;
+        var when_condition_sql: ?[]const u8 = null;
         if (self.match(.kw_when)) {
             _ = try self.expect(.left_paren);
+            const when_start = self.peek().start;
             when_condition = try self.parseExpr(0);
+            const when_end = self.peek().start; // position of closing ')'
+            when_condition_sql = std.mem.trim(u8, self.source[when_start..when_end], " \t\n\r");
             _ = try self.expect(.right_paren);
         }
 
@@ -2746,6 +2750,7 @@ pub const Parser = struct {
             .update_columns = update_columns.toOwnedSlice(a) catch return error.OutOfMemory,
             .level = level,
             .when_condition = when_condition,
+            .when_condition_sql = when_condition_sql,
             .body = body,
             .or_replace = or_replace,
         };

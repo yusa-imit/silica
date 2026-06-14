@@ -2168,9 +2168,8 @@ pub const Catalog = struct {
 
         // When condition
         total_size += 1; // has_when flag
-        if (stmt.when_condition) |_| {
-            // For now, we'll serialize the condition as empty (executor not implemented yet)
-            total_size += 4; // when_len (0 for now)
+        if (stmt.when_condition_sql) |cond| {
+            total_size += 4 + cond.len;
         }
 
         // Body
@@ -2213,12 +2212,13 @@ pub const Catalog = struct {
         offset += 1;
 
         // Write when condition
-        if (stmt.when_condition) |_| {
+        if (stmt.when_condition_sql) |cond| {
             data[offset] = 1; // has_when = true
             offset += 1;
-            // Serialize as empty string for now (executor TBD)
-            std.mem.writeInt(u32, data[offset..][0..4], 0, .little);
+            std.mem.writeInt(u32, data[offset..][0..4], @intCast(cond.len), .little);
             offset += 4;
+            @memcpy(data[offset..][0..cond.len], cond);
+            offset += cond.len;
         } else {
             data[offset] = 0; // has_when = false
             offset += 1;
@@ -5781,6 +5781,7 @@ test "Catalog createTrigger — with WHEN condition" {
         .update_columns = &.{},
         .level = .row,
         .when_condition = &when_expr,
+        .when_condition_sql = "NEW.balance < 0",
         .body = "SELECT validate_status(NEW.status)",
         .or_replace = false,
     };
@@ -5792,10 +5793,7 @@ test "Catalog createTrigger — with WHEN condition" {
 
     try std.testing.expectEqualStrings("check_status", info.name);
     try std.testing.expectEqualStrings("users", info.table_name);
-    // NOTE: When condition is currently serialized as empty (length 0),
-    // so it deserializes to null even though we passed a non-null when_condition.
-    // This is expected behavior until Milestone 14E-14H implement trigger execution.
-    try std.testing.expect(info.when_condition == null);
+    try std.testing.expectEqualStrings("NEW.balance < 0", info.when_condition.?);
 }
 
 test "Catalog createTrigger — empty body edge case" {
