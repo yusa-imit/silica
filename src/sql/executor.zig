@@ -7264,7 +7264,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy", "grouping" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "json_object_agg", "jsonb_object_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy", "grouping" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -7289,6 +7289,8 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "json_agg")) return "json_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "array_agg")) return "array_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "string_agg")) return "string_agg";
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_object_agg") or
+        std.ascii.eqlIgnoreCase(fc.name, "jsonb_object_agg")) return "json_object_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "bool_and")) return "bool_and";
     if (std.ascii.eqlIgnoreCase(fc.name, "bool_or")) return "bool_or";
     if (std.ascii.eqlIgnoreCase(fc.name, "bit_and")) return "bit_and";
@@ -9303,6 +9305,104 @@ pub const AggregateOp = struct {
                 const text_copy = self.allocator.dupe(u8, result.items) catch return .null_value;
                 return .{ .text = text_copy };
             },
+            .json_object_agg => {
+                // json_object_agg(key, value) / jsonb_object_agg(key, value)
+                // Aggregates (key, value) pairs into a JSON object string.
+                // NULL keys are skipped; NULL values are included as JSON null.
+                var out = std.ArrayListUnmanaged(u8){};
+                defer out.deinit(self.allocator);
+                out.appendSlice(self.allocator, "{") catch return .null_value;
+                var first = true;
+
+                for (group) |*row| {
+                    if (agg.filter_expr) |filter| {
+                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        defer fv.free(self.allocator);
+                        if (fv != .boolean or !fv.boolean) continue;
+                    }
+                    const key_expr = agg.arg orelse continue;
+                    const val_expr = agg.arg2 orelse continue;
+
+                    const key_val = evalExpr(self.allocator, key_expr, row, null) catch continue;
+                    defer key_val.free(self.allocator);
+                    if (key_val == .null_value) continue;
+
+                    const val = evalExpr(self.allocator, val_expr, row, null) catch continue;
+                    defer val.free(self.allocator);
+
+                    if (!first) out.appendSlice(self.allocator, ",") catch return .null_value;
+                    first = false;
+
+                    // Key: always a JSON string
+                    out.append(self.allocator, '"') catch return .null_value;
+                    switch (key_val) {
+                        .text => |t| {
+                            for (t) |c| {
+                                switch (c) {
+                                    '"' => out.appendSlice(self.allocator, "\\\"") catch return .null_value,
+                                    '\\' => out.appendSlice(self.allocator, "\\\\") catch return .null_value,
+                                    '\n' => out.appendSlice(self.allocator, "\\n") catch return .null_value,
+                                    '\r' => out.appendSlice(self.allocator, "\\r") catch return .null_value,
+                                    else => out.append(self.allocator, c) catch return .null_value,
+                                }
+                            }
+                        },
+                        .integer => |n| {
+                            var buf: [32]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return .null_value;
+                            out.appendSlice(self.allocator, s) catch return .null_value;
+                        },
+                        .real => |f| {
+                            var buf: [64]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{f}) catch return .null_value;
+                            out.appendSlice(self.allocator, s) catch return .null_value;
+                        },
+                        .boolean => |b| {
+                            out.appendSlice(self.allocator, if (b) "true" else "false") catch return .null_value;
+                        },
+                        else => out.appendSlice(self.allocator, "null") catch return .null_value,
+                    }
+                    out.append(self.allocator, '"') catch return .null_value;
+                    out.append(self.allocator, ':') catch return .null_value;
+
+                    // Value: JSON value representation
+                    switch (val) {
+                        .integer => |vi| {
+                            var buf: [32]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{vi}) catch return .null_value;
+                            out.appendSlice(self.allocator, s) catch return .null_value;
+                        },
+                        .real => |vf| {
+                            var buf: [64]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{vf}) catch return .null_value;
+                            out.appendSlice(self.allocator, s) catch return .null_value;
+                        },
+                        .text => |vt| {
+                            out.append(self.allocator, '"') catch return .null_value;
+                            for (vt) |c| {
+                                switch (c) {
+                                    '"' => out.appendSlice(self.allocator, "\\\"") catch return .null_value,
+                                    '\\' => out.appendSlice(self.allocator, "\\\\") catch return .null_value,
+                                    '\n' => out.appendSlice(self.allocator, "\\n") catch return .null_value,
+                                    '\r' => out.appendSlice(self.allocator, "\\r") catch return .null_value,
+                                    else => out.append(self.allocator, c) catch return .null_value,
+                                }
+                            }
+                            out.append(self.allocator, '"') catch return .null_value;
+                        },
+                        .boolean => |vb| {
+                            out.appendSlice(self.allocator, if (vb) "true" else "false") catch return .null_value;
+                        },
+                        .null_value => out.appendSlice(self.allocator, "null") catch return .null_value,
+                        else => out.appendSlice(self.allocator, "null") catch return .null_value,
+                    }
+                }
+
+                if (first) return .null_value;
+                out.appendSlice(self.allocator, "}") catch return .null_value;
+                const text_copy = self.allocator.dupe(u8, out.items) catch return .null_value;
+                return .{ .text = text_copy };
+            },
             .bool_and => {
                 // Return true if all non-NULL values are true, false if any is false, NULL if all NULL
                 var result: ?bool = null;
@@ -10049,6 +10149,7 @@ fn aggFuncName(func: AggFunc) []const u8 {
         .percentile_disc => "percentile_disc",
         .mode => "mode",
         .grouping => "grouping",
+        .json_object_agg => "json_object_agg",
     };
 }
 
@@ -30361,4 +30462,106 @@ test "setseed rejects negative seed outside valid range" {
 
     const result = evalFunctionCall(allocator, fc, &empty_row, null);
     try std.testing.expect(result == error.TypeError);
+}
+
+// ── json_object_agg Tests ────────────────────────────────────────────────────
+
+test "json_object_agg basic text key integer value" {
+    const allocator = std.testing.allocator;
+    const key_ref = ast.Expr{ .column_ref = .{ .name = "k" } };
+    const val_ref = ast.Expr{ .column_ref = .{ .name = "v" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .json_object_agg,
+        .arg = &key_ref,
+        .arg2 = &val_ref,
+    };
+
+    var row1_vals = [_]Value{ .{ .text = "a" }, .{ .integer = 1 } };
+    var row2_vals = [_]Value{ .{ .text = "b" }, .{ .integer = 2 } };
+
+    var rows = [_]Row{
+        .{ .columns = &.{ "k", "v" }, .values = &row1_vals, .allocator = allocator },
+        .{ .columns = &.{ "k", "v" }, .values = &row2_vals, .allocator = allocator },
+    };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "{"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "}"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "\"a\":1"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "\"b\":2"));
+}
+
+test "json_object_agg NULL key row is skipped" {
+    const allocator = std.testing.allocator;
+    const key_ref = ast.Expr{ .column_ref = .{ .name = "k" } };
+    const val_ref = ast.Expr{ .column_ref = .{ .name = "v" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .json_object_agg,
+        .arg = &key_ref,
+        .arg2 = &val_ref,
+    };
+
+    var row1_vals = [_]Value{ .{ .text = "x" }, .{ .integer = 10 } };
+    var row2_vals = [_]Value{ .null_value, .{ .integer = 99 } };
+    var rows = [_]Row{
+        .{ .columns = &.{ "k", "v" }, .values = &row1_vals, .allocator = allocator },
+        .{ .columns = &.{ "k", "v" }, .values = &row2_vals, .allocator = allocator },
+    };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "\"x\":10"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result.text, 1, "99"));
+}
+
+test "json_object_agg NULL value included as JSON null" {
+    const allocator = std.testing.allocator;
+    const key_ref = ast.Expr{ .column_ref = .{ .name = "k" } };
+    const val_ref = ast.Expr{ .column_ref = .{ .name = "v" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .json_object_agg,
+        .arg = &key_ref,
+        .arg2 = &val_ref,
+    };
+
+    var row_vals = [_]Value{ .{ .text = "mykey" }, .null_value };
+    var rows = [_]Row{
+        .{ .columns = &.{ "k", "v" }, .values = &row_vals, .allocator = allocator },
+    };
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+    defer result.free(allocator);
+
+    try std.testing.expect(result == .text);
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "\"mykey\":null"));
+}
+
+test "json_object_agg empty group returns NULL" {
+    const allocator = std.testing.allocator;
+    const key_ref = ast.Expr{ .column_ref = .{ .name = "k" } };
+    const val_ref = ast.Expr{ .column_ref = .{ .name = "v" } };
+
+    const agg_expr = planner_mod.PlanNode.AggregateExpr{
+        .func = .json_object_agg,
+        .arg = &key_ref,
+        .arg2 = &val_ref,
+    };
+
+    var rows = [_]Row{};
+
+    var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
+    const result = agg_op.computeAggregate(agg_expr, &rows);
+
+    try std.testing.expect(result == .null_value);
 }

@@ -136,6 +136,7 @@ pub const AggFunc = enum {
     percentile_disc,
     mode,
     grouping,
+    json_object_agg,
 };
 
 // ── Logical Plan Node ─────────────────────────────────────────────────
@@ -818,11 +819,12 @@ pub const Planner = struct {
                 {
                     func = .count_star;
                 }
-                // For two-argument aggregates (regression functions), populate arg2
+                // For two-argument aggregates (regression functions, json_object_agg), populate arg2
                 const is_two_arg_agg = func == .corr or func == .covar_pop or func == .covar_samp or
                     func == .regr_slope or func == .regr_intercept or func == .regr_r2 or
                     func == .regr_count or func == .regr_avgx or func == .regr_avgy or
-                    func == .regr_sxx or func == .regr_syy or func == .regr_sxy;
+                    func == .regr_sxx or func == .regr_syy or func == .regr_sxy or
+                    func == .json_object_agg;
 
                 // For GROUPING(): store all args
                 if (func == .grouping) {
@@ -1032,6 +1034,8 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "percentile_disc")) return .percentile_disc;
     if (std.mem.eql(u8, lower, "mode")) return .mode;
     if (std.mem.eql(u8, lower, "grouping")) return .grouping;
+    if (std.mem.eql(u8, lower, "json_object_agg") or
+        std.mem.eql(u8, lower, "jsonb_object_agg")) return .json_object_agg;
     return null;
 }
 

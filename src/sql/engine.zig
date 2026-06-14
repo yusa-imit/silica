@@ -32177,3 +32177,118 @@ test "RLS INSERT WITH CHECK — allows valid inserts" {
     // CRITICAL: Valid insert should succeed, 1 row should be present
     try testing.expectEqual(@as(i64, 1), count);
 }
+
+// ── json_object_agg Integration Tests ───────────────────────────────────────
+
+test "json_object_agg: basic aggregation of text key and integer value" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE kv (k TEXT, v INTEGER)");
+    _ = try db.exec("INSERT INTO kv VALUES ('alpha', 1), ('beta', 2), ('gamma', 3)");
+
+    var r = try db.exec("SELECT json_object_agg(k, v) AS obj FROM kv");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        const obj = row.values[0].text;
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"alpha\":1"));
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"beta\":2"));
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"gamma\":3"));
+    } else return error.TestUnexpectedResult;
+}
+
+test "json_object_agg: jsonb_object_agg alias produces same result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE kv2 (k TEXT, v INTEGER)");
+    _ = try db.exec("INSERT INTO kv2 VALUES ('x', 10), ('y', 20)");
+
+    var r = try db.exec("SELECT jsonb_object_agg(k, v) AS obj FROM kv2");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        const obj = row.values[0].text;
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"x\":10"));
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"y\":20"));
+    } else return error.TestUnexpectedResult;
+}
+
+test "json_object_agg: text value is JSON-escaped" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE kv3 (k TEXT, v TEXT)");
+    _ = try db.exec("INSERT INTO kv3 VALUES ('key', 'hello world')");
+
+    var r = try db.exec("SELECT json_object_agg(k, v) AS obj FROM kv3");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        const obj = row.values[0].text;
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"key\":\"hello world\""));
+    } else return error.TestUnexpectedResult;
+}
+
+test "json_object_agg: empty table returns NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE kv4 (k TEXT, v INTEGER)");
+
+    var r = try db.exec("SELECT json_object_agg(k, v) AS obj FROM kv4");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .null_value);
+    } else return error.TestUnexpectedResult;
+}
+
+test "json_object_agg: with GROUP BY produces per-group objects" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE props (cat TEXT, k TEXT, v INTEGER)");
+    _ = try db.exec("INSERT INTO props VALUES ('A', 'x', 1), ('A', 'y', 2), ('B', 'p', 9)");
+
+    var r = try db.exec("SELECT cat, json_object_agg(k, v) AS obj FROM props GROUP BY cat ORDER BY cat");
+    defer r.close(allocator);
+
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expect(row.values[0] == .text);
+        try testing.expect(row.values[1] == .text);
+        if (std.mem.eql(u8, row.values[0].text, "A")) {
+            try testing.expect(std.mem.containsAtLeast(u8, row.values[1].text, 1, "\"x\":1"));
+            try testing.expect(std.mem.containsAtLeast(u8, row.values[1].text, 1, "\"y\":2"));
+        } else if (std.mem.eql(u8, row.values[0].text, "B")) {
+            try testing.expect(std.mem.containsAtLeast(u8, row.values[1].text, 1, "\"p\":9"));
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
