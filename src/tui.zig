@@ -185,6 +185,9 @@ const App = struct {
     detail_offset: usize = 0,
     detail_selected: usize = 0,
 
+    // Spinner animation frame counter (incremented each event loop tick)
+    spinner_frame: usize = 0,
+
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
             .allocator = allocator,
@@ -1252,6 +1255,19 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         buf.set(cx, area.y, tui.Cell.init(c, bar_style));
         cx += 1;
     }
+
+    // Spinner at the rightmost cell (animated activity indicator)
+    if (area.width > 0) {
+        const spinner = (tui.Spinner{})
+            .withFrame(app.spinner_frame)
+            .withStyle(.{ .bg = .bright_black, .fg = .green });
+        spinner.render(buf, tui.Rect{
+            .x = area.x + area.width - 1,
+            .y = area.y,
+            .width = 1,
+            .height = 1,
+        });
+    }
 }
 
 // ── Local renderDiff (workaround for sailor#5: adaptToNewApi bug) ────
@@ -1469,6 +1485,8 @@ pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !vo
 
     // Main event loop
     while (!app.should_quit) {
+        app.spinner_frame +%= 1;
+
         // Clear buffer
         term.clear();
 
@@ -2297,4 +2315,114 @@ test "detail_selected clamps at max columns when pressing down" {
     app.handleEscapeSequence('[', 'B');
 
     try std.testing.expectEqual(@as(usize, 2), app.detail_selected);
+}
+
+test "App spinner_frame initializes to 0" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var app = App.init(allocator, &db, ":memory:");
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.spinner_frame);
+}
+
+test "Spinner widget currentFrame returns braille characters" {
+    const allocator = std.testing.allocator;
+    _ = allocator; // Not needed but keep for consistency
+
+    // Frame 0 should be ⣾
+    var spinner0 = tui.Spinner{};
+    const frame0 = spinner0.currentFrame();
+    try std.testing.expectEqualSlices(u8, "⣾", frame0);
+
+    // Frame 1 should be ⣽
+    var spinner1 = spinner0.withFrame(1);
+    const frame1 = spinner1.currentFrame();
+    try std.testing.expectEqualSlices(u8, "⣽", frame1);
+
+    // Frame 8 should wrap back to frame 0 (⣾) using modulo
+    var spinner8 = spinner0.withFrame(8);
+    const frame8 = spinner8.currentFrame();
+    try std.testing.expectEqualSlices(u8, "⣾", frame8);
+}
+
+test "renderStatusBar renders spinner at different frame values without crash" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var app = App.init(allocator, &db, ":memory:");
+    defer app.deinit();
+
+    // Create an 80×1 buffer
+    var buf = try tui.Buffer.init(allocator, 80, 1);
+    defer buf.deinit();
+
+    // Create a rect for status bar (80 wide, 1 tall)
+    const area = tui.Rect{ .x = 0, .y = 0, .width = 80, .height = 1 };
+
+    // Render with spinner_frame = 0 (should not crash)
+    app.spinner_frame = 0;
+    renderStatusBar(&app, &buf, area);
+
+    // Verify rightmost cell (x=79) has a non-ASCII character (spinner frame)
+    const cell0 = buf.getConst(79, 0);
+    try std.testing.expect(cell0 != null);
+    if (cell0) |c| {
+        try std.testing.expect(c.char > 0x7F);
+    }
+
+    // Render with spinner_frame = 3 (should not crash)
+    app.spinner_frame = 3;
+    renderStatusBar(&app, &buf, area);
+
+    const cell3 = buf.getConst(79, 0);
+    try std.testing.expect(cell3 != null);
+    if (cell3) |c| {
+        try std.testing.expect(c.char > 0x7F);
+    }
+
+    // Render with spinner_frame = 100 (wraps modulo 8, should not crash)
+    app.spinner_frame = 100;
+    renderStatusBar(&app, &buf, area);
+
+    const cell100 = buf.getConst(79, 0);
+    try std.testing.expect(cell100 != null);
+    if (cell100) |c| {
+        try std.testing.expect(c.char > 0x7F);
+    }
+}
+
+test "spinner_frame value changes which frame is rendered" {
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var app = App.init(allocator, &db, ":memory:");
+    defer app.deinit();
+
+    // Create an 80×1 buffer
+    var buf = try tui.Buffer.init(allocator, 80, 1);
+    defer buf.deinit();
+
+    const area = tui.Rect{ .x = 0, .y = 0, .width = 80, .height = 1 };
+
+    // Render with spinner_frame = 0
+    app.spinner_frame = 0;
+    renderStatusBar(&app, &buf, area);
+    const cell_frame0 = buf.getConst(79, 0);
+    const char_frame0 = if (cell_frame0) |c| c.char else 0;
+
+    // Render with spinner_frame = 1
+    app.spinner_frame = 1;
+    renderStatusBar(&app, &buf, area);
+    const cell_frame1 = buf.getConst(79, 0);
+    const char_frame1 = if (cell_frame1) |c| c.char else 0;
+
+    // Verify the characters are different (different spinner frames)
+    try std.testing.expect(char_frame0 != char_frame1);
+    try std.testing.expect(char_frame0 > 0);
+    try std.testing.expect(char_frame1 > 0);
 }
