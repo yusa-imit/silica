@@ -183,6 +183,7 @@ const App = struct {
     // Row detail overlay
     detail_visible: bool = false,
     detail_offset: usize = 0,
+    detail_selected: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -474,13 +475,13 @@ const App = struct {
         if (b2.? != '[') return;
         if (b3 == null) return;
 
-        // Arrow keys while detail overlay is open scroll the detail view
+        // Arrow keys while detail overlay is open move the selection
         if (self.detail_visible and self.focus == .results) {
             const num_cols = self.result_columns.items.len;
             if (b3.? == 'A') { // Up
-                if (self.detail_offset > 0) self.detail_offset -= 1;
+                if (self.detail_selected > 0) self.detail_selected -= 1;
             } else if (b3.? == 'B') { // Down
-                if (num_cols > 0 and self.detail_offset < num_cols - 1) self.detail_offset += 1;
+                if (num_cols > 0 and self.detail_selected < num_cols - 1) self.detail_selected += 1;
             }
             return;
         }
@@ -543,6 +544,7 @@ const App = struct {
             if (self.result_rows.items.len > 0) {
                 self.detail_visible = true;
                 self.detail_offset = 0;
+                self.detail_selected = 0;
             }
         }
     }
@@ -1171,8 +1173,17 @@ fn renderDetailOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const row_label = std.fmt.allocPrint(app.allocator, "Row {d}", .{app.result_selected + 1}) catch "Row Detail";
     defer app.allocator.free(row_label);
 
+    // Auto-scroll detail_offset to keep detail_selected visible
+    const visible_rows = if (oh > 2) oh - 2 else 1;
+    if (app.detail_selected < app.detail_offset) {
+        app.detail_offset = app.detail_selected;
+    } else if (app.detail_selected >= app.detail_offset + visible_rows) {
+        app.detail_offset = app.detail_selected - visible_rows + 1;
+    }
+
     const viewer = tui.KeyValueViewer.init(entries)
         .withOffset(app.detail_offset)
+        .withSelected(app.detail_selected)
         .withKeyStyle(.{ .fg = .cyan })
         .withSelectedKeyStyle(.{ .fg = .cyan, .bold = true, .reverse = true })
         .withSelectedValueStyle(.{ .reverse = true })
@@ -2042,7 +2053,7 @@ test "detail_visible starts as false" {
     try std.testing.expect(app.detail_visible == false);
 }
 
-test "detail_offset starts as 0" {
+test "detail_selected starts as 0" {
     const allocator = std.testing.allocator;
     var app = App{
         .allocator = allocator,
@@ -2051,7 +2062,7 @@ test "detail_offset starts as 0" {
     };
     defer app.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), app.detail_offset);
+    try std.testing.expectEqual(@as(usize, 0), app.detail_selected);
 }
 
 test "pressing Enter in results pane with rows shows detail overlay" {
@@ -2081,6 +2092,37 @@ test "pressing Enter in results pane with rows shows detail overlay" {
     app.handleKey(13);
 
     try std.testing.expect(app.detail_visible == true);
+}
+
+test "pressing Enter in results pane resets detail_selected to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add result columns and rows
+    const col1 = try allocator.dupe(u8, "name");
+    try app.result_columns.append(allocator, col1);
+    const col2 = try allocator.dupe(u8, "age");
+    try app.result_columns.append(allocator, col2);
+
+    const row1 = try allocator.alloc([]const u8, 2);
+    row1[0] = try allocator.dupe(u8, "Alice");
+    row1[1] = try allocator.dupe(u8, "30");
+    try app.result_rows.append(allocator, row1);
+
+    // Set detail_selected to non-zero value before opening detail
+    app.detail_selected = 5;
+
+    // Press Enter (13 = \r)
+    app.handleKey(13);
+
+    // detail_selected should be reset to 0 when opening overlay
+    try std.testing.expectEqual(@as(usize, 0), app.detail_selected);
 }
 
 test "pressing Enter in results pane with no rows keeps detail closed" {
@@ -2130,7 +2172,7 @@ test "pressing Escape in detail view closes it" {
     try std.testing.expect(app.detail_visible == false);
 }
 
-test "pressing arrow down in detail view increases offset" {
+test "pressing arrow down in detail view moves selection" {
     const allocator = std.testing.allocator;
     var app = App{
         .allocator = allocator,
@@ -2156,15 +2198,15 @@ test "pressing arrow down in detail view increases offset" {
 
     // Open detail
     app.detail_visible = true;
-    app.detail_offset = 0;
+    app.detail_selected = 0;
 
     // Press arrow down (escape sequence [B)
     app.handleEscapeSequence('[', 'B');
 
-    try std.testing.expectEqual(@as(usize, 1), app.detail_offset);
+    try std.testing.expectEqual(@as(usize, 1), app.detail_selected);
 }
 
-test "pressing arrow up in detail view decreases offset" {
+test "pressing arrow up in detail view moves selection" {
     const allocator = std.testing.allocator;
     var app = App{
         .allocator = allocator,
@@ -2185,17 +2227,17 @@ test "pressing arrow up in detail view decreases offset" {
     row1[1] = try allocator.dupe(u8, "b");
     try app.result_rows.append(allocator, row1);
 
-    // Open detail with offset
+    // Open detail with selection
     app.detail_visible = true;
-    app.detail_offset = 2;
+    app.detail_selected = 2;
 
     // Press arrow up (escape sequence [A)
     app.handleEscapeSequence('[', 'A');
 
-    try std.testing.expectEqual(@as(usize, 1), app.detail_offset);
+    try std.testing.expectEqual(@as(usize, 1), app.detail_selected);
 }
 
-test "detail_offset clamps to 0 when pressing up" {
+test "detail_selected clamps to 0 when pressing up" {
     const allocator = std.testing.allocator;
     var app = App{
         .allocator = allocator,
@@ -2213,17 +2255,17 @@ test "detail_offset clamps to 0 when pressing up" {
     row1[0] = try allocator.dupe(u8, "a");
     try app.result_rows.append(allocator, row1);
 
-    // Open detail at offset 0
+    // Open detail at selection 0
     app.detail_visible = true;
-    app.detail_offset = 0;
+    app.detail_selected = 0;
 
     // Press arrow up (should stay at 0)
     app.handleEscapeSequence('[', 'A');
 
-    try std.testing.expectEqual(@as(usize, 0), app.detail_offset);
+    try std.testing.expectEqual(@as(usize, 0), app.detail_selected);
 }
 
-test "detail_offset clamps at max columns when pressing down" {
+test "detail_selected clamps at max columns when pressing down" {
     const allocator = std.testing.allocator;
     var app = App{
         .allocator = allocator,
@@ -2247,12 +2289,12 @@ test "detail_offset clamps at max columns when pressing down" {
     row1[2] = try allocator.dupe(u8, "c");
     try app.result_rows.append(allocator, row1);
 
-    // Open detail at last valid offset (result_columns.items.len - 1 = 2)
+    // Open detail at last valid selection (result_columns.items.len - 1 = 2)
     app.detail_visible = true;
-    app.detail_offset = 2;
+    app.detail_selected = 2;
 
     // Press arrow down (should stay at 2)
     app.handleEscapeSequence('[', 'B');
 
-    try std.testing.expectEqual(@as(usize, 2), app.detail_offset);
+    try std.testing.expectEqual(@as(usize, 2), app.detail_selected);
 }
