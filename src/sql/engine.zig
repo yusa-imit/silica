@@ -32452,3 +32452,119 @@ test "string_agg with FILTER and ORDER BY combines both clauses" {
         try testing.expectEqualStrings("a,m", row.values[0].text);
     } else return error.TestUnexpectedResult;
 }
+
+test "string_agg ORDER BY with NULL values in sort column (NULLs last)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE sort_nulls (name TEXT, priority INTEGER)");
+    _ = try db.exec("INSERT INTO sort_nulls VALUES ('alice', 1), ('bob', NULL), ('charlie', 2)");
+
+    var r = try db.exec("SELECT string_agg(name, ',' ORDER BY priority) FROM sort_nulls");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // NULLs sort last in ASC: alice(1), charlie(2), bob(NULL)
+        try testing.expectEqualStrings("alice,charlie,bob", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "string_agg ORDER BY multiple columns (compound sort key)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE multi_sort (id INTEGER, cat TEXT, name TEXT)");
+    _ = try db.exec("INSERT INTO multi_sort VALUES (1, 'B', 'zebra'), (2, 'A', 'charlie'), (3, 'A', 'alice'), (4, 'B', 'beta')");
+
+    var r = try db.exec("SELECT string_agg(name, ',' ORDER BY cat, name) FROM multi_sort");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Sort by cat (A before B), then by name within cat: A(alice,charlie), B(beta,zebra)
+        try testing.expectEqualStrings("alice,charlie,beta,zebra", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "string_agg ORDER BY with NULL values in aggregated column (should skip NULLs)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE agg_nulls (val TEXT, sort_key INTEGER)");
+    _ = try db.exec("INSERT INTO agg_nulls VALUES ('a', 3), (NULL, 1), ('b', 2)");
+
+    var r = try db.exec("SELECT string_agg(val, ',' ORDER BY sort_key) FROM agg_nulls");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // NULL in aggregated col is skipped; remaining: (NULL,1)skip, (b,2), (a,3) -> "b,a"
+        try testing.expectEqualStrings("b,a", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "array_agg ORDER BY DESC with integers (reverse numeric order)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE nums_desc (val INTEGER)");
+    _ = try db.exec("INSERT INTO nums_desc VALUES (100), (10), (50), (1), (25)");
+
+    var r = try db.exec("SELECT array_agg(val ORDER BY val DESC) FROM nums_desc");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Reverse numeric order: 100, 50, 25, 10, 1
+        try testing.expectEqualStrings("[100,50,25,10,1]", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "json_agg ORDER BY with GROUP BY: per-group ordered arrays" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE grouped_agg (cat TEXT, val INTEGER)");
+    _ = try db.exec("INSERT INTO grouped_agg VALUES ('X', 30), ('Y', 20), ('X', 10), ('Y', 40)");
+
+    var r = try db.exec("SELECT cat, json_agg(val ORDER BY val) FROM grouped_agg GROUP BY cat ORDER BY cat");
+    defer r.close(allocator);
+
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expect(row.values[0] == .text);
+        try testing.expect(row.values[1] == .text);
+        const cat = row.values[0].text;
+        const arr = row.values[1].text;
+        if (std.mem.eql(u8, cat, "X")) {
+            // X values: 30, 10 -> sorted: [10,30]
+            try testing.expectEqualStrings("[10,30]", arr);
+        } else if (std.mem.eql(u8, cat, "Y")) {
+            // Y values: 20, 40 -> sorted: [20,40]
+            try testing.expectEqualStrings("[20,40]", arr);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
