@@ -3286,6 +3286,8 @@ pub const Parser = struct {
         var distinct = false;
         var args = std.ArrayListUnmanaged(*const ast.Expr){};
 
+        var agg_order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
+
         if (self.match(.star)) {
             const star_expr = self.arena.create(ast.Expr, .{ .column_ref = .{ .name = "*" } }) catch return error.OutOfMemory;
             args.append(a, star_expr) catch return error.OutOfMemory;
@@ -3295,6 +3297,39 @@ pub const Parser = struct {
             }
             while (true) {
                 args.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                // After each arg: check for inline aggregate ORDER BY
+                // e.g. string_agg(col, ',' ORDER BY col) or array_agg(col ORDER BY col)
+                if (self.check(.kw_order) and self.checkAhead(.kw_by, 1)) {
+                    _ = self.advance(); // consume ORDER
+                    _ = self.advance(); // consume BY
+                    while (true) {
+                        const ob_expr = try self.parseExpr(0);
+                        const ob_dir: ast.OrderDirection = if (self.match(.kw_desc)) .desc else blk: {
+                            _ = self.match(.kw_asc);
+                            break :blk .asc;
+                        };
+                        // NULLS FIRST / NULLS LAST (identifier-based, not keywords)
+                        var ob_nulls: ?ast.NullsOrder = null;
+                        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                            _ = self.advance();
+                            if (self.peek().type == .identifier) {
+                                const kw = self.lexeme(self.peek());
+                                if (std.ascii.eqlIgnoreCase(kw, "first")) {
+                                    _ = self.advance();
+                                    ob_nulls = .first;
+                                } else if (std.ascii.eqlIgnoreCase(kw, "last")) {
+                                    _ = self.advance();
+                                    ob_nulls = .last;
+                                }
+                            }
+                        }
+                        agg_order_by.append(a, .{ .expr = ob_expr, .direction = ob_dir, .nulls = ob_nulls }) catch return error.OutOfMemory;
+                        // ORDER BY items separated by commas, but stop before `)`
+                        if (self.check(.right_paren)) break;
+                        if (!self.match(.comma)) break;
+                    }
+                    break; // ORDER BY terminates the arg list
+                }
                 if (!self.match(.comma)) break;
             }
         }
@@ -3344,6 +3379,7 @@ pub const Parser = struct {
             .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
             .distinct = distinct,
             .filter_clause = filter_clause,
+            .order_by = agg_order_by.toOwnedSlice(a) catch return error.OutOfMemory,
         } }) catch return error.OutOfMemory;
     }
 

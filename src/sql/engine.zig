@@ -32292,3 +32292,163 @@ test "json_object_agg: with GROUP BY produces per-group objects" {
     }
     try testing.expectEqual(@as(usize, 2), count);
 }
+
+test "string_agg ORDER BY ASC produces alphabetically sorted result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE names (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO names VALUES (3, 'charlie'), (1, 'alice'), (2, 'bob')");
+
+    var r = try db.exec("SELECT string_agg(name, ',' ORDER BY name) FROM names");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Should be alphabetically sorted: alice,bob,charlie
+        try testing.expectEqualStrings("alice,bob,charlie", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "string_agg ORDER BY DESC produces reverse alphabetically sorted result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE names2 (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO names2 VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')");
+
+    var r = try db.exec("SELECT string_agg(name, ',' ORDER BY name DESC) FROM names2");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Should be reverse alphabetically sorted: charlie,bob,alice
+        try testing.expectEqualStrings("charlie,bob,alice", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "array_agg ORDER BY produces sorted JSON array" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE nums (val INTEGER)");
+    _ = try db.exec("INSERT INTO nums VALUES (5), (2), (8), (1)");
+
+    var r = try db.exec("SELECT array_agg(val ORDER BY val) FROM nums");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Should be JSON array in sorted order: [1,2,5,8]
+        const arr = row.values[0].text;
+        try testing.expectEqualStrings("[1,2,5,8]", arr);
+    } else return error.TestUnexpectedResult;
+}
+
+test "string_agg with GROUP BY and ORDER BY produces ordered per-group concatenation" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE items (cat TEXT, item TEXT)");
+    _ = try db.exec("INSERT INTO items VALUES ('A', 'zebra'), ('A', 'apple'), ('A', 'mango'), ('B', 'xray'), ('B', 'beta')");
+
+    var r = try db.exec("SELECT cat, string_agg(item, ',' ORDER BY item) FROM items GROUP BY cat ORDER BY cat");
+    defer r.close(allocator);
+
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        try testing.expect(row.values[0] == .text);
+        try testing.expect(row.values[1] == .text);
+        const cat = row.values[0].text;
+        const agg = row.values[1].text;
+        if (std.mem.eql(u8, cat, "A")) {
+            // Category A sorted: apple,mango,zebra
+            try testing.expectEqualStrings("apple,mango,zebra", agg);
+        } else if (std.mem.eql(u8, cat, "B")) {
+            // Category B sorted: beta,xray
+            try testing.expectEqualStrings("beta,xray", agg);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "string_agg ORDER BY numeric column sorts correctly" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE scores (name TEXT, score INTEGER)");
+    _ = try db.exec("INSERT INTO scores VALUES ('alice', 100), ('bob', 50), ('charlie', 75)");
+
+    var r = try db.exec("SELECT string_agg(name, ',' ORDER BY score DESC) FROM scores");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Sorted by score descending: alice(100), charlie(75), bob(50)
+        try testing.expectEqualStrings("alice,charlie,bob", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}
+
+test "json_agg ORDER BY different column returns array in specified order" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE people (id INTEGER, name TEXT)");
+    _ = try db.exec("INSERT INTO people VALUES (3, 'charlie'), (1, 'alice'), (2, 'bob')");
+
+    var r = try db.exec("SELECT json_agg(name ORDER BY id) FROM people");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Sorted by id: alice(1), bob(2), charlie(3)
+        const arr = row.values[0].text;
+        try testing.expectEqualStrings("[\"alice\",\"bob\",\"charlie\"]", arr);
+    } else return error.TestUnexpectedResult;
+}
+
+test "string_agg with FILTER and ORDER BY combines both clauses" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE filtered (val TEXT, keep INTEGER)");
+    _ = try db.exec("INSERT INTO filtered VALUES ('z', 0), ('a', 1), ('m', 1), ('b', 0)");
+
+    var r = try db.exec("SELECT string_agg(val, ',' ORDER BY val) FILTER (WHERE keep = 1) FROM filtered");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        // Filter: keep=1 gives {a, m}, ordered: a,m
+        try testing.expectEqualStrings("a,m", row.values[0].text);
+    } else return error.TestUnexpectedResult;
+}

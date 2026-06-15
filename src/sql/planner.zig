@@ -835,6 +835,15 @@ pub const Planner = struct {
                     };
                 }
 
+                // Thread inline ORDER BY (e.g. string_agg(col, ',' ORDER BY col)) into plan
+                const a = self.arena.allocator();
+                var fc_order_exprs = std.ArrayListUnmanaged(*const ast.Expr){};
+                var fc_order_dirs = std.ArrayListUnmanaged(ast.OrderDirection){};
+                for (fc.order_by) |item| {
+                    fc_order_exprs.append(a, item.expr) catch return null;
+                    fc_order_dirs.append(a, item.direction) catch return null;
+                }
+
                 return .{
                     .func = func,
                     .arg = if (func == .count_star) null else if (fc.args.len > 0) fc.args[0] else null,
@@ -843,6 +852,8 @@ pub const Planner = struct {
                     .distinct = fc.distinct,
                     .separator = if (func == .string_agg and fc.args.len > 1) fc.args[1] else null,
                     .filter_expr = fc.filter_clause,
+                    .order_exprs = fc_order_exprs.toOwnedSlice(a) catch return null,
+                    .order_dirs = fc_order_dirs.toOwnedSlice(a) catch return null,
                 };
             },
             .ordered_set_agg => |osa| {

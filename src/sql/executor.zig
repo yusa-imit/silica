@@ -8882,6 +8882,50 @@ pub const AggregateOp = struct {
         }) catch return ExecError.OutOfMemory;
     }
 
+    /// Build a sorted index slice for a group using aggregate ORDER BY expressions.
+    /// Caller owns the returned slice and must free it with self.allocator.free(indices).
+    fn sortedGroupIndices(
+        self: *AggregateOp,
+        group: []const Row,
+        order_exprs: []const *const ast.Expr,
+        order_dirs: []const ast.OrderDirection,
+    ) []usize {
+        const indices = self.allocator.alloc(usize, group.len) catch return &.{};
+        for (indices, 0..) |*idx, i| idx.* = i;
+
+        const Ctx = struct {
+            allocator: std.mem.Allocator,
+            group: []const Row,
+            exprs: []const *const ast.Expr,
+            dirs: []const ast.OrderDirection,
+        };
+        const ctx = Ctx{
+            .allocator = self.allocator,
+            .group = group,
+            .exprs = order_exprs,
+            .dirs = order_dirs,
+        };
+
+        std.sort.pdq(usize, indices, ctx, struct {
+            fn lessThan(c: Ctx, a: usize, b: usize) bool {
+                for (c.exprs, c.dirs) |expr, dir| {
+                    var ra: Row = @constCast(&c.group[a]).*;
+                    var rb: Row = @constCast(&c.group[b]).*;
+                    const va = evalExpr(c.allocator, expr, &ra, null) catch return false;
+                    defer va.free(c.allocator);
+                    const vb = evalExpr(c.allocator, expr, &rb, null) catch return false;
+                    defer vb.free(c.allocator);
+                    const ord = Value.compare(va, vb);
+                    if (ord == .eq) continue;
+                    return if (dir == .asc) (ord == .lt) else (ord == .gt);
+                }
+                return false;
+            }
+        }.lessThan);
+
+        return indices;
+    }
+
     fn computeAggregate(self: *AggregateOp, agg: planner_mod.PlanNode.AggregateExpr, group: []const Row) Value {
         switch (agg.func) {
             .count_star => {
@@ -9080,15 +9124,26 @@ pub const AggregateOp = struct {
                     values.deinit(self.allocator);
                 }
 
-                for (group) |*row| {
+                const ja_indices = if (agg.order_exprs.len > 0)
+                    self.sortedGroupIndices(group, agg.order_exprs, agg.order_dirs)
+                else
+                    &[_]usize{};
+                defer if (agg.order_exprs.len > 0) self.allocator.free(ja_indices);
+
+                const ja_sorted = agg.order_exprs.len > 0 and ja_indices.len > 0;
+                const ja_count: usize = if (ja_sorted) ja_indices.len else group.len;
+                var ja_i: usize = 0;
+                while (ja_i < ja_count) : (ja_i += 1) {
+                    const row_idx = if (ja_sorted) ja_indices[ja_i] else ja_i;
+                    var row: Row = @constCast(&group[row_idx]).*;
                     // Check FILTER clause
                     if (agg.filter_expr) |filter| {
-                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        const fv = evalExpr(self.allocator, filter, &row, null) catch continue;
                         defer fv.free(self.allocator);
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, &row, null) catch continue;
                         if (val != .null_value) {
                             values.append(self.allocator, val) catch return .null_value;
                         } else {
@@ -9160,15 +9215,26 @@ pub const AggregateOp = struct {
                     values.deinit(self.allocator);
                 }
 
-                for (group) |*row| {
+                const agg_indices = if (agg.order_exprs.len > 0)
+                    self.sortedGroupIndices(group, agg.order_exprs, agg.order_dirs)
+                else
+                    &[_]usize{};
+                defer if (agg.order_exprs.len > 0) self.allocator.free(agg_indices);
+
+                const use_sorted = agg.order_exprs.len > 0 and agg_indices.len > 0;
+                const iter_count: usize = if (use_sorted) agg_indices.len else group.len;
+                var agg_i: usize = 0;
+                while (agg_i < iter_count) : (agg_i += 1) {
+                    const row_idx = if (use_sorted) agg_indices[agg_i] else agg_i;
+                    var row: Row = @constCast(&group[row_idx]).*;
                     // Check FILTER clause
                     if (agg.filter_expr) |filter| {
-                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        const fv = evalExpr(self.allocator, filter, &row, null) catch continue;
                         defer fv.free(self.allocator);
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, &row, null) catch continue;
                         if (val != .null_value) {
                             values.append(self.allocator, val) catch return .null_value;
                         } else {
@@ -9240,15 +9306,26 @@ pub const AggregateOp = struct {
                     values.deinit(self.allocator);
                 }
 
-                for (group) |*row| {
+                const str_indices = if (agg.order_exprs.len > 0)
+                    self.sortedGroupIndices(group, agg.order_exprs, agg.order_dirs)
+                else
+                    &[_]usize{};
+                defer if (agg.order_exprs.len > 0) self.allocator.free(str_indices);
+
+                const str_sorted = agg.order_exprs.len > 0 and str_indices.len > 0;
+                const str_count: usize = if (str_sorted) str_indices.len else group.len;
+                var str_i: usize = 0;
+                while (str_i < str_count) : (str_i += 1) {
+                    const row_idx = if (str_sorted) str_indices[str_i] else str_i;
+                    var row: Row = @constCast(&group[row_idx]).*;
                     // Check FILTER clause
                     if (agg.filter_expr) |filter| {
-                        const fv = evalExpr(self.allocator, filter, row, null) catch continue;
+                        const fv = evalExpr(self.allocator, filter, &row, null) catch continue;
                         defer fv.free(self.allocator);
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                        const val = evalExpr(self.allocator, arg_expr, &row, null) catch continue;
                         if (val == .null_value) {
                             val.free(self.allocator);
                             continue;

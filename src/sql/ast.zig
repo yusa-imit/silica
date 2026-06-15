@@ -219,6 +219,8 @@ pub const Expr = union(enum) {
         args: []const *const Expr,
         distinct: bool = false,
         filter_clause: ?*const Expr = null,
+        /// ORDER BY inside an aggregate: string_agg(col, ',' ORDER BY col)
+        order_by: []const OrderByItem = &.{},
     },
     /// expr BETWEEN low AND high
     between: struct {
