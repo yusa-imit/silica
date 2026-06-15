@@ -180,6 +180,10 @@ const App = struct {
     completion_visible: bool = false,
     completion_prefix: []const u8 = "",
 
+    // Row detail overlay
+    detail_visible: bool = false,
+    detail_offset: usize = 0,
+
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
             .allocator = allocator,
@@ -462,8 +466,24 @@ const App = struct {
     }
 
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
-        if (b2 == null or b2.? != '[') return;
+        // Bare ESC (b2 == null) closes the detail overlay
+        if (b2 == null) {
+            if (self.detail_visible) self.detail_visible = false;
+            return;
+        }
+        if (b2.? != '[') return;
         if (b3 == null) return;
+
+        // Arrow keys while detail overlay is open scroll the detail view
+        if (self.detail_visible and self.focus == .results) {
+            const num_cols = self.result_columns.items.len;
+            if (b3.? == 'A') { // Up
+                if (self.detail_offset > 0) self.detail_offset -= 1;
+            } else if (b3.? == 'B') { // Down
+                if (num_cols > 0 and self.detail_offset < num_cols - 1) self.detail_offset += 1;
+            }
+            return;
+        }
 
         switch (self.focus) {
             .schema => {
@@ -519,9 +539,12 @@ const App = struct {
     }
 
     fn handleResultsKey(self: *App, byte: u8) void {
-        _ = self;
-        _ = byte;
-        // Results pane: arrow keys handled in handleEscapeSequence
+        if (byte == '\r' or byte == '\n') {
+            if (self.result_rows.items.len > 0) {
+                self.detail_visible = true;
+                self.detail_offset = 0;
+            }
+        }
     }
 
     fn handleInputKey(self: *App, byte: u8) void {
@@ -805,6 +828,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
 
     // Render status bar
     renderStatusBar(app, buf, status_area);
+
+    // Render row detail overlay (on top of everything)
+    if (app.detail_visible) {
+        renderDetailOverlay(app, buf, area);
+    }
 }
 
 fn isTableIndex(table_indices: []const usize, idx: usize) bool {
@@ -1105,6 +1133,54 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
             });
         }
     }
+}
+
+fn renderDetailOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (app.result_rows.items.len == 0 or app.result_columns.items.len == 0) return;
+
+    // Center a 60%-wide, 80%-tall popup
+    const ow: u16 = @max(20, area.width * 6 / 10);
+    const oh: u16 = @max(5, area.height * 8 / 10);
+    const ox: u16 = area.x + (area.width -| ow) / 2;
+    const oy: u16 = area.y + (area.height -| oh) / 2;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear popup background
+    var py = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{}));
+        }
+    }
+
+    const row = app.result_rows.items[app.result_selected];
+    const cols = app.result_columns.items;
+
+    // Build entries slice on the stack (max 64 columns)
+    var entries_buf: [64]tui.KeyValueViewer.Entry = undefined;
+    const num = @min(cols.len, entries_buf.len);
+    for (0..num) |i| {
+        entries_buf[i] = .{
+            .key = cols[i],
+            .value = if (i < row.len) row[i] else "(null)",
+        };
+    }
+    const entries = entries_buf[0..num];
+
+    const row_label = std.fmt.allocPrint(app.allocator, "Row {d}", .{app.result_selected + 1}) catch "Row Detail";
+    defer app.allocator.free(row_label);
+
+    const viewer = tui.KeyValueViewer.init(entries)
+        .withOffset(app.detail_offset)
+        .withKeyStyle(.{ .fg = .cyan })
+        .withSelectedKeyStyle(.{ .fg = .cyan, .bold = true, .reverse = true })
+        .withSelectedValueStyle(.{ .reverse = true })
+        .withBlock((tui.widgets.Block{
+            .title = row_label,
+            .title_position = .top_left,
+        }).withBorderStyle(.{ .fg = .cyan }));
+    viewer.render(buf, popup_area);
 }
 
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
@@ -1952,4 +2028,231 @@ test "getTableHelp truncates long column lists" {
     try testing.expect(std.mem.indexOf(u8, help_text, "id: integer") != null);
     try testing.expect(std.mem.indexOf(u8, help_text, "name: text") != null);
     try testing.expect(std.mem.indexOf(u8, help_text, "price: real") != null);
+}
+
+test "detail_visible starts as false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.detail_visible == false);
+}
+
+test "detail_offset starts as 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.detail_offset);
+}
+
+test "pressing Enter in results pane with rows shows detail overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add result columns and rows
+    const col1 = try allocator.dupe(u8, "name");
+    try app.result_columns.append(allocator, col1);
+    const col2 = try allocator.dupe(u8, "age");
+    try app.result_columns.append(allocator, col2);
+
+    const row1 = try allocator.alloc([]const u8, 2);
+    row1[0] = try allocator.dupe(u8, "Alice");
+    row1[1] = try allocator.dupe(u8, "30");
+    try app.result_rows.append(allocator, row1);
+
+    try std.testing.expect(app.detail_visible == false);
+
+    // Press Enter (13 = \r)
+    app.handleKey(13);
+
+    try std.testing.expect(app.detail_visible == true);
+}
+
+test "pressing Enter in results pane with no rows keeps detail closed" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.detail_visible == false);
+
+    // Press Enter on empty result set
+    app.handleKey(13);
+
+    // Detail should still be closed
+    try std.testing.expect(app.detail_visible == false);
+}
+
+test "pressing Escape in detail view closes it" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add result data
+    const col1 = try allocator.dupe(u8, "id");
+    try app.result_columns.append(allocator, col1);
+
+    const row1 = try allocator.alloc([]const u8, 1);
+    row1[0] = try allocator.dupe(u8, "1");
+    try app.result_rows.append(allocator, row1);
+
+    // Open detail
+    app.detail_visible = true;
+
+    // Press Escape (27 = ESC)
+    app.handleEscapeSequence(null, null);
+
+    // Detail should be closed
+    try std.testing.expect(app.detail_visible == false);
+}
+
+test "pressing arrow down in detail view increases offset" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add result columns and row
+    const col1 = try allocator.dupe(u8, "col1");
+    try app.result_columns.append(allocator, col1);
+    const col2 = try allocator.dupe(u8, "col2");
+    try app.result_columns.append(allocator, col2);
+    const col3 = try allocator.dupe(u8, "col3");
+    try app.result_columns.append(allocator, col3);
+
+    const row1 = try allocator.alloc([]const u8, 3);
+    row1[0] = try allocator.dupe(u8, "a");
+    row1[1] = try allocator.dupe(u8, "b");
+    row1[2] = try allocator.dupe(u8, "c");
+    try app.result_rows.append(allocator, row1);
+
+    // Open detail
+    app.detail_visible = true;
+    app.detail_offset = 0;
+
+    // Press arrow down (escape sequence [B)
+    app.handleEscapeSequence('[', 'B');
+
+    try std.testing.expectEqual(@as(usize, 1), app.detail_offset);
+}
+
+test "pressing arrow up in detail view decreases offset" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add result columns and row
+    const col1 = try allocator.dupe(u8, "col1");
+    try app.result_columns.append(allocator, col1);
+    const col2 = try allocator.dupe(u8, "col2");
+    try app.result_columns.append(allocator, col2);
+
+    const row1 = try allocator.alloc([]const u8, 2);
+    row1[0] = try allocator.dupe(u8, "a");
+    row1[1] = try allocator.dupe(u8, "b");
+    try app.result_rows.append(allocator, row1);
+
+    // Open detail with offset
+    app.detail_visible = true;
+    app.detail_offset = 2;
+
+    // Press arrow up (escape sequence [A)
+    app.handleEscapeSequence('[', 'A');
+
+    try std.testing.expectEqual(@as(usize, 1), app.detail_offset);
+}
+
+test "detail_offset clamps to 0 when pressing up" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add result columns and row
+    const col1 = try allocator.dupe(u8, "col1");
+    try app.result_columns.append(allocator, col1);
+
+    const row1 = try allocator.alloc([]const u8, 1);
+    row1[0] = try allocator.dupe(u8, "a");
+    try app.result_rows.append(allocator, row1);
+
+    // Open detail at offset 0
+    app.detail_visible = true;
+    app.detail_offset = 0;
+
+    // Press arrow up (should stay at 0)
+    app.handleEscapeSequence('[', 'A');
+
+    try std.testing.expectEqual(@as(usize, 0), app.detail_offset);
+}
+
+test "detail_offset clamps at max columns when pressing down" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Add 3 columns
+    const col1 = try allocator.dupe(u8, "col1");
+    try app.result_columns.append(allocator, col1);
+    const col2 = try allocator.dupe(u8, "col2");
+    try app.result_columns.append(allocator, col2);
+    const col3 = try allocator.dupe(u8, "col3");
+    try app.result_columns.append(allocator, col3);
+
+    const row1 = try allocator.alloc([]const u8, 3);
+    row1[0] = try allocator.dupe(u8, "a");
+    row1[1] = try allocator.dupe(u8, "b");
+    row1[2] = try allocator.dupe(u8, "c");
+    try app.result_rows.append(allocator, row1);
+
+    // Open detail at last valid offset (result_columns.items.len - 1 = 2)
+    app.detail_visible = true;
+    app.detail_offset = 2;
+
+    // Press arrow down (should stay at 2)
+    app.handleEscapeSequence('[', 'B');
+
+    try std.testing.expectEqual(@as(usize, 2), app.detail_offset);
 }
