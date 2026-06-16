@@ -975,6 +975,17 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
                 .subquery => "subquery",
             }), m.when_clauses.len }) catch {};
         },
+        .copy => |c| {
+            const dir_str = switch (c.direction) {
+                .from => "FROM",
+                .to => "TO",
+            };
+            const source_str = switch (c.source) {
+                .table => |t| t,
+                .query => "query",
+            };
+            writer.print("Parsed: COPY {s} {s} {s}\n", .{ source_str, dir_str, c.path }) catch {};
+        },
     }
 }
 

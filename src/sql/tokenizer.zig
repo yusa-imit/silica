@@ -56,6 +56,7 @@ pub const TokenType = enum {
     dot,
 
     // Keywords — DDL
+    kw_copy,
     kw_create,
     kw_table,
     kw_drop,
@@ -781,6 +782,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
 
     const map = std.StaticStringMap(TokenType).initComptime(.{
         // DDL
+        .{ "copy", .kw_copy },
         .{ "create", .kw_create },
         .{ "table", .kw_table },
         .{ "drop", .kw_drop },

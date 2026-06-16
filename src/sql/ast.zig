@@ -977,6 +977,26 @@ pub const ResetStmt = struct {
     parameter: ?[]const u8, // null means RESET ALL
 };
 
+/// COPY statement: bulk CSV import/export
+pub const CopyDirection = enum { from, to };
+
+pub const CopySource = union(enum) {
+    table: []const u8,
+    query: *const SelectStmt,
+};
+
+pub const CopyOptions = struct {
+    delimiter: u8 = ',',
+    header: bool = false,
+};
+
+pub const CopyStmt = struct {
+    source: CopySource,
+    direction: CopyDirection,
+    path: []const u8,
+    options: CopyOptions = .{},
+};
+
 /// Top-level SQL statement.
 pub const Stmt = union(enum) {
     select: SelectStmt,
@@ -1018,6 +1038,7 @@ pub const Stmt = union(enum) {
     set: SetStmt,
     show: ShowStmt,
     reset: ResetStmt,
+    copy: CopyStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;

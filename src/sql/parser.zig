@@ -215,6 +215,7 @@ pub const Parser = struct {
             .kw_set => .{ .set = try self.parseSet() },
             .kw_show => .{ .show = try self.parseShow() },
             .kw_reset => .{ .reset = try self.parseReset() },
+            .kw_copy => .{ .copy = try self.parseCreateCopy() },
             else => {
                 try self.addError(t, "expected statement");
                 return error.ParseFailed;
@@ -2996,6 +2997,83 @@ pub const Parser = struct {
 
         const parameter = try self.expectIdentifier();
         return .{ .parameter = parameter };
+    }
+
+    fn parseCreateCopy(self: *Parser) Error!ast.CopyStmt {
+        _ = try self.expect(.kw_copy);
+
+        // Parse source: either (query) or table_name
+        var source: ast.CopySource = undefined;
+        if (self.match(.left_paren)) {
+            // COPY (SELECT ...) TO path
+            const sel = try self.parseSelect();
+            _ = try self.expect(.right_paren);
+            const sel_ptr = try self.arena.create(ast.SelectStmt, sel);
+            source = .{ .query = sel_ptr };
+        } else {
+            const name = try self.expectIdentifier();
+            source = .{ .table = name };
+        }
+
+        // Parse FROM or TO
+        const direction: ast.CopyDirection = if (self.match(.kw_from))
+            .from
+        else if (self.match(.kw_to))
+            .to
+        else
+            return error.ParseFailed;
+
+        // Parse path (string literal)
+        const path_tok = try self.expect(.string_literal);
+        const raw = self.lexeme(path_tok);
+        const path = if (raw.len >= 2 and raw[0] == '\'' and raw[raw.len - 1] == '\'')
+            raw[1 .. raw.len - 1]
+        else
+            raw;
+
+        // Parse optional WITH (options...)
+        var options = ast.CopyOptions{};
+        if (self.match(.kw_with)) {
+            _ = try self.expect(.left_paren);
+            while (!self.check(.right_paren) and self.peek().type != .eof) {
+                const opt_name_tok = self.peek();
+                const opt_name = self.lexeme(opt_name_tok);
+
+                if (std.ascii.eqlIgnoreCase(opt_name, "header")) {
+                    _ = self.advance();
+                    // HEADER or HEADER TRUE/FALSE
+                    if (self.check(.kw_true)) {
+                        _ = self.advance();
+                        options.header = true;
+                    } else if (self.check(.kw_false)) {
+                        _ = self.advance();
+                        options.header = false;
+                    } else {
+                        options.header = true;
+                    }
+                } else if (std.ascii.eqlIgnoreCase(opt_name, "delimiter")) {
+                    _ = self.advance();
+                    const delim_tok = try self.expect(.string_literal);
+                    const d = self.lexeme(delim_tok);
+                    const inner = if (d.len >= 2 and d[0] == '\'') d[1 .. d.len - 1] else d;
+                    options.delimiter = if (inner.len > 0) inner[0] else ',';
+                } else if (std.ascii.eqlIgnoreCase(opt_name, "format")) {
+                    _ = self.advance(); // skip format value (CSV, TEXT, etc.)
+                } else {
+                    _ = self.advance(); // skip unknown option
+                }
+
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.right_paren);
+        }
+
+        return .{
+            .source = source,
+            .direction = direction,
+            .path = path,
+            .options = options,
+        };
     }
 
     // ── Expression parser (Pratt / precedence climbing) ──────────

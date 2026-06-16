@@ -375,6 +375,7 @@ pub const Analyzer = struct {
             .alter_table => {}, // ALTER TABLE needs no semantic analysis at this stage
             .reindex => {},
             .explain => |s| self.analyze(s.stmt.*),
+            .copy => {}, // COPY needs no semantic analysis
         }
     }
 

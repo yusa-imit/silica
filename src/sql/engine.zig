@@ -6229,6 +6229,218 @@ pub const Database = struct {
         return .{ .rows_affected = rows_affected, .message = "MERGE" };
     }
 
+    // ── COPY statement execution ──────────────────────────────────
+
+    fn executeCopy(self: *Database, stmt: *const ast_mod.CopyStmt, alloc: Allocator) EngineError!QueryResult {
+        return switch (stmt.direction) {
+            .from => try self.executeCopyFrom(stmt, alloc),
+            .to => try self.executeCopyTo(stmt),
+        };
+    }
+
+    fn executeCopyFrom(self: *Database, stmt: *const ast_mod.CopyStmt, _: Allocator) EngineError!QueryResult {
+        const table_name = switch (stmt.source) {
+            .table => |n| n,
+            .query => return EngineError.ExecutionError, // FROM requires table
+        };
+
+        // Open the file with std.fs.cwd()
+        const file = std.fs.cwd().openFile(stmt.path, .{}) catch return EngineError.ExecutionError;
+        defer file.close();
+
+        // Use a temporary arena for CSV reading
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        const content = file.readToEndAlloc(arena_alloc, 100 * 1024 * 1024) catch return EngineError.ExecutionError;
+
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        var row_count: u64 = 0;
+        var first = true;
+
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, "\r");
+            if (trimmed.len == 0) continue;
+            if (first) {
+                first = false;
+                if (stmt.options.header) continue; // skip header
+            }
+
+            // Split line by delimiter
+            var fields = std.ArrayListUnmanaged([]const u8){};
+            var iter = std.mem.splitScalar(u8, trimmed, stmt.options.delimiter);
+            while (iter.next()) |field| {
+                try fields.append(arena_alloc, field);
+            }
+
+            // Build INSERT SQL
+            var sql_buf = std.ArrayListUnmanaged(u8){};
+            defer sql_buf.deinit(arena_alloc);
+            try sql_buf.appendSlice(arena_alloc, "INSERT INTO ");
+            try sql_buf.appendSlice(arena_alloc, table_name);
+            try sql_buf.appendSlice(arena_alloc, " VALUES (");
+            for (fields.items, 0..) |field, i| {
+                if (i > 0) try sql_buf.append(arena_alloc, ',');
+                // Check if it looks like a number
+                if (self.isNumericString(field)) {
+                    try sql_buf.appendSlice(arena_alloc, field);
+                } else {
+                    // Quote as string, escape single quotes
+                    try sql_buf.append(arena_alloc, '\'');
+                    for (field) |c| {
+                        if (c == '\'') try sql_buf.append(arena_alloc, '\'');
+                        try sql_buf.append(arena_alloc, c);
+                    }
+                    try sql_buf.append(arena_alloc, '\'');
+                }
+            }
+            try sql_buf.appendSlice(arena_alloc, ")");
+
+            _ = try self.execSQL(sql_buf.items);
+            row_count += 1;
+        }
+
+        return .{ .message = "COPY" };
+    }
+
+    fn executeCopyTo(self: *Database, stmt: *const ast_mod.CopyStmt) EngineError!QueryResult {
+        // Get result set to export
+        var result = switch (stmt.source) {
+            .table => |n| blk: {
+                var sql_buf = std.ArrayListUnmanaged(u8){};
+                defer sql_buf.deinit(self.allocator);
+                try sql_buf.appendSlice(self.allocator, "SELECT * FROM ");
+                try sql_buf.appendSlice(self.allocator, n);
+                break :blk try self.execSQL(sql_buf.items);
+            },
+            .query => |sel| blk: {
+                // Re-execute the select via execSQL with the statement
+                // We'll create a temporary AST and execute it
+                var arena: ?*AstArena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
+                arena.?.* = AstArena.init(self.allocator);
+
+                const provider = self.schemaProvider();
+                var an = Analyzer.init(self.allocator, provider);
+                defer an.deinit();
+
+                const select_stmt = sel.*;
+                an.analyze(.{ .select = select_stmt });
+                if (an.hasErrors()) {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    return EngineError.AnalysisError;
+                }
+
+                var plnr = Planner.init(arena.?, provider);
+                const plan = plnr.plan(.{ .select = select_stmt }) catch {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    return EngineError.PlanError;
+                };
+
+                var opt = Optimizer.init(arena.?);
+                const optimized = opt.optimize(plan) catch {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    return EngineError.PlanError;
+                };
+
+                const owned_arena = arena.?;
+                arena = null;
+                break :blk try self.executePlan(owned_arena, optimized);
+            },
+        };
+        defer result.close(self.allocator);
+
+        // Open/create output file
+        const file = std.fs.cwd().createFile(stmt.path, .{}) catch return EngineError.ExecutionError;
+        defer file.close();
+
+        // Use ArrayListUnmanaged to collect output
+        var output = std.ArrayListUnmanaged(u8){};
+        defer output.deinit(self.allocator);
+
+        // Collect all rows from result
+        var row_count: u64 = 0;
+        if (result.rows != null) {
+            var col_names: ?[][]const u8 = null;
+            var first_row = true;
+
+            while (true) {
+                const maybe_row = result.rows.?.next() catch return EngineError.ExecutionError;
+                const row_ptr = maybe_row orelse break;
+                var row = row_ptr;
+                defer row.deinit();
+
+                // Collect column names from first row
+                if (first_row) {
+                    col_names = self.allocator.alloc([]const u8, row.values.len) catch
+                        return EngineError.OutOfMemory;
+                    for (row.columns, 0..) |col, i| {
+                        col_names.?[i] = col;
+                    }
+
+                    // Write header if requested
+                    if (stmt.options.header) {
+                        for (col_names.?, 0..) |col, i| {
+                            if (i > 0) try output.append(self.allocator, stmt.options.delimiter);
+                            try output.appendSlice(self.allocator, col);
+                        }
+                        try output.append(self.allocator, '\n');
+                    }
+                    first_row = false;
+                }
+
+                // Write data row
+                for (row.values, 0..) |val, i| {
+                    if (i > 0) try output.append(self.allocator, stmt.options.delimiter);
+                    switch (val) {
+                        .integer => |n| {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{n}) catch "";
+                            try output.appendSlice(self.allocator, str);
+                        },
+                        .real => |r| {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{r}) catch "";
+                            try output.appendSlice(self.allocator, str);
+                        },
+                        .text => |t| try output.appendSlice(self.allocator, t),
+                        .null_value => {}, // empty field
+                        else => {},
+                    }
+                }
+                try output.append(self.allocator, '\n');
+                row_count += 1;
+            }
+
+            if (col_names) |cn| self.allocator.free(cn);
+        }
+
+        // Write output to file
+        file.writeAll(output.items) catch return EngineError.ExecutionError;
+
+        return .{ .message = "COPY" };
+    }
+
+    fn isNumericString(self: *Database, s: []const u8) bool {
+        _ = self;
+        if (s.len == 0) return false;
+        var i: usize = 0;
+        if (s[i] == '-' or s[i] == '+') i += 1;
+        var has_digit = false;
+        var has_dot = false;
+        while (i < s.len) : (i += 1) {
+            if (std.ascii.isDigit(s[i])) {
+                has_digit = true;
+            } else if (s[i] == '.' and !has_dot) {
+                has_dot = true;
+            } else return false;
+        }
+        return has_digit;
+    }
+
     // ── DDL execution ────────────────────────────────────────────────
 
     fn executeCreateTable(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
@@ -7447,6 +7659,13 @@ pub const Database = struct {
             .merge => |m| {
                 // MERGE is executed directly as a special DML operation
                 const result = try self.executeMerge(arena.?, &m);
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                arena = null; // prevent errdefer from double-freeing
+                return result;
+            },
+            .copy => |c| {
+                const result = try self.executeCopy(&c, infra_alloc.allocator());
                 arena.?.deinit();
                 self.allocator.destroy(arena.?);
                 arena = null; // prevent errdefer from double-freeing
@@ -32755,4 +32974,260 @@ test "json_agg ORDER BY with GROUP BY: per-group ordered arrays" {
         }
     }
     try testing.expectEqual(@as(usize, 2), count);
+}
+
+// ── COPY statement for bulk CSV import/export ──────────────────────────
+
+test "COPY FROM basic CSV import without header" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_basic.db";
+    const csv_path = "test_copy_basic.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Write CSV file (2 rows of data)
+    const csv_content = "1,Alice,30\n2,Bob,25\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
+
+    // COPY FROM the CSV file
+    var r2 = try db.execSQL("COPY users FROM 'test_copy_basic.csv'");
+    defer r2.close(testing.allocator);
+
+    // Verify row count
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM users");
+    defer r3.close(testing.allocator);
+
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+    } else return error.TestUnexpectedResult;
+}
+
+test "COPY FROM with HEADER skips first line" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_header.db";
+    const csv_path = "test_copy_header.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER, product_name TEXT, price REAL)");
+    defer r1.close(testing.allocator);
+
+    // Write CSV file with header row
+    const csv_content = "id,product_name,price\n1,Widget,9.99\n2,Gadget,19.99\n3,Doohickey,14.50\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
+
+    // COPY FROM with HEADER option
+    var r2 = try db.execSQL("COPY products FROM 'test_copy_header.csv' WITH (HEADER)");
+    defer r2.close(testing.allocator);
+
+    // Verify we have 3 data rows (header was skipped)
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM products");
+    defer r3.close(testing.allocator);
+
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+    } else return error.TestUnexpectedResult;
+}
+
+test "COPY FROM with custom DELIMITER" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_delimiter.db";
+    const csv_path = "test_copy_delimiter.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE data (col1 TEXT, col2 TEXT, col3 TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Write pipe-delimited CSV file
+    const csv_content = "alpha|beta|gamma\none|two|three\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
+
+    // COPY FROM with custom delimiter
+    var r2 = try db.execSQL("COPY data FROM 'test_copy_delimiter.csv' WITH (DELIMITER '|')");
+    defer r2.close(testing.allocator);
+
+    // Verify data was parsed correctly with pipe delimiter
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM data WHERE col2 = 'beta'");
+    defer r3.close(testing.allocator);
+
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else return error.TestUnexpectedResult;
+}
+
+test "COPY TO basic export to CSV" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_to_basic.db";
+    const csv_path = "test_copy_to_basic.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert data
+    var r1 = try db.execSQL("CREATE TABLE students (id INTEGER, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO students VALUES (1, 'Alice'), (2, 'Bob')");
+    defer r2.close(testing.allocator);
+
+    // COPY TO export to CSV
+    var r3 = try db.execSQL("COPY students TO 'test_copy_to_basic.csv'");
+    defer r3.close(testing.allocator);
+
+    // Verify file was created and contains data
+    const file = try std.fs.cwd().openFile(csv_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(testing.allocator, 10_000);
+    defer testing.allocator.free(content);
+
+    // Should contain both rows as CSV
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "1"));
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "Alice"));
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "2"));
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "Bob"));
+}
+
+test "COPY TO with HEADER includes column names" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_to_header.db";
+    const csv_path = "test_copy_to_header.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert data
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, item_name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO items VALUES (10, 'Widget')");
+    defer r2.close(testing.allocator);
+
+    // COPY TO with HEADER
+    var r3 = try db.execSQL("COPY items TO 'test_copy_to_header.csv' WITH (HEADER)");
+    defer r3.close(testing.allocator);
+
+    // Verify file contains header row
+    const file = try std.fs.cwd().openFile(csv_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(testing.allocator, 10_000);
+    defer testing.allocator.free(content);
+
+    // Should start with column headers
+    try testing.expect(std.mem.startsWith(u8, content, "id") or std.mem.startsWith(u8, content, "item_name"));
+}
+
+test "COPY (query) TO exports query result subset" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_query_to.db";
+    const csv_path = "test_copy_query_to.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert data
+    var r1 = try db.execSQL("CREATE TABLE orders (id INTEGER, status TEXT, amount REAL)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO orders VALUES (1, 'completed', 100.0), (2, 'pending', 200.0), (3, 'completed', 150.0)");
+    defer r2.close(testing.allocator);
+
+    // COPY (SELECT ...) TO export only completed orders
+    var r3 = try db.execSQL("COPY (SELECT id, status, amount FROM orders WHERE status = 'completed') TO 'test_copy_query_to.csv'");
+    defer r3.close(testing.allocator);
+
+    // Verify file contains only 2 rows (the completed orders)
+    const file = try std.fs.cwd().openFile(csv_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(testing.allocator, 10_000);
+    defer testing.allocator.free(content);
+
+    // Should contain completed orders but not pending
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "1"));
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "3"));
+    try testing.expect(!std.mem.containsAtLeast(u8, content, 1, "pending"));
+}
+
+test "COPY FROM nonexistent file returns error" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_missing.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE dummy (id INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // COPY FROM nonexistent file should fail with ExecutionError (file not found)
+    const result = db.execSQL("COPY dummy FROM '/nonexistent/path/file.csv'");
+    try testing.expectError(error.ExecutionError, result);
+}
+
+test "COPY FROM type coercion across columns" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_copy_types.db";
+    const csv_path = "test_copy_types.csv";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(csv_path) catch {};
+
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with mixed types
+    var r1 = try db.execSQL("CREATE TABLE mixed (id INTEGER, name TEXT, price REAL)");
+    defer r1.close(testing.allocator);
+
+    // Write CSV with mixed types
+    const csv_content = "1,Widget,9.99\n2,Gadget,19.50\n";
+    try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
+
+    // COPY FROM
+    var r2 = try db.execSQL("COPY mixed FROM 'test_copy_types.csv'");
+    defer r2.close(testing.allocator);
+
+    // Verify types were coerced correctly
+    var r3 = try db.execSQL("SELECT id, name, price FROM mixed WHERE id = 1");
+    defer r3.close(testing.allocator);
+
+    if (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+        try testing.expectEqualStrings("Widget", row.values[1].text);
+        try testing.expect(row.values[2] == .real);
+        // Check price is approximately 9.99
+        try testing.expect(row.values[2].real > 9.98 and row.values[2].real < 10.00);
+    } else return error.TestUnexpectedResult;
 }

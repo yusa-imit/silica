@@ -397,6 +397,7 @@ pub const Planner = struct {
             .alter_table => self.planTransaction(),    // handled early in engine
             .reindex => self.planTransaction(), // handled early in engine
             .explain => |s| self.planExplain(s),
+            .copy => self.planTransaction(), // handled early in engine
         };
     }
 
