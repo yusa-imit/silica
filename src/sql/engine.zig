@@ -19731,6 +19731,9 @@ test "CREATE DOMAIN basic" {
     var r = try db.exec("CREATE DOMAIN positive_int AS INTEGER CHECK (VALUE > 0)");
     defer r.close(testing.allocator);
     try testing.expectEqualStrings("CREATE DOMAIN", r.message);
+
+    // Verify the domain was persisted: creating a duplicate must fail
+    try testing.expectError(error.TableAlreadyExists, db.exec("CREATE DOMAIN positive_int AS TEXT"));
 }
 
 test "CREATE DOMAIN without constraint" {
@@ -19743,6 +19746,11 @@ test "CREATE DOMAIN without constraint" {
     var r = try db.exec("CREATE DOMAIN email_address AS TEXT");
     defer r.close(testing.allocator);
     try testing.expectEqualStrings("CREATE DOMAIN", r.message);
+
+    // Verify persistence: DROP succeeds only if the domain was stored
+    var r2 = try db.exec("DROP DOMAIN email_address");
+    defer r2.close(testing.allocator);
+    try testing.expectEqualStrings("DROP DOMAIN", r2.message);
 }
 
 test "DROP DOMAIN basic" {
@@ -20875,16 +20883,6 @@ test "CREATE TRIGGER with different timings" {
     defer result3.close(testing.allocator);
     try testing.expectEqualStrings("CREATE TRIGGER", result3.message);
 }
-
-// TODO(Milestone 14 limitation): Triggers not yet executed
-// Current implementation only stores trigger definitions in the catalog.
-// Trigger execution requires:
-//   - Trigger firing mechanism in INSERT/UPDATE/DELETE executor
-//   - OLD/NEW row reference resolution
-//   - WHEN condition evaluation
-//   - Statement-level vs row-level execution logic
-//   - Trigger execution order by name (alphabetical)
-// This will be implemented in future milestones.
 
 // ── Role Management Tests ───────────────────────────────────────────
 
@@ -32032,16 +32030,23 @@ test "trigger: Disabled trigger does not fire" {
     var r5 = try db.exec("INSERT INTO events (id, name) VALUES (1, 'Hank')");
     defer r5.close(testing.allocator);
 
-    // Verify the trigger did NOT fire by checking audit_log is empty
-    var r6 = try db.exec("SELECT COUNT(*) FROM audit_log");
+    // Verify the INSERT itself succeeded (the row is in events)
+    var r6 = try db.exec("SELECT COUNT(*) FROM events");
     defer r6.close(testing.allocator);
-
     if (try r6.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
         defer row.deinit();
-        try testing.expect(row.values[0] == .integer);
-        // PASSING (even though triggers don't fire): count is 0 because trigger never executes
-        // Expected: 0 (no audit log entry because trigger is disabled)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Verify the trigger did NOT fire (audit_log must be empty)
+    var r7 = try db.exec("SELECT COUNT(*) FROM audit_log");
+    defer r7.close(testing.allocator);
+    if (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
         try testing.expectEqual(@as(i64, 0), row.values[0].integer);
     } else {
         return error.TestUnexpectedResult;
@@ -33105,11 +33110,17 @@ test "COPY TO basic export to CSV" {
     const content = try file.readToEndAlloc(testing.allocator, 10_000);
     defer testing.allocator.free(content);
 
-    // Should contain both rows as CSV
-    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "1"));
-    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "Alice"));
-    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "2"));
-    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "Bob"));
+    // Should contain both rows as CSV: each row has id,name on its own line
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, content, "\r\n"), '\n');
+    var row1_found = false;
+    var row2_found = false;
+    while (lines.next()) |line| {
+        const l = std.mem.trim(u8, line, "\r");
+        if (std.mem.eql(u8, l, "1,Alice")) row1_found = true;
+        if (std.mem.eql(u8, l, "2,Bob")) row2_found = true;
+    }
+    try testing.expect(row1_found);
+    try testing.expect(row2_found);
 }
 
 test "COPY TO with HEADER includes column names" {
@@ -33140,8 +33151,12 @@ test "COPY TO with HEADER includes column names" {
     const content = try file.readToEndAlloc(testing.allocator, 10_000);
     defer testing.allocator.free(content);
 
-    // Should start with column headers
-    try testing.expect(std.mem.startsWith(u8, content, "id") or std.mem.startsWith(u8, content, "item_name"));
+    // First line should be the header row with both column names separated by comma
+    const first_line_end = std.mem.indexOfScalar(u8, content, '\n') orelse content.len;
+    const first_line = std.mem.trim(u8, content[0..first_line_end], "\r");
+    try testing.expectEqualStrings("id,item_name", first_line);
+    // Data row should follow: 10,Widget
+    try testing.expect(std.mem.containsAtLeast(u8, content, 1, "10,Widget"));
 }
 
 test "COPY (query) TO exports query result subset" {
