@@ -1497,17 +1497,53 @@ pub const Database = struct {
                 // Replace bind parameter with the corresponding value literal
                 if (idx >= params.len) return error.InvalidParameterIndex;
                 const value = params[idx] orelse return error.UnboundParameter;
-                break :blk execution_arena.create(ast_mod.Expr, switch (value) {
-                    .integer => |i| .{ .integer_literal = i },
-                    .real => |r| .{ .float_literal = r },
-                    .text => |t| .{ .string_literal = t },
-                    .blob => |b| .{ .blob_literal = b },
-                    .null_value => .null_literal,
-                    .boolean => |b| .{ .boolean_literal = b },
-                    // TODO: Support advanced types (date, time, timestamp, interval, numeric, uuid, array, tsvector, tsquery)
-                    // These require special literal representations or alternative binding mechanisms
-                    .date, .time, .timestamp, .interval, .numeric, .uuid, .array, .tsvector, .tsquery => return error.UnsupportedParameterType,
-                }) catch return error.OutOfMemory;
+                const alloc = execution_arena.allocator();
+                const literal: ast_mod.Expr = e: {
+                    switch (value) {
+                        .integer => |i| break :e .{ .integer_literal = i },
+                        .real => |r| break :e .{ .float_literal = r },
+                        .text => |t| break :e .{ .string_literal = t },
+                        .blob => |b| break :e .{ .blob_literal = b },
+                        .null_value => break :e .null_literal,
+                        .boolean => |b| break :e .{ .boolean_literal = b },
+                        // Advanced types: produce CAST('formatted_value' AS type) so that
+                        // Value.compare() receives matching types (date vs date, not date vs text).
+                        .date => |d| {
+                            const s = try executor_mod.formatDate(alloc, d);
+                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_date } };
+                        },
+                        .time => |t| {
+                            const s = try executor_mod.formatTime(alloc, t);
+                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_time } };
+                        },
+                        .timestamp => |ts| {
+                            const s = try executor_mod.formatTimestamp(alloc, ts);
+                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_timestamp } };
+                        },
+                        .interval => |iv| {
+                            const s = try executor_mod.formatInterval(alloc, iv);
+                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_interval } };
+                        },
+                        .numeric => |n| {
+                            const s = try executor_mod.formatNumeric(alloc, n);
+                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_numeric } };
+                        },
+                        .uuid => |u| {
+                            const s = try executor_mod.formatUuid(alloc, u);
+                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_uuid } };
+                        },
+                        .array => |arr| break :e .{ .string_literal = try executor_mod.formatArray(alloc, arr) },
+                        .tsvector => |v| break :e .{ .string_literal = v },
+                        .tsquery => |v| break :e .{ .string_literal = v },
+                    }
+                };
+                break :blk execution_arena.create(ast_mod.Expr, literal) catch return error.OutOfMemory;
             },
             .binary_op => |b| execution_arena.create(ast_mod.Expr, .{ .binary_op = .{
                 .op = b.op,
@@ -24187,6 +24223,158 @@ test "prepared stmt: rebind after execution" {
     defer row2.deinit();
     try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
     try testing.expectEqualStrings("Second", row2.values[1].text);
+}
+
+test "prepared stmt: bind date parameter" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_prepared_date_bind.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY, event_date DATE)");
+    defer r1.close(testing.allocator);
+
+    // Prepare INSERT statement with date parameter
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO events (id, event_date) VALUES (?, ?)");
+    defer stmt.close();
+
+    // Bind parameters: id=1, event_date=19723 (days since epoch)
+    try stmt.bind(0, Value{ .integer = 1 });
+    try stmt.bind(1, Value{ .date = 19723 });
+
+    // Execute
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), result.rows_affected);
+
+    // Verify insertion
+    var verify = try db.execSQL("SELECT COUNT(*) FROM events");
+    defer verify.close(testing.allocator);
+    const row_opt = try verify.rows.?.next();
+    try testing.expect(row_opt != null);
+    var row = row_opt.?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+}
+
+test "prepared stmt: bind timestamp parameter" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_prepared_ts_bind.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE logs (id INTEGER PRIMARY KEY, created_at TIMESTAMP)");
+    defer r1.close(testing.allocator);
+
+    // Prepare INSERT statement with timestamp parameter
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO logs (id, created_at) VALUES (?, ?)");
+    defer stmt.close();
+
+    // Bind parameters: id=42, created_at=1704067200000000 (microseconds since epoch, approx 2024-01-01 00:00:00 UTC)
+    try stmt.bind(0, Value{ .integer = 42 });
+    try stmt.bind(1, Value{ .timestamp = 1704067200000000 });
+
+    // Execute
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), result.rows_affected);
+
+    // Verify insertion
+    var verify = try db.execSQL("SELECT COUNT(*) FROM logs");
+    defer verify.close(testing.allocator);
+    const row_opt = try verify.rows.?.next();
+    try testing.expect(row_opt != null);
+    var row = row_opt.?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+}
+
+test "prepared stmt: bind numeric parameter" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_prepared_numeric_bind.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE prices (id INTEGER PRIMARY KEY, amount NUMERIC)");
+    defer r1.close(testing.allocator);
+
+    // Prepare INSERT statement with numeric parameter
+    var stmt = try db.prepare(testing.allocator, "INSERT INTO prices (id, amount) VALUES (?, ?)");
+    defer stmt.close();
+
+    // Bind parameters: id=7, amount=Value.Numeric{ .value = 9999, .scale = 2 } (represents 99.99)
+    try stmt.bind(0, Value{ .integer = 7 });
+    try stmt.bind(1, Value{ .numeric = .{ .value = 9999, .scale = 2 } });
+
+    // Execute
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), result.rows_affected);
+
+    // Verify insertion
+    var verify = try db.execSQL("SELECT COUNT(*) FROM prices");
+    defer verify.close(testing.allocator);
+    const row_opt = try verify.rows.?.next();
+    try testing.expect(row_opt != null);
+    var row = row_opt.?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+}
+
+test "prepared stmt: bind date in WHERE clause" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
+    const path = "test_prepared_date_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Setup test table
+    var r1 = try db.execSQL("CREATE TABLE appointments (id INTEGER PRIMARY KEY, appt_date DATE)");
+    defer r1.close(testing.allocator);
+
+    // Insert 2 rows directly
+    var r2 = try db.execSQL("INSERT INTO appointments VALUES (1, CAST('2024-01-15' AS DATE))");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO appointments VALUES (2, CAST('2024-06-30' AS DATE))");
+    defer r3.close(testing.allocator);
+
+    // Prepare SELECT statement with date parameter in WHERE
+    var stmt = try db.prepare(testing.allocator, "SELECT id FROM appointments WHERE appt_date = ?");
+    defer stmt.close();
+
+    // Bind parameter: date=19737 (Jan 15 2024, which is day 19723 + 14 = 19737)
+    // Actually, let's calculate: 2024-01-15 should be very close to 19723
+    // Using dateToDays algorithm: 2024-01-15 = 19737
+    try stmt.bind(0, Value{ .date = 19737 });
+
+    // Execute
+    var result = try stmt.execute();
+    defer result.close(testing.allocator);
+
+    // Verify exactly 1 row returned with id = 1
+    const row_opt = try result.rows.?.next();
+    try testing.expect(row_opt != null);
+    var row = row_opt.?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+
+    // Verify no more rows
+    const row_opt2 = try result.rows.?.next();
+    try testing.expect(row_opt2 == null);
 }
 
 // NOTE: We previously had a "zzz_cleanup_global_registry" test here that called
