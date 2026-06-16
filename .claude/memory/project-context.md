@@ -9,10 +9,22 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 389 - FEATURE MODE)
-- **Date**: 2026-06-14
-- **Mode**: FEATURE MODE (Session 389)
-- **Focus**: Trigger execution (fireTriggers) + sailor v2.39.0 migration
+### Last Session (Session 400 - STABILIZATION MODE)
+- **Date**: 2026-06-16
+- **Mode**: STABILIZATION MODE (Session 400)
+- **Focus**: sailor v2.48.0 migration, COPY implementation commit, test quality audit
+- **Commits**: 83d75c9 (COPY FROM/TO impl), 09c71b3 (sailor v2.48.0), 31c6a60 (test quality)
+- **Key facts**: 
+  - sailor: v2.47.0 → v2.48.0 (Marquee Widget, no breaking changes)
+  - COPY FROM/TO was uncommitted from prev session — committed and working
+  - Test quality fixes: COPY TO CSV format checks, CREATE DOMAIN persistence, disabled trigger dual-assert
+  - Removed stale TODO block that said triggers not implemented (they ARE implemented)
+  - CI: ✅ GREEN throughout
+
+### Previous Session (Session 397 - FEATURE MODE)
+- **Date**: 2026-06-16
+- **Mode**: FEATURE MODE (Session 397)
+- **Focus**: TUI row detail overlay — selection highlight via detail_selected
 
 ### Session 386 Details
 - **CI Status**: ✅ GREEN
