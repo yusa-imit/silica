@@ -491,6 +491,7 @@ pub const EngineError = error{
     GeneratedColumnViolation,
     CheckConstraintViolation,
     RlsPolicyViolation,
+    ConstraintViolation,
 };
 
 /// A named savepoint within a transaction.
@@ -4133,7 +4134,25 @@ pub const Database = struct {
                 break :blk false;
             };
 
-            if (has_generated or has_autoincrement) {
+            // Check if we need to fill defaults or validate NOT NULL
+            const has_defaults = blk: {
+                for (table_info.columns) |col| {
+                    if (col.flags.has_default) break :blk true;
+                }
+                break :blk false;
+            };
+
+            const has_not_null = blk: {
+                for (table_info.columns) |col| {
+                    if (col.flags.not_null) break :blk true;
+                }
+                break :blk false;
+            };
+
+            // Check if we need to build a full row (has generated, autoincrement, defaults, or NOT NULL)
+            const need_full_row = has_generated or has_autoincrement or has_defaults or has_not_null;
+
+            if (need_full_row) {
                 // Build full row for all table columns
                 vals = self.allocator.alloc(Value, table_info.columns.len) catch return EngineError.OutOfMemory;
                 full_row_allocated = true;
@@ -4178,6 +4197,16 @@ pub const Database = struct {
                     }
                 }
 
+                // Fill in default values for columns that weren't provided
+                for (table_info.columns, 0..) |col, ti| {
+                    if (vals[ti] == .null_value and col.flags.has_default) {
+                        if (self.catalog.getDefaultExpr(actual_table, col.name) catch null) |expr_sql| {
+                            defer self.allocator.free(expr_sql);
+                            vals[ti] = evalDefaultExprToValue(expr_sql, self.allocator);
+                        }
+                    }
+                }
+
                 // Build column names for row context (needed for generated col evaluation)
                 const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
                 defer self.allocator.free(col_names);
@@ -4205,6 +4234,13 @@ pub const Database = struct {
                         // Explicit value provided — advance sequence if it exceeds current max
                         self.catalog.advanceSeqIfGreater(actual_table, tc.name, vals[ti].integer) catch
                             return EngineError.ExecutionError;
+                    }
+                }
+
+                // Validate NOT NULL constraints
+                for (table_info.columns, 0..) |col, ti| {
+                    if (col.flags.not_null and vals[ti] == .null_value) {
+                        return EngineError.ConstraintViolation;
                     }
                 }
             } else {
@@ -6520,6 +6556,9 @@ pub const Database = struct {
             .rename_to => |new_name| {
                 try self.catalog.renameTable(stmt.table_name, new_name);
             },
+            .alter_column => |ac| {
+                try self.catalog.alterColumn(stmt.table_name, ac.col_name, ac.action, ac.default_sql);
+            },
         }
     }
 
@@ -8698,8 +8737,8 @@ fn createTestDb(allocator: Allocator, path: []const u8) !Database {
 }
 
 fn cleanupTestDb(db: *Database, path: []const u8) void {
+    _ = path;
     db.close();
-    std.fs.cwd().deleteFile(path) catch {};
 }
 
 test "Database open and close" {
@@ -33245,4 +33284,176 @@ test "COPY FROM type coercion across columns" {
         // Check price is approximately 9.99
         try testing.expect(row.values[2].real > 9.98 and row.values[2].real < 10.00);
     } else return error.TestUnexpectedResult;
+}
+
+test "ALTER COLUMN SET DEFAULT applies to new inserts" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_col_set_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with id and qty (no default initially)
+    _ = try db.exec("CREATE TABLE items (id INTEGER, qty INTEGER)");
+
+    // Set default for qty column
+    _ = try db.exec("ALTER TABLE items ALTER COLUMN qty SET DEFAULT 10");
+
+    // Insert without specifying qty — should use default
+    _ = try db.exec("INSERT INTO items (id) VALUES (1)");
+
+    // Select and verify qty is 10
+    var r = try db.exec("SELECT qty FROM items WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 10), row.values[0].integer);
+}
+
+test "ALTER COLUMN DROP DEFAULT removes default" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_col_drop_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    _ = try db.exec("CREATE TABLE items (id INTEGER, qty INTEGER)");
+
+    // Set default via ALTER
+    _ = try db.exec("ALTER TABLE items ALTER COLUMN qty SET DEFAULT 5");
+
+    // Insert without qty — should use default 5
+    _ = try db.exec("INSERT INTO items (id) VALUES (1)");
+    var r1 = try db.exec("SELECT qty FROM items WHERE id = 1");
+    defer r1.close(testing.allocator);
+    var row1 = (try r1.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 5), row1.values[0].integer);
+
+    // Drop default
+    _ = try db.exec("ALTER TABLE items ALTER COLUMN qty DROP DEFAULT");
+
+    // Insert without qty — should be NULL (since column is nullable)
+    _ = try db.exec("INSERT INTO items (id) VALUES (2)");
+    var r2 = try db.exec("SELECT qty FROM items WHERE id = 2");
+    defer r2.close(testing.allocator);
+    var row2 = (try r2.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expect(row2.values[0] == .null_value);
+}
+
+test "ALTER COLUMN SET NOT NULL adds constraint" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_col_set_not_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with nullable column
+    _ = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+
+    // Set NOT NULL constraint
+    _ = try db.exec("ALTER TABLE items ALTER COLUMN name SET NOT NULL");
+
+    // Try to insert NULL — should fail
+    const result = db.exec("INSERT INTO items (id, name) VALUES (1, NULL)");
+    try testing.expectError(error.ConstraintViolation, result);
+
+    // Insert with non-NULL value — should succeed
+    _ = try db.exec("INSERT INTO items (id, name) VALUES (2, 'valid')");
+    var r = try db.exec("SELECT name FROM items WHERE id = 2");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualSlices(u8, "valid", row.values[0].text);
+}
+
+test "ALTER COLUMN DROP NOT NULL removes constraint" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_col_drop_not_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with NOT NULL column
+    _ = try db.exec("CREATE TABLE items (id INTEGER, name TEXT NOT NULL)");
+
+    // Try to insert NULL — should fail
+    const result_before = db.exec("INSERT INTO items (id, name) VALUES (1, NULL)");
+    try testing.expectError(error.ConstraintViolation, result_before);
+
+    // Drop NOT NULL constraint
+    _ = try db.exec("ALTER TABLE items ALTER COLUMN name DROP NOT NULL");
+
+    // Now insert NULL — should succeed
+    _ = try db.exec("INSERT INTO items (id, name) VALUES (2, NULL)");
+    var r = try db.exec("SELECT name FROM items WHERE id = 2");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expect(row.values[0] == .null_value);
+}
+
+test "ALTER COLUMN SET DEFAULT with string literal" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_col_string_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    _ = try db.exec("CREATE TABLE items (id INTEGER, status TEXT)");
+
+    // Set string default
+    _ = try db.exec("ALTER TABLE items ALTER COLUMN status SET DEFAULT 'pending'");
+
+    // Insert without status
+    _ = try db.exec("INSERT INTO items (id) VALUES (1)");
+
+    // Verify default string was applied
+    var r = try db.exec("SELECT status FROM items WHERE id = 1");
+    defer r.close(testing.allocator);
+    var row = (try r.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqualSlices(u8, "pending", row.values[0].text);
+}
+
+test "ALTER COLUMN SET DEFAULT persists across reopen" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_alter_col_persist_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // First session: create table, set default
+    {
+        var db = try createTestDb(testing.allocator, path);
+        defer cleanupTestDb(&db, path);
+
+        _ = try db.exec("CREATE TABLE items (id INTEGER, qty INTEGER)");
+        _ = try db.exec("ALTER TABLE items ALTER COLUMN qty SET DEFAULT 42");
+        _ = try db.exec("INSERT INTO items (id) VALUES (1)");
+    }
+
+    // Second session: reopen DB, verify default is still there
+    {
+        var db = try Database.open(testing.allocator, path, .{});
+        defer db.close();
+
+        // Insert without specifying qty
+        _ = try db.exec("INSERT INTO items (id) VALUES (2)");
+
+        // Verify both rows have correct defaults
+        var r = try db.exec("SELECT id, qty FROM items ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row1 = (try r.rows.?.next()).?;
+        defer row1.deinit();
+        try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+        try testing.expectEqual(@as(i64, 42), row1.values[1].integer);
+
+        var row2 = (try r.rows.?.next()).?;
+        defer row2.deinit();
+        try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+        try testing.expectEqual(@as(i64, 42), row2.values[1].integer);
+    }
 }

@@ -934,6 +934,14 @@ pub const AlterTableRLSStmt = struct {
     force: bool = false, // FORCE ROW LEVEL SECURITY (applies even to table owner)
 };
 
+/// ALTER COLUMN action variants
+pub const AlterColumnAction = enum {
+    set_default,
+    drop_default,
+    set_not_null,
+    drop_not_null,
+};
+
 /// ALTER TABLE structural mutations (ADD/DROP/RENAME COLUMN)
 pub const AlterTableAction = union(enum) {
     /// ADD [COLUMN] col_def
@@ -954,6 +962,12 @@ pub const AlterTableAction = union(enum) {
     },
     /// RENAME TO new_name
     rename_to: []const u8,
+    /// ALTER COLUMN col SET DEFAULT expr | DROP DEFAULT | SET NOT NULL | DROP NOT NULL
+    alter_column: struct {
+        col_name: []const u8,
+        action: AlterColumnAction,
+        default_sql: ?[]const u8 = null,
+    },
 };
 
 pub const AlterTableStmt = struct {

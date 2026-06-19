@@ -2340,9 +2340,67 @@ pub const Parser = struct {
                 .enable = false,
                 .force = false,
             } };
+        } else if (self.match(.kw_alter)) {
+            // ALTER COLUMN col_name SET DEFAULT expr | DROP DEFAULT | SET NOT NULL | DROP NOT NULL
+            _ = self.match(.kw_column); // optional COLUMN keyword
+            const col_name = try self.expectIdentifier();
+
+            if (self.match(.kw_set)) {
+                if (self.match(.kw_default)) {
+                    // SET DEFAULT expr — capture the SQL source text
+                    const expr_start = self.peek().start;
+                    const expr = try self.parseExpr(0);
+                    _ = expr; // we only need the source text
+                    const expr_end = self.peek().start;
+                    // Capture source text of expression
+                    const expr_sql = std.mem.trim(u8, self.source[expr_start..expr_end], " \t\n\r");
+                    return .{ .alter_table = .{
+                        .table_name = table_name,
+                        .action = .{ .alter_column = .{
+                            .col_name = col_name,
+                            .action = .set_default,
+                            .default_sql = expr_sql,
+                        } },
+                    } };
+                } else if (self.match(.kw_not)) {
+                    _ = try self.expect(.kw_null);
+                    return .{ .alter_table = .{
+                        .table_name = table_name,
+                        .action = .{ .alter_column = .{
+                            .col_name = col_name,
+                            .action = .set_not_null,
+                        } },
+                    } };
+                }
+                try self.addError(self.peek(), "expected DEFAULT or NOT NULL after SET in ALTER COLUMN");
+                return error.ParseFailed;
+            } else if (self.match(.kw_drop)) {
+                if (self.match(.kw_default)) {
+                    return .{ .alter_table = .{
+                        .table_name = table_name,
+                        .action = .{ .alter_column = .{
+                            .col_name = col_name,
+                            .action = .drop_default,
+                        } },
+                    } };
+                } else if (self.match(.kw_not)) {
+                    _ = try self.expect(.kw_null);
+                    return .{ .alter_table = .{
+                        .table_name = table_name,
+                        .action = .{ .alter_column = .{
+                            .col_name = col_name,
+                            .action = .drop_not_null,
+                        } },
+                    } };
+                }
+                try self.addError(self.peek(), "expected DEFAULT or NOT NULL after DROP in ALTER COLUMN");
+                return error.ParseFailed;
+            }
+            try self.addError(self.peek(), "expected SET or DROP after ALTER COLUMN col_name");
+            return error.ParseFailed;
         }
 
-        try self.addError(self.peek(), "expected ADD, DROP, RENAME, ENABLE, DISABLE, FORCE, or NO after ALTER TABLE");
+        try self.addError(self.peek(), "expected ADD, DROP, RENAME, ALTER, ENABLE, DISABLE, FORCE, or NO after ALTER TABLE");
         return error.ParseFailed;
     }
 

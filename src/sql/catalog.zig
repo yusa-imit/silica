@@ -950,6 +950,84 @@ pub const Catalog = struct {
         } else |_| {}
     }
 
+    /// Alter a column's constraints or default expression.
+    pub fn alterColumn(
+        self: *Catalog,
+        table_name: []const u8,
+        col_name: []const u8,
+        action: ast.AlterColumnAction,
+        default_sql: ?[]const u8,
+    ) !void {
+        var table_info = try self.getTable(table_name);
+
+        // Find column (case-insensitive)
+        var col_index: ?usize = null;
+        for (table_info.columns, 0..) |col, i| {
+            if (std.ascii.eqlIgnoreCase(col.name, col_name)) {
+                col_index = i;
+                break;
+            }
+        }
+
+        if (col_index == null) {
+            table_info.deinit(self.allocator);
+            return CatalogError.ColumnNotFound;
+        }
+
+        const idx = col_index.?;
+
+        // Build new columns slice with updated flags
+        const new_cols = try self.allocator.alloc(ColumnInfo, table_info.columns.len);
+        defer self.allocator.free(new_cols);
+
+        for (table_info.columns, 0..) |col, i| {
+            new_cols[i] = col;
+        }
+
+        // Apply the action
+        switch (action) {
+            .set_default => {
+                new_cols[idx].flags.has_default = true;
+            },
+            .drop_default => {
+                new_cols[idx].flags.has_default = false;
+            },
+            .set_not_null => {
+                new_cols[idx].flags.not_null = true;
+            },
+            .drop_not_null => {
+                new_cols[idx].flags.not_null = false;
+            },
+        }
+
+        // Delete old table entry
+        try self.tree.delete(table_name);
+
+        // Re-insert with updated schema
+        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        defer self.allocator.free(value);
+
+        try self.tree.insert(table_name, value);
+
+        // Clean up old table info
+        table_info.deinit(self.allocator);
+
+        // Handle default expression storage
+        switch (action) {
+            .set_default => {
+                if (default_sql) |sql| {
+                    try self.storeDefaultExpr(table_name, col_name, sql);
+                }
+            },
+            .drop_default => {
+                const k = try self.makeDefaultKey(table_name, col_name);
+                defer self.allocator.free(k);
+                self.tree.delete(k) catch {};
+            },
+            else => {},
+        }
+    }
+
     /// Rename a table.
     pub fn renameTable(self: *Catalog, old_name: []const u8, new_name: []const u8) !void {
         const value = (try self.tree.get(self.allocator, old_name)) orelse
