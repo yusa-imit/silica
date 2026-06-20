@@ -6656,7 +6656,77 @@ pub const Database = struct {
                             target_tree.delete(key) catch return EngineError.StorageError;
                             rows_affected += 1;
                         },
-                        .update => {}, // TODO
+                        .update => |upd| {
+                            // Read current target row for this unmatched key.
+                            var upd_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
+                            defer upd_cursor.deinit();
+                            upd_cursor.seek(key) catch return EngineError.StorageError;
+                            const upd_entry = (upd_cursor.current() catch return EngineError.StorageError) orelse
+                                return EngineError.ExecutionError;
+                            defer self.allocator.free(upd_entry.key);
+                            defer self.allocator.free(upd_entry.value);
+
+                            const upd_raw = if (mvcc_mod.isVersionedRow(upd_entry.value))
+                                upd_entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                            else
+                                upd_entry.value;
+                            const upd_tgt_vals = deserializeRow(self.allocator, upd_raw) catch
+                                return EngineError.ExecutionError;
+                            defer {
+                                for (upd_tgt_vals) |v| v.free(self.allocator);
+                                self.allocator.free(upd_tgt_vals);
+                            }
+
+                            var updated = self.allocator.alloc(Value, upd_tgt_vals.len) catch return EngineError.OutOfMemory;
+                            var updated_inited: usize = 0;
+                            errdefer {
+                                for (updated[0..updated_inited]) |v| v.free(self.allocator);
+                                self.allocator.free(updated);
+                            }
+                            for (upd_tgt_vals, 0..) |v, vi| {
+                                updated[vi] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                updated_inited += 1;
+                            }
+                            defer {
+                                for (updated) |v| v.free(self.allocator);
+                                self.allocator.free(updated);
+                            }
+
+                            // Evaluate assignments using target row as context.
+                            // tgt_col_names uses "alias.col" format; getQualifiedColumn
+                            // falls back to unqualified lookup so bare column names also work.
+                            const upd_row_ctx = Row{
+                                .columns = tgt_col_names,
+                                .values = updated,
+                                .allocator = self.allocator,
+                            };
+
+                            for (upd.assignments) |assign| {
+                                var col_idx: ?usize = null;
+                                for (target_info.columns, 0..) |col, i| {
+                                    if (std.ascii.eqlIgnoreCase(col.name, assign.column)) {
+                                        col_idx = i;
+                                        break;
+                                    }
+                                }
+                                if (col_idx) |ci| {
+                                    const new_val = evalExpr(self.allocator, assign.value, &upd_row_ctx, null) catch
+                                        return EngineError.ExecutionError;
+                                    updated[ci].free(self.allocator);
+                                    updated[ci] = new_val;
+                                }
+                            }
+
+                            const new_data = if (self.current_txn) |txn| blk: {
+                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const hdr = TupleHeader.forInsert(txn.xid, cid);
+                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, hdr, updated) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, updated) catch return EngineError.OutOfMemory;
+                            defer self.allocator.free(new_data);
+                            target_tree.delete(key) catch return EngineError.StorageError;
+                            target_tree.insert(key, new_data) catch return EngineError.StorageError;
+                            rows_affected += 1;
+                        },
                         .insert => {}, // not valid
                     }
                     break;
@@ -34148,5 +34218,251 @@ test "trigger WHEN (NEW.col >= 0 AND NEW.col <= 50) compound condition on INSERT
         try testing.expectEqual(@as(i64, 3), row.values[0].integer);
     } else {
         return error.TestUnexpectedResult;
+    }
+}
+
+test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - basic" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_not_matched_by_source_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with initial data
+    {
+        var r = try db.execSQL("CREATE TABLE target (id INTEGER PRIMARY KEY, status TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert target rows: all initially 'active'
+    {
+        var r = try db.execSQL("INSERT INTO target VALUES (1, 'active'), (2, 'active'), (3, 'active')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE source (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert source data: only id=2 is in source (so 1 and 3 are unmatched)
+    {
+        var r = try db.execSQL("INSERT INTO source VALUES (2)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: update unmatched target rows (1 and 3) to 'inactive'
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO target t
+            \\USING source s ON t.id = s.id
+            \\WHEN NOT MATCHED BY SOURCE THEN UPDATE SET status = 'inactive'
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify target table: rows 1 and 3 should have 'inactive', row 2 should still be 'active'
+    {
+        var r = try db.execSQL("SELECT id, status FROM target ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqualStrings("inactive", row.values[1].text);
+            } else if (row_count == 1) {
+                try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+                try testing.expectEqualStrings("active", row.values[1].text);
+            } else if (row_count == 2) {
+                try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+                try testing.expectEqualStrings("inactive", row.values[1].text);
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 3), row_count);
+    }
+}
+
+test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - uses target column value in expression" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_not_matched_by_source_update_expr.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE target (id INTEGER PRIMARY KEY, val INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert target rows
+    {
+        var r = try db.execSQL("INSERT INTO target VALUES (1, 10), (2, 20), (3, 30)");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE source (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert source data: only id=2 is in source
+    {
+        var r = try db.execSQL("INSERT INTO source VALUES (2)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: update unmatched rows (1 and 3), doubling the val using qualified column reference
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO target t
+            \\USING source s ON t.id = s.id
+            \\WHEN NOT MATCHED BY SOURCE THEN UPDATE SET val = t.val * 2
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify: row 1 val should be 20, row 2 val unchanged (20), row 3 val should be 60
+    {
+        var r = try db.execSQL("SELECT id, val FROM target ORDER BY id");
+        defer r.close(testing.allocator);
+
+        var row_count: usize = 0;
+        while (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqual(@as(i64, 20), row.values[1].integer);
+            } else if (row_count == 1) {
+                try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+                try testing.expectEqual(@as(i64, 20), row.values[1].integer);
+            } else if (row_count == 2) {
+                try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+                try testing.expectEqual(@as(i64, 60), row.values[1].integer);
+            }
+            row_count += 1;
+        }
+
+        try testing.expectEqual(@as(usize, 3), row_count);
+    }
+}
+
+test "MERGE: WHEN NOT MATCHED BY SOURCE THEN DELETE - verifies delete still works" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_not_matched_by_source_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE target (id INTEGER PRIMARY KEY, category TEXT)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert target rows
+    {
+        var r = try db.execSQL("INSERT INTO target VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table
+    {
+        var r = try db.execSQL("CREATE TABLE source (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert source data: only ids 2 and 3 match
+    {
+        var r = try db.execSQL("INSERT INTO source VALUES (2), (3)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE: delete unmatched rows (1 and 4)
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO target t
+            \\USING source s ON t.id = s.id
+            \\WHEN NOT MATCHED BY SOURCE THEN DELETE
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 2), r.rows_affected);
+    }
+
+    // Verify: only rows 2 and 3 remain
+    {
+        var r = try db.execSQL("SELECT COUNT(*) FROM target");
+        defer r.close(testing.allocator);
+
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - empty source updates all" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_merge_not_matched_by_source_empty_source.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table
+    {
+        var r = try db.execSQL("CREATE TABLE target (id INTEGER PRIMARY KEY, flag INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    // Insert target rows
+    {
+        var r = try db.execSQL("INSERT INTO target VALUES (1, 0), (2, 0), (3, 0)");
+        defer r.close(testing.allocator);
+    }
+
+    // Create source table (empty)
+    {
+        var r = try db.execSQL("CREATE TABLE source (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    // MERGE with empty source: all target rows are unmatched, so all should be updated
+    {
+        var r = try db.execSQL(
+            \\MERGE INTO target t
+            \\USING source s ON t.id = s.id
+            \\WHEN NOT MATCHED BY SOURCE THEN UPDATE SET flag = 1
+        );
+        defer r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 3), r.rows_affected);
+    }
+
+    // Verify: all target rows should have flag = 1
+    {
+        var r = try db.execSQL("SELECT COUNT(*) FROM target WHERE flag = 1");
+        defer r.close(testing.allocator);
+
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+        } else {
+            return error.TestUnexpectedResult;
+        }
     }
 }
