@@ -5560,28 +5560,101 @@ pub const Database = struct {
 
         // Fire AFTER UPDATE triggers (STATEMENT fires once, ROW fires per successfully updated row)
         if (rows_updated > 0) {
-            var update_new_vals: ?[]Value = null;
-            defer if (update_new_vals) |vals| {
-                for (vals) |v| v.free(self.allocator);
-                self.allocator.free(vals);
+            const triggers_after_upd = self.catalog.listTriggersForTable(
+                self.allocator,
+                actual_table,
+                .update,
+                .after,
+            ) catch null;
+            defer if (triggers_after_upd) |trigs| {
+                for (trigs) |tri| tri.deinit();
+                self.allocator.free(trigs);
             };
-            const update_ctx: ?TriggerRowContext = blk: {
-                if (updates.items.len > 0) {
-                    const first_update = updates.items[0];
-                    const idx_data_u = if (isVersionedRowData(first_update.value))
-                        first_update.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
-                    else
-                        first_update.value;
-                    update_new_vals = executor_mod.deserializeRow(self.allocator, idx_data_u) catch break :blk null;
-                    break :blk .{
-                        .col_names = col_names,
-                        .new_values = update_new_vals,
-                        .old_values = first_update.old_values,
-                    };
+
+            var upd_when_evaluated = false;
+            if (triggers_after_upd) |trigs| {
+                for (trigs) |trigger| {
+                    if (!trigger.enabled or trigger.level != .row) continue;
+                    if (trigger.when_condition) |cond| {
+                        const has_old = containsIgnoreCaseSubstring(cond, "old.");
+                        const has_new = containsIgnoreCaseSubstring(cond, "new.");
+                        if (has_old or has_new) {
+                            // Per-row WHEN evaluation: evaluate condition for each updated row
+                            var rows_that_pass: u64 = 0;
+                            var first_passing_idx: ?usize = null;
+                            var first_new_vals: ?[]Value = null;
+                            defer if (first_new_vals) |vals| {
+                                for (vals) |v| v.free(self.allocator);
+                                self.allocator.free(vals);
+                            };
+
+                            for (updates.items, 0..) |upd, ri| {
+                                const data = if (isVersionedRowData(upd.value))
+                                    upd.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                                else
+                                    upd.value;
+                                const new_vals = executor_mod.deserializeRow(self.allocator, data) catch continue;
+                                defer {
+                                    if (first_passing_idx == null or first_passing_idx.? != ri) {
+                                        for (new_vals) |v| v.free(self.allocator);
+                                        self.allocator.free(new_vals);
+                                    }
+                                }
+                                const row_ctx: TriggerRowContext = .{
+                                    .col_names = col_names,
+                                    .new_values = new_vals,
+                                    .old_values = upd.old_values,
+                                };
+                                if (self.evaluateTriggerWhenCondition(cond, row_ctx)) {
+                                    rows_that_pass += 1;
+                                    if (first_passing_idx == null) {
+                                        first_passing_idx = ri;
+                                        first_new_vals = new_vals;
+                                    }
+                                }
+                            }
+
+                            if (first_passing_idx) |fpi| {
+                                if (rows_that_pass > 0) {
+                                    const upd_ctx: TriggerRowContext = .{
+                                        .col_names = col_names,
+                                        .new_values = first_new_vals,
+                                        .old_values = updates.items[fpi].old_values,
+                                    };
+                                    self.fireTriggers(actual_table, .update, .after, rows_that_pass, upd_ctx, true);
+                                }
+                            }
+                            upd_when_evaluated = true;
+                            break;
+                        }
+                    }
                 }
-                break :blk null;
-            };
-            self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated), update_ctx, false);
+            }
+
+            if (!upd_when_evaluated) {
+                var update_new_vals: ?[]Value = null;
+                defer if (update_new_vals) |vals| {
+                    for (vals) |v| v.free(self.allocator);
+                    self.allocator.free(vals);
+                };
+                const update_ctx: ?TriggerRowContext = blk: {
+                    if (updates.items.len > 0) {
+                        const first_update = updates.items[0];
+                        const idx_data_u = if (isVersionedRowData(first_update.value))
+                            first_update.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                        else
+                            first_update.value;
+                        update_new_vals = executor_mod.deserializeRow(self.allocator, idx_data_u) catch break :blk null;
+                        break :blk .{
+                            .col_names = col_names,
+                            .new_values = update_new_vals,
+                            .old_values = first_update.old_values,
+                        };
+                    }
+                    break :blk null;
+                };
+                self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated), update_ctx, false);
+            }
         }
 
         // Handle RETURNING clause
