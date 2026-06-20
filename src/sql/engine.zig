@@ -4072,6 +4072,13 @@ pub const Database = struct {
 
         var rows_inserted: u64 = 0;
 
+        // Build column names for trigger context
+        const insert_col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+        defer self.allocator.free(insert_col_names);
+        for (table_info.columns, 0..) |col, i| {
+            insert_col_names[i] = col.name;
+        }
+
         // Collect inserted rows if RETURNING clause is present
         var inserted_rows = std.ArrayListUnmanaged([]Value){};
         defer {
@@ -4083,7 +4090,7 @@ pub const Database = struct {
         }
 
         // Fire BEFORE INSERT triggers (STATEMENT fires once, ROW fires per row to be inserted)
-        self.fireTriggers(actual_table, .insert, .before, @intCast(values_node.rows.len));
+        self.fireTriggers(actual_table, .insert, .before, @intCast(values_node.rows.len), null, false);
 
         for (values_node.rows) |row_exprs| {
             // Evaluate value expressions
@@ -4477,15 +4484,15 @@ pub const Database = struct {
                 }
             };
 
-            // For successful inserts (no conflict or conflict handled), add to RETURNING and increment count
+            // For successful inserts (no conflict or conflict handled), add to collection and increment count
             if (insert_succeeded) {
-                if (values_node.returning != null) {
-                    const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
-                    for (vals, 0..) |v, i| {
-                        row_copy[i] = try v.dupe(self.allocator);
-                    }
-                    try inserted_rows.append(self.allocator, row_copy);
+                // Always collect row for RETURNING and trigger evaluation
+                const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
+                for (vals, 0..) |v, i| {
+                    row_copy[i] = try v.dupe(self.allocator);
                 }
+                try inserted_rows.append(self.allocator, row_copy);
+
                 rows_inserted += 1;
             }
         }
@@ -4497,7 +4504,75 @@ pub const Database = struct {
 
         // Fire AFTER INSERT triggers (STATEMENT fires once, ROW fires per successfully inserted row)
         if (rows_inserted > 0) {
-            self.fireTriggers(actual_table, .insert, .after, rows_inserted);
+            // For ROW-level triggers with WHEN conditions that reference NEW, evaluate per-row
+            const triggers_after = self.catalog.listTriggersForTable(
+                self.allocator,
+                actual_table,
+                .insert,
+                .after,
+            ) catch null;
+            defer if (triggers_after) |trigs| {
+                for (trigs) |tri| tri.deinit();
+                self.allocator.free(trigs);
+            };
+
+            if (triggers_after) |trigs| {
+                var rows_that_pass: u64 = 0;
+                var first_passing_idx: ?usize = null;
+
+                // Check if any ROW-level trigger has a WHEN condition with NEW references
+                for (trigs) |trigger| {
+                    if (!trigger.enabled or trigger.level != .row) continue;
+                    if (trigger.when_condition) |cond| {
+                        if (containsIgnoreCaseSubstring(cond, "new.")) {
+                            // Evaluate WHEN condition for each inserted row
+                            rows_that_pass = 0;
+                            first_passing_idx = null;
+                            for (inserted_rows.items, 0..) |row, ri| {
+                                const row_ctx: TriggerRowContext = .{
+                                    .col_names = insert_col_names,
+                                    .new_values = row,
+                                    .old_values = null,
+                                };
+                                if (self.evaluateTriggerWhenCondition(cond, row_ctx)) {
+                                    rows_that_pass += 1;
+                                    if (first_passing_idx == null) first_passing_idx = ri;
+                                }
+                            }
+
+                            // Call fireTriggers with only the count of passing rows
+                            if (first_passing_idx) |fpi| {
+                                if (rows_that_pass > 0) {
+                                    const insert_ctx: TriggerRowContext = .{
+                                        .col_names = insert_col_names,
+                                        .new_values = inserted_rows.items[fpi],
+                                        .old_values = null,
+                                    };
+                                    self.fireTriggers(actual_table, .insert, .after, rows_that_pass, insert_ctx, true);
+                                }
+                            }
+                            break; // Only evaluate once
+                        }
+                    }
+                }
+
+                // If no ROW triggers with WHEN that filter, fire normally
+                if (rows_that_pass == 0 and first_passing_idx == null) {
+                    const insert_ctx: ?TriggerRowContext = if (inserted_rows.items.len > 0) .{
+                        .col_names = insert_col_names,
+                        .new_values = inserted_rows.items[0],
+                        .old_values = null,
+                    } else null;
+                    self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false);
+                }
+            } else {
+                const insert_ctx: ?TriggerRowContext = if (inserted_rows.items.len > 0) .{
+                    .col_names = insert_col_names,
+                    .new_values = inserted_rows.items[0],
+                    .old_values = null,
+                } else null;
+                self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false);
+            }
         }
 
         // Handle RETURNING clause
@@ -4756,16 +4831,191 @@ pub const Database = struct {
         }
     }
 
+    const TriggerRowContext = struct {
+        col_names: []const []const u8,
+        new_values: ?[]const Value = null,
+        old_values: ?[]const Value = null,
+    };
+
+    /// Format a Value as a SQL literal string for substitution into WHEN conditions.
+    fn valueToSqlLiteral(allocator: Allocator, val: Value) ![]u8 {
+        return switch (val) {
+            .null_value => allocator.dupe(u8, "NULL"),
+            .boolean => |b| allocator.dupe(u8, if (b) "TRUE" else "FALSE"),
+            .integer => |n| std.fmt.allocPrint(allocator, "{d}", .{n}),
+            .real => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
+            .text => |s| blk: {
+                var buf = std.ArrayListUnmanaged(u8){};
+                errdefer buf.deinit(allocator);
+                try buf.append(allocator, '\'');
+                for (s) |c| {
+                    if (c == '\'') try buf.append(allocator, '\'');
+                    try buf.append(allocator, c);
+                }
+                try buf.append(allocator, '\'');
+                break :blk buf.toOwnedSlice(allocator);
+            },
+            .blob => |b| blk: {
+                var hex = std.ArrayListUnmanaged(u8){};
+                errdefer hex.deinit(allocator);
+                try hex.appendSlice(allocator, "X'");
+                for (b) |byte| {
+                    try hex.writer(allocator).print("{x:0>2}", .{byte});
+                }
+                try hex.append(allocator, '\'');
+                break :blk hex.toOwnedSlice(allocator);
+            },
+            .date => |d| std.fmt.allocPrint(allocator, "DATE '{d}'", .{d}),
+            .time => |t| std.fmt.allocPrint(allocator, "TIME '{d}'", .{t}),
+            .timestamp => |ts| std.fmt.allocPrint(allocator, "TIMESTAMP '{d}'", .{ts}),
+            .interval => |i| std.fmt.allocPrint(allocator, "INTERVAL '{d} {d} {d}'", .{ i.months, i.days, i.micros }),
+            .numeric => |n| executor_mod.formatNumeric(allocator, n),
+            .uuid => |u| blk: {
+                var buf = std.ArrayListUnmanaged(u8){};
+                errdefer buf.deinit(allocator);
+                try buf.appendSlice(allocator, "'");
+                for (0..16) |i| {
+                    if (i == 4 or i == 6 or i == 8 or i == 10) try buf.append(allocator, '-');
+                    try buf.writer(allocator).print("{x:0>2}", .{u[i]});
+                }
+                try buf.append(allocator, '\'');
+                break :blk buf.toOwnedSlice(allocator);
+            },
+            .array => allocator.dupe(u8, "ARRAY[]"), // Simplified: arrays to empty ARRAY[]
+            .tsvector => |s| blk: {
+                var buf = std.ArrayListUnmanaged(u8){};
+                errdefer buf.deinit(allocator);
+                try buf.append(allocator, '\'');
+                for (s) |c| {
+                    if (c == '\'') try buf.append(allocator, '\'');
+                    try buf.append(allocator, c);
+                }
+                try buf.append(allocator, '\'');
+                break :blk buf.toOwnedSlice(allocator);
+            },
+            .tsquery => |s| blk: {
+                var buf = std.ArrayListUnmanaged(u8){};
+                errdefer buf.deinit(allocator);
+                try buf.append(allocator, '\'');
+                for (s) |c| {
+                    if (c == '\'') try buf.append(allocator, '\'');
+                    try buf.append(allocator, c);
+                }
+                try buf.append(allocator, '\'');
+                break :blk buf.toOwnedSlice(allocator);
+            },
+        };
+    }
+
+    /// Evaluate a WHEN condition for a specific row context (NEW/OLD values).
+    /// Returns true if the condition is satisfied, false otherwise.
+    /// If the condition references NEW/OLD, evaluates against the provided context.
+    /// If the condition doesn't reference NEW/OLD, evaluates as a constant expression.
+    fn evaluateTriggerWhenCondition(self: *Database, cond: []const u8, ctx: TriggerRowContext) bool {
+        const has_row_ref = containsIgnoreCaseSubstring(cond, "new.") or
+            containsIgnoreCaseSubstring(cond, "old.");
+
+        if (has_row_ref) {
+            const eval_cond = substituteRowRefs(self.allocator, cond, ctx) catch return false;
+            defer self.allocator.free(eval_cond);
+
+            const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{eval_cond}) catch return false;
+            defer self.allocator.free(when_sql);
+            var cond_result = self.exec(when_sql) catch return false;
+            defer cond_result.close(self.allocator);
+            const is_truthy = blk: {
+                if (cond_result.rows == null) break :blk false;
+                const first_row = cond_result.rows.?.next() catch break :blk false;
+                if (first_row == null) break :blk false;
+                var row = first_row.?;
+                defer row.deinit();
+                if (row.values.len == 0) break :blk false;
+                break :blk row.values[0].isTruthy();
+            };
+            return is_truthy;
+        }
+
+        // Evaluate condition as constant (no NEW/OLD references)
+        const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{cond}) catch return false;
+        defer self.allocator.free(when_sql);
+        var cond_result = self.exec(when_sql) catch return false;
+        defer cond_result.close(self.allocator);
+        const is_truthy = blk: {
+            if (cond_result.rows == null) break :blk false;
+            const first_row = cond_result.rows.?.next() catch break :blk false;
+            if (first_row == null) break :blk false;
+            var row = first_row.?;
+            defer row.deinit();
+            if (row.values.len == 0) break :blk false;
+            break :blk row.values[0].isTruthy();
+        };
+        return is_truthy;
+    }
+
+    /// Substitute NEW.col and OLD.col references in a WHEN condition string with SQL literal values.
+    fn substituteRowRefs(allocator: Allocator, cond: []const u8, ctx: TriggerRowContext) ![]u8 {
+        var result = std.ArrayListUnmanaged(u8){};
+        errdefer result.deinit(allocator);
+
+        var i: usize = 0;
+        while (i < cond.len) {
+            // Check for NEW. or OLD. prefix (case-insensitive, need at least 4 chars)
+            const has_new = i + 4 <= cond.len and std.ascii.eqlIgnoreCase(cond[i..][0..4], "new.");
+            const has_old = i + 4 <= cond.len and std.ascii.eqlIgnoreCase(cond[i..][0..4], "old.");
+
+            if (has_new or has_old) {
+                const is_new = has_new;
+                const values = if (is_new) ctx.new_values else ctx.old_values;
+
+                // Find the identifier after NEW. or OLD.
+                const name_start = i + 4;
+                var name_end = name_start;
+                while (name_end < cond.len and (std.ascii.isAlphanumeric(cond[name_end]) or cond[name_end] == '_')) {
+                    name_end += 1;
+                }
+
+                if (name_end > name_start and values != null) {
+                    const col_name = cond[name_start..name_end];
+                    var col_idx: ?usize = null;
+                    for (ctx.col_names, 0..) |cn, ci| {
+                        if (std.ascii.eqlIgnoreCase(cn, col_name)) {
+                            col_idx = ci;
+                            break;
+                        }
+                    }
+                    if (col_idx) |ci| {
+                        if (ci < values.?.len) {
+                            const lit = try valueToSqlLiteral(allocator, values.?[ci]);
+                            defer allocator.free(lit);
+                            try result.appendSlice(allocator, lit);
+                            i = name_end;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            try result.append(allocator, cond[i]);
+            i += 1;
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
     /// Fire all matching triggers for a table+event+timing combination.
     /// row_count: how many rows were affected (used for ROW-level vs STATEMENT-level firing).
     /// For STATEMENT-level triggers, fires exactly once regardless of row_count.
     /// For ROW-level triggers, fires row_count times (or 0 if row_count is 0).
+    /// ctx: optional row context containing NEW/OLD values for WHEN condition evaluation.
+    /// skip_when_eval: if true, skip WHEN condition evaluation (caller has pre-evaluated it).
     fn fireTriggers(
         self: *Database,
         table_name: []const u8,
         event: ast_mod.TriggerEvent,
         timing: ast_mod.TriggerTiming,
         row_count: u64,
+        ctx: ?TriggerRowContext,
+        skip_when_eval: bool,
     ) void {
         const triggers = self.catalog.listTriggersForTable(
             self.allocator,
@@ -4781,14 +5031,22 @@ pub const Database = struct {
         for (triggers) |trigger| {
             if (!trigger.enabled) continue;
 
-            // Evaluate WHEN condition if present.
-            // Conditions referencing NEW/OLD require row context (not available here),
-            // so skip evaluation for those — they always fire.
-            if (trigger.when_condition) |cond| {
-                const has_row_ref = containsIgnoreCaseSubstring(cond, "new.") or
-                    containsIgnoreCaseSubstring(cond, "old.");
-                if (!has_row_ref) {
-                    const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{cond}) catch continue;
+            // Evaluate WHEN condition if present (unless caller pre-evaluated it).
+            if (!skip_when_eval and trigger.when_condition != null) {
+                if (trigger.when_condition) |cond| {
+                    const has_row_ref = containsIgnoreCaseSubstring(cond, "new.") or
+                        containsIgnoreCaseSubstring(cond, "old.");
+
+                    // Build the condition SQL to evaluate — substitute row refs if context available
+                    const eval_cond: []const u8 = if (has_row_ref and ctx != null)
+                        substituteRowRefs(self.allocator, cond, ctx.?) catch continue
+                    else if (has_row_ref)
+                        continue // No row context yet (e.g., BEFORE trigger) — always fire
+                    else
+                        self.allocator.dupe(u8, cond) catch continue;
+                    defer self.allocator.free(eval_cond);
+
+                    const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{eval_cond}) catch continue;
                     defer self.allocator.free(when_sql);
                     var cond_result = self.exec(when_sql) catch continue;
                     defer cond_result.close(self.allocator);
@@ -4945,7 +5203,7 @@ pub const Database = struct {
         }
 
         // Fire BEFORE UPDATE triggers (STATEMENT fires once, ROW fires per row to be updated)
-        self.fireTriggers(actual_table, .update, .before, 1);
+        self.fireTriggers(actual_table, .update, .before, 1, null, false);
 
         // Scan all rows, collect those matching predicate, update them
         var cursor = btree_mod.Cursor.init(self.allocator, &tree);
@@ -5302,7 +5560,28 @@ pub const Database = struct {
 
         // Fire AFTER UPDATE triggers (STATEMENT fires once, ROW fires per successfully updated row)
         if (rows_updated > 0) {
-            self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated));
+            var update_new_vals: ?[]Value = null;
+            defer if (update_new_vals) |vals| {
+                for (vals) |v| v.free(self.allocator);
+                self.allocator.free(vals);
+            };
+            const update_ctx: ?TriggerRowContext = blk: {
+                if (updates.items.len > 0) {
+                    const first_update = updates.items[0];
+                    const idx_data_u = if (isVersionedRowData(first_update.value))
+                        first_update.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                    else
+                        first_update.value;
+                    update_new_vals = executor_mod.deserializeRow(self.allocator, idx_data_u) catch break :blk null;
+                    break :blk .{
+                        .col_names = col_names,
+                        .new_values = update_new_vals,
+                        .old_values = first_update.old_values,
+                    };
+                }
+                break :blk null;
+            };
+            self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated), update_ctx, false);
         }
 
         // Handle RETURNING clause
@@ -5519,7 +5798,7 @@ pub const Database = struct {
         }
 
         // Fire BEFORE DELETE triggers (STATEMENT fires once, ROW fires per row to be deleted)
-        self.fireTriggers(actual_table, .delete, .before, 1);
+        self.fireTriggers(actual_table, .delete, .before, 1, null, false);
 
         var cursor = btree_mod.Cursor.init(self.allocator, &tree);
         defer cursor.deinit();
@@ -5652,7 +5931,62 @@ pub const Database = struct {
 
         // Fire AFTER DELETE triggers (STATEMENT fires once, ROW fires per successfully deleted row)
         if (rows_deleted > 0) {
-            self.fireTriggers(actual_table, .delete, .after, @intCast(rows_deleted));
+            const triggers_after_del = self.catalog.listTriggersForTable(
+                self.allocator,
+                actual_table,
+                .delete,
+                .after,
+            ) catch null;
+            defer if (triggers_after_del) |trigs| {
+                for (trigs) |tri| tri.deinit();
+                self.allocator.free(trigs);
+            };
+
+            var del_when_evaluated = false;
+            if (triggers_after_del) |trigs| {
+                for (trigs) |trigger| {
+                    if (!trigger.enabled or trigger.level != .row) continue;
+                    if (trigger.when_condition) |cond| {
+                        if (containsIgnoreCaseSubstring(cond, "old.")) {
+                            // Evaluate WHEN condition per deleted row
+                            var rows_that_pass: u64 = 0;
+                            var first_passing_idx: ?usize = null;
+                            for (deletes.items, 0..) |d, ri| {
+                                const row_ctx: TriggerRowContext = .{
+                                    .col_names = col_names,
+                                    .new_values = null,
+                                    .old_values = d.values,
+                                };
+                                if (self.evaluateTriggerWhenCondition(cond, row_ctx)) {
+                                    rows_that_pass += 1;
+                                    if (first_passing_idx == null) first_passing_idx = ri;
+                                }
+                            }
+                            if (first_passing_idx) |fpi| {
+                                if (rows_that_pass > 0) {
+                                    const del_ctx: TriggerRowContext = .{
+                                        .col_names = col_names,
+                                        .new_values = null,
+                                        .old_values = deletes.items[fpi].values,
+                                    };
+                                    self.fireTriggers(actual_table, .delete, .after, rows_that_pass, del_ctx, true);
+                                }
+                            }
+                            del_when_evaluated = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!del_when_evaluated) {
+                const del_ctx: ?TriggerRowContext = if (deletes.items.len > 0) .{
+                    .col_names = col_names,
+                    .new_values = null,
+                    .old_values = deletes.items[0].values,
+                } else null;
+                self.fireTriggers(actual_table, .delete, .after, @intCast(rows_deleted), del_ctx, false);
+            }
         }
 
         // Handle RETURNING clause
@@ -33455,5 +33789,291 @@ test "ALTER COLUMN SET DEFAULT persists across reopen" {
         defer row2.deinit();
         try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
         try testing.expectEqual(@as(i64, 42), row2.values[1].integer);
+    }
+}
+
+test "trigger WHEN (NEW.col > threshold) fires only when condition true on INSERT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_new_col_insert.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table with an amount column
+    var r1 = try db.exec("CREATE TABLE orders (id INTEGER, amount INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit table to track trigger fires
+    var r2 = try db.exec("CREATE TABLE audit (event TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger that fires only when NEW.amount > 100
+    var r3 = try db.exec(
+        \\CREATE TRIGGER trg_high_amount
+        \\AFTER INSERT ON orders
+        \\FOR EACH ROW
+        \\WHEN (NEW.amount > 100)
+        \\AS 'INSERT INTO audit VALUES (''high amount'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row with amount=200 — trigger should fire (200 > 100)
+    var r4 = try db.exec("INSERT INTO orders VALUES (1, 200)");
+    defer r4.close(testing.allocator);
+
+    // Insert a row with amount=50 — trigger should NOT fire (50 <= 100)
+    var r5 = try db.exec("INSERT INTO orders VALUES (2, 50)");
+    defer r5.close(testing.allocator);
+
+    // Verify audit table has exactly 1 entry (only first insert triggered)
+    var r6 = try db.exec("SELECT COUNT(*) FROM audit");
+    defer r6.close(testing.allocator);
+
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (only the insert with amount=200 should have fired the trigger)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger WHEN (OLD.status != NEW.status) fires only on UPDATE change" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_old_new_update.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table with a status column
+    var r1 = try db.exec("CREATE TABLE tasks (id INTEGER, status TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit table to track trigger fires
+    var r2 = try db.exec("CREATE TABLE audit (event TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Insert initial row
+    var r3 = try db.exec("INSERT INTO tasks VALUES (1, 'pending')");
+    defer r3.close(testing.allocator);
+
+    // Create a trigger that fires only when status actually changes
+    var r4 = try db.exec(
+        \\CREATE TRIGGER trg_status_change
+        \\AFTER UPDATE ON tasks
+        \\FOR EACH ROW
+        \\WHEN (OLD.status != NEW.status)
+        \\AS 'INSERT INTO audit VALUES (''status changed'')'
+    );
+    defer r4.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r4.message);
+
+    // Update row changing status from 'pending' to 'completed' — trigger should fire
+    var r5 = try db.exec("UPDATE tasks SET status = 'completed' WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // Update row keeping same status 'completed' — trigger should NOT fire
+    var r6 = try db.exec("UPDATE tasks SET status = 'completed' WHERE id = 1");
+    defer r6.close(testing.allocator);
+
+    // Verify audit table has exactly 1 entry (only the status change triggered)
+    var r7 = try db.exec("SELECT COUNT(*) FROM audit");
+    defer r7.close(testing.allocator);
+
+    if (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (only the actual status change should have fired the trigger)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger WHEN (OLD.amount < 0) fires on DELETE with OLD row reference" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_old_col_delete.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table with an amount column
+    var r1 = try db.exec("CREATE TABLE transactions (id INTEGER, amount INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit table to track trigger fires
+    var r2 = try db.exec("CREATE TABLE audit (event TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Insert rows with positive and negative amounts
+    var r3 = try db.exec("INSERT INTO transactions VALUES (1, -10)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.exec("INSERT INTO transactions VALUES (2, 20)");
+    defer r4.close(testing.allocator);
+
+    // Create a trigger that fires only when OLD.amount < 0 (negative amount being deleted)
+    var r5 = try db.exec(
+        \\CREATE TRIGGER trg_delete_negative
+        \\AFTER DELETE ON transactions
+        \\FOR EACH ROW
+        \\WHEN (OLD.amount < 0)
+        \\AS 'INSERT INTO audit VALUES (''deleted negative'')'
+    );
+    defer r5.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r5.message);
+
+    // Delete all rows
+    var r6 = try db.exec("DELETE FROM transactions");
+    defer r6.close(testing.allocator);
+
+    // Verify audit table has exactly 1 entry (only the negative-amount row triggered)
+    var r7 = try db.exec("SELECT COUNT(*) FROM audit");
+    defer r7.close(testing.allocator);
+
+    if (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (only the deletion of amount=-10 should have fired the trigger)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger WHEN (NEW.col < 0) condition false suppresses INSERT trigger" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_new_col_false.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table
+    var r1 = try db.exec("CREATE TABLE items (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit table
+    var r2 = try db.exec("CREATE TABLE audit (event TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger with WHEN condition that is false for all inserts
+    var r3 = try db.exec(
+        \\CREATE TRIGGER trg_negative
+        \\AFTER INSERT ON items
+        \\FOR EACH ROW
+        \\WHEN (NEW.value < 0)
+        \\AS 'INSERT INTO audit VALUES (''triggered'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert only positive values — trigger should never fire
+    var r4 = try db.exec("INSERT INTO items VALUES (1, 10)");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.exec("INSERT INTO items VALUES (2, 50)");
+    defer r5.close(testing.allocator);
+
+    var r6 = try db.exec("INSERT INTO items VALUES (3, 100)");
+    defer r6.close(testing.allocator);
+
+    // Verify audit table is empty (no trigger fires)
+    var r7 = try db.exec("SELECT COUNT(*) FROM audit");
+    defer r7.close(testing.allocator);
+
+    if (try r7.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 0 (all inserts had positive values, WHEN condition never true)
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger WHEN (NEW.col >= 0 AND NEW.col <= 50) compound condition on INSERT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_when_new_compound.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the main table
+    var r1 = try db.exec("CREATE TABLE scores (id INTEGER, points INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit table
+    var r2 = try db.exec("CREATE TABLE audit (event TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger with compound WHEN condition: fire only for points in range [0, 50]
+    var r3 = try db.exec(
+        \\CREATE TRIGGER trg_low_score
+        \\AFTER INSERT ON scores
+        \\FOR EACH ROW
+        \\WHEN (NEW.points >= 0 AND NEW.points <= 50)
+        \\AS 'INSERT INTO audit VALUES (''low score'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert in-range value (30) — should fire
+    var r4 = try db.exec("INSERT INTO scores VALUES (1, 30)");
+    defer r4.close(testing.allocator);
+
+    // Insert out-of-range value (100) — should NOT fire
+    var r5 = try db.exec("INSERT INTO scores VALUES (2, 100)");
+    defer r5.close(testing.allocator);
+
+    // Insert negative value (-10) — should NOT fire
+    var r6 = try db.exec("INSERT INTO scores VALUES (3, -10)");
+    defer r6.close(testing.allocator);
+
+    // Insert boundary value (50) — should fire (inclusive range)
+    var r7 = try db.exec("INSERT INTO scores VALUES (4, 50)");
+    defer r7.close(testing.allocator);
+
+    // Insert boundary value (0) — should fire (inclusive range)
+    var r8 = try db.exec("INSERT INTO scores VALUES (5, 0)");
+    defer r8.close(testing.allocator);
+
+    // Verify audit table has exactly 3 entries (points=30, 50, 0 triggered)
+    var r9 = try db.exec("SELECT COUNT(*) FROM audit");
+    defer r9.close(testing.allocator);
+
+    if (try r9.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 3 (inserts with points 30, 50, and 0 should have fired)
+        try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
     }
 }
