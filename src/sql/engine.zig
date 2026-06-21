@@ -1466,6 +1466,8 @@ pub const Database = struct {
                 .input = try substituteParamsInNode(template_arena, execution_arena, l.input, params),
                 .limit_expr = if (l.limit_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
                 .offset_expr = if (l.offset_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
+                .with_ties = l.with_ties,
+                .order_by = l.order_by,
             } },
             .distinct => |d| .{ .distinct = .{
                 .input = try substituteParamsInNode(template_arena, execution_arena, d.input, params),
@@ -3879,6 +3881,8 @@ pub const Database = struct {
 
         const limit_op = self.allocator.create(LimitOp) catch return EngineError.OutOfMemory;
         limit_op.* = LimitOp.init(self.allocator, input, limit_count, offset_count);
+        limit_op.with_ties = limit.with_ties;
+        limit_op.order_by = limit.order_by;
         ops.limit = limit_op;
         return limit_op.iterator();
     }
@@ -34753,3 +34757,235 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE - multiple clauses with conditions" {
         try testing.expectEqual(@as(usize, 3), row_count);
     }
 }
+
+test "FETCH FIRST n ROWS WITH TIES — basic, returns tied rows at boundary" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_with_ties_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert test data
+    {
+        var r = try db.execSQL("CREATE TABLE scores (name TEXT, score INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO scores VALUES ('alice', 100), ('bob', 90), ('charlie', 90), ('dave', 85)");
+        defer r.close(testing.allocator);
+    }
+
+    // Query: FETCH FIRST 2 ROWS WITH TIES
+    // Expected: 3 rows (alice=100, bob=90, charlie=90) because bob and charlie tie
+    var result = try db.execSQL("SELECT name, score FROM scores ORDER BY score DESC FETCH FIRST 2 ROWS WITH TIES");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var row0_name: ?[]u8 = null;
+    defer if (row0_name) |n| testing.allocator.free(n);
+    var row0_score: i64 = 0;
+    var row1_score: i64 = 0;
+    var row2_score: i64 = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (count == 0) {
+            row0_name = try testing.allocator.dupe(u8, row.values[0].text);
+            row0_score = row.values[1].integer;
+        } else if (count == 1) {
+            row1_score = row.values[1].integer;
+        } else if (count == 2) {
+            row2_score = row.values[1].integer;
+        }
+
+        count += 1;
+    }
+
+    // Should have 3 rows (not 2) due to ties
+    try testing.expectEqual(@as(usize, 3), count);
+
+    // Verify content: alice(100), then two rows at 90
+    try testing.expectEqualStrings("alice", row0_name orelse "");
+    try testing.expectEqual(@as(i64, 100), row0_score);
+    try testing.expectEqual(@as(i64, 90), row1_score);
+    try testing.expectEqual(@as(i64, 90), row2_score);
+}
+
+test "FETCH FIRST n ROWS WITH TIES — no tie at boundary, returns exactly n rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_with_ties_2.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert test data
+    {
+        var r = try db.execSQL("CREATE TABLE scores2 (name TEXT, score INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO scores2 VALUES ('alice', 100), ('bob', 90), ('charlie', 80)");
+        defer r.close(testing.allocator);
+    }
+
+    // Query: FETCH FIRST 2 ROWS WITH TIES
+    // Expected: 2 rows (alice=100, bob=90) because charlie is distinctly lower
+    var result = try db.execSQL("SELECT name FROM scores2 ORDER BY score DESC FETCH FIRST 2 ROWS WITH TIES");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var row0_name: []const u8 = "";
+    var row1_name: []const u8 = "";
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (count == 0) {
+            row0_name = try testing.allocator.dupe(u8, row.values[0].text);
+        } else if (count == 1) {
+            row1_name = try testing.allocator.dupe(u8, row.values[0].text);
+        }
+
+        count += 1;
+    }
+
+    defer testing.allocator.free(row0_name);
+    defer testing.allocator.free(row1_name);
+
+    // Should have exactly 2 rows (no ties at boundary)
+    try testing.expectEqual(@as(usize, 2), count);
+
+    // Verify: alice and bob
+    try testing.expectEqualStrings("alice", row0_name);
+    try testing.expectEqualStrings("bob", row1_name);
+}
+
+test "FETCH FIRST n ROWS WITH TIES — all remaining rows tie" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_with_ties_3.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert test data
+    {
+        var r = try db.execSQL("CREATE TABLE scores3 (name TEXT, score INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO scores3 VALUES ('a', 50), ('b', 50), ('c', 50), ('d', 50)");
+        defer r.close(testing.allocator);
+    }
+
+    // Query: FETCH FIRST 1 ROWS WITH TIES
+    // Expected: all 4 rows because they all tie at score=50
+    var result = try db.execSQL("SELECT name FROM scores3 ORDER BY score ASC FETCH FIRST 1 ROWS WITH TIES");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        count += 1;
+    }
+
+    // Should have all 4 rows (all tied at score=50)
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "FETCH FIRST 1 ROWS WITH TIES — single row with no tie" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_with_ties_4.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert test data
+    {
+        var r = try db.execSQL("CREATE TABLE scores4 (name TEXT, score INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO scores4 VALUES ('alice', 100), ('bob', 90)");
+        defer r.close(testing.allocator);
+    }
+
+    // Query: FETCH FIRST 1 ROWS WITH TIES
+    // Expected: 1 row (alice only, no tie at position 1)
+    var result = try db.execSQL("SELECT name FROM scores4 ORDER BY score DESC FETCH FIRST 1 ROWS WITH TIES");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var row0_name: []const u8 = "";
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (count == 0) {
+            row0_name = try testing.allocator.dupe(u8, row.values[0].text);
+        }
+
+        count += 1;
+    }
+
+    defer testing.allocator.free(row0_name);
+
+    // Should have exactly 1 row
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqualStrings("alice", row0_name);
+}
+
+test "FETCH FIRST n ROWS WITH TIES — with NULL values and NULLS LAST" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_with_ties_5.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert test data with NULLs
+    {
+        var r = try db.execSQL("CREATE TABLE scores5 (name TEXT, score INTEGER)");
+        defer r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.execSQL("INSERT INTO scores5 VALUES ('alice', 100), ('bob', NULL), ('charlie', NULL), ('dave', 50)");
+        defer r.close(testing.allocator);
+    }
+
+    // Query: FETCH FIRST 1 ROWS WITH TIES with NULLS LAST
+    // Expected: 1 row (alice=100, no tie at position 1)
+    var result = try db.execSQL("SELECT name FROM scores5 ORDER BY score DESC NULLS LAST FETCH FIRST 1 ROWS WITH TIES");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var row0_name: []const u8 = "";
+
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+
+        if (count == 0) {
+            row0_name = try testing.allocator.dupe(u8, row.values[0].text);
+        }
+
+        count += 1;
+    }
+
+    defer testing.allocator.free(row0_name);
+
+    // Should have exactly 1 row (alice)
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqualStrings("alice", row0_name);
+}
+

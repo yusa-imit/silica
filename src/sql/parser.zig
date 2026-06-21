@@ -330,7 +330,7 @@ pub const Parser = struct {
             }
         }
 
-        // Parse FETCH [FIRST|NEXT] n [ROW|ROWS] ONLY (SQL standard LIMIT alternative)
+        // Parse FETCH [FIRST|NEXT] n [ROW|ROWS] ONLY/WITH TIES (SQL standard LIMIT alternative)
         if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "fetch")) {
             _ = self.advance(); // consume "fetch"
             // consume FIRST or NEXT (contextual keywords, tokenized as identifiers)
@@ -342,9 +342,18 @@ pub const Parser = struct {
             if (self.peek().type == .kw_row or self.peek().type == .kw_rows) {
                 _ = self.advance();
             }
-            // consume ONLY (contextual keyword, tokenized as identifier)
+            // consume ONLY or WITH TIES
             if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "only")) {
-                _ = self.advance();
+                // ONLY is a contextual keyword, tokenized as identifier
+                _ = self.advance(); // consume ONLY
+            } else if (self.match(.kw_with)) {
+                // WITH is a real keyword (kw_with)
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ties")) {
+                    _ = self.advance(); // consume TIES
+                    stmt.with_ties = true;
+                } else {
+                    return error.ParseFailed;
+                }
             }
         }
 

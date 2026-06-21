@@ -454,6 +454,7 @@ pub const SelectStmt = struct {
     order_by: []const OrderByItem = &.{},
     limit: ?*const Expr = null,
     offset: ?*const Expr = null,
+    with_ties: bool = false,
     /// Named window definitions (WINDOW w AS (...), ...)
     window_defs: []const WindowDef = &.{},
     /// Optional set operation chaining (UNION, INTERSECT, EXCEPT)

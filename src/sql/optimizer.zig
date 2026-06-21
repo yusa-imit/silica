@@ -332,6 +332,8 @@ pub const Optimizer = struct {
             .input = opt_input,
             .limit_expr = limit.limit_expr,
             .offset_expr = limit.offset_expr,
+            .with_ties = limit.with_ties,
+            .order_by = limit.order_by,
         } });
     }
 

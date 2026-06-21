@@ -7994,6 +7994,10 @@ pub const LimitOp = struct {
     offset_count: u64,
     returned: u64 = 0,
     skipped: u64 = 0,
+    // WITH TIES fields:
+    with_ties: bool = false,
+    order_by: []const ast.OrderByItem = &.{},
+    tie_key: ?[]Value = null,
 
     pub fn init(allocator: Allocator, input: RowIterator, limit_count: ?u64, offset_count: u64) LimitOp {
         return .{
@@ -8014,16 +8018,34 @@ pub const LimitOp = struct {
 
         // Check limit
         if (self.limit_count) |lim| {
-            if (self.returned >= lim) return null;
+            if (self.returned >= lim) {
+                if (!self.with_ties or self.tie_key == null) return null;
+                // WITH TIES mode: continue returning rows that match the boundary ORDER BY key
+                var row = try self.input.next() orelse return null;
+                if (self.sameOrderByKey(row)) return row;
+                row.deinit();
+                return null;
+            }
         }
 
         const row = try self.input.next() orelse return null;
         self.returned += 1;
+
+        // When we reach the limit boundary and WITH TIES is active, save the key
+        if (self.with_ties and self.limit_count != null and self.returned == self.limit_count.?) {
+            self.saveTieKey(row) catch {}; // best-effort; ignore OOM
+        }
+
         return row;
     }
 
     pub fn close(self: *LimitOp) void {
         self.input.close();
+        if (self.tie_key) |key| {
+            for (key) |v| v.free(self.allocator);
+            self.allocator.free(key);
+            self.tie_key = null;
+        }
     }
 
     pub fn iterator(self: *LimitOp) RowIterator {
@@ -8034,6 +8056,32 @@ pub const LimitOp = struct {
                 .close = @ptrCast(&LimitOp.close),
             },
         };
+    }
+
+    fn saveTieKey(self: *LimitOp, row: Row) !void {
+        if (self.order_by.len == 0) return;
+        // Free previous key if any
+        if (self.tie_key) |old_key| {
+            for (old_key) |v| v.free(self.allocator);
+            self.allocator.free(old_key);
+        }
+        const key = try self.allocator.alloc(Value, self.order_by.len);
+        for (key, self.order_by) |*kv, ob| {
+            const v = evalExpr(self.allocator, ob.expr, &row, null) catch Value.null_value;
+            kv.* = v;
+        }
+        self.tie_key = key;
+    }
+
+    fn sameOrderByKey(self: *LimitOp, row: Row) bool {
+        const key = self.tie_key orelse return false;
+        for (key, self.order_by) |k, ob| {
+            const v = evalExpr(self.allocator, ob.expr, &row, null) catch return false;
+            defer v.free(self.allocator);
+            const cmp = k.compare(v);
+            if (cmp != .eq) return false;
+        }
+        return true;
     }
 };
 

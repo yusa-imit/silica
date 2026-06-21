@@ -267,6 +267,8 @@ pub const PlanNode = union(enum) {
         input: *const PlanNode,
         limit_expr: ?*const ast.Expr = null,
         offset_expr: ?*const ast.Expr = null,
+        with_ties: bool = false,
+        order_by: []const ast.OrderByItem = &.{},
     };
 
     pub const Distinct = struct {
@@ -459,7 +461,19 @@ pub const Planner = struct {
             } });
         }
 
-        // 3.5. Project — applied after Sort so ORDER BY can access all columns
+        // 3.5. WITH TIES Limit — must come BEFORE Project so ORDER BY key columns are still
+        // accessible when the tie-boundary comparison runs inside LimitOp.
+        if (stmt.with_ties) {
+            node = try self.createNode(.{ .limit = .{
+                .input = node,
+                .limit_expr = stmt.limit,
+                .offset_expr = stmt.offset,
+                .with_ties = true,
+                .order_by = stmt.order_by,
+            } });
+        }
+
+        // 3.6. Project — applied after Sort (and after WITH TIES Limit if present)
         // (for set ops, Project was already applied above before the set op)
         if (stmt.set_operation == null) {
             const proj_cols = try self.buildProjectColumns(stmt.columns);
@@ -477,8 +491,8 @@ pub const Planner = struct {
             } });
         }
 
-        // 4. LIMIT/OFFSET → Limit
-        if (stmt.limit != null or stmt.offset != null) {
+        // 4. Regular LIMIT/OFFSET (no WITH TIES — that was handled above before Project)
+        if ((stmt.limit != null or stmt.offset != null) and !stmt.with_ties) {
             node = try self.createNode(.{ .limit = .{
                 .input = node,
                 .limit_expr = stmt.limit,
