@@ -4794,13 +4794,21 @@ pub const Database = struct {
                     try idx_hash.insert(idx_key, idx_val);
                     // Hash index root page ID doesn't change (no rebalancing like B+Tree)
                 },
-                .gist => {
-                    // GiST index implementation is complete but insert operations are not yet integrated
-                    // For now, skip GiST index maintenance during INSERT
-                },
-                .gin => {
-                    // GIN index implementation is not yet integrated
-                    // For now, skip GIN index maintenance during INSERT
+                .gist, .gin => {
+                    // GiST/GIN pages are initialized as B+Tree leaf pages at CREATE INDEX time,
+                    // so we can use B+Tree semantics for DML until native GiST/GIN storage is integrated.
+                    var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                    if (idx.is_unique) {
+                        const existing = idx_tree.get(self.allocator, idx_key) catch null;
+                        if (existing) |val| {
+                            self.allocator.free(val);
+                            return error.UniqueConstraintViolation;
+                        }
+                    }
+                    try idx_tree.insert(idx_key, idx_val);
+                    if (idx_tree.root_page_id != idx.root_page_id) {
+                        self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                    }
                 },
             }
         }
@@ -4823,13 +4831,9 @@ pub const Database = struct {
                     var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
                     idx_hash.delete(idx_key) catch {};
                 },
-                .gist => {
-                    // GiST index implementation is complete but delete operations are not yet integrated
-                    // For now, skip GiST index maintenance during DELETE
-                },
-                .gin => {
-                    // GIN index implementation is not yet integrated
-                    // For now, skip GIN index maintenance during DELETE
+                .gist, .gin => {
+                    var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                    idx_tree.delete(idx_key) catch {};
                 },
             }
         }
@@ -7791,6 +7795,8 @@ pub const Database = struct {
                         idx_type = catalog_mod.IndexType.hash;
                     } else if (std.ascii.eqlIgnoreCase(type_str, "gist")) {
                         idx_type = catalog_mod.IndexType.gist;
+                    } else if (std.ascii.eqlIgnoreCase(type_str, "gin")) {
+                        idx_type = catalog_mod.IndexType.gin;
                     } else if (std.ascii.eqlIgnoreCase(type_str, "btree")) {
                         idx_type = catalog_mod.IndexType.btree;
                     }
@@ -35280,5 +35286,215 @@ test "trigger: Regular AFTER UPDATE (without UPDATE OF) fires for all updates" {
     } else {
         return error.TestUnexpectedResult;
     }
+}
+
+test "gist index INSERT maintains index" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gist_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with an integer column
+    var r1 = try db.execSQL("CREATE TABLE numbers (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIST index on the value column
+    var r2 = try db.execSQL("CREATE INDEX idx_numbers_value ON numbers (value) USING GIST");
+    defer r2.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Insert a row
+    var r3 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (1, 42)");
+    defer r3.close(testing.allocator);
+
+    // Verify the row exists via SELECT (index should not be stale)
+    var r4 = try db.execSQL("SELECT * FROM numbers WHERE value = 42");
+    defer r4.close(testing.allocator);
+
+    // Should return 1 row
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "gist index DELETE removes index entry" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gist_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE numbers (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIST index
+    var r2 = try db.execSQL("CREATE INDEX idx_numbers_value ON numbers (value) USING GIST");
+    defer r2.close(testing.allocator);
+
+    // Insert a row
+    var r3 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (1, 42)");
+    defer r3.close(testing.allocator);
+
+    // Delete the row
+    var r4 = try db.execSQL("DELETE FROM numbers WHERE id = 1");
+    defer r4.close(testing.allocator);
+
+    // Verify the row is gone
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM numbers");
+    defer r5.close(testing.allocator);
+
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "gin index INSERT maintains index" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with an integer column
+    var r1 = try db.execSQL("CREATE TABLE numbers (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index on the value column
+    var r2 = try db.execSQL("CREATE INDEX idx_numbers_value ON numbers (value) USING GIN");
+    defer r2.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Insert a row
+    var r3 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (1, 42)");
+    defer r3.close(testing.allocator);
+
+    // Verify the row exists via SELECT (index should not be stale)
+    var r4 = try db.execSQL("SELECT * FROM numbers WHERE value = 42");
+    defer r4.close(testing.allocator);
+
+    // Should return 1 row
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "gin index DELETE removes index entry" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE numbers (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index
+    var r2 = try db.execSQL("CREATE INDEX idx_numbers_value ON numbers (value) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Insert a row
+    var r3 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (1, 42)");
+    defer r3.close(testing.allocator);
+
+    // Delete the row
+    var r4 = try db.execSQL("DELETE FROM numbers WHERE id = 1");
+    defer r4.close(testing.allocator);
+
+    // Verify the row is gone
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM numbers");
+    defer r5.close(testing.allocator);
+
+    if (try r5.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "gist index created with USING GIN keyword recognizes gin in catalog" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_keyword_catalog.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, data INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index
+    var r2 = try db.execSQL("CREATE INDEX idx_items_data ON items (data) USING GIN");
+    defer r2.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE INDEX", r2.message);
+
+    // Verify the catalog stores index_type=gin
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("data");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("data", idx.?.column_name);
+    // The index_type should be recognized as gin
+    try testing.expect(idx.?.index_type == .gin);
+}
+
+test "multiple rows with gist index — all found" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gist_multiple_rows.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE numbers (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIST index
+    var r2 = try db.execSQL("CREATE INDEX idx_numbers_value ON numbers (value) USING GIST");
+    defer r2.close(testing.allocator);
+
+    // Insert 3 rows
+    var r3 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (1, 10)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (2, 20)");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("INSERT INTO numbers (id, value) VALUES (3, 30)");
+    defer r5.close(testing.allocator);
+
+    // Do a full table scan
+    var r6 = try db.execSQL("SELECT * FROM numbers");
+    defer r6.close(testing.allocator);
+
+    // Verify all 3 rows are returned
+    var count: usize = 0;
+    if (r6.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 3), count);
 }
 

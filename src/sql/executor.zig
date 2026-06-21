@@ -7707,15 +7707,11 @@ pub const IndexScanOp = struct {
                 var idx_hash = HashIndex.init(self.pool, self.index_root_page_id);
                 break :blk idx_hash.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
             },
-            .gist => {
-                // GiST index lookup not yet supported in executor
-                // Return error to prevent silent failures
-                return ExecError.ExecutionError;
-            },
-            .gin => {
-                // GIN index lookup not yet supported in executor
-                // Return error to prevent silent failures
-                return ExecError.ExecutionError;
+            .gist, .gin => blk: {
+                // GiST/GIN pages use B+Tree layout (initialized as B+Tree at CREATE INDEX time),
+                // so we fall back to B+Tree point lookup until native GiST/GIN lookup is integrated.
+                var idx_tree = BTree.init(self.pool, self.index_root_page_id);
+                break :blk idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
             },
         };
         if (row_key == null) return null; // No matching index entry
@@ -11647,8 +11643,26 @@ pub const BitmapIndexScanOp = struct {
                 try bitmap.set(page_id, slot_id);
             },
             .gist, .gin => {
-                // Not yet supported
-                return ExecError.ExecutionError;
+                // GiST/GIN pages use B+Tree layout (initialized as B+Tree at CREATE INDEX time),
+                // so fall back to B+Tree scan for now.
+                var idx_tree = BTree.init(self.pool, self.index_root);
+                var cursor = Cursor.init(self.allocator, &idx_tree);
+                defer cursor.deinit();
+                try cursor.seek(self.lookup_key);
+                while (try cursor.next()) |entry| {
+                    defer self.allocator.free(entry.key);
+                    defer self.allocator.free(entry.value);
+                    const matches = if (std.mem.indexOfScalar(u8, entry.key, 0)) |sep_pos|
+                        std.mem.eql(u8, entry.key[0..sep_pos], self.lookup_key)
+                    else
+                        std.mem.eql(u8, entry.key, self.lookup_key);
+                    if (matches) {
+                        const hash = std.hash.Wyhash.hash(0, entry.value);
+                        const page_id = @as(u32, @truncate(hash >> 32));
+                        const slot_id = @as(u32, @truncate(hash & 0xFFFFFFFF)) % 1024;
+                        try bitmap.set(page_id, slot_id);
+                    } else break;
+                }
             },
         }
 
