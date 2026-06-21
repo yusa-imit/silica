@@ -4094,7 +4094,7 @@ pub const Database = struct {
         }
 
         // Fire BEFORE INSERT triggers (STATEMENT fires once, ROW fires per row to be inserted)
-        self.fireTriggers(actual_table, .insert, .before, @intCast(values_node.rows.len), null, false);
+        self.fireTriggers(actual_table, .insert, .before, @intCast(values_node.rows.len), null, false, null);
 
         for (values_node.rows) |row_exprs| {
             // Evaluate value expressions
@@ -4552,7 +4552,7 @@ pub const Database = struct {
                                         .new_values = inserted_rows.items[fpi],
                                         .old_values = null,
                                     };
-                                    self.fireTriggers(actual_table, .insert, .after, rows_that_pass, insert_ctx, true);
+                                    self.fireTriggers(actual_table, .insert, .after, rows_that_pass, insert_ctx, true, null);
                                 }
                             }
                             break; // Only evaluate once
@@ -4567,7 +4567,7 @@ pub const Database = struct {
                         .new_values = inserted_rows.items[0],
                         .old_values = null,
                     } else null;
-                    self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false);
+                    self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false, null);
                 }
             } else {
                 const insert_ctx: ?TriggerRowContext = if (inserted_rows.items.len > 0) .{
@@ -4575,7 +4575,7 @@ pub const Database = struct {
                     .new_values = inserted_rows.items[0],
                     .old_values = null,
                 } else null;
-                self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false);
+                self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false, null);
             }
         }
 
@@ -5020,6 +5020,8 @@ pub const Database = struct {
         row_count: u64,
         ctx: ?TriggerRowContext,
         skip_when_eval: bool,
+        /// For UPDATE events: the columns actually being SET. null = all columns.
+        updated_cols: ?[]const []const u8,
     ) void {
         const triggers = self.catalog.listTriggersForTable(
             self.allocator,
@@ -5034,6 +5036,24 @@ pub const Database = struct {
 
         for (triggers) |trigger| {
             if (!trigger.enabled) continue;
+
+            // UPDATE OF column_list enforcement: only fire if an updated column matches.
+            if (event == .update and trigger.update_columns.len > 0) {
+                if (updated_cols) |cols| {
+                    var matched = false;
+                    for (trigger.update_columns) |tc| {
+                        for (cols) |uc| {
+                            if (std.ascii.eqlIgnoreCase(tc, uc)) {
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (matched) break;
+                    }
+                    if (!matched) continue;
+                }
+                // updated_cols == null means "all columns" — fire regardless
+            }
 
             // Evaluate WHEN condition if present (unless caller pre-evaluated it).
             if (!skip_when_eval and trigger.when_condition != null) {
@@ -5206,8 +5226,21 @@ pub const Database = struct {
             col_names[i] = col.name;
         }
 
+        // Build the list of column names being SET in this UPDATE (for UPDATE OF enforcement).
+        var updated_col_names = std.ArrayListUnmanaged([]const u8){};
+        defer updated_col_names.deinit(self.allocator);
+        for (assignments) |asgn| {
+            if (asgn.alias) |col| {
+                updated_col_names.append(self.allocator, col) catch {};
+            }
+        }
+        const updated_cols_slice: ?[]const []const u8 = if (updated_col_names.items.len > 0)
+            updated_col_names.items
+        else
+            null;
+
         // Fire BEFORE UPDATE triggers (STATEMENT fires once, ROW fires per row to be updated)
-        self.fireTriggers(actual_table, .update, .before, 1, null, false);
+        self.fireTriggers(actual_table, .update, .before, 1, null, false, updated_cols_slice);
 
         // Scan all rows, collect those matching predicate, update them
         var cursor = btree_mod.Cursor.init(self.allocator, &tree);
@@ -5625,7 +5658,7 @@ pub const Database = struct {
                                         .new_values = first_new_vals,
                                         .old_values = updates.items[fpi].old_values,
                                     };
-                                    self.fireTriggers(actual_table, .update, .after, rows_that_pass, upd_ctx, true);
+                                    self.fireTriggers(actual_table, .update, .after, rows_that_pass, upd_ctx, true, updated_cols_slice);
                                 }
                             }
                             upd_when_evaluated = true;
@@ -5657,7 +5690,7 @@ pub const Database = struct {
                     }
                     break :blk null;
                 };
-                self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated), update_ctx, false);
+                self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated), update_ctx, false, updated_cols_slice);
             }
         }
 
@@ -5875,7 +5908,7 @@ pub const Database = struct {
         }
 
         // Fire BEFORE DELETE triggers (STATEMENT fires once, ROW fires per row to be deleted)
-        self.fireTriggers(actual_table, .delete, .before, 1, null, false);
+        self.fireTriggers(actual_table, .delete, .before, 1, null, false, null);
 
         var cursor = btree_mod.Cursor.init(self.allocator, &tree);
         defer cursor.deinit();
@@ -6046,7 +6079,7 @@ pub const Database = struct {
                                         .new_values = null,
                                         .old_values = deletes.items[fpi].values,
                                     };
-                                    self.fireTriggers(actual_table, .delete, .after, rows_that_pass, del_ctx, true);
+                                    self.fireTriggers(actual_table, .delete, .after, rows_that_pass, del_ctx, true, null);
                                 }
                             }
                             del_when_evaluated = true;
@@ -6062,7 +6095,7 @@ pub const Database = struct {
                     .new_values = null,
                     .old_values = deletes.items[0].values,
                 } else null;
-                self.fireTriggers(actual_table, .delete, .after, @intCast(rows_deleted), del_ctx, false);
+                self.fireTriggers(actual_table, .delete, .after, @intCast(rows_deleted), del_ctx, false, null);
             }
         }
 
@@ -34987,5 +35020,265 @@ test "FETCH FIRST n ROWS WITH TIES — with NULL values and NULLS LAST" {
     // Should have exactly 1 row (alice)
     try testing.expectEqual(@as(usize, 1), count);
     try testing.expectEqualStrings("alice", row0_name);
+}
+
+test "trigger: UPDATE OF salary fires when salary column is updated" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_update_of_salary.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the employees table
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit_log table
+    var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger: AFTER UPDATE OF salary, should fire when salary is updated
+    var r3 = try db.exec(
+        \\CREATE TRIGGER on_salary_update
+        \\AFTER UPDATE OF salary ON employees
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO log (msg) VALUES (''salary changed'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row
+    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    defer r4.close(testing.allocator);
+
+    // Update the salary column — should fire the UPDATE OF salary trigger
+    var r5 = try db.exec("UPDATE employees SET salary = 55000 WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // Verify the trigger fired by checking log has an entry
+    var r6 = try db.exec("SELECT COUNT(*) FROM log");
+    defer r6.close(testing.allocator);
+
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (one log entry from trigger fire)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger: UPDATE OF salary suppressed when only name column is updated" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_update_of_salary_suppressed.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the employees table
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit_log table
+    var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger: AFTER UPDATE OF salary, should fire ONLY when salary is updated
+    var r3 = try db.exec(
+        \\CREATE TRIGGER on_salary_update
+        \\AFTER UPDATE OF salary ON employees
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO log (msg) VALUES (''salary changed'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row
+    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    defer r4.close(testing.allocator);
+
+    // Update the name column (not salary) — should NOT fire the UPDATE OF salary trigger
+    var r5 = try db.exec("UPDATE employees SET name = 'Alicia' WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // Verify the trigger did NOT fire by checking log has NO entries
+    var r6 = try db.exec("SELECT COUNT(*) FROM log");
+    defer r6.close(testing.allocator);
+
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 0 (no log entries, trigger should NOT have fired)
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger: UPDATE OF (multiple columns) fires when any specified column is updated" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_update_of_multiple.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the employees table
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit_log table
+    var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger: AFTER UPDATE OF salary, dept — should fire when EITHER is updated
+    var r3 = try db.exec(
+        \\CREATE TRIGGER on_salary_or_dept_update
+        \\AFTER UPDATE OF salary, dept ON employees
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO log (msg) VALUES (''salary or dept changed'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row
+    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    defer r4.close(testing.allocator);
+
+    // Update the salary column (one of the specified columns) — should fire
+    var r5 = try db.exec("UPDATE employees SET salary = 55000 WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // Verify the trigger fired by checking log has an entry
+    var r6 = try db.exec("SELECT COUNT(*) FROM log");
+    defer r6.close(testing.allocator);
+
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (one log entry from trigger fire)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger: UPDATE OF (multiple columns) suppressed when no specified column is updated" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_update_of_multiple_suppressed.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the employees table
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit_log table
+    var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a trigger: AFTER UPDATE OF salary, dept — should fire ONLY when those columns are updated
+    var r3 = try db.exec(
+        \\CREATE TRIGGER on_salary_or_dept_update
+        \\AFTER UPDATE OF salary, dept ON employees
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO log (msg) VALUES (''salary or dept changed'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row
+    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    defer r4.close(testing.allocator);
+
+    // Update the name column (not salary or dept) — should NOT fire the trigger
+    var r5 = try db.exec("UPDATE employees SET name = 'Alicia' WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // Verify the trigger did NOT fire by checking log has NO entries
+    var r6 = try db.exec("SELECT COUNT(*) FROM log");
+    defer r6.close(testing.allocator);
+
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 0 (no log entries, trigger should NOT have fired)
+        try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "trigger: Regular AFTER UPDATE (without UPDATE OF) fires for all updates" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_trigger_regular_update.db";
+    std.fs.cwd().deleteFile(path) catch {};
+    defer {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create the employees table
+    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create the audit_log table
+    var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Create a regular trigger: AFTER UPDATE ON (no UPDATE OF clause) — should fire for ANY update
+    var r3 = try db.exec(
+        \\CREATE TRIGGER on_any_update
+        \\AFTER UPDATE ON employees
+        \\FOR EACH ROW
+        \\AS 'INSERT INTO log (msg) VALUES (''something changed'')'
+    );
+    defer r3.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
+
+    // Insert a row
+    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    defer r4.close(testing.allocator);
+
+    // Update the name column — regular AFTER UPDATE (without OF) should still fire
+    var r5 = try db.exec("UPDATE employees SET name = 'Alicia' WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // Verify the trigger fired by checking log has an entry
+    var r6 = try db.exec("SELECT COUNT(*) FROM log");
+    defer r6.close(testing.allocator);
+
+    if (try r6.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        // Expected: 1 (one log entry from trigger fire — regular AFTER UPDATE always fires)
+        try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+    } else {
+        return error.TestUnexpectedResult;
+    }
 }
 
