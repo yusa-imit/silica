@@ -3,12 +3,12 @@
 //! Supports:
 //!   - Literals (a, b, ...)
 //!   - Wildcard (.)
-//!   - Character classes ([abc], [a-z], [^abc])
-//!   - Quantifiers (*, +, ?)
+//!   - Character classes ([abc], [a-z], [^abc], [\d\w])
+//!   - Quantifiers (*, +, ?, {n}, {n,}, {n,m})
 //!   - Alternation (a|b)
 //!   - Groups ((expr))
 //!   - Anchors (^, $)
-//!   - Escape sequences (\d, \w, \s, \D, \W, \S)
+//!   - Escape sequences (\d, \w, \s, \D, \W, \S) — both standalone and inside [...]
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -473,11 +473,81 @@ const Parser = struct {
                     node.* = Node{ .opt = .{ .child = atom, .greedy = true } };
                     atom = node;
                 },
+                '{' => {
+                    // Only treat as quantifier if followed by a digit.
+                    const saved = self.pos;
+                    _ = self.consume(); // consume '{'
+                    const first = self.peek() orelse {
+                        self.pos = saved;
+                        break;
+                    };
+                    if (first < '0' or first > '9') {
+                        self.pos = saved;
+                        break;
+                    }
+                    const min = try self.parseUint();
+                    var max_opt: ?u32 = min; // default: exactly min
+                    if (self.peek() == ',') {
+                        _ = self.consume();
+                        if (self.peek() == '}') {
+                            max_opt = null; // {n,} = n or more
+                        } else {
+                            const m = try self.parseUint();
+                            if (m < min) return Error.InvalidPattern;
+                            max_opt = m;
+                        }
+                    }
+                    if (self.consume() != '}') return Error.InvalidPattern;
+
+                    // Expand into AST: min mandatory copies + optional tail
+                    var parts = std.ArrayListUnmanaged(*const Node){};
+                    var i: u32 = 0;
+                    while (i < min) : (i += 1) {
+                        try parts.append(self.arena, atom);
+                    }
+                    if (max_opt) |max| {
+                        var j: u32 = min;
+                        while (j < max) : (j += 1) {
+                            const opt = try self.arena.create(Node);
+                            opt.* = Node{ .opt = .{ .child = atom, .greedy = true } };
+                            try parts.append(self.arena, opt);
+                        }
+                    } else {
+                        const star = try self.arena.create(Node);
+                        star.* = Node{ .star = .{ .child = atom, .greedy = true } };
+                        try parts.append(self.arena, star);
+                    }
+                    if (parts.items.len == 0) {
+                        const empty = try self.arena.create(Node);
+                        empty.* = Node{ .seq = &.{} };
+                        atom = empty;
+                    } else if (parts.items.len == 1) {
+                        atom = parts.items[0];
+                    } else {
+                        const seq_slice = try self.arena.dupe(*const Node, parts.items);
+                        const seq = try self.arena.create(Node);
+                        seq.* = Node{ .seq = seq_slice };
+                        atom = seq;
+                    }
+                },
                 else => break,
             }
         }
 
         return atom;
+    }
+
+    fn parseUint(self: *Parser) Error!u32 {
+        var n: u32 = 0;
+        var has_digit = false;
+        while (self.peek()) |d| {
+            if (d < '0' or d > '9') break;
+            _ = self.consume();
+            n = n * 10 + (d - '0');
+            has_digit = true;
+        }
+        if (!has_digit) return Error.InvalidPattern;
+        return n;
     }
 
     fn parseAtom(self: *Parser) Error!*const Node {
@@ -586,7 +656,23 @@ const Parser = struct {
         while (self.peek() != null and self.peek() != ']') {
             const ch = self.consume().?;
 
-            if (ch == '-' and self.peek() != null and self.peek() != ']' and items.items.len > 0) {
+            if (ch == '\\') {
+                // Escape sequence inside character class
+                const escaped = self.consume() orelse return Error.InvalidPattern;
+                const item: ClsItem = switch (escaped) {
+                    'd' => .digit,
+                    'D' => .ndigit,
+                    'w' => .word,
+                    'W' => .nword,
+                    's' => .space,
+                    'S' => .nspace,
+                    'n' => ClsItem{ .single = '\n' },
+                    't' => ClsItem{ .single = '\t' },
+                    'r' => ClsItem{ .single = '\r' },
+                    else => ClsItem{ .single = escaped },
+                };
+                try items.append(self.arena, item);
+            } else if (ch == '-' and self.peek() != null and self.peek() != ']' and items.items.len > 0) {
                 const next = self.consume().?;
                 if (items.pop()) |last| {
                     if (last == .single) {
@@ -1300,4 +1386,156 @@ test "regex: dot matches newline with dot_all" {
 
     const m = try rx.find(alloc, "a\nb", Flags{ .dot_all = true });
     try std.testing.expect(m != null);
+}
+
+// ─ Bounded quantifier tests {n,m} ─
+
+test "regex: bounded quantifier \\d{4} matches exactly 4 digits" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\d{4}");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "year 2024", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 5), m.?.start);
+    try std.testing.expectEqual(@as(usize, 9), m.?.end);
+}
+
+test "regex: bounded quantifier \\d{4} does not match 3 digits" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\d{4}");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "123", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: bounded quantifier a{3} matches exactly 3 a's" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a{3}");
+    defer rx.deinit(alloc);
+
+    const m1 = try rx.find(alloc, "aaa", Flags{});
+    try std.testing.expect(m1 != null);
+
+    const m2 = try rx.find(alloc, "aa", Flags{});
+    try std.testing.expect(m2 == null);
+}
+
+test "regex: bounded quantifier a{2,4} matches 2-4 a's" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "^a{2,4}$");
+    defer rx.deinit(alloc);
+
+    const m2 = try rx.find(alloc, "aa", Flags{});
+    try std.testing.expect(m2 != null);
+
+    const m3 = try rx.find(alloc, "aaa", Flags{});
+    try std.testing.expect(m3 != null);
+
+    const m4 = try rx.find(alloc, "aaaa", Flags{});
+    try std.testing.expect(m4 != null);
+
+    const m1 = try rx.find(alloc, "a", Flags{});
+    try std.testing.expect(m1 == null);
+
+    const m5 = try rx.find(alloc, "aaaaa", Flags{});
+    try std.testing.expect(m5 == null);
+}
+
+test "regex: bounded quantifier a{2,} matches 2 or more a's greedy" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a{2,}");
+    defer rx.deinit(alloc);
+
+    const m2 = try rx.find(alloc, "aa", Flags{});
+    try std.testing.expect(m2 != null);
+    try std.testing.expectEqual(@as(usize, 0), m2.?.start);
+    try std.testing.expectEqual(@as(usize, 2), m2.?.end);
+
+    const m6 = try rx.find(alloc, "aaaaaa", Flags{});
+    try std.testing.expect(m6 != null);
+    try std.testing.expectEqual(@as(usize, 0), m6.?.start);
+    try std.testing.expectEqual(@as(usize, 6), m6.?.end);
+}
+
+test "regex: bounded quantifier [a-z]{5} matches exactly 5 lowercase letters" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[a-z]{5}");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello world", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 5), m.?.end);
+}
+
+// ─ Escape sequences inside character classes ─
+
+test "regex: char class with escape [\\d]+ matches digits" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[\\d]+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "123", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 3), m.?.end);
+}
+
+test "regex: char class with escape [\\w]+ matches word characters" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[\\w]+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello_world", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 11), m.?.end);
+}
+
+test "regex: char class with escape [\\s]+ matches whitespace" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[\\s]+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello\tworld", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 5), m.?.start);
+    try std.testing.expectEqual(@as(usize, 6), m.?.end);
+}
+
+test "regex: char class with escape [\\D]+ matches non-digits" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[\\D]+");
+    defer rx.deinit(alloc);
+
+    const m1 = try rx.find(alloc, "abc", Flags{});
+    try std.testing.expect(m1 != null);
+
+    const m2 = try rx.find(alloc, "123", Flags{});
+    try std.testing.expect(m2 == null);
+}
+
+test "regex: char class mixed literal and escape [a\\d]+" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[a\\d]+");
+    defer rx.deinit(alloc);
+
+    // 'a' and '1' match; 'b' stops the match (not 'a' and not a digit)
+    const m = try rx.find(alloc, "a1b2", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 2), m.?.end);
+}
+
+test "regex: char class with multiple escapes [\\d\\w]+" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[\\d\\w]+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "abc123", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 6), m.?.end);
 }
