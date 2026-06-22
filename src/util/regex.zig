@@ -55,6 +55,11 @@ const ClsItem = union(enum) {
     nspace,  // \S
 };
 
+const CharClass = struct {
+    neg: bool,
+    items: []const ClsItem,
+};
+
 const Node = union(enum) {
     lit: u8,
     any: void,
@@ -79,6 +84,7 @@ const InstTag = enum {
     jmp,        // unconditional jump
     save,       // save current position to slot n
     match,      // success
+    anchor_end, // match only at end of input
 };
 
 const Inst = struct {
@@ -88,7 +94,7 @@ const Inst = struct {
 
 pub const Regex = struct {
     insts: []const Inst,
-    char_classes: []const []const ClsItem,
+    char_classes: []const CharClass,
     allocator: Allocator,
     n_groups: u32,
     pattern: []const u8,
@@ -112,7 +118,7 @@ pub const Regex = struct {
         compiler.alloc = alloc;
         compiler.group_count = group_count;
         compiler.insts = std.ArrayListUnmanaged(Inst){};
-        compiler.char_classes = std.ArrayListUnmanaged([]const ClsItem){};
+        compiler.char_classes = std.ArrayListUnmanaged(CharClass){};
         defer compiler.insts.deinit(alloc);
         defer compiler.char_classes.deinit(alloc);
 
@@ -120,11 +126,11 @@ pub const Regex = struct {
 
         const insts = try alloc.dupe(Inst, compiler.insts.items);
 
-        var char_classes_out = std.ArrayListUnmanaged([]const ClsItem){};
+        var char_classes_out = std.ArrayListUnmanaged(CharClass){};
 
-        for (compiler.char_classes.items) |cls_slice| {
-            const items = try alloc.dupe(ClsItem, cls_slice);
-            try char_classes_out.append(alloc, items);
+        for (compiler.char_classes.items) |cc| {
+            const items = try alloc.dupe(ClsItem, cc.items);
+            try char_classes_out.append(alloc, CharClass{ .neg = cc.neg, .items = items });
         }
 
         const pattern_copy = try alloc.dupe(u8, pattern);
@@ -140,7 +146,7 @@ pub const Regex = struct {
 
     pub fn deinit(self: *Regex, alloc: Allocator) void {
         for (self.char_classes) |cls| {
-            alloc.free(cls);
+            alloc.free(cls.items);
         }
         alloc.free(self.char_classes);
         alloc.free(self.insts);
@@ -213,7 +219,7 @@ pub const Regex = struct {
                     }
                 },
                 .any => {
-                    if (thread.pos < text.len) {
+                    if (thread.pos < text.len and (flags.dot_all or text[thread.pos] != '\n')) {
                         try stack.append(alloc, Thread{
                             .pc = thread.pc + 1,
                             .pos = thread.pos + 1,
@@ -273,16 +279,26 @@ pub const Regex = struct {
                     saves.* = thread.saves;
                     return thread.pos;
                 },
+                .anchor_end => {
+                    if (thread.pos == text.len) {
+                        try stack.append(alloc, Thread{
+                            .pc = thread.pc + 1,
+                            .pos = thread.pos,
+                            .saves = thread.saves,
+                        });
+                    }
+                },
             }
         }
 
         return null;
     }
 
-    fn matchesCharClass(self: *const Regex, ch: u8, items: []const ClsItem, ignore_case: bool) bool {
+    fn matchesCharClass(self: *const Regex, ch: u8, cc: CharClass, ignore_case: bool) bool {
         _ = self;
 
-        for (items) |item| {
+        var positive_match = false;
+        for (cc.items) |item| {
             const matches = switch (item) {
                 .single => |c| if (ignore_case) std.ascii.toLower(c) == std.ascii.toLower(ch) else c == ch,
                 .range => |r| ch >= r.lo and ch <= r.hi,
@@ -293,10 +309,13 @@ pub const Regex = struct {
                 .ndigit => !(ch >= '0' and ch <= '9'),
                 .nspace => !(ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '\x0c' or ch == '\x0b'),
             };
-            if (matches) return true;
+            if (matches) {
+                positive_match = true;
+                break;
+            }
         }
 
-        return false;
+        return if (cc.neg) !positive_match else positive_match;
     }
 
     pub fn replace(
@@ -598,7 +617,7 @@ const Parser = struct {
 
 const Compiler = struct {
     insts: std.ArrayListUnmanaged(Inst),
-    char_classes: std.ArrayListUnmanaged([]const ClsItem),
+    char_classes: std.ArrayListUnmanaged(CharClass),
     arena: Allocator,
     alloc: Allocator,
     group_count: u32,
@@ -639,7 +658,7 @@ const Compiler = struct {
     fn compileClassData(self: *Compiler, cls_node: *const Node) Error!u32 {
         const cls_data = cls_node.cls;
         const cls_idx = @as(u32, @intCast(self.char_classes.items.len));
-        try self.char_classes.append(self.alloc, cls_data.items);
+        try self.char_classes.append(self.alloc, CharClass{ .neg = cls_data.neg, .items = cls_data.items });
         const pc = @as(u32, @intCast(self.insts.items.len));
         try self.insts.append(self.alloc, Inst{ .tag = .cls, .data = cls_idx });
         return pc;
@@ -740,8 +759,10 @@ const Compiler = struct {
         return pc;
     }
 
-    fn compileAnchorEnd(_: *Compiler) Error!u32 {
-        return 0;
+    fn compileAnchorEnd(self: *Compiler) Error!u32 {
+        const pc = @as(u32, @intCast(self.insts.items.len));
+        try self.insts.append(self.alloc, Inst{ .tag = .anchor_end, .data = 0 });
+        return pc;
     }
 };
 
@@ -834,4 +855,449 @@ test "regex: replace all" {
     defer alloc.free(result);
 
     try std.testing.expectEqualStrings("dog bat dog", result);
+}
+
+// ─ Alternation tests ─
+
+test "regex: alternation simple a|b matches a" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a|b");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "a", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 1), m.?.end);
+}
+
+test "regex: alternation simple a|b matches b" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a|b");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "b", Flags{});
+    try std.testing.expect(m != null);
+}
+
+test "regex: alternation longer patterns cat|dog" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "cat|dog");
+    defer rx.deinit(alloc);
+
+    const m1 = try rx.find(alloc, "my cat is here", Flags{});
+    try std.testing.expect(m1 != null);
+    try std.testing.expectEqual(@as(usize, 3), m1.?.start);
+    try std.testing.expectEqual(@as(usize, 6), m1.?.end);
+
+    const m2 = try rx.find(alloc, "my dog is here", Flags{});
+    try std.testing.expect(m2 != null);
+    try std.testing.expectEqual(@as(usize, 3), m2.?.start);
+    try std.testing.expectEqual(@as(usize, 6), m2.?.end);
+}
+
+test "regex: alternation no match" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "cat|dog");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "bird", Flags{});
+    try std.testing.expect(m == null);
+}
+
+// ─ Anchor tests ─
+
+test "regex: anchor start ^hello matches at beginning" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "^hello");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello world", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+}
+
+test "regex: anchor start ^hello does not match in middle" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "^hello");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "say hello", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: anchor end world$ matches at end" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "world$");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello world", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 6), m.?.start);
+    try std.testing.expectEqual(@as(usize, 11), m.?.end);
+}
+
+// ─ Plus quantifier tests ─
+
+test "regex: plus quantifier a+ matches aaa" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "aaa", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 3), m.?.end);
+}
+
+test "regex: plus quantifier a+ no match on empty" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: plus quantifier a+ no match starting with b" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "bbb", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: plus quantifier in context" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a+b");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "aaab", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 4), m.?.end);
+}
+
+// ─ Optional quantifier tests ─
+
+test "regex: optional quantifier colou?r matches color" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "colou?r");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "color", Flags{});
+    try std.testing.expect(m != null);
+}
+
+test "regex: optional quantifier colou?r matches colour" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "colou?r");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "colour", Flags{});
+    try std.testing.expect(m != null);
+}
+
+test "regex: optional quantifier in pattern" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a?b");
+    defer rx.deinit(alloc);
+
+    const m1 = try rx.find(alloc, "ab", Flags{});
+    try std.testing.expect(m1 != null);
+
+    const m2 = try rx.find(alloc, "b", Flags{});
+    try std.testing.expect(m2 != null);
+}
+
+// ─ Escape sequence tests: \d ─
+
+test "regex: escape \\d+ matches 123" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\d+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "123", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 3), m.?.end);
+}
+
+test "regex: escape \\d+ no match on abc" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\d+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "abc", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: escape \\d in context" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "call \\d+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "call 555", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 8), m.?.end);
+}
+
+// ─ Escape sequence tests: \w ─
+
+test "regex: escape \\w+ matches hello_world" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\w+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello_world", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 11), m.?.end);
+}
+
+test "regex: escape \\w+ no match on !!!" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\w+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "!!!", Flags{});
+    try std.testing.expect(m == null);
+}
+
+// ─ Escape sequence tests: \s ─
+
+test "regex: escape \\s+ matches whitespace" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\s+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello   world", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 5), m.?.start);
+    try std.testing.expectEqual(@as(usize, 8), m.?.end);
+}
+
+test "regex: escape \\s+ matches tab" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\s+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello\tworld", Flags{});
+    try std.testing.expect(m != null);
+}
+
+// ─ Escape sequence tests: \D ─
+
+test "regex: escape \\D+ matches abc" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\D+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "abc", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 3), m.?.end);
+}
+
+test "regex: escape \\D+ no match on 123" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "\\D+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "123", Flags{});
+    try std.testing.expect(m == null);
+}
+
+// ─ groupText() tests ─
+
+test "regex: groupText group 0 is whole match" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "(\\d+)-(\\d+)");
+    defer rx.deinit(alloc);
+
+    const text = "call 555-1234";
+    const m = try rx.find(alloc, text, Flags{});
+    try std.testing.expect(m != null);
+
+    const whole = m.?.groupText(0, text);
+    try std.testing.expect(whole != null);
+    try std.testing.expectEqualStrings("555-1234", whole.?);
+}
+
+test "regex: groupText group 1 first capture" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "(\\d+)-(\\d+)");
+    defer rx.deinit(alloc);
+
+    const text = "call 555-1234";
+    const m = try rx.find(alloc, text, Flags{});
+    try std.testing.expect(m != null);
+
+    const group1 = m.?.groupText(1, text);
+    try std.testing.expect(group1 != null);
+    try std.testing.expectEqualStrings("555", group1.?);
+}
+
+test "regex: groupText group 2 second capture" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "(\\d+)-(\\d+)");
+    defer rx.deinit(alloc);
+
+    const text = "call 555-1234";
+    const m = try rx.find(alloc, text, Flags{});
+    try std.testing.expect(m != null);
+
+    const group2 = m.?.groupText(2, text);
+    try std.testing.expect(group2 != null);
+    try std.testing.expectEqualStrings("1234", group2.?);
+}
+
+test "regex: groupText nonexistent group returns null" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "(\\d+)");
+    defer rx.deinit(alloc);
+
+    const text = "123";
+    const m = try rx.find(alloc, text, Flags{});
+    try std.testing.expect(m != null);
+
+    const group2 = m.?.groupText(2, text);
+    try std.testing.expect(group2 == null);
+}
+
+// ─ Non-match cases ─
+
+test "regex: non-match xyz in hello world" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "xyz");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello world", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: non-match pattern not found" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "elephant");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "cat dog bird", Flags{});
+    try std.testing.expect(m == null);
+}
+
+// ─ Invalid pattern tests ─
+
+test "regex: invalid pattern unclosed bracket" {
+    const alloc = std.testing.allocator;
+
+    const result = Regex.compile(alloc, "[unclosed");
+    try std.testing.expect(result == error.InvalidPattern);
+}
+
+test "regex: invalid pattern unclosed group" {
+    const alloc = std.testing.allocator;
+
+    const result = Regex.compile(alloc, "(unclosed");
+    try std.testing.expect(result == error.InvalidPattern);
+}
+
+test "regex: invalid pattern bad quantifier" {
+    const alloc = std.testing.allocator;
+
+    const result = Regex.compile(alloc, "*invalid");
+    try std.testing.expect(result == error.InvalidPattern);
+}
+
+// ─ Empty pattern tests ─
+
+test "regex: empty pattern matches at position 0" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "hello", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 0), m.?.end);
+}
+
+test "regex: empty pattern on empty string" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "", Flags{});
+    try std.testing.expect(m != null);
+}
+
+// ─ anchor_end ($) fix tests ─
+
+test "regex: anchor end world$ does not match when not at end" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "world$");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "world is big", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: anchor end ^abc$ exact match only" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "^abc$");
+    defer rx.deinit(alloc);
+
+    const yes = try rx.find(alloc, "abc", Flags{});
+    try std.testing.expect(yes != null);
+
+    const no = try rx.find(alloc, "abcd", Flags{});
+    try std.testing.expect(no == null);
+
+    const no2 = try rx.find(alloc, "xabc", Flags{});
+    try std.testing.expect(no2 == null);
+}
+
+// ─ negated char class fix tests ─
+
+test "regex: negated class [^aeiou]+ matches consonants" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[^aeiou]+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "bcdfg", Flags{});
+    try std.testing.expect(m != null);
+    try std.testing.expectEqual(@as(usize, 0), m.?.start);
+    try std.testing.expectEqual(@as(usize, 5), m.?.end);
+}
+
+test "regex: negated class [^0-9]+ matches non-digits" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "[^0-9]+");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "abc", Flags{});
+    try std.testing.expect(m != null);
+
+    const no = try rx.find(alloc, "123", Flags{});
+    try std.testing.expect(no == null);
+}
+
+// ─ dot_all flag fix tests ─
+
+test "regex: dot does not match newline without dot_all" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a.b");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "a\nb", Flags{});
+    try std.testing.expect(m == null);
+}
+
+test "regex: dot matches newline with dot_all" {
+    const alloc = std.testing.allocator;
+    var rx = try Regex.compile(alloc, "a.b");
+    defer rx.deinit(alloc);
+
+    const m = try rx.find(alloc, "a\nb", Flags{ .dot_all = true });
+    try std.testing.expect(m != null);
 }
