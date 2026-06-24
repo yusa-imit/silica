@@ -825,8 +825,28 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render schema tree
     renderSchemaTree(app, buf, schema_area);
 
-    // Render results table
-    renderResultsTable(app, buf, results_area);
+    // Render results table with optional MiniMap sidebar
+    const minimap_width: u16 = 2;
+    const show_minimap = app.result_rows.items.len > 0 and results_area.width > minimap_width + 8;
+    if (show_minimap) {
+        const result_split = try tui.layout.split(allocator, .horizontal, results_area, &.{
+            .{ .min = 8 },
+            .{ .length = minimap_width },
+        });
+        defer allocator.free(result_split);
+        renderResultsTable(app, buf, result_split[0]);
+        const lines = try buildMinimapLines(allocator, app.result_rows.items);
+        defer allocator.free(lines);
+        tui.widgets.MiniMap.init()
+            .withLines(lines)
+            .withViewportTop(app.result_offset)
+            .withViewportHeight(minimapViewportHeight(results_area.height))
+            .withViewportStyle(.{ .fg = .cyan, .bold = true })
+            .withStyle(.{ .fg = .bright_black })
+            .render(buf, result_split[1]);
+    } else {
+        renderResultsTable(app, buf, results_area);
+    }
 
     // Render SQL input
     renderSQLInput(app, buf, input_area);
@@ -846,6 +866,18 @@ fn isTableIndex(table_indices: []const usize, idx: usize) bool {
         if (ti > idx) break;
     }
     return false;
+}
+
+fn buildMinimapLines(allocator: std.mem.Allocator, rows: []const []const []const u8) ![][]const u8 {
+    const lines = try allocator.alloc([]const u8, rows.len);
+    for (rows, 0..) |row, i| {
+        lines[i] = if (row.len > 0) row[0] else " ";
+    }
+    return lines;
+}
+
+fn minimapViewportHeight(area_height: u16) usize {
+    return if (area_height > 3) area_height - 3 else 1;
 }
 
 fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
@@ -2427,4 +2459,83 @@ test "spinner_frame value changes which frame is rendered" {
     try std.testing.expect(char_frame0 != char_frame1);
     try std.testing.expect(char_frame0 > 0);
     try std.testing.expect(char_frame1 > 0);
+}
+
+test "buildMinimapLines extracts first cell from each row" {
+    const allocator = std.testing.allocator;
+
+    // Create 3 rows with 2 cells each
+    const row0 = try allocator.alloc([]const u8, 2);
+    row0[0] = "Alice";
+    row0[1] = "30";
+
+    const row1 = try allocator.alloc([]const u8, 2);
+    row1[0] = "Bob";
+    row1[1] = "25";
+
+    const row2 = try allocator.alloc([]const u8, 2);
+    row2[0] = "Charlie";
+    row2[1] = "35";
+
+    const rows = [_][]const []const u8{ row0, row1, row2 };
+
+    // Call buildMinimapLines
+    const lines = try buildMinimapLines(allocator, &rows);
+    defer allocator.free(lines);
+
+    // Verify: lines should contain first cell of each row
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqualStrings("Alice", lines[0]);
+    try std.testing.expectEqualStrings("Bob", lines[1]);
+    try std.testing.expectEqualStrings("Charlie", lines[2]);
+
+    // Cleanup allocated rows
+    allocator.free(row0);
+    allocator.free(row1);
+    allocator.free(row2);
+}
+
+test "buildMinimapLines uses space for empty row" {
+    const allocator = std.testing.allocator;
+
+    // Create one row with 0 cells
+    const row0 = try allocator.alloc([]const u8, 0);
+
+    const rows = [_][]const []const u8{row0};
+
+    // Call buildMinimapLines
+    const lines = try buildMinimapLines(allocator, &rows);
+    defer allocator.free(lines);
+
+    // Verify: lines[0] should be " "
+    try std.testing.expectEqual(@as(usize, 1), lines.len);
+    try std.testing.expectEqualStrings(" ", lines[0]);
+
+    // Cleanup
+    allocator.free(row0);
+}
+
+test "buildMinimapLines returns empty slice for empty rows" {
+    const allocator = std.testing.allocator;
+
+    const rows: [][]const []const u8 = &[_][]const []const u8{};
+
+    // Call buildMinimapLines with zero rows
+    const lines = try buildMinimapLines(allocator, rows);
+    defer allocator.free(lines);
+
+    // Verify: lines should be empty slice
+    try std.testing.expectEqual(@as(usize, 0), lines.len);
+}
+
+test "minimapViewportHeight subtracts 3 from area height" {
+    // Test typical area height (24 - 3 = 21)
+    const result = minimapViewportHeight(24);
+    try std.testing.expectEqual(@as(usize, 21), result);
+}
+
+test "minimapViewportHeight returns 1 for small area" {
+    // Test small area (2 - 3 is negative, should clamp to 1)
+    const result = minimapViewportHeight(2);
+    try std.testing.expectEqual(@as(usize, 1), result);
 }
