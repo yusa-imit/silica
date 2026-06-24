@@ -1912,7 +1912,10 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
                 .text => |t| t,
                 else => return .{ .boolean = false },
             };
-            const matches = likeMatch(text_val, pattern);
+            const matches = if (lk.ilike)
+                likeMatchIgnoreCase(text_val, pattern)
+            else
+                likeMatch(text_val, pattern);
             return .{ .boolean = if (lk.negated) !matches else matches };
         },
 
@@ -7520,6 +7523,22 @@ fn likeMatch(text: []const u8, pattern: []const u8) bool {
         }
     }
     return true;
+}
+
+fn likeMatchIgnoreCase(text: []const u8, pattern: []const u8) bool {
+    if (text.len < 512 and pattern.len < 512) {
+        var text_buf: [512]u8 = undefined;
+        var pat_buf: [512]u8 = undefined;
+        const ltext = std.ascii.lowerString(text_buf[0..text.len], text);
+        const lpat = std.ascii.lowerString(pat_buf[0..pattern.len], pattern);
+        return likeMatch(ltext, lpat);
+    }
+    const a = std.heap.page_allocator;
+    const ltext = std.ascii.allocLowerString(a, text) catch return false;
+    defer a.free(ltext);
+    const lpat = std.ascii.allocLowerString(a, pattern) catch return false;
+    defer a.free(lpat);
+    return likeMatch(ltext, lpat);
 }
 
 // ── Executor Interface ──────────────────────────────────────────────────

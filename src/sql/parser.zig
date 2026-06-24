@@ -3183,6 +3183,10 @@ pub const Parser = struct {
                 left = try self.parseLikeExpr(left, false);
                 continue;
             }
+            if (self.check(.kw_ilike)) {
+                left = try self.parseIlikeExpr(left, false);
+                continue;
+            }
 
             const op = self.currentBinaryOp() orelse break;
             _ = self.advance();
@@ -3758,7 +3762,7 @@ pub const Parser = struct {
     fn peekNot(self: *const Parser) bool {
         if (self.pos + 1 >= self.tokens.len) return false;
         const next = self.tokens[self.pos + 1].type;
-        return next == .kw_between or next == .kw_in or next == .kw_like;
+        return next == .kw_between or next == .kw_in or next == .kw_like or next == .kw_ilike;
     }
 
     fn parseNotInfix(self: *Parser, left: *const ast.Expr) Error!*const ast.Expr {
@@ -3766,7 +3770,8 @@ pub const Parser = struct {
         if (self.check(.kw_between)) return self.parseBetweenExpr(left, true);
         if (self.check(.kw_in)) return self.parseInExpr(left, true);
         if (self.check(.kw_like)) return self.parseLikeExpr(left, true);
-        try self.addError(self.peek(), "expected BETWEEN, IN, or LIKE after NOT");
+        if (self.check(.kw_ilike)) return self.parseIlikeExpr(left, true);
+        try self.addError(self.peek(), "expected BETWEEN, IN, LIKE, or ILIKE after NOT");
         return error.ParseFailed;
     }
 
@@ -3828,6 +3833,17 @@ pub const Parser = struct {
         } }) catch return error.OutOfMemory;
     }
 
+    fn parseIlikeExpr(self: *Parser, expr: *const ast.Expr, negated: bool) Error!*const ast.Expr {
+        _ = try self.expect(.kw_ilike);
+        const pattern = try self.parseExpr(0);
+        return self.arena.create(ast.Expr, .{ .like = .{
+            .expr = expr,
+            .pattern = pattern,
+            .negated = negated,
+            .ilike = true,
+        } }) catch return error.OutOfMemory;
+    }
+
     // ── Operator precedence ───────────────────────────────────────
 
     fn currentPrecedence(self: *const Parser) u8 {
@@ -3837,7 +3853,7 @@ pub const Parser = struct {
             .kw_and => 2,
             .kw_not => if (self.peekNot()) 3 else 0,
             .kw_is => 4,
-            .kw_between, .kw_in, .kw_like, .kw_glob => 4,
+            .kw_between, .kw_in, .kw_like, .kw_ilike, .kw_glob => 4,
             .equals, .not_equals, .less_than, .greater_than, .less_than_or_equal, .greater_than_or_equal => 5,
             .bitwise_and, .bitwise_or => 6,
             .left_shift, .right_shift => 7,
