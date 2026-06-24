@@ -177,6 +177,31 @@ pub const Regex = struct {
         return null;
     }
 
+    pub fn findFrom(self: *const Regex, alloc: Allocator, text: []const u8, from_pos: usize, flags: Flags) Error!?Match {
+        const start = from_pos;
+        const max_start = if (self.startsWithAnchor()) start + 1 else text.len + 1;
+
+        var start_pos: usize = start;
+        while (start_pos < max_start) : (start_pos += 1) {
+            var saves: [64]?usize = undefined;
+            for (&saves) |*s| s.* = null;
+
+            saves[0] = start_pos;
+
+            if (try self.matchAt(alloc, text, start_pos, &saves, flags)) |end_pos| {
+                saves[1] = end_pos;
+                return Match{
+                    .start = start_pos,
+                    .end = end_pos,
+                    .n_groups = self.n_groups,
+                    .saves = saves,
+                };
+            }
+        }
+
+        return null;
+    }
+
     fn startsWithAnchor(self: *const Regex) bool {
         return self.insts.len > 0 and self.insts[0].tag == .save and self.insts[0].data == 0;
     }

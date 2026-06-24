@@ -7259,6 +7259,175 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = result };
     }
 
+    // ─ regexp_count ─
+    if (std.ascii.eqlIgnoreCase(fc.name, "regexp_count")) {
+        if (fc.args.len < 2 or fc.args.len > 4) return EvalError.TypeError;
+
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer pat_val.free(allocator);
+
+        const str = switch (str_val) { .text => |t| t, else => return .null_value };
+        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+
+        var start_offset: usize = 0;
+        if (fc.args.len >= 3) {
+            const sv = try evalExpr(allocator, fc.args[2], row, catalog);
+            defer sv.free(allocator);
+            if (sv == .integer and sv.integer >= 1) start_offset = @intCast(sv.integer - 1);
+        }
+
+        var flags = regex_mod.Flags{};
+        if (fc.args.len == 4) {
+            const fv = try evalExpr(allocator, fc.args[3], row, catalog);
+            defer fv.free(allocator);
+            if (fv == .text) for (fv.text) |c| {
+                if (c == 'i') flags.ignore_case = true;
+                if (c == 's') flags.dot_all = true;
+            };
+        }
+
+        var rx = regex_mod.Regex.compile(allocator, pat) catch return .null_value;
+        defer rx.deinit(allocator);
+
+        var count: i64 = 0;
+        var pos: usize = start_offset;
+        while (pos <= str.len) {
+            const m = rx.findFrom(allocator, str, pos, flags) catch break;
+            if (m == null) break;
+            count += 1;
+            const end = m.?.end;
+            if (end == m.?.start) {
+                pos = end + 1;
+            } else {
+                pos = end;
+            }
+        }
+        return Value{ .integer = count };
+    }
+
+    // ─ regexp_substr ─
+    if (std.ascii.eqlIgnoreCase(fc.name, "regexp_substr")) {
+        if (fc.args.len < 2 or fc.args.len > 5) return EvalError.TypeError;
+
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer pat_val.free(allocator);
+
+        const str = switch (str_val) { .text => |t| t, else => return .null_value };
+        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+
+        var start_offset: usize = 0;
+        if (fc.args.len >= 3) {
+            const sv = try evalExpr(allocator, fc.args[2], row, catalog);
+            defer sv.free(allocator);
+            if (sv == .integer and sv.integer >= 1) start_offset = @intCast(sv.integer - 1);
+        }
+
+        var occurrence: i64 = 1;
+        if (fc.args.len >= 4) {
+            const ov = try evalExpr(allocator, fc.args[3], row, catalog);
+            defer ov.free(allocator);
+            if (ov == .integer and ov.integer >= 1) occurrence = ov.integer;
+        }
+
+        var flags = regex_mod.Flags{};
+        if (fc.args.len == 5) {
+            const fv = try evalExpr(allocator, fc.args[4], row, catalog);
+            defer fv.free(allocator);
+            if (fv == .text) for (fv.text) |c| {
+                if (c == 'i') flags.ignore_case = true;
+                if (c == 's') flags.dot_all = true;
+            };
+        }
+
+        var rx = regex_mod.Regex.compile(allocator, pat) catch return .null_value;
+        defer rx.deinit(allocator);
+
+        var found: i64 = 0;
+        var pos: usize = start_offset;
+        while (pos <= str.len) {
+            const m = rx.findFrom(allocator, str, pos, flags) catch break;
+            if (m == null) break;
+            found += 1;
+            if (found == occurrence) {
+                const matched = try allocator.dupe(u8, str[m.?.start..m.?.end]);
+                return Value{ .text = matched };
+            }
+            const end = m.?.end;
+            pos = if (end == m.?.start) end + 1 else end;
+        }
+        return .null_value;
+    }
+
+    // ─ regexp_instr ─
+    if (std.ascii.eqlIgnoreCase(fc.name, "regexp_instr")) {
+        if (fc.args.len < 2 or fc.args.len > 6) return EvalError.TypeError;
+
+        const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer str_val.free(allocator);
+        const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer pat_val.free(allocator);
+
+        const str = switch (str_val) { .text => |t| t, else => return .null_value };
+        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+
+        var start_offset: usize = 0;
+        if (fc.args.len >= 3) {
+            const sv = try evalExpr(allocator, fc.args[2], row, catalog);
+            defer sv.free(allocator);
+            if (sv == .integer and sv.integer >= 1) start_offset = @intCast(sv.integer - 1);
+        }
+
+        var occurrence: i64 = 1;
+        if (fc.args.len >= 4) {
+            const ov = try evalExpr(allocator, fc.args[3], row, catalog);
+            defer ov.free(allocator);
+            if (ov == .integer and ov.integer >= 1) occurrence = ov.integer;
+        }
+
+        var end_option: i64 = 0;
+        if (fc.args.len >= 5) {
+            const ev = try evalExpr(allocator, fc.args[4], row, catalog);
+            defer ev.free(allocator);
+            if (ev == .integer) end_option = ev.integer;
+        }
+
+        var flags = regex_mod.Flags{};
+        if (fc.args.len == 6) {
+            const fv = try evalExpr(allocator, fc.args[5], row, catalog);
+            defer fv.free(allocator);
+            if (fv == .text) for (fv.text) |c| {
+                if (c == 'i') flags.ignore_case = true;
+                if (c == 's') flags.dot_all = true;
+            };
+        }
+
+        var rx = regex_mod.Regex.compile(allocator, pat) catch return Value{ .integer = 0 };
+        defer rx.deinit(allocator);
+
+        var found: i64 = 0;
+        var pos: usize = start_offset;
+        while (pos <= str.len) {
+            const m = rx.findFrom(allocator, str, pos, flags) catch break;
+            if (m == null) break;
+            found += 1;
+            if (found == occurrence) {
+                // Return 1-indexed position
+                const result_pos: i64 = if (end_option == 1)
+                    @intCast(m.?.end + 1)
+                else
+                    @intCast(m.?.start + 1);
+                return Value{ .integer = result_pos };
+            }
+            const end = m.?.end;
+            pos = if (end == m.?.start) end + 1 else end;
+        }
+        return Value{ .integer = 0 };
+    }
+
     return EvalError.UnsupportedExpression;
 }
 
@@ -27888,6 +28057,295 @@ test "regexp_replace case-insensitive flag" {
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     try std.testing.expectEqualStrings("hi world", result.text);
+}
+
+// ─ regexp_count Tests
+
+test "regexp_count counts non-overlapping matches" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_count('hello world hello', 'hello') → 2
+    const str_expr = ast.Expr{ .string_literal = "hello world hello" };
+    const pat_expr = ast.Expr{ .string_literal = "hello" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_count", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "regexp_count with greedy quantifier" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_count('aaaa', 'a+') → 1 (greedy match consumes 'aaaa')
+    const str_expr = ast.Expr{ .string_literal = "aaaa" };
+    const pat_expr = ast.Expr{ .string_literal = "a+" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_count", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+test "regexp_count single character pattern" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_count('aaaa', 'a') → 4
+    const str_expr = ast.Expr{ .string_literal = "aaaa" };
+    const pat_expr = ast.Expr{ .string_literal = "a" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_count", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 4), result.integer);
+}
+
+test "regexp_count no match returns zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_count('hello', 'xyz') → 0
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "xyz" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_count", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "regexp_count with NULL string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_count(NULL, 'pat') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const pat_expr = ast.Expr{ .string_literal = "pat" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_count", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_count case-insensitive flag" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_count('Hello HELLO hello', 'hello', 1, 'i') → 3
+    const str_expr = ast.Expr{ .string_literal = "Hello HELLO hello" };
+    const pat_expr = ast.Expr{ .string_literal = "hello" };
+    const start_expr = ast.Expr{ .integer_literal = 1 };
+    const flags_expr = ast.Expr{ .string_literal = "i" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &start_expr, &flags_expr };
+    const fc = .{ .name = "regexp_count", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+// ─ regexp_substr Tests
+
+test "regexp_substr returns matching text" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_substr('hello world', 'w\w+') → 'world'
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "w\\w+" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_substr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("world", result.text);
+}
+
+test "regexp_substr second occurrence" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_substr('one two three', '\w+', 1, 2) → 'two'
+    const str_expr = ast.Expr{ .string_literal = "one two three" };
+    const pat_expr = ast.Expr{ .string_literal = "\\w+" };
+    const start_expr = ast.Expr{ .integer_literal = 1 };
+    const occ_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &start_expr, &occ_expr };
+    const fc = .{ .name = "regexp_substr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("two", result.text);
+}
+
+test "regexp_substr no match returns NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_substr('abc', 'xyz') → NULL
+    const str_expr = ast.Expr{ .string_literal = "abc" };
+    const pat_expr = ast.Expr{ .string_literal = "xyz" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_substr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_substr with NULL string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_substr(NULL, 'pat') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const pat_expr = ast.Expr{ .string_literal = "pat" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_substr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_substr case-insensitive flag" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_substr('hello', '[a-z]+', 1, 1, 'i') → 'hello'
+    const str_expr = ast.Expr{ .string_literal = "hello" };
+    const pat_expr = ast.Expr{ .string_literal = "[a-z]+" };
+    const start_expr = ast.Expr{ .integer_literal = 1 };
+    const occ_expr = ast.Expr{ .integer_literal = 1 };
+    const flags_expr = ast.Expr{ .string_literal = "i" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &start_expr, &occ_expr, &flags_expr };
+    const fc = .{ .name = "regexp_substr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("hello", result.text);
+}
+
+// ─ regexp_instr Tests
+
+test "regexp_instr returns 1-indexed position of match" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_instr('hello world', 'world') → 7
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "world" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_instr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 7), result.integer);
+}
+
+test "regexp_instr no match returns zero" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_instr('hello world', 'xyz') → 0
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "xyz" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_instr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "regexp_instr with NULL string" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_instr(NULL, 'pat') → NULL
+    const str_expr = ast.Expr{ .null_literal = {} };
+    const pat_expr = ast.Expr{ .string_literal = "pat" };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr };
+    const fc = .{ .name = "regexp_instr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "regexp_instr second occurrence" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_instr('hello world hello', 'hello', 1, 2) → 13
+    const str_expr = ast.Expr{ .string_literal = "hello world hello" };
+    const pat_expr = ast.Expr{ .string_literal = "hello" };
+    const start_expr = ast.Expr{ .integer_literal = 1 };
+    const occ_expr = ast.Expr{ .integer_literal = 2 };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &start_expr, &occ_expr };
+    const fc = .{ .name = "regexp_instr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 13), result.integer);
+}
+
+test "regexp_instr with end_option 1 returns position after match end" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_instr('hello world', 'world', 1, 1, 1) → 12
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "world" };
+    const start_expr = ast.Expr{ .integer_literal = 1 };
+    const occ_expr = ast.Expr{ .integer_literal = 1 };
+    const end_opt_expr = ast.Expr{ .integer_literal = 1 };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &start_expr, &occ_expr, &end_opt_expr };
+    const fc = .{ .name = "regexp_instr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 12), result.integer);
+}
+
+test "regexp_instr with end_option 0 returns position of match start" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // regexp_instr('hello world', 'world', 1, 1, 0) → 7
+    const str_expr = ast.Expr{ .string_literal = "hello world" };
+    const pat_expr = ast.Expr{ .string_literal = "world" };
+    const start_expr = ast.Expr{ .integer_literal = 1 };
+    const occ_expr = ast.Expr{ .integer_literal = 1 };
+    const end_opt_expr = ast.Expr{ .integer_literal = 0 };
+    const args = [_]*const ast.Expr{ &str_expr, &pat_expr, &start_expr, &occ_expr, &end_opt_expr };
+    const fc = .{ .name = "regexp_instr", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 7), result.integer);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
