@@ -144,6 +144,10 @@ fn getTableHelp(db: *Database, table_name: []const u8) ?[]const u8 {
 
 const Pane = enum { schema, results, input };
 
+// ── Ring Menu Items ──────────────────────────────────────────────────
+
+const RING_MENU_ITEMS = [_][]const u8{ "Execute", "Schema", "Results", "Refresh", "Clear", "Quit" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -187,6 +191,10 @@ const App = struct {
 
     // Spinner animation frame counter (incremented each event loop tick)
     spinner_frame: usize = 0,
+
+    // Ring menu context overlay
+    ring_menu_visible: bool = false,
+    ring_menu_selected: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -445,10 +453,45 @@ const App = struct {
         }
     }
 
+    fn executeRingMenuAction(self: *App) void {
+        switch (self.ring_menu_selected) {
+            0 => self.executeSQL(),         // Execute
+            1 => self.focus = .schema,      // Schema
+            2 => self.focus = .results,     // Results
+            3 => self.refreshSchema(),      // Refresh
+            4 => {                           // Clear
+                self.input_text.clearRetainingCapacity();
+                self.input_cursor = 0;
+            },
+            5 => self.should_quit = true,   // Quit
+            else => {},
+        }
+    }
+
     fn handleKey(self: *App, byte: u8) void {
         // Ctrl+C / Ctrl+Q quit
         if (byte == 3 or byte == 17) {
             self.should_quit = true;
+            return;
+        }
+
+        // 'm' key toggles ring menu
+        if (byte == 109) {
+            if (self.ring_menu_visible) {
+                self.ring_menu_visible = false;
+            } else {
+                self.ring_menu_visible = true;
+                self.ring_menu_selected = 0;
+            }
+            return;
+        }
+
+        // When ring menu is visible, Enter executes the selected action
+        if (self.ring_menu_visible) {
+            if (byte == '\r' or byte == '\n') {
+                self.ring_menu_visible = false;
+                self.executeRingMenuAction();
+            }
             return;
         }
 
@@ -470,6 +513,30 @@ const App = struct {
     }
 
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
+        // Ring menu arrow key navigation
+        if (self.ring_menu_visible) {
+            if (b2 == null) {
+                self.ring_menu_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A', 'D' => { // Up or Left → prev
+                        if (self.ring_menu_selected == 0) {
+                            self.ring_menu_selected = 5;
+                        } else {
+                            self.ring_menu_selected -= 1;
+                        }
+                    },
+                    'B', 'C' => { // Down or Right → next
+                        self.ring_menu_selected = (self.ring_menu_selected + 1) % 6;
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // Bare ESC (b2 == null) closes the detail overlay
         if (b2 == null) {
             if (self.detail_visible) self.detail_visible = false;
@@ -858,6 +925,9 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     if (app.detail_visible) {
         renderDetailOverlay(app, buf, area);
     }
+
+    // Render ring menu (on top of everything)
+    renderRingMenu(app, buf, area);
 }
 
 fn isTableIndex(table_indices: []const usize, idx: usize) bool {
@@ -1227,6 +1297,39 @@ fn renderDetailOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
             .title_position = .top_left,
         }).withBorderStyle(.{ .fg = .cyan }));
     viewer.render(buf, popup_area);
+}
+
+fn renderRingMenu(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.ring_menu_visible) return;
+    // Center the ring menu in the terminal area
+    const width: u16 = 40;
+    const height: u16 = 20;
+    const ox: u16 = if (area.width > width) (area.width - width) / 2 else 0;
+    const oy: u16 = if (area.height > height) (area.height - height) / 2 else 0;
+    const ow: u16 = @min(width, area.width);
+    const oh: u16 = @min(height, area.height);
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    for (oy..oy + oh) |py| {
+        for (ox..ox + ow) |px| {
+            buf.set(@intCast(px), @intCast(py), tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const menu = tui.RingMenu.init()
+        .withItems(&RING_MENU_ITEMS)
+        .withSelected(app.ring_menu_selected)
+        .withCenterLabel("Menu")
+        .withRadius(6)
+        .withSelectedStyle(tui.Style{ .fg = .yellow, .bold = true })
+        .withCenterStyle(tui.Style{ .fg = .cyan, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Context Menu (↑↓←→ navigate · Enter select · m/Esc close) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+
+    menu.render(buf, popup_area);
 }
 
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
@@ -2538,4 +2641,186 @@ test "minimapViewportHeight returns 1 for small area" {
     // Test small area (2 - 3 is negative, should clamp to 1)
     const result = minimapViewportHeight(2);
     try std.testing.expectEqual(@as(usize, 1), result);
+}
+
+test "App ring_menu opens on 'm' key" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.ring_menu_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.ring_menu_selected);
+
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.ring_menu_selected);
+}
+
+test "App ring_menu closes on second 'm' key" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+
+    // Close menu with second 'm'
+    app.handleKey(109); // 'm'
+    try std.testing.expect(!app.ring_menu_visible);
+}
+
+test "App ring_menu navigate right/down increments selected" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.ring_menu_selected);
+
+    // Press Right arrow ([C)
+    app.handleEscapeSequence('[', 'C');
+    try std.testing.expectEqual(@as(usize, 1), app.ring_menu_selected);
+
+    // Press Right again
+    app.handleEscapeSequence('[', 'C');
+    try std.testing.expectEqual(@as(usize, 2), app.ring_menu_selected);
+
+    // Press Down arrow ([B) - should also increment
+    app.handleEscapeSequence('[', 'B');
+    try std.testing.expectEqual(@as(usize, 3), app.ring_menu_selected);
+}
+
+test "App ring_menu navigate left/up decrements selected with wraparound" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+
+    // Start at 0, press Left - should wraparound to 5 (last item)
+    app.handleEscapeSequence('[', 'D');
+    try std.testing.expectEqual(@as(usize, 5), app.ring_menu_selected);
+
+    // Press Left again - should go to 4
+    app.handleEscapeSequence('[', 'D');
+    try std.testing.expectEqual(@as(usize, 4), app.ring_menu_selected);
+
+    // Press Up arrow ([A) - should also decrement
+    app.handleEscapeSequence('[', 'A');
+    try std.testing.expectEqual(@as(usize, 3), app.ring_menu_selected);
+}
+
+test "App ring_menu ESC closes menu" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+
+    // Press ESC (b2=null means ESC was pressed)
+    app.handleEscapeSequence(null, null);
+    try std.testing.expect(!app.ring_menu_visible);
+}
+
+test "App ring_menu Enter Quit sets should_quit" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+
+    // Set selected to 5 (Quit)
+    app.ring_menu_selected = 5;
+
+    // Press Enter
+    app.handleKey('\r');
+    try std.testing.expect(app.should_quit);
+    try std.testing.expect(!app.ring_menu_visible);
+}
+
+test "App ring_menu Enter Schema focuses schema pane" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+
+    // Set selected to 1 (Schema)
+    app.ring_menu_selected = 1;
+
+    // Press Enter
+    app.handleKey('\r');
+    try std.testing.expectEqual(Pane.schema, app.focus);
+    try std.testing.expect(!app.ring_menu_visible);
+}
+
+test "App ring_menu Enter Clear clears input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Type some input
+    for ("SELECT *") |c| {
+        app.handleKey(c);
+    }
+    try std.testing.expectEqualStrings("SELECT *", app.input_text.items);
+    try std.testing.expectEqual(@as(usize, 8), app.input_cursor);
+
+    // Open menu
+    app.handleKey(109); // 'm'
+    try std.testing.expect(app.ring_menu_visible);
+
+    // Set selected to 4 (Clear)
+    app.ring_menu_selected = 4;
+
+    // Press Enter
+    app.handleKey('\r');
+    try std.testing.expectEqual(@as(usize, 0), app.input_text.items.len);
+    try std.testing.expectEqual(@as(usize, 0), app.input_cursor);
+    try std.testing.expect(!app.ring_menu_visible);
 }
