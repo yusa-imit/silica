@@ -7506,7 +7506,7 @@ fn likeMatch(text: []const u8, pattern: []const u8) bool {
                 continue;
             }
             if (ti < text.len) {
-                if (pattern[pi] == '_' or std.ascii.toLower(pattern[pi]) == std.ascii.toLower(text[ti])) {
+                if (pattern[pi] == '_' or pattern[pi] == text[ti]) {
                     ti += 1;
                     pi += 1;
                     continue;
@@ -12472,9 +12472,9 @@ test "LIKE pattern matching: extended cases" {
     try std.testing.expect(likeMatch("a", "%_%")); // at least 1 char
     try std.testing.expect(!likeMatch("", "%_%")); // empty doesn't match "at least 1"
 
-    // Case insensitivity
-    try std.testing.expect(likeMatch("Hello", "hello"));
-    try std.testing.expect(likeMatch("HELLO", "h%o"));
+    // Case sensitivity: different case does NOT match
+    try std.testing.expect(!likeMatch("Hello", "hello"));
+    try std.testing.expect(!likeMatch("HELLO", "h%o"));
 
     // Consecutive percent signs (should behave like single %)
     try std.testing.expect(likeMatch("abc", "%%"));
@@ -12489,6 +12489,52 @@ test "LIKE pattern matching: extended cases" {
     try std.testing.expect(likeMatch("x", "%"));
     try std.testing.expect(likeMatch("x", "x"));
     try std.testing.expect(!likeMatch("x", "y"));
+}
+
+test "LIKE is case-sensitive: different case does not match" {
+    // LIKE is case-sensitive per SQL standard
+    // text "Hello" does NOT match pattern "hello" (lowercase)
+    try std.testing.expect(!likeMatch("Hello", "hello"));
+}
+
+test "LIKE is case-sensitive: uppercase pattern does not match lowercase text" {
+    // Pattern "HELLO" (uppercase) does not match text "hello" (lowercase)
+    try std.testing.expect(!likeMatch("hello", "HELLO"));
+}
+
+test "LIKE is case-sensitive: partial pattern different case" {
+    // Pattern "hello%" (lowercase h) does not match text starting with "Hello" (uppercase H)
+    try std.testing.expect(!likeMatch("Hello World", "hello%"));
+}
+
+test "LIKE is case-sensitive: exact case matches" {
+    // Pattern "Hello" matches text "Hello" (exact case)
+    try std.testing.expect(likeMatch("Hello", "Hello"));
+}
+
+test "ILIKE likeMatchIgnoreCase: different case matches" {
+    // ILIKE (case-insensitive) should match "Hello" against pattern "hello"
+    try std.testing.expect(likeMatchIgnoreCase("Hello", "hello"));
+}
+
+test "ILIKE likeMatchIgnoreCase: uppercase text, lowercase pattern" {
+    // ILIKE should match uppercase text "HELLO" against lowercase pattern "hello"
+    try std.testing.expect(likeMatchIgnoreCase("HELLO", "hello"));
+}
+
+test "ILIKE likeMatchIgnoreCase: case-insensitive wildcard" {
+    // ILIKE with pattern "hello%" should match "Hello World"
+    try std.testing.expect(likeMatchIgnoreCase("Hello World", "hello%"));
+}
+
+test "ILIKE likeMatchIgnoreCase: exact case also matches" {
+    // ILIKE should still match when case is already identical
+    try std.testing.expect(likeMatchIgnoreCase("hello", "hello"));
+}
+
+test "ILIKE likeMatchIgnoreCase: uppercase pattern lowercase text" {
+    // ILIKE should match uppercase pattern "H%O" against lowercase text "hello"
+    try std.testing.expect(likeMatchIgnoreCase("hello", "H%O"));
 }
 
 test "FilterOp filters rows" {

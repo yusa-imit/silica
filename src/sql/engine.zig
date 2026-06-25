@@ -17248,7 +17248,7 @@ test "NOT LIKE filters matching rows" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-test "LIKE with no wildcard is exact match" {
+test "LIKE with no wildcard is case-sensitive exact match" {
 
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const path = "test_like_exact.db";
@@ -17260,7 +17260,7 @@ test "LIKE with no wildcard is exact match" {
     _ = try db.exec("INSERT INTO t VALUES ('Hello')");
     _ = try db.exec("INSERT INTO t VALUES ('HELLO')");
 
-    // LIKE without wildcards = case-insensitive exact match
+    // LIKE is case-sensitive per SQL standard
     var r = try db.exec("SELECT v FROM t WHERE v LIKE 'hello'");
     defer r.close(testing.allocator);
 
@@ -17270,8 +17270,8 @@ test "LIKE with no wildcard is exact match" {
         defer row.deinit();
         count += 1;
     }
-    // likeMatch is case-insensitive, so all 3 match
-    try testing.expectEqual(@as(usize, 3), count);
+    // Only exact case match ('hello') should match
+    try testing.expectEqual(@as(usize, 1), count);
 }
 
 // ── Stabilization: NULL three-valued logic tests ────────────────────────
