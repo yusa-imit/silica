@@ -3727,6 +3727,14 @@ pub const Database = struct {
         const scan_op = self.allocator.create(ScanOp) catch return EngineError.OutOfMemory;
         scan_op.* = ScanOp.init(self.allocator, self.pool, table_info.data_root_page_id, col_names);
         scan_op.col_defaults = col_defaults;
+        // TABLESAMPLE: configure probabilistic row sampling
+        if (scan.tablesample) |ts| {
+            scan_op.sample_pct = ts.percent;
+            if (ts.seed) |s| {
+                // User-specified seed: ensure non-zero (xorshift64 breaks on 0)
+                scan_op.sample_state = if (s == 0) 1 else @as(u64, @bitCast(s));
+            }
+        }
         // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
         scan_op.mvcc_ctx = try self.getMvccContextWithOps(ops);
         // Set row-level locking for SELECT FOR UPDATE/SHARE
@@ -35491,6 +35499,167 @@ test "multiple rows with gist index — all found" {
     // Verify all 3 rows are returned
     var count: usize = 0;
     if (r6.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "TABLESAMPLE BERNOULLI(100) returns all rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_tablesample_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4), (5)");
+        defer r.close(testing.allocator);
+    }
+
+    var result = try db.execSQL("SELECT id FROM t TABLESAMPLE BERNOULLI(100)");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    if (result.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "TABLESAMPLE BERNOULLI(0) returns no rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_tablesample_2.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4), (5)");
+        defer r.close(testing.allocator);
+    }
+
+    var result = try db.execSQL("SELECT id FROM t TABLESAMPLE BERNOULLI(0)");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    if (result.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), count);
+}
+
+test "TABLESAMPLE BERNOULLI(50) REPEATABLE is deterministic" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_tablesample_3.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10)");
+        defer r.close(testing.allocator);
+    }
+
+    // Run twice with same seed — must get same count
+    var count1: usize = 0;
+    {
+        var result = try db.execSQL("SELECT id FROM t TABLESAMPLE BERNOULLI(50) REPEATABLE(42)");
+        defer result.close(testing.allocator);
+        if (result.rows) |*rows| {
+            while (try rows.next()) |*row_ptr| : (count1 += 1) {
+                var row = row_ptr.*;
+                defer row.deinit();
+            }
+        }
+    }
+
+    var count2: usize = 0;
+    {
+        var result = try db.execSQL("SELECT id FROM t TABLESAMPLE BERNOULLI(50) REPEATABLE(42)");
+        defer result.close(testing.allocator);
+        if (result.rows) |*rows| {
+            while (try rows.next()) |*row_ptr| : (count2 += 1) {
+                var row = row_ptr.*;
+                defer row.deinit();
+            }
+        }
+    }
+
+    try testing.expectEqual(count1, count2);
+}
+
+test "TABLESAMPLE SYSTEM(100) returns all rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_tablesample_4.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.execSQL("CREATE TABLE t (id INTEGER)");
+        defer r.close(testing.allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO t VALUES (1), (2), (3)");
+        defer r.close(testing.allocator);
+    }
+
+    var result = try db.execSQL("SELECT id FROM t TABLESAMPLE SYSTEM(100)");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    if (result.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "TABLESAMPLE BERNOULLI with alias" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_tablesample_5.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.execSQL("CREATE TABLE items (id INTEGER, name TEXT)");
+        defer r.close(testing.allocator);
+    }
+    {
+        var r = try db.execSQL("INSERT INTO items VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+        defer r.close(testing.allocator);
+    }
+
+    // Table with alias + TABLESAMPLE
+    var result = try db.execSQL("SELECT i.id FROM items AS i TABLESAMPLE BERNOULLI(100)");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    if (result.rows) |*rows| {
         while (try rows.next()) |*row_ptr| : (count += 1) {
             var row = row_ptr.*;
             defer row.deinit();

@@ -123,12 +123,23 @@ pub const JoinClause = struct {
     on_condition: ?*const Expr = null,
 };
 
+/// TABLESAMPLE sampling method (SQL:2003).
+pub const SampleMethod = enum { bernoulli, system };
+
+/// TABLESAMPLE clause: method (percent) [REPEATABLE (seed)].
+pub const TableSample = struct {
+    method: SampleMethod,
+    percent: f64,
+    seed: ?i64 = null,
+};
+
 /// Table reference in FROM clause.
 pub const TableRef = union(enum) {
     /// Simple table name with optional alias
     table_name: struct {
         name: []const u8,
         alias: ?[]const u8 = null,
+        tablesample: ?TableSample = null,
     },
     /// Subquery with alias
     subquery: struct {

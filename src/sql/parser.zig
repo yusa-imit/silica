@@ -824,9 +824,56 @@ pub const Parser = struct {
         } else if (self.peek().type == .identifier and !self.peekIsClauseKeyword()) {
             alias = self.lexeme(self.advance());
         }
+
+        var tablesample: ?ast.TableSample = null;
+        if (self.match(.kw_tablesample)) {
+            tablesample = try self.parseTableSample();
+        }
+
         return self.arena.create(ast.TableRef, .{
-            .table_name = .{ .name = name, .alias = alias },
+            .table_name = .{ .name = name, .alias = alias, .tablesample = tablesample },
         }) catch return error.OutOfMemory;
+    }
+
+    fn parseTableSample(self: *Parser) Error!ast.TableSample {
+        // Parse: method_name ( percent ) [REPEATABLE ( seed )]
+        const method_name = try self.expectIdentifier();
+        const method: ast.SampleMethod = blk: {
+            if (std.ascii.eqlIgnoreCase(method_name, "bernoulli")) break :blk .bernoulli;
+            if (std.ascii.eqlIgnoreCase(method_name, "system")) break :blk .system;
+            try self.addError(self.peek(), "unknown TABLESAMPLE method; expected BERNOULLI or SYSTEM");
+            return error.ParseFailed;
+        };
+        _ = try self.expect(.left_paren);
+        const pct_expr = try self.parseExpr(0);
+        _ = try self.expect(.right_paren);
+        const percent: f64 = switch (pct_expr.*) {
+            .integer_literal => |n| @as(f64, @floatFromInt(n)),
+            .float_literal => |f| f,
+            else => {
+                try self.addError(self.peek(), "TABLESAMPLE percentage must be a numeric literal");
+                return error.ParseFailed;
+            },
+        };
+        if (percent < 0.0 or percent > 100.0) {
+            try self.addError(self.peek(), "TABLESAMPLE percentage must be between 0 and 100");
+            return error.ParseFailed;
+        }
+        var seed: ?i64 = null;
+        if (self.check(.kw_repeatable)) {
+            _ = self.advance();
+            _ = try self.expect(.left_paren);
+            const seed_expr = try self.parseExpr(0);
+            _ = try self.expect(.right_paren);
+            seed = switch (seed_expr.*) {
+                .integer_literal => |n| n,
+                else => {
+                    try self.addError(self.peek(), "REPEATABLE seed must be an integer literal");
+                    return error.ParseFailed;
+                },
+            };
+        }
+        return .{ .method = method, .percent = percent, .seed = seed };
     }
 
     fn peekIsClauseKeyword(self: *const Parser) bool {
@@ -835,7 +882,8 @@ pub const Parser = struct {
             t == .kw_having or t == .kw_limit or t == .kw_join or
             t == .kw_inner or t == .kw_left or t == .kw_right or
             t == .kw_full or t == .kw_cross or t == .kw_natural or
-            t == .kw_lateral or t == .kw_on or t == .kw_set;
+            t == .kw_lateral or t == .kw_on or t == .kw_set or
+            t == .kw_tablesample;
     }
 
     fn peekIsJoinKeyword(self: *const Parser) bool {

@@ -184,6 +184,8 @@ pub const PlanNode = union(enum) {
         columns: []const ColumnRef = &.{},
         /// Index-only scan flag: if true, all required columns are in the index, no heap fetch needed
         index_only: bool = false,
+        /// TABLESAMPLE clause (null = no sampling).
+        tablesample: ?ast.TableSample = null,
     };
 
     pub const TableFunctionScan = struct {
@@ -619,6 +621,7 @@ pub const Planner = struct {
                         .table = tn.name,
                         .alias = tn.alias,
                         .columns = &.{}, // columns resolved at execution time
+                        .tablesample = tn.tablesample,
                     } });
                 }
 
@@ -640,6 +643,7 @@ pub const Planner = struct {
                         .table = tn.name,
                         .alias = tn.alias,
                         .columns = columns,
+                        .tablesample = tn.tablesample,
                     } });
                 }
 
@@ -658,6 +662,7 @@ pub const Planner = struct {
                         .table = tn.name,
                         .alias = tn.alias,
                         .columns = columns,
+                        .tablesample = tn.tablesample,
                     } });
                 }
 
@@ -678,6 +683,7 @@ pub const Planner = struct {
                     .table = tn.name,
                     .alias = tn.alias,
                     .columns = columns,
+                    .tablesample = tn.tablesample,
                 } });
             },
             .subquery => |sq| {

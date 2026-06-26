@@ -7600,6 +7600,18 @@ fn similarToNotMatch(allocator: Allocator, text: []const u8, pattern: []const u8
     return !(try similarToMatch(allocator, text, pattern));
 }
 
+/// xorshift64 PRNG step. Accepts percent in [0, 100]; returns true if this row should be included.
+fn sampleAccept(state: *u64, percent: f64) bool {
+    // xorshift64: never produces 0, well-distributed
+    state.* ^= state.* << 13;
+    state.* ^= state.* >> 7;
+    state.* ^= state.* << 17;
+    // Map to [0, 999999] and compare against percent threshold (basis points * 10)
+    const val: u64 = state.* % 1_000_000;
+    const threshold: u64 = @intFromFloat(@round(percent * 10_000.0));
+    return val < threshold;
+}
+
 // ── Executor Interface ──────────────────────────────────────────────────
 
 /// Error type for executor operations.
@@ -7741,6 +7753,10 @@ pub const ScanOp = struct {
     lock_mode: ?LockMode = null,
     /// When true, skip rows that cannot be locked (SKIP LOCKED behavior).
     lock_skip_locked: bool = false,
+    /// TABLESAMPLE: percent in [0, 100]. 100.0 = include all rows (no sampling).
+    sample_pct: f64 = 100.0,
+    /// TABLESAMPLE PRNG state (xorshift64). Initialized from REPEATABLE seed or a constant.
+    sample_state: u64 = 0x9e3779b97f4a7c15,
 
     /// Create a ScanOp. After placement on the heap, call initCursor() to
     /// set up the cursor with a stable pointer to the tree.
@@ -7792,6 +7808,12 @@ pub const ScanOp = struct {
             if (entry == null) return null;
 
             defer self.allocator.free(entry.?.key);
+
+            // TABLESAMPLE: probabilistically skip rows using xorshift64 PRNG.
+            if (self.sample_pct < 100.0 and !sampleAccept(&self.sample_state, self.sample_pct)) {
+                self.allocator.free(entry.?.value);
+                continue;
+            }
 
             // MVCC visibility check: deserialize header and filter invisible tuples
             if (self.mvcc_ctx) |ctx| {
@@ -31378,4 +31400,53 @@ test "SIMILAR TO mixed" {
     try std.testing.expect(!try similarToMatch(allocator, "abc", "[a-z]+[0-9]+"));
     try std.testing.expect(!try similarToMatch(allocator, "123", "[a-z]+[0-9]+"));
     try std.testing.expect(try similarToMatch(allocator, "a1", "[a-z]+[0-9]+"));
+}
+
+test "sampleAccept 100% accepts all rows" {
+    var state: u64 = 0x9e3779b97f4a7c15;
+    for (0..1000) |_| {
+        try std.testing.expect(sampleAccept(&state, 100.0));
+    }
+}
+
+test "sampleAccept 0% rejects all rows" {
+    var state: u64 = 0x9e3779b97f4a7c15;
+    for (0..1000) |_| {
+        try std.testing.expect(!sampleAccept(&state, 0.0));
+    }
+}
+
+test "sampleAccept is deterministic with same seed" {
+    // Two PRNG instances with same seed must produce identical accept/reject sequences
+    var state_a: u64 = 12345;
+    var state_b: u64 = 12345;
+    for (0..100) |_| {
+        const a = sampleAccept(&state_a, 50.0);
+        const b = sampleAccept(&state_b, 50.0);
+        try std.testing.expectEqual(a, b);
+    }
+}
+
+test "sampleAccept 50% produces roughly half accepted" {
+    var state: u64 = 0xDEADBEEFCAFEBABE;
+    var accepted: usize = 0;
+    const total = 10_000;
+    for (0..total) |_| {
+        if (sampleAccept(&state, 50.0)) accepted += 1;
+    }
+    // Expect between 40% and 60% accepted (50% ± 10%)
+    try std.testing.expect(accepted >= 4000 and accepted <= 6000);
+}
+
+test "sampleAccept different seeds produce different sequences" {
+    var state_a: u64 = 1;
+    var state_b: u64 = 2;
+    var same_count: usize = 0;
+    for (0..100) |_| {
+        const a = sampleAccept(&state_a, 50.0);
+        const b = sampleAccept(&state_b, 50.0);
+        if (a == b) same_count += 1;
+    }
+    // Different seeds should not produce identical 100-element sequences
+    try std.testing.expect(same_count < 100);
 }
