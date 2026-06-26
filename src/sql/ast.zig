@@ -253,6 +253,7 @@ pub const Expr = union(enum) {
         pattern: *const Expr,
         negated: bool = false,
         ilike: bool = false,
+        similar: bool = false,
     },
     /// CASE [expr] WHEN ... THEN ... [ELSE ...] END
     case_expr: struct {

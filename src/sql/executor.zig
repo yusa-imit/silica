@@ -1784,6 +1784,7 @@ pub const EvalError = error{
     DivisionByZero,
     ColumnNotFound,
     UnsupportedExpression,
+    InvalidPattern,
 };
 
 /// Vtable for executing subqueries at the engine level.
@@ -1912,7 +1913,9 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
                 .text => |t| t,
                 else => return .{ .boolean = false },
             };
-            const matches = if (lk.ilike)
+            const matches = if (lk.similar)
+                try similarToMatch(allocator, text_val, pattern)
+            else if (lk.ilike)
                 likeMatchIgnoreCase(text_val, pattern)
             else
                 likeMatch(text_val, pattern);
@@ -7541,6 +7544,62 @@ fn likeMatchIgnoreCase(text: []const u8, pattern: []const u8) bool {
     return likeMatch(ltext, lpat);
 }
 
+fn similarToConvertPattern(allocator: Allocator, pattern: []const u8) Allocator.Error![]u8 {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try buf.append(allocator, '^');
+
+    var i: usize = 0;
+    while (i < pattern.len) : (i += 1) {
+        const ch = pattern[i];
+        switch (ch) {
+            '%' => try buf.appendSlice(allocator, ".*"),
+            '_' => try buf.append(allocator, '.'),
+            '[' => {
+                // pass character class through as-is, including contents up to ']'
+                try buf.append(allocator, '[');
+                i += 1;
+                while (i < pattern.len and pattern[i] != ']') : (i += 1) {
+                    try buf.append(allocator, pattern[i]);
+                }
+                if (i < pattern.len) try buf.append(allocator, ']');
+            },
+            '{' => {
+                // pass {n,m} repetition count through as-is
+                try buf.append(allocator, '{');
+                i += 1;
+                while (i < pattern.len and pattern[i] != '}') : (i += 1) {
+                    try buf.append(allocator, pattern[i]);
+                }
+                if (i < pattern.len) try buf.append(allocator, '}');
+            },
+            '(', ')', '|', '*', '+', '?' => try buf.append(allocator, ch),
+            '.', '\\', '^', '$' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, ch);
+            },
+            else => try buf.append(allocator, ch),
+        }
+    }
+
+    try buf.append(allocator, '$');
+    return buf.toOwnedSlice(allocator);
+}
+
+fn similarToMatch(allocator: Allocator, text: []const u8, pattern: []const u8) !bool {
+    const re_pattern = try similarToConvertPattern(allocator, pattern);
+    defer allocator.free(re_pattern);
+    var rx = try regex_mod.Regex.compile(allocator, re_pattern);
+    defer rx.deinit(allocator);
+    const m = try rx.find(allocator, text, .{});
+    return m != null;
+}
+
+fn similarToNotMatch(allocator: Allocator, text: []const u8, pattern: []const u8) !bool {
+    return !(try similarToMatch(allocator, text, pattern));
+}
+
 // ── Executor Interface ──────────────────────────────────────────────────
 
 /// Error type for executor operations.
@@ -7555,6 +7614,7 @@ pub const ExecError = error{
     StorageError,
     ExecutionError,
     LockConflict,
+    InvalidPattern,
 };
 
 /// The Volcano-model iterator interface.
@@ -8029,6 +8089,7 @@ pub const FilterOp = struct {
                     error.DivisionByZero => ExecError.DivisionByZero,
                     error.ColumnNotFound => ExecError.ColumnNotFound,
                     error.UnsupportedExpression => ExecError.UnsupportedExpression,
+                    error.InvalidPattern => ExecError.InvalidPattern,
                 };
             };
             if (self.outer_row != null) eval_row.deinit();
@@ -8127,6 +8188,7 @@ pub const ProjectOp = struct {
                     error.DivisionByZero => ExecError.DivisionByZero,
                     error.ColumnNotFound => ExecError.ColumnNotFound,
                     error.UnsupportedExpression => ExecError.UnsupportedExpression,
+                    error.InvalidPattern => ExecError.InvalidPattern,
                 };
             };
             inited += 1;
@@ -11199,6 +11261,7 @@ pub const ValuesOp = struct {
                     error.DivisionByZero => ExecError.DivisionByZero,
                     error.ColumnNotFound => ExecError.ColumnNotFound,
                     error.UnsupportedExpression => ExecError.UnsupportedExpression,
+                    error.InvalidPattern => ExecError.InvalidPattern,
                 };
             };
             inited += 1;
@@ -31226,4 +31289,93 @@ test "json_object_agg empty group returns NULL" {
     const result = agg_op.computeAggregate(agg_expr, &rows);
 
     try std.testing.expect(result == .null_value);
+}
+
+test "SIMILAR TO basic percent" {
+    const allocator = std.testing.allocator;
+    // '%' matches any sequence of characters
+    try std.testing.expect(try similarToMatch(allocator, "hello", "%"));
+    try std.testing.expect(try similarToMatch(allocator, "", "%"));
+    try std.testing.expect(try similarToMatch(allocator, "x", "%"));
+    try std.testing.expect(try similarToMatch(allocator, "abc123", "%"));
+}
+
+test "SIMILAR TO underscore" {
+    const allocator = std.testing.allocator;
+    // '_' matches exactly one character
+    try std.testing.expect(try similarToMatch(allocator, "abc", "___"));
+    try std.testing.expect(!try similarToMatch(allocator, "ab", "___"));
+    try std.testing.expect(!try similarToMatch(allocator, "abcd", "___"));
+    try std.testing.expect(!try similarToMatch(allocator, "", "_"));
+    try std.testing.expect(try similarToMatch(allocator, "x", "_"));
+}
+
+test "SIMILAR TO alternation" {
+    const allocator = std.testing.allocator;
+    // '|' alternation: matches one of the alternatives
+    try std.testing.expect(try similarToMatch(allocator, "cat", "cat|dog"));
+    try std.testing.expect(try similarToMatch(allocator, "dog", "cat|dog"));
+    try std.testing.expect(!try similarToMatch(allocator, "bird", "cat|dog"));
+    try std.testing.expect(try similarToMatch(allocator, "hello", "hello|world"));
+    try std.testing.expect(!try similarToMatch(allocator, "foo", "hello|world"));
+}
+
+test "SIMILAR TO quantifiers" {
+    const allocator = std.testing.allocator;
+    // '+' one or more, '*' zero or more, '?' zero or one
+    try std.testing.expect(try similarToMatch(allocator, "aaa", "a+"));
+    try std.testing.expect(try similarToMatch(allocator, "a", "a+"));
+    try std.testing.expect(!try similarToMatch(allocator, "", "a+"));
+
+    try std.testing.expect(try similarToMatch(allocator, "", "a*"));
+    try std.testing.expect(try similarToMatch(allocator, "a", "a*"));
+    try std.testing.expect(try similarToMatch(allocator, "aaa", "a*"));
+
+    try std.testing.expect(try similarToMatch(allocator, "b", "a?b"));
+    try std.testing.expect(try similarToMatch(allocator, "ab", "a?b"));
+    try std.testing.expect(!try similarToMatch(allocator, "aab", "a?b"));
+}
+
+test "SIMILAR TO grouping" {
+    const allocator = std.testing.allocator;
+    // '(...)' grouping allows quantifiers on groups
+    try std.testing.expect(try similarToMatch(allocator, "ababab", "(ab)+"));
+    try std.testing.expect(try similarToMatch(allocator, "ab", "(ab)+"));
+    try std.testing.expect(!try similarToMatch(allocator, "x", "(ab)+"));
+
+    try std.testing.expect(try similarToMatch(allocator, "abcabcabc", "(abc)*"));
+    try std.testing.expect(try similarToMatch(allocator, "abc", "(abc)*"));
+    try std.testing.expect(try similarToMatch(allocator, "", "(abc)*"));
+    try std.testing.expect(!try similarToMatch(allocator, "abab", "(abc)*"));
+}
+
+test "SIMILAR TO character class" {
+    const allocator = std.testing.allocator;
+    // '[...]' character class matches single character in the set
+    try std.testing.expect(try similarToMatch(allocator, "a", "[abc]"));
+    try std.testing.expect(try similarToMatch(allocator, "b", "[abc]"));
+    try std.testing.expect(!try similarToMatch(allocator, "d", "[abc]"));
+
+    try std.testing.expect(try similarToMatch(allocator, "a", "[a-z]+"));
+    try std.testing.expect(try similarToMatch(allocator, "abc", "[a-z]+"));
+    try std.testing.expect(!try similarToMatch(allocator, "", "[a-z]+"));
+    try std.testing.expect(!try similarToMatch(allocator, "123", "[a-z]+"));
+}
+
+test "NOT SIMILAR TO" {
+    const allocator = std.testing.allocator;
+    // NOT SIMILAR TO is the negation
+    try std.testing.expect(try similarToNotMatch(allocator, "hello", "world"));
+    try std.testing.expect(!try similarToNotMatch(allocator, "hello", "h%"));
+    try std.testing.expect(!try similarToNotMatch(allocator, "hello", "hello"));
+    try std.testing.expect(try similarToNotMatch(allocator, "hello", "x%"));
+}
+
+test "SIMILAR TO mixed" {
+    const allocator = std.testing.allocator;
+    // Complex patterns combining character classes and quantifiers
+    try std.testing.expect(try similarToMatch(allocator, "abc123", "[a-z]+[0-9]+"));
+    try std.testing.expect(!try similarToMatch(allocator, "abc", "[a-z]+[0-9]+"));
+    try std.testing.expect(!try similarToMatch(allocator, "123", "[a-z]+[0-9]+"));
+    try std.testing.expect(try similarToMatch(allocator, "a1", "[a-z]+[0-9]+"));
 }

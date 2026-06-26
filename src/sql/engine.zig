@@ -1911,6 +1911,7 @@ pub const Database = struct {
                 error.UnsupportedExpression => EngineError.ExecutionError,
                 error.InvalidRowData => EngineError.ExecutionError,
                 error.LockConflict => EngineError.LockConflict,
+                error.InvalidPattern => EngineError.ExecutionError,
             };
         })) |row| {
             var mutable_row = row;
