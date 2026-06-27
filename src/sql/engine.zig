@@ -35848,3 +35848,326 @@ test "window EXCLUDE CURRENT ROW: COUNT(*) reduces by one per row" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
+test "SIMILAR TO: basic pattern matching in WHERE clause" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE words (name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO words VALUES ('apple')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO words VALUES ('banana')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO words VALUES ('cherry')");
+    defer ins3.close(testing.allocator);
+
+    // Test '%an%' pattern — should match 'banana'
+    var result1 = try db.execSQL("SELECT name FROM words WHERE name SIMILAR TO '%an%' ORDER BY name");
+    defer result1.close(testing.allocator);
+
+    var count1: usize = 0;
+    var matched: bool = false;
+    while (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count1 += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "banana")) {
+                matched = true;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count1);
+    try testing.expect(matched);
+
+    // Test 'a%' pattern — should match 'apple'
+    var result2 = try db.execSQL("SELECT name FROM words WHERE name SIMILAR TO 'a%' ORDER BY name");
+    defer result2.close(testing.allocator);
+
+    var count2: usize = 0;
+    matched = false;
+    while (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count2 += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "apple")) {
+                matched = true;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count2);
+    try testing.expect(matched);
+}
+
+test "SIMILAR TO: alternation pattern" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_alt.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE animals (name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO animals VALUES ('cat')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO animals VALUES ('dog')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO animals VALUES ('fish')");
+    defer ins3.close(testing.allocator);
+
+    // Test 'cat|dog' pattern — should match 'cat' and 'dog'
+    var result = try db.execSQL("SELECT name FROM animals WHERE name SIMILAR TO 'cat|dog' ORDER BY name");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var found_cat = false;
+    var found_dog = false;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "cat")) found_cat = true;
+            if (std.mem.eql(u8, row.values[0].text, "dog")) found_dog = true;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expect(found_cat);
+    try testing.expect(found_dog);
+}
+
+test "SIMILAR TO: quantifier patterns" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_quant.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE items (val TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO items VALUES ('a')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO items VALUES ('ab')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO items VALUES ('abb')");
+    defer ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO items VALUES ('abc')");
+    defer ins4.close(testing.allocator);
+
+    // Test 'ab+' pattern — should match 'ab' and 'abb' (a followed by 1+ b's)
+    var result1 = try db.execSQL("SELECT val FROM items WHERE val SIMILAR TO 'ab+' ORDER BY val");
+    defer result1.close(testing.allocator);
+
+    var count1: usize = 0;
+    while (try result1.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count1 += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count1);
+
+    // Test 'a?b' pattern — should match 'ab' and 'b' (optional a, then mandatory b)
+    var result2 = try db.execSQL("SELECT val FROM items WHERE val SIMILAR TO 'a?b' ORDER BY val");
+    defer result2.close(testing.allocator);
+
+    var count2: usize = 0;
+    var found_ab = false;
+    while (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count2 += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "ab")) {
+                found_ab = true;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count2);
+    try testing.expect(found_ab);
+}
+
+test "SIMILAR TO: character class pattern" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_class.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE codes (code TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO codes VALUES ('a1')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO codes VALUES ('b2')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO codes VALUES ('c3')");
+    defer ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO codes VALUES ('abc')");
+    defer ins4.close(testing.allocator);
+
+    // Test '[a-c][1-3]' pattern — should match 'a1', 'b2', 'c3'
+    var result = try db.execSQL("SELECT code FROM codes WHERE code SIMILAR TO '[a-c][1-3]' ORDER BY code");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "SIMILAR TO: NOT SIMILAR TO excludes matching rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_not.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE words (word TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO words VALUES ('hello')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO words VALUES ('world')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO words VALUES ('help')");
+    defer ins3.close(testing.allocator);
+
+    // Test NOT SIMILAR TO 'hel%' — should only match 'world'
+    var result = try db.execSQL("SELECT word FROM words WHERE word NOT SIMILAR TO 'hel%' ORDER BY word");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var found_world = false;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "world")) {
+                found_world = true;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expect(found_world);
+}
+
+test "SIMILAR TO: NULL value handling" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE vals (val TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO vals VALUES (NULL)");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO vals VALUES ('hello')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO vals VALUES ('world')");
+    defer ins3.close(testing.allocator);
+
+    // Test SIMILAR TO '%' pattern — should only match non-NULL rows ('hello', 'world')
+    var result = try db.execSQL("SELECT val FROM vals WHERE val SIMILAR TO '%' ORDER BY val");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        // All returned rows should be non-NULL
+        try testing.expect(row.values[0] == .text);
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SIMILAR TO: underscore wildcard" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_under.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE strs (s TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO strs VALUES ('ab')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO strs VALUES ('abc')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO strs VALUES ('a')");
+    defer ins3.close(testing.allocator);
+
+    // Test 'a_' pattern — should only match 'ab' (exactly 2 chars: a + any char)
+    var result = try db.execSQL("SELECT s FROM strs WHERE s SIMILAR TO 'a_' ORDER BY s");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var found_ab = false;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "ab")) {
+                found_ab = true;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expect(found_ab);
+}
+
+test "SIMILAR TO: grouping and quantifiers" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_similar_to_group.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE repeats (val TEXT)");
+    defer r1.close(testing.allocator);
+
+    var ins1 = try db.execSQL("INSERT INTO repeats VALUES ('aaa')");
+    defer ins1.close(testing.allocator);
+    var ins2 = try db.execSQL("INSERT INTO repeats VALUES ('a')");
+    defer ins2.close(testing.allocator);
+    var ins3 = try db.execSQL("INSERT INTO repeats VALUES ('bbb')");
+    defer ins3.close(testing.allocator);
+    var ins4 = try db.execSQL("INSERT INTO repeats VALUES ('ab')");
+    defer ins4.close(testing.allocator);
+
+    // Test '(a)+' pattern — should match 'aaa' and 'a' (one or more a's)
+    var result = try db.execSQL("SELECT val FROM repeats WHERE val SIMILAR TO '(a)+' ORDER BY val");
+    defer result.close(testing.allocator);
+
+    var count: usize = 0;
+    var found_a = false;
+    var found_aaa = false;
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        if (row.values[0] == .text) {
+            if (std.mem.eql(u8, row.values[0].text, "a")) found_a = true;
+            if (std.mem.eql(u8, row.values[0].text, "aaa")) found_aaa = true;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expect(found_a);
+    try testing.expect(found_aaa);
+}
+
