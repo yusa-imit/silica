@@ -3678,24 +3678,41 @@ pub const Parser = struct {
             return error.ParseFailed;
         };
 
+        var start: ast.WindowFrameBound = undefined;
+        var end: ast.WindowFrameBound = .current_row;
+
         if (self.match(.kw_between)) {
-            // BETWEEN start AND end
-            const start = try self.parseFrameBound();
+            start = try self.parseFrameBound();
             _ = try self.expect(.kw_and);
-            const end = try self.parseFrameBound();
-            return self.arena.create(ast.WindowFrameSpec, .{
-                .mode = mode,
-                .start = start,
-                .end = end,
-            }) catch return error.OutOfMemory;
+            end = try self.parseFrameBound();
+        } else {
+            start = try self.parseFrameBound();
         }
 
-        // Single bound (start only, end defaults to CURRENT ROW)
-        const start = try self.parseFrameBound();
+        // Optional EXCLUDE clause (SQL:2011)
+        const exclusion: ast.FrameExclusion = if (self.match(.kw_exclude)) blk: {
+            if (self.match(.kw_current)) {
+                _ = try self.expect(.kw_row);
+                break :blk .current_row;
+            } else if (self.match(.kw_group)) {
+                break :blk .group;
+            } else if (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ties")) {
+                _ = self.advance();
+                break :blk .ties;
+            } else if (self.match(.kw_no)) {
+                _ = try self.expect(.kw_others);
+                break :blk .no_others;
+            } else {
+                try self.addError(self.peek(), "expected CURRENT ROW, GROUP, TIES, or NO OTHERS after EXCLUDE");
+                return error.ParseFailed;
+            }
+        } else .no_others;
+
         return self.arena.create(ast.WindowFrameSpec, .{
             .mode = mode,
             .start = start,
-            .end = .current_row,
+            .end = end,
+            .exclusion = exclusion,
         }) catch return error.OutOfMemory;
     }
 
@@ -7205,4 +7222,44 @@ test "bind parameters reset between statements" {
 
     const ins = r2.stmt.insert;
     try std.testing.expectEqual(@as(u32, 0), ins.values[0][0].bind_parameter);
+}
+
+test "parse EXCLUDE CURRENT ROW in window frame" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expect(wf.frame != null);
+    try std.testing.expectEqual(ast.FrameExclusion.current_row, wf.frame.?.exclusion);
+}
+
+test "parse EXCLUDE GROUP in window frame" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS UNBOUNDED PRECEDING EXCLUDE GROUP) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expect(wf.frame != null);
+    try std.testing.expectEqual(ast.FrameExclusion.group, wf.frame.?.exclusion);
+}
+
+test "parse EXCLUDE TIES in window frame" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE TIES) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expect(wf.frame != null);
+    try std.testing.expectEqual(ast.FrameExclusion.ties, wf.frame.?.exclusion);
+}
+
+test "parse EXCLUDE NO OTHERS in window frame" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS UNBOUNDED PRECEDING EXCLUDE NO OTHERS) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expect(wf.frame != null);
+    try std.testing.expectEqual(ast.FrameExclusion.no_others, wf.frame.?.exclusion);
+}
+
+test "parse window frame without EXCLUDE defaults to no_others" {
+    var r = try testParseWithArena("SELECT SUM(x) OVER (ROWS UNBOUNDED PRECEDING) FROM t");
+    defer r.deinit();
+    const wf = r.stmt.select.columns[0].expr.value.window_function;
+    try std.testing.expect(wf.frame != null);
+    try std.testing.expectEqual(ast.FrameExclusion.no_others, wf.frame.?.exclusion);
 }

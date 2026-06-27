@@ -394,11 +394,24 @@ pub const WindowFrameBound = union(enum) {
     expr_following: *const Expr,
 };
 
-/// Window frame specification: ROWS/RANGE/GROUPS BETWEEN ... AND ...
+/// Window frame exclusion (SQL:2011 EXCLUDE clause).
+pub const FrameExclusion = enum {
+    /// EXCLUDE NO OTHERS (default) — exclude nothing.
+    no_others,
+    /// EXCLUDE CURRENT ROW — exclude the current row from the frame.
+    current_row,
+    /// EXCLUDE GROUP — exclude all peers (rows with the same ORDER BY key).
+    group,
+    /// EXCLUDE TIES — exclude peers but not the current row itself.
+    ties,
+};
+
+/// Window frame specification: ROWS/RANGE/GROUPS BETWEEN ... AND ... [EXCLUDE ...]
 pub const WindowFrameSpec = struct {
     mode: WindowFrameMode = .range,
     start: WindowFrameBound = .unbounded_preceding,
     end: WindowFrameBound = .current_row,
+    exclusion: FrameExclusion = .no_others,
 };
 
 /// Named window definition in WINDOW clause.

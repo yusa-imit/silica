@@ -35668,3 +35668,183 @@ test "TABLESAMPLE BERNOULLI with alias" {
     try testing.expectEqual(@as(usize, 3), count);
 }
 
+test "window EXCLUDE CURRENT ROW: SUM excludes current row from running total" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_wf_exclude_current_row.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE nums (v INTEGER)");
+    _ = try db.exec("INSERT INTO nums VALUES (1),(2),(3),(4)");
+
+    var r = try db.exec(
+        "SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) AS s FROM nums ORDER BY v",
+    );
+    defer r.close(testing.allocator);
+
+    // Row 1: frame=[1], exclude current → empty → NULL
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expect(row1.values[1] == .null_value);
+
+    // Row 2: frame=[1,2], exclude 2 → SUM(1)=1
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 1), row2.values[1].integer);
+
+    // Row 3: frame=[1,2,3], exclude 3 → SUM(1+2)=3
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 3), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 3), row3.values[1].integer);
+
+    // Row 4: frame=[1,2,3,4], exclude 4 → SUM(1+2+3)=6
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 4), row4.values[0].integer);
+    try testing.expectEqual(@as(i64, 6), row4.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "window EXCLUDE NO OTHERS: explicit — same as default running SUM" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_wf_exclude_no_others.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE nums (v INTEGER)");
+    _ = try db.exec("INSERT INTO nums VALUES (1),(2),(3)");
+
+    var r = try db.exec(
+        "SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE NO OTHERS) AS s FROM nums ORDER BY v",
+    );
+    defer r.close(testing.allocator);
+
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[1].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[1].integer);
+
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 6), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "window EXCLUDE GROUP: excludes all peers from full-partition frame" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_wf_exclude_group.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (g INTEGER, v INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1,10),(1,20),(2,30),(2,40)");
+
+    var r = try db.exec(
+        "SELECT g, v, SUM(v) OVER (ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS s FROM t ORDER BY g, v",
+    );
+    defer r.close(testing.allocator);
+
+    // g=1 rows: total=100, exclude group(g=1)=30 → s=70
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+    try testing.expectEqual(@as(i64, 70), row1.values[2].integer);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 1), row2.values[0].integer);
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer);
+    try testing.expectEqual(@as(i64, 70), row2.values[2].integer);
+
+    // g=2 rows: total=100, exclude group(g=2)=70 → s=30
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 2), row3.values[0].integer);
+    try testing.expectEqual(@as(i64, 30), row3.values[1].integer);
+    try testing.expectEqual(@as(i64, 30), row3.values[2].integer);
+
+    var row4 = (try r.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 2), row4.values[0].integer);
+    try testing.expectEqual(@as(i64, 40), row4.values[1].integer);
+    try testing.expectEqual(@as(i64, 30), row4.values[2].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "window EXCLUDE TIES: excludes peers but not current row" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_wf_exclude_ties.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE t (g INTEGER, v INTEGER)");
+    _ = try db.exec("INSERT INTO t VALUES (1,10),(1,20),(2,30)");
+
+    var r = try db.exec(
+        "SELECT g, v, SUM(v) OVER (ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) AS s FROM t ORDER BY g, v",
+    );
+    defer r.close(testing.allocator);
+
+    // Row (g=1, v=10, pos=0): exclude ties (g=1, fi!=0) → exclude fi=1(v=20) → SUM=10+30=40
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 10), row1.values[1].integer);
+    try testing.expectEqual(@as(i64, 40), row1.values[2].integer);
+
+    // Row (g=1, v=20, pos=1): exclude ties (g=1, fi!=1) → exclude fi=0(v=10) → SUM=20+30=50
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 20), row2.values[1].integer);
+    try testing.expectEqual(@as(i64, 50), row2.values[2].integer);
+
+    // Row (g=2, v=30, pos=2): no ties → SUM=60
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 30), row3.values[1].integer);
+    try testing.expectEqual(@as(i64, 60), row3.values[2].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+
+test "window EXCLUDE CURRENT ROW: COUNT(*) reduces by one per row" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_wf_exclude_count_star.db";
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE nums (v INTEGER)");
+    _ = try db.exec("INSERT INTO nums VALUES (1),(2),(3)");
+
+    var r = try db.exec(
+        "SELECT v, COUNT(*) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) AS c FROM nums ORDER BY v",
+    );
+    defer r.close(testing.allocator);
+
+    // Row 1: frame size=1, exclude current → 0
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 0), row1.values[1].integer);
+
+    // Row 2: frame size=2, exclude current → 1
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 1), row2.values[1].integer);
+
+    // Row 3: frame size=3, exclude current → 2
+    var row3 = (try r.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 2), row3.values[1].integer);
+
+    try testing.expect((try r.rows.?.next()) == null);
+}
+

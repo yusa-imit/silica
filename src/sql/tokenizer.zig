@@ -274,6 +274,8 @@ pub const TokenType = enum {
     kw_do,
     kw_nothing,
     kw_excluded,
+    kw_exclude,
+    kw_others,
 
     // Keywords — Types
     kw_integer,
@@ -998,6 +1000,8 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "do", .kw_do },
         .{ "nothing", .kw_nothing },
         .{ "excluded", .kw_excluded },
+        .{ "exclude", .kw_exclude },
+        .{ "others", .kw_others },
         // Types
         .{ "integer", .kw_integer },
         .{ "int", .kw_int },
@@ -1937,4 +1941,9 @@ test "ALTER TABLE ENABLE ROW LEVEL SECURITY keywords" {
         .kw_level,
         .kw_security,
     });
+}
+
+test "window frame EXCLUDE keywords" {
+    try expectSingleToken("exclude", .kw_exclude, "exclude");
+    try expectSingleToken("others", .kw_others, "others");
 }

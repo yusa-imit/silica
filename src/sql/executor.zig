@@ -8850,6 +8850,25 @@ pub const WindowOp = struct {
         }
     }
 
+    /// Returns true if frame position `fi` should be excluded when computing
+    /// the aggregate for the row at partition position `pos`.
+    fn shouldExcludeFramePos(
+        alloc: Allocator,
+        exclusion: ast.FrameExclusion,
+        fi: usize,
+        pos: usize,
+        order_by: []const ast.OrderByItem,
+        all_rows: []const Row,
+        partition_indices: []const usize,
+    ) bool {
+        return switch (exclusion) {
+            .no_others => false,
+            .current_row => fi == pos,
+            .group => orderKeysEqual(alloc, order_by, &all_rows[partition_indices[fi]], &all_rows[partition_indices[pos]]),
+            .ties => fi != pos and orderKeysEqual(alloc, order_by, &all_rows[partition_indices[fi]], &all_rows[partition_indices[pos]]),
+        };
+    }
+
     fn computeAggregateWindow(
         alloc: Allocator,
         wf: ast.WindowFunctionExpr,
@@ -8861,6 +8880,7 @@ pub const WindowOp = struct {
         const func_name_lower = toLower(wf.name, &name_buf);
         const is_count_star = std.mem.eql(u8, func_name_lower, "count") and
             (wf.args.len == 0 or (wf.args.len > 0 and wf.args[0].* == .column_ref and std.mem.eql(u8, wf.args[0].column_ref.name, "*")));
+        const exclusion: ast.FrameExclusion = if (wf.frame) |f| f.exclusion else .no_others;
 
         // Determine frame bounds for each row
         for (partition_indices, 0..) |orig_idx, pos| {
@@ -8869,10 +8889,20 @@ pub const WindowOp = struct {
             const frame_end = frame_range[1];
 
             if (is_count_star) {
-                results[orig_idx] = .{ .integer = @intCast(frame_end - frame_start) };
+                if (exclusion == .no_others) {
+                    results[orig_idx] = .{ .integer = @intCast(frame_end - frame_start) };
+                } else {
+                    var count: i64 = 0;
+                    for (frame_start..frame_end) |fi| {
+                        if (!shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices))
+                            count += 1;
+                    }
+                    results[orig_idx] = .{ .integer = count };
+                }
             } else if (std.mem.eql(u8, func_name_lower, "count")) {
                 var count: i64 = 0;
                 for (frame_start..frame_end) |fi| {
+                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
                     if (wf.args.len > 0) {
                         const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         defer v.free(alloc);
@@ -8886,6 +8916,7 @@ pub const WindowOp = struct {
                 var has_real = false;
                 var has_any = false;
                 for (frame_start..frame_end) |fi| {
+                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
                     if (wf.args.len > 0) {
                         const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         defer v.free(alloc);
@@ -8914,6 +8945,7 @@ pub const WindowOp = struct {
                 var sum: f64 = 0;
                 var count: usize = 0;
                 for (frame_start..frame_end) |fi| {
+                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
                     if (wf.args.len > 0) {
                         const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         defer v.free(alloc);
@@ -8938,6 +8970,7 @@ pub const WindowOp = struct {
             } else if (std.mem.eql(u8, func_name_lower, "min")) {
                 var min_val: Value = Value.null_value;
                 for (frame_start..frame_end) |fi| {
+                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
                     if (wf.args.len > 0) {
                         const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         if (v == .null_value) {
@@ -8956,6 +8989,7 @@ pub const WindowOp = struct {
             } else if (std.mem.eql(u8, func_name_lower, "max")) {
                 var max_val: Value = Value.null_value;
                 for (frame_start..frame_end) |fi| {
+                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
                     if (wf.args.len > 0) {
                         const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
                         if (v == .null_value) {
