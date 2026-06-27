@@ -148,6 +148,18 @@ const Pane = enum { schema, results, input };
 
 const RING_MENU_ITEMS = [_][]const u8{ "Execute", "Schema", "Results", "Refresh", "Clear", "Quit" };
 
+// ── Query History KanbanBoard ────────────────────────────────────────
+
+const QUERY_HISTORY_MAX = 16;
+const QUERY_TITLE_MAX = 48;
+
+const QueryHistoryEntry = struct {
+    title: [QUERY_TITLE_MAX]u8 = std.mem.zeroes([QUERY_TITLE_MAX]u8),
+    title_len: usize = 0,
+    success: bool = false,
+    duration_ms: u64 = 0,
+};
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -202,6 +214,13 @@ const App = struct {
     query_laps: [32]u64 = std.mem.zeroes([32]u64),
     query_lap_count: usize = 0,
     query_cumulative_ms: u64 = 0,
+
+    // Query history KanbanBoard overlay
+    kanban_visible: bool = false,
+    kanban_focused_col: usize = 0,
+    kanban_focused_card: usize = 0,
+    query_history: [QUERY_HISTORY_MAX]QueryHistoryEntry = std.mem.zeroes([QUERY_HISTORY_MAX]QueryHistoryEntry),
+    query_history_count: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -375,6 +394,20 @@ const App = struct {
         }
     }
 
+    fn recordQueryHistory(self: *App, query: []const u8, success: bool, duration_ms: u64) void {
+        // Use ring buffer — wrap at QUERY_HISTORY_MAX, but cap count at QUERY_HISTORY_MAX
+        if (self.query_history_count < QUERY_HISTORY_MAX) {
+            self.query_history_count += 1;
+        }
+        const idx = (self.query_history_count - 1) % QUERY_HISTORY_MAX;
+        var entry = &self.query_history[idx];
+        entry.success = success;
+        entry.duration_ms = duration_ms;
+        const copy_len = @min(query.len, QUERY_TITLE_MAX);
+        @memcpy(entry.title[0..copy_len], query[0..copy_len]);
+        entry.title_len = copy_len;
+    }
+
     fn executeSQL(self: *App) void {
         if (self.input_text.items.len == 0) return;
 
@@ -384,6 +417,7 @@ const App = struct {
         var result = self.db.exec(self.input_text.items) catch |err| {
             const elapsed: u64 = @intCast(@max(0, std.time.milliTimestamp() - start_ms));
             self.recordQueryTime(elapsed);
+            self.recordQueryHistory(self.input_text.items, false, elapsed);
             const msg = switch (err) {
                 error.ParseError => "SQL parse error.",
                 error.AnalysisError => "Semantic analysis error.",
@@ -401,6 +435,7 @@ const App = struct {
         defer result.close(self.allocator);
         const elapsed: u64 = @intCast(@max(0, std.time.milliTimestamp() - start_ms));
         self.recordQueryTime(elapsed);
+        self.recordQueryHistory(self.input_text.items, true, elapsed);
 
         if (result.rows != null) {
             // Collect result rows
@@ -522,6 +557,18 @@ const App = struct {
             return;
         }
 
+        // 'b' key toggles query history kanban board (not while editing input)
+        if (byte == 98 and self.focus != .input) {
+            if (self.kanban_visible) {
+                self.kanban_visible = false;
+            } else {
+                self.kanban_visible = true;
+                self.kanban_focused_col = 0;
+                self.kanban_focused_card = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -539,7 +586,48 @@ const App = struct {
         }
     }
 
+    fn countKanbanColCards(app: *const App, col: usize) usize {
+        const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+        var count: usize = 0;
+        for (app.query_history[0..actual_count]) |entry| {
+            if (col == 0 and entry.success) count += 1;
+            if (col == 1 and !entry.success) count += 1;
+        }
+        return count;
+    }
+
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
+        // Kanban board arrow key navigation and ESC handling
+        if (self.kanban_visible) {
+            if (b2 == null) {
+                self.kanban_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up
+                        if (self.kanban_focused_card > 0) self.kanban_focused_card -= 1;
+                    },
+                    'B' => { // Down
+                        self.kanban_focused_card += 1;
+                        // Clamp to actual cards in focused column
+                        const col_count = countKanbanColCards(self, self.kanban_focused_col);
+                        if (col_count > 0 and self.kanban_focused_card >= col_count) {
+                            self.kanban_focused_card = col_count - 1;
+                        }
+                    },
+                    'C' => { // Right
+                        if (self.kanban_focused_col < 1) self.kanban_focused_col += 1;
+                    },
+                    'D' => { // Left
+                        if (self.kanban_focused_col > 0) self.kanban_focused_col -= 1;
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // Ring menu arrow key navigation
         if (self.ring_menu_visible) {
             if (b2 == null) {
@@ -566,7 +654,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.detail_visible) {
+            if (self.kanban_visible) {
+                self.kanban_visible = false;
+            } else if (self.detail_visible) {
                 self.detail_visible = false;
             } else if (self.timer_visible) {
                 self.timer_visible = false;
@@ -960,6 +1050,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render timer overlay (on top of content, below ring menu)
     if (app.timer_visible) {
         renderTimerOverlay(app, buf, area);
+    }
+
+    // Render query history kanban board
+    if (app.kanban_visible) {
+        renderKanbanBoard(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -1406,6 +1501,85 @@ fn renderTimerOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     sw.render(buf, popup_area);
 }
 
+fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.kanban_visible) return;
+
+    // Centered overlay: ~80% width, ~70% height
+    const ow: u16 = @min(area.width * 4 / 5, area.width);
+    const oh: u16 = @min(area.height * 7 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Build success and error card arrays
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+    var success_cards: [QUERY_HISTORY_MAX]sailor.kanban.Card = undefined;
+    var error_cards: [QUERY_HISTORY_MAX]sailor.kanban.Card = undefined;
+    var success_count: usize = 0;
+    var error_count: usize = 0;
+
+    // Tag buffers for duration strings
+    var tag_bufs: [QUERY_HISTORY_MAX][8]u8 = undefined;
+    var tag_strs: [QUERY_HISTORY_MAX][]const u8 = undefined;
+    var tag_slices: [QUERY_HISTORY_MAX][1][]const u8 = undefined;
+
+    for (app.query_history[0..actual_count]) |*entry| {
+        const title_slice = entry.title[0..entry.title_len];
+        const priority: sailor.kanban.Priority = if (entry.success) blk: {
+            if (entry.duration_ms > 1000) break :blk .high;
+            if (entry.duration_ms > 100) break :blk .normal;
+            break :blk .low;
+        } else .critical;
+
+        // Build duration tag
+        const tag_idx = success_count + error_count;
+        const tag_written = std.fmt.bufPrint(&tag_bufs[tag_idx], "#{d}ms", .{entry.duration_ms}) catch "#?ms";
+        tag_strs[tag_idx] = tag_written;
+        tag_slices[tag_idx] = .{tag_strs[tag_idx]};
+
+        if (entry.success) {
+            success_cards[success_count] = .{
+                .title = title_slice,
+                .priority = priority,
+                .tags = &tag_slices[tag_idx],
+            };
+            success_count += 1;
+        } else {
+            error_cards[error_count] = .{
+                .title = title_slice,
+                .priority = priority,
+                .tags = &tag_slices[tag_idx],
+            };
+            error_count += 1;
+        }
+    }
+
+    var cols = [2]sailor.kanban.Column{
+        .{ .title = "Success \xe2\x9c\x93", .cards = success_cards[0..success_count] },
+        .{ .title = "Errors \xe2\x9c\x97", .cards = error_cards[0..error_count] },
+    };
+
+    const kb = sailor.KanbanBoard.init()
+        .withColumns(&cols)
+        .withFocusedColumn(app.kanban_focused_col)
+        .withFocusedCard(app.kanban_focused_card)
+        .withBlock((tui.widgets.Block{
+            .title = " Query History (b/Esc:close  \xe2\x86\x90\xe2\x86\x92:col  \xe2\x86\x91\xe2\x86\x93:card) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    kb.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -1452,8 +1626,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -3078,4 +3252,187 @@ test "App renderUI does not crash with timer_visible = true" {
     _ = height;
     // Actual renderUI call would be:
     // renderUI(&app, width, height); // Not calling to avoid dependency on full TUI rendering setup
+}
+
+test "kanban_visible starts as false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.kanban_visible == false);
+}
+
+test "App handleKey 'b' opens kanban board" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Press 'b' (ASCII 98)
+    app.handleKey(98);
+    try std.testing.expect(app.kanban_visible == true);
+    try std.testing.expectEqual(@as(usize, 0), app.kanban_focused_col);
+}
+
+test "App handleKey 'b' toggles kanban closed" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Open kanban
+    app.handleKey(98); // 'b'
+    try std.testing.expect(app.kanban_visible == true);
+
+    // Close kanban
+    app.handleKey(98); // 'b' again
+    try std.testing.expect(app.kanban_visible == false);
+}
+
+test "App ESC closes kanban board" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open kanban
+    app.kanban_visible = true;
+    try std.testing.expect(app.kanban_visible == true);
+
+    // Send bare ESC (b2 == null)
+    app.handleEscapeSequence(null, null);
+    try std.testing.expect(app.kanban_visible == false);
+}
+
+test "recordQueryHistory stores success entry" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Record a successful query
+    app.recordQueryHistory("SELECT 1", true, 42);
+
+    try std.testing.expectEqual(@as(usize, 1), app.query_history_count);
+    try std.testing.expect(app.query_history[0].success == true);
+    try std.testing.expectEqual(@as(u64, 42), app.query_history[0].duration_ms);
+}
+
+test "recordQueryHistory stores failure entry" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Record a failed query
+    app.recordQueryHistory("SELECT invalid", false, 15);
+
+    try std.testing.expectEqual(@as(usize, 1), app.query_history_count);
+    try std.testing.expect(app.query_history[0].success == false);
+    try std.testing.expectEqual(@as(u64, 15), app.query_history[0].duration_ms);
+}
+
+test "recordQueryHistory ring buffer wraps at QUERY_HISTORY_MAX" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Add QUERY_HISTORY_MAX + 1 entries (should wrap ring buffer)
+    const max = 16; // Assuming QUERY_HISTORY_MAX = 16
+    for (0..max + 1) |i| {
+        const query_text = std.fmt.allocPrint(allocator, "SELECT {d}", .{i}) catch return;
+        defer allocator.free(query_text);
+        app.recordQueryHistory(query_text, true, @as(u64, @intCast(i)));
+    }
+
+    // Count should be capped at max (ring buffer, not growing beyond)
+    try std.testing.expectEqual(@as(usize, max), app.query_history_count);
+}
+
+test "kanban right arrow increments focused_col" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open kanban
+    app.kanban_visible = true;
+    app.kanban_focused_col = 0;
+
+    // Send right arrow (ESC [ C)
+    app.handleEscapeSequence('[', 'C');
+
+    try std.testing.expectEqual(@as(usize, 1), app.kanban_focused_col);
+}
+
+test "kanban left arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open kanban with focused_col = 0
+    app.kanban_visible = true;
+    app.kanban_focused_col = 0;
+
+    // Send left arrow (ESC [ D)
+    app.handleEscapeSequence('[', 'D');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.kanban_focused_col);
+}
+
+test "kanban down arrow increments focused_card" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open kanban
+    app.kanban_visible = true;
+    app.kanban_focused_col = 0;
+    app.kanban_focused_card = 0;
+
+    // Add 2 success entries so column 0 has cards
+    app.recordQueryHistory("SELECT 1", true, 42);
+    app.recordQueryHistory("SELECT 2", true, 50);
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    try std.testing.expectEqual(@as(usize, 1), app.kanban_focused_card);
 }
