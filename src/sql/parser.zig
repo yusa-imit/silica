@@ -3410,8 +3410,36 @@ pub const Parser = struct {
                     return self.arena.create(ast.Expr, .{ .subquery = sel_ptr }) catch return error.OutOfMemory;
                 }
                 const inner = try self.parseExpr(0);
+                // (e1, e2, ...) → row_constructor; (e) → paren
+                if (self.match(.comma)) {
+                    const a = self.alloc();
+                    var elems = std.ArrayListUnmanaged(*const ast.Expr){};
+                    elems.append(a, inner) catch return error.OutOfMemory;
+                    while (true) {
+                        elems.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                        if (!self.match(.comma)) break;
+                    }
+                    _ = try self.expect(.right_paren);
+                    const slice = elems.toOwnedSlice(a) catch return error.OutOfMemory;
+                    return self.arena.create(ast.Expr, .{ .row_constructor = slice }) catch return error.OutOfMemory;
+                }
                 _ = try self.expect(.right_paren);
                 return self.arena.create(ast.Expr, .{ .paren = inner }) catch return error.OutOfMemory;
+            },
+            .kw_row => {
+                _ = self.advance();
+                _ = try self.expect(.left_paren);
+                const a = self.alloc();
+                var elems = std.ArrayListUnmanaged(*const ast.Expr){};
+                if (!self.check(.right_paren)) {
+                    while (true) {
+                        elems.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                        if (!self.match(.comma)) break;
+                    }
+                }
+                _ = try self.expect(.right_paren);
+                const slice = elems.toOwnedSlice(a) catch return error.OutOfMemory;
+                return self.arena.create(ast.Expr, .{ .row_constructor = slice }) catch return error.OutOfMemory;
             },
             .kw_array => return self.parseArrayConstructor(),
             .kw_case => return self.parseCaseExpr(),
@@ -7262,4 +7290,132 @@ test "parse window frame without EXCLUDE defaults to no_others" {
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expect(wf.frame != null);
     try std.testing.expectEqual(ast.FrameExclusion.no_others, wf.frame.?.exclusion);
+}
+
+// ── ROW constructor tests ──────────────────────────────────────────────
+
+test "parser: row constructor (a, b) = (1, 2) parses to binary_op with row_constructor" {
+    var r = try testParseWithArena("SELECT * FROM t WHERE (a, b) = (1, 2)");
+    defer r.deinit();
+
+    // Verify it's a SELECT statement
+    try std.testing.expect(r.stmt == .select);
+
+    // Verify WHERE clause exists
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.where != null);
+
+    // Verify WHERE clause is a binary op
+    const where = sel.where.?;
+    try std.testing.expect(where.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.equal, where.binary_op.op);
+
+    // Left side should be row_constructor
+    const left = where.binary_op.left;
+    try std.testing.expect(left.* == .row_constructor);
+    const left_rows = left.row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), left_rows.len);
+    try std.testing.expect(left_rows[0].* == .column_ref);
+    try std.testing.expect(left_rows[1].* == .column_ref);
+
+    // Right side should be row_constructor
+    const right = where.binary_op.right;
+    try std.testing.expect(right.* == .row_constructor);
+    const right_rows = right.row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), right_rows.len);
+    try std.testing.expect(right_rows[0].* == .integer_literal);
+    try std.testing.expectEqual(@as(i64, 1), right_rows[0].integer_literal);
+    try std.testing.expect(right_rows[1].* == .integer_literal);
+    try std.testing.expectEqual(@as(i64, 2), right_rows[1].integer_literal);
+}
+
+test "parser: ROW(a, b) = ROW(1, 2) parses correctly" {
+    var r = try testParseWithArena("SELECT * FROM t WHERE ROW(a, b) = ROW(1, 2)");
+    defer r.deinit();
+
+    // Verify it's a SELECT statement
+    try std.testing.expect(r.stmt == .select);
+
+    // Verify WHERE clause exists
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.where != null);
+
+    // Verify WHERE clause is a binary op
+    const where = sel.where.?;
+    try std.testing.expect(where.* == .binary_op);
+    try std.testing.expectEqual(ast.BinaryOp.equal, where.binary_op.op);
+
+    // Left side should be row_constructor
+    const left = where.binary_op.left;
+    try std.testing.expect(left.* == .row_constructor);
+    const left_rows = left.row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), left_rows.len);
+
+    // Right side should be row_constructor
+    const right = where.binary_op.right;
+    try std.testing.expect(right.* == .row_constructor);
+    const right_rows = right.row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), right_rows.len);
+}
+
+test "parser: (a, b) IN ((1, 2), (3, 4)) parses to in_list with row_constructor" {
+    var r = try testParseWithArena("SELECT * FROM t WHERE (a, b) IN ((1, 2), (3, 4))");
+    defer r.deinit();
+
+    // Verify it's a SELECT statement
+    try std.testing.expect(r.stmt == .select);
+
+    // Verify WHERE clause exists
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.where != null);
+
+    // Verify WHERE clause is an in_list
+    const where = sel.where.?;
+    try std.testing.expect(where.* == .in_list);
+
+    const il = where.in_list;
+    // expr should be row_constructor
+    try std.testing.expect(il.expr.* == .row_constructor);
+    const expr_rows = il.expr.row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), expr_rows.len);
+
+    // list should have 2 row constructors
+    try std.testing.expectEqual(@as(usize, 2), il.list.len);
+    try std.testing.expect(il.list[0].* == .row_constructor);
+    try std.testing.expect(il.list[1].* == .row_constructor);
+
+    const list0 = il.list[0].row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), list0.len);
+    try std.testing.expectEqual(@as(i64, 1), list0[0].integer_literal);
+    try std.testing.expectEqual(@as(i64, 2), list0[1].integer_literal);
+
+    const list1 = il.list[1].row_constructor;
+    try std.testing.expectEqual(@as(usize, 2), list1.len);
+    try std.testing.expectEqual(@as(i64, 3), list1[0].integer_literal);
+    try std.testing.expectEqual(@as(i64, 4), list1[1].integer_literal);
+}
+
+test "parser: single-elem (a) = (1) parses as paren not row_constructor" {
+    var r = try testParseWithArena("SELECT * FROM t WHERE (a) = (1)");
+    defer r.deinit();
+
+    // Verify it's a SELECT statement
+    try std.testing.expect(r.stmt == .select);
+
+    // Verify WHERE clause exists
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.where != null);
+
+    // Verify WHERE clause is a binary op
+    const where = sel.where.?;
+    try std.testing.expect(where.* == .binary_op);
+
+    // Single-element parens should be .paren, not .row_constructor
+    const left = where.binary_op.left;
+    try std.testing.expect(left.* == .paren);
+    try std.testing.expect(left.paren.* == .column_ref);
+
+    const right = where.binary_op.right;
+    try std.testing.expect(right.* == .paren);
+    try std.testing.expect(right.paren.* == .integer_literal);
 }

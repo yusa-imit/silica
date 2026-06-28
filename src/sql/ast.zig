@@ -313,6 +313,8 @@ pub const Expr = union(enum) {
         op: BinaryOp,
         array: *const Expr,
     },
+    /// ROW(expr, expr, ...) or (expr, expr, ...) — row value constructor (SQL:2003)
+    row_constructor: []const *const Expr,
     /// Bind parameter: ?
     bind_parameter: u32,
 };

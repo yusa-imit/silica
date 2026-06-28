@@ -1209,6 +1209,9 @@ pub const Analyzer = struct {
                 for (osa.args) |arg| self.analyzeExpr(arg);
                 for (osa.order_by) |ob| self.analyzeExpr(ob.expr);
             },
+            .row_constructor => |elements| {
+                for (elements) |elem| self.analyzeExpr(elem);
+            },
             .bind_parameter => {},
         }
     }

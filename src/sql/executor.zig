@@ -1889,15 +1889,23 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
                 return .{ .boolean = if (il.negated) !found else found };
             }
             var found = false;
+            var has_unknown = false;
             for (il.list) |item| {
                 const item_val = try evalExpr(allocator, item, row, catalog);
                 defer item_val.free(allocator);
-                if (val.eql(item_val)) {
+                // Row constructor IN: use SQL NULL semantics (element-wise)
+                if (val == .array and item_val == .array) {
+                    const cmp = evalRowComparison(.equal, val.array, item_val.array);
+                    if (cmp == .boolean and cmp.boolean) { found = true; break; }
+                    if (cmp == .null_value) has_unknown = true;
+                } else if (val.eql(item_val)) {
                     found = true;
                     break;
                 }
             }
-            return .{ .boolean = if (il.negated) !found else found };
+            if (found) return .{ .boolean = !il.negated };
+            if (has_unknown) return .null_value;
+            return .{ .boolean = il.negated };
         },
 
         .like => |lk| {
@@ -2047,11 +2055,90 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             return .{ .boolean = if (ex.negated) !found else found };
         },
 
+        .row_constructor => |elements| {
+            // Evaluate each field; produce a Value.array usable in row comparisons
+            const elems = allocator.alloc(Value, elements.len) catch return EvalError.OutOfMemory;
+            var inited: usize = 0;
+            errdefer {
+                for (elems[0..inited]) |e| e.free(allocator);
+                allocator.free(elems);
+            }
+            for (elements, 0..) |elem_expr, i| {
+                elems[i] = try evalExpr(allocator, elem_expr, row, catalog);
+                inited += 1;
+            }
+            return .{ .array = elems };
+        },
+
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
         .bind_parameter,
         .ordered_set_agg,
         => return EvalError.UnsupportedExpression,
+    }
+}
+
+/// SQL:2003 row value constructor comparison with proper NULL (UNKNOWN) semantics.
+/// Returns .null_value when the result is UNKNOWN.
+fn evalRowComparison(op: ast.BinaryOp, left: []const Value, right: []const Value) Value {
+    if (left.len != right.len) return .null_value;
+    switch (op) {
+        .equal => {
+            // TRUE iff all elements equal; UNKNOWN if any NULL pair; FALSE if any non-equal non-NULL
+            var has_unknown = false;
+            for (left, right) |lv, rv| {
+                if (lv == .null_value or rv == .null_value) { has_unknown = true; continue; }
+                if (!lv.eql(rv)) return .{ .boolean = false };
+            }
+            return if (has_unknown) .null_value else .{ .boolean = true };
+        },
+        .not_equal => {
+            // TRUE iff any element differs; UNKNOWN if any NULL pair; FALSE if all equal
+            var has_unknown = false;
+            for (left, right) |lv, rv| {
+                if (lv == .null_value or rv == .null_value) { has_unknown = true; continue; }
+                if (!lv.eql(rv)) return .{ .boolean = true };
+            }
+            return if (has_unknown) .null_value else .{ .boolean = false };
+        },
+        .less_than => {
+            // Lexicographic: first differing pair determines result; NULL → UNKNOWN
+            for (left, right) |lv, rv| {
+                if (lv == .null_value or rv == .null_value) return .null_value;
+                const cmp = lv.compare(rv);
+                if (cmp == .lt) return .{ .boolean = true };
+                if (cmp == .gt) return .{ .boolean = false };
+            }
+            return .{ .boolean = false }; // all equal → not less than
+        },
+        .greater_than => {
+            for (left, right) |lv, rv| {
+                if (lv == .null_value or rv == .null_value) return .null_value;
+                const cmp = lv.compare(rv);
+                if (cmp == .gt) return .{ .boolean = true };
+                if (cmp == .lt) return .{ .boolean = false };
+            }
+            return .{ .boolean = false };
+        },
+        .less_than_or_equal => {
+            for (left, right) |lv, rv| {
+                if (lv == .null_value or rv == .null_value) return .null_value;
+                const cmp = lv.compare(rv);
+                if (cmp == .lt) return .{ .boolean = true };
+                if (cmp == .gt) return .{ .boolean = false };
+            }
+            return .{ .boolean = true }; // all equal → <=
+        },
+        .greater_than_or_equal => {
+            for (left, right) |lv, rv| {
+                if (lv == .null_value or rv == .null_value) return .null_value;
+                const cmp = lv.compare(rv);
+                if (cmp == .gt) return .{ .boolean = true };
+                if (cmp == .lt) return .{ .boolean = false };
+            }
+            return .{ .boolean = true }; // all equal → >=
+        },
+        else => return .null_value,
     }
 }
 
@@ -3016,6 +3103,16 @@ fn evalTsMatch(tsvector: Value, tsquery: Value) Value {
 // ──────────────────────────────────────────────────────────────────
 
 fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Value) EvalError!Value {
+    // Row constructor comparison: both arrays, comparison op → SQL NULL semantics
+    if (left == .array and right == .array) {
+        switch (op) {
+            .equal, .not_equal, .less_than, .greater_than, .less_than_or_equal, .greater_than_or_equal => {
+                return evalRowComparison(op, left.array, right.array);
+            },
+            else => {},
+        }
+    }
+
     // NULL propagation for most ops
     if (left == .null_value or right == .null_value) {
         return switch (op) {
