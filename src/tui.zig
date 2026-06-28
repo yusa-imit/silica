@@ -168,6 +168,27 @@ const QUERY_TITLE_MAX = 48;
 const ACTIVITY_LOG_MAX = 64;
 const ACTIVITY_EVENT_MAX = 60;
 
+// ── FlowChart Query Pipeline ─────────────────────────────────────────
+
+const FLOW_NODE_COUNT: usize = 6;
+
+const FLOW_NODES = [FLOW_NODE_COUNT]sailor.FlowNode{
+    .{ .label = "Start", .kind = .terminal, .col = 0, .row = 0 },
+    .{ .label = "Parse SQL", .kind = .process, .col = 0, .row = 1 },
+    .{ .label = "Analyze", .kind = .process, .col = 0, .row = 2 },
+    .{ .label = "Plan", .kind = .process, .col = 0, .row = 3 },
+    .{ .label = "Execute", .kind = .decision, .col = 0, .row = 4 },
+    .{ .label = "Result", .kind = .terminal, .col = 0, .row = 5 },
+};
+
+const FLOW_EDGES = [5]sailor.FlowEdge{
+    .{ .from = 0, .to = 1 },
+    .{ .from = 1, .to = 2 },
+    .{ .from = 2, .to = 3 },
+    .{ .from = 3, .to = 4 },
+    .{ .from = 4, .to = 5, .label = "ok" },
+};
+
 const QueryHistoryEntry = struct {
     title: [QUERY_TITLE_MAX]u8 = std.mem.zeroes([QUERY_TITLE_MAX]u8),
     title_len: usize = 0,
@@ -254,6 +275,10 @@ const App = struct {
     // GanttChart query timeline overlay
     gantt_visible: bool = false,
     gantt_focused: usize = 0,
+
+    // FlowChart query pipeline overlay
+    flow_visible: bool = false,
+    flow_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -663,6 +688,17 @@ const App = struct {
             return;
         }
 
+        // 'f' key toggles query pipeline flowchart (not while editing input)
+        if (byte == 102 and self.focus != .input) {
+            if (self.flow_visible) {
+                self.flow_visible = false;
+            } else {
+                self.flow_visible = true;
+                self.flow_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -729,6 +765,28 @@ const App = struct {
                         const count = @min(self.query_history_count, QUERY_HISTORY_MAX);
                         if (count > 0 and self.gantt_focused + 1 < count) {
                             self.gantt_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // FlowChart arrow key navigation and ESC handling
+        if (self.flow_visible) {
+            if (b2 == null) {
+                self.flow_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up
+                        if (self.flow_focused > 0) self.flow_focused -= 1;
+                    },
+                    'B' => { // Down
+                        if (self.flow_focused + 1 < FLOW_NODE_COUNT) {
+                            self.flow_focused += 1;
                         }
                     },
                     else => {},
@@ -1240,6 +1298,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render query timeline gantt chart
     if (app.gantt_visible) {
         renderGanttChart(app, buf, area);
+    }
+
+    // Render query pipeline flowchart
+    if (app.flow_visible) {
+        renderFlowChart(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -1939,6 +2002,43 @@ fn renderGanttChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     chart.render(buf, popup_area);
 }
 
+fn renderFlowChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.flow_visible) return;
+
+    // Centered overlay: ~60% width, ~90% height (to show all 6 nodes)
+    const ow: u16 = @min(area.width * 3 / 5, area.width);
+    const oh: u16 = @min(area.height * 9 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const chart = sailor.FlowChart.init()
+        .withNodes(&FLOW_NODES)
+        .withEdges(&FLOW_EDGES)
+        .withFocused(app.flow_focused)
+        .withStyle(.{ .fg = .white })
+        .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
+        .withNodeWidth(14)
+        .withNodeHeight(3)
+        .withHSpacing(4)
+        .withVSpacing(2)
+        .withBlock((tui.widgets.Block{
+            .title = " Query Pipeline (f/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    chart.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -1985,8 +2085,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -4381,4 +4481,210 @@ test "gantt: closing via 'g' key hides overlay" {
 
     // Verify it's closed
     try std.testing.expect(app.gantt_visible == false);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FlowChart SQL Pipeline Overlay Tests
+// ─────────────────────────────────────────────────────────────────────────
+
+test "flow: 'f' key toggles flow_visible when not in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // FlowChart overlay should be closed initially
+    try std.testing.expect(app.flow_visible == false);
+
+    // Press 'f' (ASCII 102)
+    app.handleKey(102);
+
+    // FlowChart overlay should now be open
+    try std.testing.expect(app.flow_visible == true);
+
+    // Press 'f' again
+    app.handleKey(102);
+
+    // FlowChart overlay should be closed
+    try std.testing.expect(app.flow_visible == false);
+}
+
+test "flow: 'f' key does nothing when in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Press 'f' while focus is on input pane
+    app.handleKey(102);
+
+    // FlowChart overlay should NOT open when input is focused
+    try std.testing.expect(app.flow_visible == false);
+}
+
+test "flow: opens with focused at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Press 'f' to open FlowChart overlay
+    app.handleKey(102);
+
+    // Verify it's open and focused is at 0
+    try std.testing.expect(app.flow_visible == true);
+    try std.testing.expectEqual(@as(usize, 0), app.flow_focused);
+}
+
+test "flow: ESC closes flow overlay (bare ESC)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open FlowChart overlay
+    app.flow_visible = true;
+    try std.testing.expect(app.flow_visible == true);
+
+    // Send bare ESC (b2 == null)
+    app.handleEscapeSequence(null, null);
+
+    // FlowChart overlay should be closed
+    try std.testing.expect(app.flow_visible == false);
+}
+
+test "flow: down arrow increments flow_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open FlowChart overlay
+    app.flow_visible = true;
+    app.flow_focused = 0;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should increment
+    try std.testing.expectEqual(@as(usize, 1), app.flow_focused);
+}
+
+test "flow: down arrow clamps at FLOW_NODE_COUNT boundary" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open FlowChart overlay with focused at last node (FLOW_NODE_COUNT - 1 = 5)
+    app.flow_visible = true;
+    app.flow_focused = 5;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should stay at 5 (clamped at boundary)
+    try std.testing.expectEqual(@as(usize, 5), app.flow_focused);
+}
+
+test "flow: up arrow decrements flow_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open FlowChart overlay with focused at position 2
+    app.flow_visible = true;
+    app.flow_focused = 2;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Focused should decrement
+    try std.testing.expectEqual(@as(usize, 1), app.flow_focused);
+}
+
+test "flow: up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open FlowChart overlay with focused at 0
+    app.flow_visible = true;
+    app.flow_focused = 0;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.flow_focused);
+}
+
+test "flow: opening resets focused to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set focused to 5 (simulate previous overlay state)
+    app.flow_focused = 5;
+
+    // Press 'f' to open FlowChart overlay
+    app.handleKey(102);
+
+    // Verify focused was reset to 0
+    try std.testing.expectEqual(@as(usize, 0), app.flow_focused);
+}
+
+test "flow: closing via 'f' key hides overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open FlowChart overlay
+    app.flow_visible = true;
+    try std.testing.expect(app.flow_visible == true);
+
+    // Press 'f' to close FlowChart overlay
+    app.handleKey(102);
+
+    // Verify it's closed
+    try std.testing.expect(app.flow_visible == false);
 }
