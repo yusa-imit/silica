@@ -4119,7 +4119,7 @@ test "activity up arrow clamps at 0" {
     try std.testing.expectEqual(@as(usize, 0), app.activity_focused);
 }
 
-test "activity log: activity_count increments on new entry" {
+test "activity log: recordActivity increments count and sets correct kind" {
     const allocator = std.testing.allocator;
     var app = App{
         .allocator = allocator,
@@ -4128,19 +4128,22 @@ test "activity log: activity_count increments on new entry" {
     };
     defer app.deinit();
 
-    // Initially no activities logged
     try std.testing.expectEqual(@as(usize, 0), app.activity_count);
 
-    // Manually add an entry to simulate executeSQL logging
-    const idx = app.activity_count % app.activity_log.len;
-    app.activity_log[idx].kind = .success;
-    app.activity_log[idx].event = "SELECT * FROM table";
-    app.activity_log[idx].actor = "";
-    app.activity_log[idx].timestamp = "";
-    app.activity_count += 1;
-
-    // Count should increment
+    // SELECT → success kind
+    app.recordActivity("SELECT * FROM t", true);
     try std.testing.expectEqual(@as(usize, 1), app.activity_count);
+    try std.testing.expectEqual(sailor.activity_feed.Kind.success, app.activity_log[0].kind);
+
+    // Failed query → error_kind
+    app.recordActivity("SELECT * FROM t", false);
+    try std.testing.expectEqual(@as(usize, 2), app.activity_count);
+    try std.testing.expectEqual(sailor.activity_feed.Kind.error_kind, app.activity_log[1].kind);
+
+    // DDL → action kind regardless of success flag
+    app.recordActivity("CREATE TABLE x (id INTEGER)", true);
+    try std.testing.expectEqual(@as(usize, 3), app.activity_count);
+    try std.testing.expectEqual(sailor.activity_feed.Kind.action, app.activity_log[2].kind);
 }
 
 test "activity log: ring buffer wraps at ACTIVITY_LOG_MAX" {
