@@ -140,6 +140,16 @@ fn getTableHelp(db: *Database, table_name: []const u8) ?[]const u8 {
     return help_text;
 }
 
+// Check if SQL string contains a keyword (case-insensitive)
+fn sqlContains(sql: []const u8, keyword: []const u8) bool {
+    if (sql.len < keyword.len) return false;
+    var i: usize = 0;
+    while (i + keyword.len <= sql.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(sql[i..i+keyword.len], keyword)) return true;
+    }
+    return false;
+}
+
 // ── Focus Pane ───────────────────────────────────────────────────────
 
 const Pane = enum { schema, results, input };
@@ -221,6 +231,13 @@ const App = struct {
     kanban_focused_card: usize = 0,
     query_history: [QUERY_HISTORY_MAX]QueryHistoryEntry = std.mem.zeroes([QUERY_HISTORY_MAX]QueryHistoryEntry),
     query_history_count: usize = 0,
+
+    // BracketViewer SQL plan overlay
+    bracket_visible: bool = false,
+    bracket_focused_round: usize = 0,
+    bracket_focused_match: usize = 0,
+    plan_sql_buf: [512]u8 = std.mem.zeroes([512]u8),
+    plan_sql_len: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -437,6 +454,11 @@ const App = struct {
         self.recordQueryTime(elapsed);
         self.recordQueryHistory(self.input_text.items, true, elapsed);
 
+        // Copy SQL to plan buffer for bracket viewer
+        const copy_len = @min(self.input_text.items.len, 512);
+        @memcpy(self.plan_sql_buf[0..copy_len], self.input_text.items[0..copy_len]);
+        self.plan_sql_len = copy_len;
+
         if (result.rows != null) {
             // Collect result rows
             var row_count: usize = 0;
@@ -569,6 +591,18 @@ const App = struct {
             return;
         }
 
+        // 'p' key toggles SQL plan bracket viewer (not while editing input)
+        if (byte == 112 and self.focus != .input) {
+            if (self.bracket_visible) {
+                self.bracket_visible = false;
+            } else {
+                self.bracket_visible = true;
+                self.bracket_focused_round = 0;
+                self.bracket_focused_match = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -628,6 +662,32 @@ const App = struct {
             return;
         }
 
+        // Bracket viewer arrow key navigation and ESC handling
+        if (self.bracket_visible) {
+            if (b2 == null) {
+                self.bracket_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up
+                        if (self.bracket_focused_match > 0) self.bracket_focused_match -= 1;
+                    },
+                    'B' => { // Down
+                        self.bracket_focused_match += 1;
+                    },
+                    'C' => { // Right
+                        if (self.bracket_focused_round < 2) self.bracket_focused_round += 1;
+                    },
+                    'D' => { // Left
+                        if (self.bracket_focused_round > 0) self.bracket_focused_round -= 1;
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // Ring menu arrow key navigation
         if (self.ring_menu_visible) {
             if (b2 == null) {
@@ -656,6 +716,8 @@ const App = struct {
         if (b2 == null) {
             if (self.kanban_visible) {
                 self.kanban_visible = false;
+            } else if (self.bracket_visible) {
+                self.bracket_visible = false;
             } else if (self.detail_visible) {
                 self.detail_visible = false;
             } else if (self.timer_visible) {
@@ -1055,6 +1117,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render query history kanban board
     if (app.kanban_visible) {
         renderKanbanBoard(app, buf, area);
+    }
+
+    // Render SQL plan bracket viewer
+    if (app.bracket_visible) {
+        renderBracketViewer(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -1580,6 +1647,87 @@ fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     kb.render(buf, popup_area);
 }
 
+fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.bracket_visible) return;
+
+    // Centered overlay: ~80% width, ~70% height
+    const ow: u16 = @min(area.width * 4 / 5, area.width);
+    const oh: u16 = @min(area.height * 7 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Build rounds from SQL
+    const sql = app.plan_sql_buf[0..app.plan_sql_len];
+
+    // Round 1 "Storage": 1 match [Seq Scan vs Index Scan]
+    const storage_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "WHERE")) .b else .a;
+    const storage_match = sailor.bracket_viewer.Match{
+        .team_a = "Seq Scan",
+        .team_b = "Index Scan",
+        .winner = storage_winner,
+    };
+
+    // Round 2 "Logic": 2 matches
+    const filter_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "JOIN")) .b else .a;
+    const filter_match = sailor.bracket_viewer.Match{
+        .team_a = "Filter",
+        .team_b = "Join",
+        .winner = filter_winner,
+    };
+
+    const aggregate_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "GROUP BY")) .b else .a;
+    const aggregate_match = sailor.bracket_viewer.Match{
+        .team_a = "Project",
+        .team_b = "Aggregate",
+        .winner = aggregate_winner,
+    };
+
+    // Round 3 "Output": 1 match [Project vs Sort]
+    const output_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "ORDER BY")) .b else .a;
+    const output_match = sailor.bracket_viewer.Match{
+        .team_a = "Project",
+        .team_b = "Sort",
+        .winner = output_winner,
+    };
+
+    // Build round arrays (no titles in API, just matches)
+    var rounds: [3]sailor.bracket_viewer.Round = undefined;
+    rounds[0] = .{
+        .matches = &.{storage_match},
+    };
+    rounds[1] = .{
+        .matches = &.{ filter_match, aggregate_match },
+    };
+    rounds[2] = .{
+        .matches = &.{output_match},
+    };
+
+    // Render with sailor's BracketViewer widget
+    const bv = sailor.BracketViewer.init()
+        .withRounds(&rounds)
+        .withFocusedRound(app.bracket_focused_round)
+        .withFocusedMatch(app.bracket_focused_match)
+        .withWinStyle(tui.Style{ .fg = .green })
+        .withFocusedStyle(tui.Style{ .fg = .cyan, .bold = true })
+        .withShowScores(false)
+        .withBlock((tui.widgets.Block{
+            .title = " Query Plan (Esc:close) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .blue }));
+
+    bv.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -1626,8 +1774,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -3435,4 +3583,167 @@ test "kanban down arrow increments focused_card" {
     app.handleEscapeSequence('[', 'B');
 
     try std.testing.expectEqual(@as(usize, 1), app.kanban_focused_card);
+}
+
+test "bracket_visible starts as false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.bracket_visible == false);
+}
+
+test "App handleKey 'p' from results focus opens bracket" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Press 'p' (ASCII 112)
+    app.handleKey(112);
+    try std.testing.expect(app.bracket_visible == true);
+    try std.testing.expectEqual(@as(usize, 0), app.bracket_focused_round);
+    try std.testing.expectEqual(@as(usize, 0), app.bracket_focused_match);
+}
+
+test "App handleKey 'p' from input focus does NOT open bracket" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Press 'p' (ASCII 112)
+    app.handleKey(112);
+    try std.testing.expect(app.bracket_visible == false);
+}
+
+test "App handleKey 'p' toggles bracket closed" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Open bracket
+    app.handleKey(112); // 'p'
+    try std.testing.expect(app.bracket_visible == true);
+
+    // Close bracket
+    app.handleKey(112); // 'p' again
+    try std.testing.expect(app.bracket_visible == false);
+}
+
+test "App ESC closes bracket" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open bracket
+    app.bracket_visible = true;
+    try std.testing.expect(app.bracket_visible == true);
+
+    // Ensure other overlays are not open (kanban must be closed first in escape order)
+    app.kanban_visible = false;
+
+    // Send bare ESC (b2 == null)
+    app.handleEscapeSequence(null, null);
+    try std.testing.expect(app.bracket_visible == false);
+}
+
+test "bracket right arrow increments focused_round" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open bracket
+    app.bracket_visible = true;
+    app.bracket_focused_round = 0;
+
+    // Send right arrow (ESC [ C)
+    app.handleEscapeSequence('[', 'C');
+
+    try std.testing.expectEqual(@as(usize, 1), app.bracket_focused_round);
+}
+
+test "bracket left arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open bracket with focused_round = 0
+    app.bracket_visible = true;
+    app.bracket_focused_round = 0;
+
+    // Send left arrow (ESC [ D)
+    app.handleEscapeSequence('[', 'D');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.bracket_focused_round);
+}
+
+test "bracket down arrow increments focused_match" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open bracket
+    app.bracket_visible = true;
+    app.bracket_focused_round = 0;
+    app.bracket_focused_match = 0;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    try std.testing.expectEqual(@as(usize, 1), app.bracket_focused_match);
+}
+
+test "bracket up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open bracket with focused_match = 0
+    app.bracket_visible = true;
+    app.bracket_focused_match = 0;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.bracket_focused_match);
 }
