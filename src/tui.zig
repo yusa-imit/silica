@@ -251,6 +251,10 @@ const App = struct {
     activity_event_bufs: [ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8 = std.mem.zeroes([ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8),
     activity_count: usize = 0,
 
+    // GanttChart query timeline overlay
+    gantt_visible: bool = false,
+    gantt_focused: usize = 0,
+
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
             .allocator = allocator,
@@ -648,6 +652,17 @@ const App = struct {
             return;
         }
 
+        // 'g' key toggles query timeline gantt chart (not while editing input)
+        if (byte == 103 and self.focus != .input) {
+            if (self.gantt_visible) {
+                self.gantt_visible = false;
+            } else {
+                self.gantt_visible = true;
+                self.gantt_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -691,6 +706,29 @@ const App = struct {
                         const count = @min(self.activity_count, ACTIVITY_LOG_MAX);
                         if (count > 0 and self.activity_focused + 1 < count) {
                             self.activity_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // GanttChart arrow key navigation and ESC handling
+        if (self.gantt_visible) {
+            if (b2 == null) {
+                self.gantt_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up
+                        if (self.gantt_focused > 0) self.gantt_focused -= 1;
+                    },
+                    'B' => { // Down
+                        const count = @min(self.query_history_count, QUERY_HISTORY_MAX);
+                        if (count > 0 and self.gantt_focused + 1 < count) {
+                            self.gantt_focused += 1;
                         }
                     },
                     else => {},
@@ -782,7 +820,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.kanban_visible) {
+            if (self.gantt_visible) {
+                self.gantt_visible = false;
+            } else if (self.kanban_visible) {
                 self.kanban_visible = false;
             } else if (self.bracket_visible) {
                 self.bracket_visible = false;
@@ -1195,6 +1235,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render activity feed overlay
     if (app.activity_visible) {
         renderActivityFeed(app, buf, area);
+    }
+
+    // Render query timeline gantt chart
+    if (app.gantt_visible) {
+        renderGanttChart(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -1840,6 +1885,60 @@ fn renderActivityFeed(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     feed.render(buf, popup_area);
 }
 
+fn renderGanttChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.gantt_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Centered overlay: ~80% width, ~70% height
+    const ow: u16 = @min(area.width * 4 / 5, area.width);
+    const oh: u16 = @min(@as(u16, @intCast(actual_count + 2)), @min(area.height * 7 / 10, area.height));
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Build tasks from query_history — each task's start/end derived from cumulative duration
+    var tasks: [QUERY_HISTORY_MAX]sailor.gantt.Task = undefined;
+    var cumulative: u64 = 0;
+    for (0..actual_count) |i| {
+        const entry = &app.query_history[i];
+        const task_start: u16 = @intCast(@min(cumulative, 65535));
+        cumulative += entry.duration_ms;
+        const task_end: u16 = @intCast(@min(cumulative, 65535));
+        tasks[i] = sailor.gantt.Task{
+            .name = entry.title[0..entry.title_len],
+            .start = task_start,
+            .end = if (task_end > task_start) task_end else task_start + 1,
+            .progress = if (entry.success) 100 else 0,
+        };
+    }
+
+    const chart = sailor.GanttChart.init()
+        .withTasks(tasks[0..actual_count])
+        .withFocused(app.gantt_focused)
+        .withLabelWidth(22)
+        .withShowProgress(true)
+        .withStyle(.{ .fg = .white })
+        .withBarStyle(.{ .fg = .bright_black })
+        .withCompleteStyle(.{ .fg = .green })
+        .withFocusedStyle(.{ .fg = .black, .bg = .cyan, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Query Timeline (g/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .yellow }));
+
+    chart.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -1886,8 +1985,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -4070,4 +4169,213 @@ test "activity log: ring buffer wraps at ACTIVITY_LOG_MAX" {
     const oldest_idx = 0;
     const expected_kind: sailor.activity_feed.Kind = if (max % 2 == 0) .success else .error_kind;
     try std.testing.expectEqual(expected_kind, app.activity_log[oldest_idx].kind);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// GanttChart Query Timeline Overlay Tests
+// ─────────────────────────────────────────────────────────────────────────
+
+test "gantt: 'g' key toggles gantt_visible when not in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // GanttChart overlay should be closed initially
+    try std.testing.expect(app.gantt_visible == false);
+
+    // Press 'g' (ASCII 103)
+    app.handleKey(103);
+
+    // GanttChart overlay should now be open
+    try std.testing.expect(app.gantt_visible == true);
+
+    // Press 'g' again
+    app.handleKey(103);
+
+    // GanttChart overlay should be closed
+    try std.testing.expect(app.gantt_visible == false);
+}
+
+test "gantt: 'g' key does nothing when in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Press 'g' while focus is on input pane
+    app.handleKey(103);
+
+    // GanttChart overlay should NOT open when input is focused
+    try std.testing.expect(app.gantt_visible == false);
+}
+
+test "gantt: opens with focused at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Press 'g' to open GanttChart overlay
+    app.handleKey(103);
+
+    // Verify it's open and focused is at 0
+    try std.testing.expect(app.gantt_visible == true);
+    try std.testing.expectEqual(@as(usize, 0), app.gantt_focused);
+}
+
+test "gantt: ESC closes gantt overlay (bare ESC)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open GanttChart overlay
+    app.gantt_visible = true;
+    try std.testing.expect(app.gantt_visible == true);
+
+    // Send bare ESC (b2 == null)
+    app.handleEscapeSequence(null, null);
+
+    // GanttChart overlay should be closed
+    try std.testing.expect(app.gantt_visible == false);
+}
+
+test "gantt: down arrow increments gantt_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open GanttChart overlay with some query history entries
+    app.gantt_visible = true;
+    app.gantt_focused = 0;
+    app.query_history_count = 3;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should increment
+    try std.testing.expectEqual(@as(usize, 1), app.gantt_focused);
+}
+
+test "gantt: down arrow clamps at query_history_count boundary" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open GanttChart overlay with focused at last item
+    app.gantt_visible = true;
+    app.gantt_focused = 2;
+    app.query_history_count = 3;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should stay at 2 (no change, already at last)
+    try std.testing.expectEqual(@as(usize, 2), app.gantt_focused);
+}
+
+test "gantt: up arrow decrements gantt_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open GanttChart overlay with focused at position 2
+    app.gantt_visible = true;
+    app.gantt_focused = 2;
+    app.query_history_count = 3;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Focused should decrement
+    try std.testing.expectEqual(@as(usize, 1), app.gantt_focused);
+}
+
+test "gantt: up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open GanttChart overlay with focused at 0
+    app.gantt_visible = true;
+    app.gantt_focused = 0;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.gantt_focused);
+}
+
+test "gantt: opening resets focused to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set focused to 5 (simulate previous overlay state)
+    app.gantt_focused = 5;
+
+    // Press 'g' to open GanttChart overlay
+    app.handleKey(103);
+
+    // Verify focused was reset to 0
+    try std.testing.expectEqual(@as(usize, 0), app.gantt_focused);
+}
+
+test "gantt: closing via 'g' key hides overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open GanttChart overlay
+    app.gantt_visible = true;
+    try std.testing.expect(app.gantt_visible == true);
+
+    // Press 'g' to close GanttChart overlay
+    app.handleKey(103);
+
+    // Verify it's closed
+    try std.testing.expect(app.gantt_visible == false);
 }
