@@ -163,6 +163,11 @@ const RING_MENU_ITEMS = [_][]const u8{ "Execute", "Schema", "Results", "Refresh"
 const QUERY_HISTORY_MAX = 16;
 const QUERY_TITLE_MAX = 48;
 
+// ── Activity Feed Audit Log ──────────────────────────────────────────
+
+const ACTIVITY_LOG_MAX = 64;
+const ACTIVITY_EVENT_MAX = 60;
+
 const QueryHistoryEntry = struct {
     title: [QUERY_TITLE_MAX]u8 = std.mem.zeroes([QUERY_TITLE_MAX]u8),
     title_len: usize = 0,
@@ -238,6 +243,13 @@ const App = struct {
     bracket_focused_match: usize = 0,
     plan_sql_buf: [512]u8 = std.mem.zeroes([512]u8),
     plan_sql_len: usize = 0,
+
+    // Activity feed audit log overlay
+    activity_visible: bool = false,
+    activity_focused: usize = 0,
+    activity_log: [ACTIVITY_LOG_MAX]sailor.activity_feed.Activity = std.mem.zeroes([ACTIVITY_LOG_MAX]sailor.activity_feed.Activity),
+    activity_event_bufs: [ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8 = std.mem.zeroes([ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8),
+    activity_count: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -411,6 +423,26 @@ const App = struct {
         }
     }
 
+    fn recordActivity(self: *App, sql: []const u8, success: bool) void {
+        const trimmed = std.mem.trim(u8, sql, " \t\r\n");
+        const is_ddl = std.ascii.startsWithIgnoreCase(trimmed, "CREATE") or
+            std.ascii.startsWithIgnoreCase(trimmed, "DROP") or
+            std.ascii.startsWithIgnoreCase(trimmed, "ALTER");
+        const kind: sailor.activity_feed.Kind = if (is_ddl) .action
+            else if (success) .success
+            else .error_kind;
+        const idx = self.activity_count % ACTIVITY_LOG_MAX;
+        const copy_len = @min(trimmed.len, ACTIVITY_EVENT_MAX);
+        @memcpy(self.activity_event_bufs[idx][0..copy_len], trimmed[0..copy_len]);
+        self.activity_log[idx] = .{
+            .event = self.activity_event_bufs[idx][0..copy_len],
+            .kind = kind,
+            .actor = "",
+            .timestamp = "",
+        };
+        self.activity_count += 1;
+    }
+
     fn recordQueryHistory(self: *App, query: []const u8, success: bool, duration_ms: u64) void {
         // Use ring buffer — wrap at QUERY_HISTORY_MAX, but cap count at QUERY_HISTORY_MAX
         if (self.query_history_count < QUERY_HISTORY_MAX) {
@@ -435,6 +467,7 @@ const App = struct {
             const elapsed: u64 = @intCast(@max(0, std.time.milliTimestamp() - start_ms));
             self.recordQueryTime(elapsed);
             self.recordQueryHistory(self.input_text.items, false, elapsed);
+            self.recordActivity(self.input_text.items, false);
             const msg = switch (err) {
                 error.ParseError => "SQL parse error.",
                 error.AnalysisError => "Semantic analysis error.",
@@ -453,6 +486,7 @@ const App = struct {
         const elapsed: u64 = @intCast(@max(0, std.time.milliTimestamp() - start_ms));
         self.recordQueryTime(elapsed);
         self.recordQueryHistory(self.input_text.items, true, elapsed);
+        self.recordActivity(self.input_text.items, true);
 
         // Copy SQL to plan buffer for bracket viewer
         const copy_len = @min(self.input_text.items.len, 512);
@@ -603,6 +637,17 @@ const App = struct {
             return;
         }
 
+        // 'a' key toggles activity feed overlay (not while editing input)
+        if (byte == 97 and self.focus != .input) {
+            if (self.activity_visible) {
+                self.activity_visible = false;
+            } else {
+                self.activity_visible = true;
+                self.activity_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -631,6 +676,29 @@ const App = struct {
     }
 
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
+        // Activity feed arrow key navigation and ESC handling
+        if (self.activity_visible) {
+            if (b2 == null) {
+                self.activity_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up
+                        if (self.activity_focused > 0) self.activity_focused -= 1;
+                    },
+                    'B' => { // Down
+                        const count = @min(self.activity_count, ACTIVITY_LOG_MAX);
+                        if (count > 0 and self.activity_focused + 1 < count) {
+                            self.activity_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // Kanban board arrow key navigation and ESC handling
         if (self.kanban_visible) {
             if (b2 == null) {
@@ -1122,6 +1190,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render SQL plan bracket viewer
     if (app.bracket_visible) {
         renderBracketViewer(app, buf, area);
+    }
+
+    // Render activity feed overlay
+    if (app.activity_visible) {
+        renderActivityFeed(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -1728,6 +1801,45 @@ fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     bv.render(buf, popup_area);
 }
 
+fn renderActivityFeed(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.activity_visible) return;
+
+    const count = @min(app.activity_count, ACTIVITY_LOG_MAX);
+
+    // Centered overlay: ~70% width, ~70% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 7 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const feed = sailor.ActivityFeed.init()
+        .withItems(app.activity_log[0..count])
+        .withFocused(app.activity_focused)
+        .withShowTimestamp(false)
+        .withShowActor(false)
+        .withSuccessStyle(tui.Style{ .fg = .green })
+        .withErrorStyle(tui.Style{ .fg = .red })
+        .withActionStyle(tui.Style{ .fg = .cyan })
+        .withInfoStyle(tui.Style{ .fg = .white })
+        .withFocusedStyle(tui.Style{ .fg = .black, .bg = .white, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Activity Log  ↑↓ navigate  a/Esc close ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    feed.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -1774,8 +1886,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -3746,4 +3858,216 @@ test "bracket up arrow clamps at 0" {
 
     // Should stay at 0 (clamp at lower bound)
     try std.testing.expectEqual(@as(usize, 0), app.bracket_focused_match);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ActivityFeed Overlay Tests
+// ─────────────────────────────────────────────────────────────────────────
+
+test "App handleKey 'a' from results focus opens activity overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Activity overlay should be closed initially
+    try std.testing.expect(app.activity_visible == false);
+
+    // Press 'a' (ASCII 97)
+    app.handleKey(97);
+
+    // Activity overlay should now be open
+    try std.testing.expect(app.activity_visible == true);
+    try std.testing.expectEqual(@as(usize, 0), app.activity_focused);
+}
+
+test "App handleKey 'a' from input focus does NOT open activity overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Press 'a' while focus is on input pane
+    app.handleKey(97);
+
+    // Activity overlay should NOT open when input is focused
+    try std.testing.expect(app.activity_visible == false);
+}
+
+test "App handleKey 'a' toggles activity overlay closed" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Open activity overlay
+    app.handleKey(97); // 'a'
+    try std.testing.expect(app.activity_visible == true);
+
+    // Close activity overlay
+    app.handleKey(97); // 'a' again
+    try std.testing.expect(app.activity_visible == false);
+}
+
+test "App handleKey 'a' from schema focus opens activity overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Press 'a' while focus is on schema pane
+    app.handleKey(97);
+
+    // Activity overlay should open from schema pane
+    try std.testing.expect(app.activity_visible == true);
+}
+
+test "App ESC closes activity overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open activity overlay
+    app.activity_visible = true;
+    try std.testing.expect(app.activity_visible == true);
+
+    // Send bare ESC (b2 == null)
+    app.handleEscapeSequence(null, null);
+
+    // Activity overlay should be closed
+    try std.testing.expect(app.activity_visible == false);
+}
+
+test "activity down arrow increments focused when overlay visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open activity overlay with some entries
+    app.activity_visible = true;
+    app.activity_focused = 0;
+    app.activity_count = 3;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should increment
+    try std.testing.expectEqual(@as(usize, 1), app.activity_focused);
+}
+
+test "activity up arrow decrements focused at positive position" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open activity overlay with selected item at position 2
+    app.activity_visible = true;
+    app.activity_focused = 2;
+    app.activity_count = 3;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Focused should decrement
+    try std.testing.expectEqual(@as(usize, 1), app.activity_focused);
+}
+
+test "activity up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open activity overlay with focused at 0
+    app.activity_visible = true;
+    app.activity_focused = 0;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.activity_focused);
+}
+
+test "activity log: activity_count increments on new entry" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Initially no activities logged
+    try std.testing.expectEqual(@as(usize, 0), app.activity_count);
+
+    // Manually add an entry to simulate executeSQL logging
+    const idx = app.activity_count % app.activity_log.len;
+    app.activity_log[idx].kind = .success;
+    app.activity_log[idx].event = "SELECT * FROM table";
+    app.activity_log[idx].actor = "";
+    app.activity_log[idx].timestamp = "";
+    app.activity_count += 1;
+
+    // Count should increment
+    try std.testing.expectEqual(@as(usize, 1), app.activity_count);
+}
+
+test "activity log: ring buffer wraps at ACTIVITY_LOG_MAX" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    const max = app.activity_log.len;
+
+    // Fill the log to capacity + 2 entries
+    for (0..max + 2) |i| {
+        const idx = app.activity_count % max;
+        app.activity_log[idx].kind = if (i % 2 == 0) .success else .error_kind;
+        app.activity_count += 1;
+    }
+
+    // activity_count should be max + 2 (tracks total, not wrapped index)
+    try std.testing.expectEqual(max + 2, app.activity_count);
+
+    // The oldest entry (index 0) should be overwritten by the (max+1)th entry
+    // which is at i=max, so it should have kind based on max % 2
+    const oldest_idx = 0;
+    const expected_kind: sailor.activity_feed.Kind = if (max % 2 == 0) .success else .error_kind;
+    try std.testing.expectEqual(expected_kind, app.activity_log[oldest_idx].kind);
 }
