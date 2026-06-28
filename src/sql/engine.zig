@@ -36171,3 +36171,253 @@ test "SIMILAR TO: grouping and quantifiers" {
     try testing.expect(found_aaa);
 }
 
+// ── ROW constructor integration tests ──────────────────────────────────────────────
+
+test "row constructor: (a, b) = (1, 2) equality" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_equality.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 2)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (a, b) VALUES (3, 4)");
+    defer r3.close(testing.allocator);
+
+    // Query with row constructor equality
+    var r4 = try db.execSQL("SELECT * FROM t WHERE (a, b) = (1, 2)");
+    defer r4.close(testing.allocator);
+
+    // Should return 1 row
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            // Verify the row values match (1, 2)
+            if (count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqual(@as(i64, 2), row.values[1].integer);
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "row constructor: (a, b) <> (3, 4) inequality" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_inequality.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 2)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (a, b) VALUES (3, 4)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t (a, b) VALUES (5, 6)");
+    defer r4.close(testing.allocator);
+
+    // Query with row constructor inequality
+    var r5 = try db.execSQL("SELECT * FROM t WHERE (a, b) <> (3, 4)");
+    defer r5.close(testing.allocator);
+
+    // Should return 2 rows (all except (3, 4))
+    var count: usize = 0;
+    if (r5.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            // Verify neither row is (3, 4)
+            const a = row.values[0].integer;
+            const b = row.values[1].integer;
+            try testing.expect(!((a == 3 and b == 4)));
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "row constructor: (a, b) < (2, 0) lexicographic" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_lexicographic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 100)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (a, b) VALUES (2, 0)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t (a, b) VALUES (2, 50)");
+    defer r4.close(testing.allocator);
+
+    var r5 = try db.execSQL("INSERT INTO t (a, b) VALUES (3, 0)");
+    defer r5.close(testing.allocator);
+
+    // Query with row constructor lexicographic comparison
+    var r6 = try db.execSQL("SELECT * FROM t WHERE (a, b) < (2, 0)");
+    defer r6.close(testing.allocator);
+
+    // Should return 1 row: (1, 100) is less than (2, 0)
+    // (2, 0) is not less than (2, 0)
+    // (2, 50) is not less than (2, 0)
+    // (3, 0) is not less than (2, 0)
+    var count: usize = 0;
+    if (r6.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            // Verify the row is (1, 100)
+            if (count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqual(@as(i64, 100), row.values[1].integer);
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "row constructor: (a, b) IN ((1, 2), (5, 6))" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_in.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 2)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (a, b) VALUES (3, 4)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t (a, b) VALUES (5, 6)");
+    defer r4.close(testing.allocator);
+
+    // Query with row constructor IN list
+    var r5 = try db.execSQL("SELECT * FROM t WHERE (a, b) IN ((1, 2), (5, 6))");
+    defer r5.close(testing.allocator);
+
+    // Should return 2 rows: (1, 2) and (5, 6)
+    var count: usize = 0;
+    var found_1_2 = false;
+    var found_5_6 = false;
+    if (r5.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            const a = row.values[0].integer;
+            const b = row.values[1].integer;
+            if (a == 1 and b == 2) found_1_2 = true;
+            if (a == 5 and b == 6) found_5_6 = true;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expect(found_1_2);
+    try testing.expect(found_5_6);
+}
+
+test "row constructor: ROW(a, b) = ROW(1, 2) explicit keyword" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_explicit.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 2)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (a, b) VALUES (3, 4)");
+    defer r3.close(testing.allocator);
+
+    // Query with explicit ROW keyword
+    var r4 = try db.execSQL("SELECT * FROM t WHERE ROW(a, b) = ROW(1, 2)");
+    defer r4.close(testing.allocator);
+
+    // Should return 1 row: (1, 2)
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (count == 0) {
+                try testing.expectEqual(@as(i64, 1), row.values[0].integer);
+                try testing.expectEqual(@as(i64, 2), row.values[1].integer);
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "row constructor: (a, b) = (1, 2) with NULL returns NULL" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_row_null.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert test data
+    var r2 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, 2)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (a, b) VALUES (1, NULL)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t (a, b) VALUES (NULL, 2)");
+    defer r4.close(testing.allocator);
+
+    // Query with row constructor that includes NULL in the compare value
+    // WHERE (a, b) = (1, NULL) should return 0 rows (NULL makes the comparison unknown)
+    var r5 = try db.execSQL("SELECT * FROM t WHERE (a, b) = (1, NULL)");
+    defer r5.close(testing.allocator);
+
+    // Should return 0 rows (all comparisons with NULL are NULL/unknown)
+    var count: usize = 0;
+    if (r5.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), count);
+}
+
