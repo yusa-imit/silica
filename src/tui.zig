@@ -280,6 +280,10 @@ const App = struct {
     flow_visible: bool = false,
     flow_focused: usize = 0,
 
+    // MindMap schema explorer overlay
+    mind_visible: bool = false,
+    mind_focused: usize = 0,
+
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
             .allocator = allocator,
@@ -699,6 +703,17 @@ const App = struct {
             return;
         }
 
+        // 'n' key toggles schema mind map (not while editing input)
+        if (byte == 110 and self.focus != .input) {
+            if (self.mind_visible) {
+                self.mind_visible = false;
+            } else {
+                self.mind_visible = true;
+                self.mind_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -765,6 +780,33 @@ const App = struct {
                         const count = @min(self.query_history_count, QUERY_HISTORY_MAX);
                         if (count > 0 and self.gantt_focused + 1 < count) {
                             self.gantt_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // MindMap arrow key navigation and ESC handling
+        if (self.mind_visible) {
+            if (b2 == null) {
+                self.mind_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up
+                        if (self.mind_focused > 0) self.mind_focused -= 1;
+                    },
+                    'B' => { // Down
+                        if (self.schema_table_indices.items.len == 0) {
+                            // Allow at least minimal navigation when no tables
+                            if (self.mind_focused == 0) {
+                                self.mind_focused = 1;
+                            }
+                        } else if (self.mind_focused + 1 < self.schema_table_indices.items.len) {
+                            self.mind_focused += 1;
                         }
                     },
                     else => {},
@@ -878,7 +920,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.gantt_visible) {
+            if (self.mind_visible) {
+                self.mind_visible = false;
+            } else if (self.gantt_visible) {
                 self.gantt_visible = false;
             } else if (self.kanban_visible) {
                 self.kanban_visible = false;
@@ -1303,6 +1347,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render query pipeline flowchart
     if (app.flow_visible) {
         renderFlowChart(app, buf, area);
+    }
+
+    // Render schema mind map
+    if (app.mind_visible) {
+        renderMindMap(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2039,6 +2088,59 @@ fn renderFlowChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     chart.render(buf, popup_area);
 }
 
+fn renderMindMap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.mind_visible) return;
+
+    // Centered overlay: ~70% width, ~80% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 8 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Build nodes: root = db basename, children = table names
+    const MindNode = sailor.widgets.mindmap.MindNode;
+    var nodes: [sailor.widgets.MindMap.MAX_NODES]MindNode = undefined;
+    var node_count: usize = 0;
+
+    // Root: database name
+    const db_name = std.fs.path.basename(app.db_path);
+    nodes[0] = .{ .label = db_name, .parent = 0 };
+    node_count = 1;
+
+    // Level 1: table names
+    const table_count = @min(app.schema_table_indices.items.len, sailor.widgets.MindMap.MAX_NODES - 1);
+    for (app.schema_table_indices.items[0..table_count]) |table_idx| {
+        nodes[node_count] = .{ .label = app.schema_items.items[table_idx], .parent = 0 };
+        node_count += 1;
+    }
+
+    const map = sailor.widgets.MindMap.init()
+        .withNodes(nodes[0..node_count])
+        .withFocused(app.mind_focused)
+        .withStyle(.{ .fg = .white })
+        .withRootStyle(.{ .fg = .black, .bg = .cyan, .bold = true })
+        .withFocusedStyle(.{ .fg = .black, .bg = .green, .bold = true })
+        .withNodeWidth(16)
+        .withNodeHeight(3)
+        .withHGap(3)
+        .withBlock((tui.widgets.Block{
+            .title = " Schema Map (n/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+
+    map.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2085,8 +2187,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -4687,4 +4789,200 @@ test "flow: closing via 'f' key hides overlay" {
 
     // Verify it's closed
     try std.testing.expect(app.flow_visible == false);
+}
+
+test "mind: mind_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // MindMap overlay should be closed initially
+    try std.testing.expect(app.mind_visible == false);
+}
+
+test "mind: 'n' key toggles mind_visible true when not in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // MindMap overlay should be closed initially
+    try std.testing.expect(app.mind_visible == false);
+
+    // Press 'n' (ASCII 110) to open MindMap overlay
+    app.handleKey(110);
+
+    // MindMap overlay should now be open
+    try std.testing.expect(app.mind_visible == true);
+}
+
+test "mind: 'n' key toggles mind_visible false when open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    // Open MindMap overlay
+    app.mind_visible = true;
+    try std.testing.expect(app.mind_visible == true);
+
+    // Press 'n' again
+    app.handleKey(110);
+
+    // MindMap overlay should be closed
+    try std.testing.expect(app.mind_visible == false);
+}
+
+test "mind: 'n' key does nothing when in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    // Press 'n' while focus is on input pane
+    app.handleKey(110);
+
+    // MindMap overlay should NOT open when input is focused
+    try std.testing.expect(app.mind_visible == false);
+}
+
+test "mind: opening resets mind_focused to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set focused to 5 (simulate previous overlay state)
+    app.mind_focused = 5;
+
+    // Press 'n' to open MindMap overlay
+    app.handleKey(110);
+
+    // Verify focused was reset to 0
+    try std.testing.expectEqual(@as(usize, 0), app.mind_focused);
+}
+
+test "mind: ESC closes mind overlay (bare ESC)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open MindMap overlay
+    app.mind_visible = true;
+    try std.testing.expect(app.mind_visible == true);
+
+    // Send bare ESC (b2 == null)
+    app.handleEscapeSequence(null, null);
+
+    // MindMap overlay should be closed
+    try std.testing.expect(app.mind_visible == false);
+}
+
+test "mind: up arrow decrements mind_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open MindMap overlay with focused at position 2
+    app.mind_visible = true;
+    app.mind_focused = 2;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Focused should decrement
+    try std.testing.expectEqual(@as(usize, 1), app.mind_focused);
+}
+
+test "mind: up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open MindMap overlay with focused at 0
+    app.mind_visible = true;
+    app.mind_focused = 0;
+
+    // Send up arrow (ESC [ A)
+    app.handleEscapeSequence('[', 'A');
+
+    // Should stay at 0 (clamp at lower bound)
+    try std.testing.expectEqual(@as(usize, 0), app.mind_focused);
+}
+
+test "mind: down arrow increments mind_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Open MindMap overlay
+    app.mind_visible = true;
+    app.mind_focused = 0;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should increment
+    try std.testing.expectEqual(@as(usize, 1), app.mind_focused);
+}
+
+test "mind: down arrow clamps at schema_table_indices boundary" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    // Populate schema_table_indices with 3 table indices (simulating 3 tables in DB schema)
+    try app.schema_table_indices.append(allocator, 0);
+    try app.schema_table_indices.append(allocator, 5);
+    try app.schema_table_indices.append(allocator, 10);
+
+    // Open MindMap overlay with focused at last table (index 2)
+    app.mind_visible = true;
+    app.mind_focused = 2;
+
+    // Send down arrow (ESC [ B)
+    app.handleEscapeSequence('[', 'B');
+
+    // Focused should stay at 2 (clamped at schema_table_indices.items.len - 1)
+    try std.testing.expectEqual(@as(usize, 2), app.mind_focused);
 }
