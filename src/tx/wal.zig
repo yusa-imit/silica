@@ -818,21 +818,24 @@ test "Wal recovery discards uncommitted frames" {
     }
 }
 
-test "Wal computeFrameChecksum consistency" {
+test "Wal computeFrameChecksum sensitivity" {
     var data: [512]u8 = undefined;
     @memset(&data, 0xAB);
-    const ck1 = computeFrameChecksum(5, 0x111, 0x222, &data);
-    const ck2 = computeFrameChecksum(5, 0x111, 0x222, &data);
-    try testing.expectEqual(ck1, ck2);
+    const ck_base = computeFrameChecksum(5, 0x111, 0x222, &data);
 
     // Different page_id → different checksum
-    const ck3 = computeFrameChecksum(6, 0x111, 0x222, &data);
-    try testing.expect(ck1 != ck3);
+    const ck_page = computeFrameChecksum(6, 0x111, 0x222, &data);
+    try testing.expect(ck_base != ck_page);
 
     // Different data → different checksum
     data[0] = 0;
-    const ck4 = computeFrameChecksum(5, 0x111, 0x222, &data);
-    try testing.expect(ck1 != ck4);
+    const ck_data = computeFrameChecksum(5, 0x111, 0x222, &data);
+    try testing.expect(ck_base != ck_data);
+
+    // Different salts (WAL salt rotation) → different checksum
+    data[0] = 0xAB; // restore
+    const ck_salt = computeFrameChecksum(5, 0x999, 0xAAA, &data);
+    try testing.expect(ck_base != ck_salt);
 }
 
 test "Wal recovery stops at corrupt frame" {

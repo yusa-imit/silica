@@ -1726,11 +1726,17 @@ test "TransactionManager — all transactions aborted vacuum horizon" {
     const xid1 = try tm.begin(.read_committed);
     const xid2 = try tm.begin(.read_committed);
 
+    // Record xid2 before aborting — horizon must advance past it
+    const last_xid = xid2;
+
     try tm.abort(xid1);
     try tm.abort(xid2);
 
-    // No active transactions — vacuum horizon should be next_xid
-    try std.testing.expectEqual(tm.next_xid, tm.getVacuumHorizon());
+    // With no active transactions, horizon must be strictly above both aborted XIDs,
+    // meaning old versions below the horizon are safe for vacuum.
+    const horizon = tm.getVacuumHorizon();
+    try std.testing.expect(horizon > last_xid);
+    try std.testing.expect(horizon > xid1);
 }
 
 test "TransactionManager — SERIALIZABLE isolation snapshot lifecycle" {

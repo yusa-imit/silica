@@ -31193,7 +31193,7 @@ test "clock_timestamp() returns timestamp value (not null)" {
     try std.testing.expect(result.timestamp > 0);
 }
 
-test "txid_current() returns positive integer" {
+test "txid_current() returns stub value 1" {
     const allocator = std.testing.allocator;
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
@@ -31202,7 +31202,9 @@ test "txid_current() returns positive integer" {
     defer result.free(allocator);
 
     try std.testing.expect(result == .integer);
-    try std.testing.expect(result.integer > 0);
+    // txid_current is a placeholder stub returning 1; update this test when
+    // wired to the real TransactionManager current XID.
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
 }
 
 test "num_nulls counts NULL arguments correctly" {
