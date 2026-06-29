@@ -196,6 +196,12 @@ const QueryHistoryEntry = struct {
     duration_ms: u64 = 0,
 };
 
+// ── RadarChart Query Stats ───────────────────────────────────────────
+
+const RADAR_SERIES_COUNT: usize = 2;
+
+const RADAR_AXES = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL", "Error" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -283,6 +289,10 @@ const App = struct {
     // MindMap schema explorer overlay
     mind_visible: bool = false,
     mind_focused: usize = 0,
+
+    // RadarChart query stats overlay
+    radar_visible: bool = false,
+    radar_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -714,6 +724,17 @@ const App = struct {
             return;
         }
 
+        // 'r' key toggles radar chart query stats (not while editing input)
+        if (byte == 114 and self.focus != .input) {
+            if (self.radar_visible) {
+                self.radar_visible = false;
+            } else {
+                self.radar_visible = true;
+                self.radar_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -781,6 +802,28 @@ const App = struct {
                         if (count > 0 and self.gantt_focused + 1 < count) {
                             self.gantt_focused += 1;
                         }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // RadarChart arrow key navigation and ESC handling
+        if (self.radar_visible) {
+            if (b2 == null) {
+                self.radar_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'C' => { // Right — next series
+                        if (self.radar_focused + 1 < RADAR_SERIES_COUNT) {
+                            self.radar_focused += 1;
+                        }
+                    },
+                    'D' => { // Left — previous series
+                        if (self.radar_focused > 0) self.radar_focused -= 1;
                     },
                     else => {},
                 }
@@ -920,7 +963,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.mind_visible) {
+            if (self.radar_visible) {
+                self.radar_visible = false;
+            } else if (self.mind_visible) {
                 self.mind_visible = false;
             } else if (self.gantt_visible) {
                 self.gantt_visible = false;
@@ -1352,6 +1397,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render schema mind map
     if (app.mind_visible) {
         renderMindMap(app, buf, area);
+    }
+
+    // Render radar chart query stats
+    if (app.radar_visible) {
+        renderRadarChart(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2141,6 +2191,87 @@ fn renderMindMap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     map.render(buf, popup_area);
 }
 
+fn renderRadarChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.radar_visible) return;
+
+    // Centered overlay: ~60% width, ~75% height
+    const ow: u16 = @min(area.width * 6 / 10, area.width);
+    const oh: u16 = @min(area.height * 3 / 4, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Build series from query history
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+    var n_select: f32 = 0;
+    var n_insert: f32 = 0;
+    var n_update: f32 = 0;
+    var n_delete: f32 = 0;
+    var n_ddl: f32 = 0;
+    var n_err: f32 = 0;
+
+    for (app.query_history[0..actual_count]) |entry| {
+        if (!entry.success) {
+            n_err += 1;
+            continue;
+        }
+        const upper = entry.title[0..@min(entry.title_len, 6)];
+        if (std.mem.startsWith(u8, upper, "SELECT") or std.mem.startsWith(u8, upper, "select")) {
+            n_select += 1;
+        } else if (std.mem.startsWith(u8, upper, "INSERT") or std.mem.startsWith(u8, upper, "insert")) {
+            n_insert += 1;
+        } else if (std.mem.startsWith(u8, upper, "UPDATE") or std.mem.startsWith(u8, upper, "update")) {
+            n_update += 1;
+        } else if (std.mem.startsWith(u8, upper, "DELETE") or std.mem.startsWith(u8, upper, "delete")) {
+            n_delete += 1;
+        } else {
+            n_ddl += 1;
+        }
+    }
+
+    const total: f32 = @floatFromInt(@max(actual_count, 1));
+    const actual_values = [_]f32{
+        n_select / total,
+        n_insert / total,
+        n_update / total,
+        n_delete / total,
+        n_ddl / total,
+        n_err / total,
+    };
+
+    // Series 0: actual distribution; Series 1: ideal (balanced) baseline
+    const ideal_val: f32 = 1.0 / @as(f32, @floatFromInt(RADAR_AXES.len));
+    const ideal_values = [_]f32{ ideal_val, ideal_val, ideal_val, ideal_val, ideal_val, ideal_val };
+
+    const series = [RADAR_SERIES_COUNT]sailor.RadarSeries{
+        .{ .label = "Actual", .values = &actual_values, .style = .{ .fg = .green } },
+        .{ .label = "Ideal", .values = &ideal_values, .style = .{ .fg = .yellow } },
+    };
+
+    const chart = sailor.RadarChart.init()
+        .withAxes(&RADAR_AXES)
+        .withSeries(&series)
+        .withFocused(app.radar_focused)
+        .withFilled(false)
+        .withAxisStyle(.{ .fg = .bright_black })
+        .withFocusedStyle(.{ .fg = .cyan, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Query Profile (r/Esc:close  \xe2\x86\x90\xe2\x86\x92:series) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    chart.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2187,8 +2318,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -4985,4 +5116,168 @@ test "mind: down arrow clamps at schema_table_indices boundary" {
 
     // Focused should stay at 2 (clamped at schema_table_indices.items.len - 1)
     try std.testing.expectEqual(@as(usize, 2), app.mind_focused);
+}
+
+test "radar: radar_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.radar_visible == false);
+}
+
+test "radar: 'r' key toggles radar_visible true when not in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.radar_visible == false);
+
+    app.handleKey(114);
+
+    try std.testing.expect(app.radar_visible == true);
+}
+
+test "radar: 'r' key toggles radar_visible false when open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.radar_visible = true;
+    try std.testing.expect(app.radar_visible == true);
+
+    app.handleKey(114);
+
+    try std.testing.expect(app.radar_visible == false);
+}
+
+test "radar: 'r' key does nothing when in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    app.handleKey(114);
+
+    try std.testing.expect(app.radar_visible == false);
+}
+
+test "radar: opening resets radar_focused to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.radar_focused = 3;
+
+    app.handleKey(114);
+
+    try std.testing.expectEqual(@as(usize, 0), app.radar_focused);
+}
+
+test "radar: ESC closes radar overlay (bare ESC)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radar_visible = true;
+    try std.testing.expect(app.radar_visible == true);
+
+    app.handleEscapeSequence(null, null);
+
+    try std.testing.expect(app.radar_visible == false);
+}
+
+test "radar: right arrow increments radar_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radar_visible = true;
+    app.radar_focused = 0;
+
+    app.handleEscapeSequence('[', 'C');
+
+    try std.testing.expectEqual(@as(usize, 1), app.radar_focused);
+}
+
+test "radar: right arrow clamps at 1 (max series index)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radar_visible = true;
+    app.radar_focused = 1;
+
+    app.handleEscapeSequence('[', 'C');
+
+    try std.testing.expectEqual(@as(usize, 1), app.radar_focused);
+}
+
+test "radar: left arrow decrements radar_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radar_visible = true;
+    app.radar_focused = 1;
+
+    app.handleEscapeSequence('[', 'D');
+
+    try std.testing.expectEqual(@as(usize, 0), app.radar_focused);
+}
+
+test "radar: left arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radar_visible = true;
+    app.radar_focused = 0;
+
+    app.handleEscapeSequence('[', 'D');
+
+    try std.testing.expectEqual(@as(usize, 0), app.radar_focused);
 }
