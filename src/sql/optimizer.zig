@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const planner_mod = @import("planner.zig");
 const cost_mod = @import("cost.zig");
+const catalog_mod = @import("catalog.zig");
 
 const PlanNode = planner_mod.PlanNode;
 const LogicalPlan = planner_mod.LogicalPlan;
@@ -24,11 +25,21 @@ const CostEstimator = cost_mod.CostEstimator;
 pub const Optimizer = struct {
     arena: *ast.AstArena,
     cost_estimator: CostEstimator,
+    /// Optional catalog for index-aware scan optimization.
+    catalog: ?*catalog_mod.Catalog = null,
 
     pub fn init(arena: *ast.AstArena) Optimizer {
         return .{
             .arena = arena,
             .cost_estimator = CostEstimator.init(.{}),
+        };
+    }
+
+    pub fn initWithCatalog(arena: *ast.AstArena, catalog: *catalog_mod.Catalog) Optimizer {
+        return .{
+            .arena = arena,
+            .cost_estimator = CostEstimator.init(.{}),
+            .catalog = catalog,
         };
     }
 
@@ -62,8 +73,9 @@ pub const Optimizer = struct {
                     .aliases = w.aliases,
                 } });
             },
+            .scan => |s| self.optimizeScan(s),
             // Leaf nodes — no optimization
-            .scan, .table_function_scan, .values_table_scan, .values, .empty => node,
+            .table_function_scan, .values_table_scan, .values, .empty => node,
         };
     }
 
@@ -153,6 +165,33 @@ pub const Optimizer = struct {
             .input = opt_input,
             .columns = project.columns,
         } });
+    }
+
+    // ── Scan Optimization ────────────────────────────────────────────
+
+    fn optimizeScan(self: *Optimizer, scan: PlanNode.Scan) !*const PlanNode {
+        if (self.catalog == null or scan.columns.len == 0) {
+            return self.createNode(.{ .scan = scan });
+        }
+        const cat = self.catalog.?;
+        const table_info = cat.getTable(scan.table) catch {
+            return self.createNode(.{ .scan = scan });
+        };
+        defer table_info.deinit(cat.allocator);
+
+        for (table_info.indexes) |idx| {
+            if (idx.state != .valid) continue;
+            if (indexCoversColumns(scan.columns, idx.column_name, idx.included_columns)) {
+                return self.createNode(.{ .scan = .{
+                    .table = scan.table,
+                    .alias = scan.alias,
+                    .columns = scan.columns,
+                    .index_only = true,
+                    .tablesample = scan.tablesample,
+                } });
+            }
+        }
+        return self.createNode(.{ .scan = scan });
     }
 
     // ── Join Optimization ────────────────────────────────────────────
@@ -382,6 +421,28 @@ pub const Optimizer = struct {
 };
 
 // ── Free Functions ────────────────────────────────────────────────────
+
+/// Returns true if all columns in scan_cols are covered by an index defined
+/// by key_column and included_cols. Case-insensitive column name matching.
+/// Empty scan_cols is vacuously true (no columns to fetch means no heap access needed).
+pub fn indexCoversColumns(
+    scan_cols: []const planner_mod.ColumnRef,
+    key_column: []const u8,
+    included_cols: []const []const u8,
+) bool {
+    for (scan_cols) |col| {
+        if (std.ascii.eqlIgnoreCase(col.column, key_column)) continue;
+        var found = false;
+        for (included_cols) |incl| {
+            if (std.ascii.eqlIgnoreCase(col.column, incl)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
 
 /// Check if an expression mentions a specific table name (in qualified column refs).
 fn exprMentionsTable(expr: *const ast.Expr, table: []const u8) bool {
@@ -2013,105 +2074,116 @@ test "optimize sort with empty order by" {
 }
 
 test "detect index-only scan when all columns are covered" {
-    const ColumnRef = planner_mod.ColumnRef;
-
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
-    // Simulate: SELECT name, email FROM users
-    // With index: CREATE INDEX idx_name ON users (name) INCLUDE (email)
-    // Expected: index_only flag should be set to true
-
-    const columns = [_]ColumnRef{
+    // SELECT name, email FROM users
+    // Index: CREATE INDEX idx_name ON users (name) INCLUDE (email)
+    const scan_cols = [_]planner_mod.ColumnRef{
         .{ .table = "users", .column = "name" },
         .{ .table = "users", .column = "email" },
     };
-    const scan = try arena.create(PlanNode, .{ .scan = .{
-        .table = "users",
-        .columns = &columns,
-        .index_only = false, // Initially false
-    } });
+    const included = [_][]const u8{"email"};
 
-    // In real implementation, optimizer would:
-    // 1. Check catalog for indexes on 'users'
-    // 2. Find idx_name covering (name, email)
-    // 3. Set index_only = true
-
-    // TODO: Implement index-only scan detection in optimizer
-    // For now, verify the flag exists and can be set
-    const scan_node = scan.scan;
-    try testing.expectEqual(false, scan_node.index_only);
+    const result = indexCoversColumns(&scan_cols, "name", &included);
+    try testing.expect(result);
 }
 
 test "no index-only scan when columns are not covered" {
-    const ColumnRef = planner_mod.ColumnRef;
-
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
-    // Simulate: SELECT name, created_at FROM users
-    // With index: CREATE INDEX idx_name ON users (name) INCLUDE (email)
-    // Expected: index_only flag should remain false (created_at not in index)
-
-    const columns = [_]ColumnRef{
+    // SELECT name, created_at FROM users
+    // Index: CREATE INDEX idx_name ON users (name) INCLUDE (email)
+    // created_at is NOT in index
+    const scan_cols = [_]planner_mod.ColumnRef{
         .{ .table = "users", .column = "name" },
-        .{ .table = "users", .column = "created_at" }, // Not in INCLUDE clause
+        .{ .table = "users", .column = "created_at" },
     };
-    const scan = try arena.create(PlanNode, .{ .scan = .{
-        .table = "users",
-        .columns = &columns,
-        .index_only = false,
-    } });
+    const included = [_][]const u8{"email"};
 
-    // In real implementation, optimizer would verify created_at is NOT in index
-    // and leave index_only = false
-    try testing.expectEqual(false, scan.scan.index_only);
+    const result = indexCoversColumns(&scan_cols, "name", &included);
+    try testing.expect(!result);
 }
 
 test "index-only scan with indexed column only" {
-    const ColumnRef = planner_mod.ColumnRef;
-
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
-    // Simulate: SELECT name FROM users
-    // With index: CREATE INDEX idx_name ON users (name)
-    // Expected: index_only = true (indexed column is always in index)
-
-    const columns = [_]ColumnRef{
+    // SELECT name FROM users
+    // Index: CREATE INDEX idx_name ON users (name) with no INCLUDE
+    const scan_cols = [_]planner_mod.ColumnRef{
         .{ .table = "users", .column = "name" },
     };
-    const scan = try arena.create(PlanNode, .{ .scan = .{
-        .table = "users",
-        .columns = &columns,
-        .index_only = false,
-    } });
+    const included = [_][]const u8{};
 
-    // Indexed column is always covered
-    try testing.expectEqual(false, scan.scan.index_only); // Will be true after optimization
+    const result = indexCoversColumns(&scan_cols, "name", &included);
+    try testing.expect(result);
 }
 
 test "index-only scan with multiple included columns" {
-    const ColumnRef = planner_mod.ColumnRef;
-
     var arena = ast.AstArena.init(testing.allocator);
     defer arena.deinit();
 
-    // Simulate: SELECT user_id, total, status FROM orders
-    // With index: CREATE INDEX idx_orders ON orders (user_id) INCLUDE (total, status)
-    // Expected: index_only = true (all columns covered)
-
-    const columns = [_]ColumnRef{
+    // SELECT user_id, total, status FROM orders
+    // Index: CREATE INDEX idx_orders ON orders (user_id) INCLUDE (total, status)
+    const scan_cols = [_]planner_mod.ColumnRef{
         .{ .table = "orders", .column = "user_id" },
         .{ .table = "orders", .column = "total" },
         .{ .table = "orders", .column = "status" },
     };
-    const scan = try arena.create(PlanNode, .{ .scan = .{
-        .table = "orders",
-        .columns = &columns,
-        .index_only = false,
-    } });
+    const included = [_][]const u8{ "total", "status" };
 
-    // All columns in index (indexed + included)
-    try testing.expectEqual(false, scan.scan.index_only); // Will be true after optimization
+    const result = indexCoversColumns(&scan_cols, "user_id", &included);
+    try testing.expect(result);
+}
+
+test "index-only: empty scan columns always covered" {
+    // Empty scan_cols is vacuously covered
+    const scan_cols = [_]planner_mod.ColumnRef{};
+    const included = [_][]const u8{};
+
+    const result = indexCoversColumns(&scan_cols, "id", &included);
+    try testing.expect(result);
+}
+
+test "index-only: case-insensitive column matching" {
+    // SELECT Name FROM users (different case)
+    // Index: CREATE INDEX idx_name ON users (name) (lowercase key)
+    const scan_cols = [_]planner_mod.ColumnRef{
+        .{ .table = "users", .column = "Name" },
+    };
+    const included = [_][]const u8{};
+
+    const result = indexCoversColumns(&scan_cols, "name", &included);
+    try testing.expect(result);
+}
+
+test "index-only: multiple scan columns one not covered" {
+    // SELECT a, b, c FROM t; only a and b in index, c is not
+    // Index: CREATE INDEX idx_t ON t (a) INCLUDE (b)
+    const scan_cols = [_]planner_mod.ColumnRef{
+        .{ .table = "t", .column = "a" },
+        .{ .table = "t", .column = "b" },
+        .{ .table = "t", .column = "c" },
+    };
+    const included = [_][]const u8{"b"};
+
+    const result = indexCoversColumns(&scan_cols, "a", &included);
+    try testing.expect(!result);
+}
+
+test "index-only: key column plus INCLUDE plus extra column" {
+    // SELECT a, b, c, d FROM t; only a, b, c in index, d is not
+    // Index: CREATE INDEX idx_t ON t (a) INCLUDE (b, c)
+    const scan_cols = [_]planner_mod.ColumnRef{
+        .{ .table = "t", .column = "a" },
+        .{ .table = "t", .column = "b" },
+        .{ .table = "t", .column = "c" },
+        .{ .table = "t", .column = "d" },
+    };
+    const included = [_][]const u8{ "b", "c" };
+
+    const result = indexCoversColumns(&scan_cols, "a", &included);
+    try testing.expect(!result);
 }

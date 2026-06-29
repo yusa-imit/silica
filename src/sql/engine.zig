@@ -1193,7 +1193,7 @@ pub const Database = struct {
         };
 
         // 5. Optimize
-        var optimizer = Optimizer.init(arena);
+        var optimizer = Optimizer.initWithCatalog(arena, &self.catalog);
         const optimized_plan = optimizer.optimize(logical_plan) catch |err| {
             arena.deinit();
             allocator.destroy(arena);
