@@ -294,6 +294,12 @@ const App = struct {
     radar_visible: bool = false,
     radar_focused: usize = 0,
 
+    // HexEditor page viewer overlay
+    hex_visible: bool = false,
+    hex_cursor: usize = 0,
+    hex_data: [4096]u8 = std.mem.zeroes([4096]u8),
+    hex_data_len: usize = 0,
+
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
             .allocator = allocator,
@@ -623,6 +629,13 @@ const App = struct {
         }
     }
 
+    fn loadHexData(self: *App) void {
+        const file = std.fs.cwd().openFile(self.db_path, .{}) catch return;
+        defer file.close();
+        const n = file.read(&self.hex_data) catch return;
+        self.hex_data_len = n;
+    }
+
     fn handleKey(self: *App, byte: u8) void {
         // Ctrl+C / Ctrl+Q quit
         if (byte == 3 or byte == 17) {
@@ -735,6 +748,18 @@ const App = struct {
             return;
         }
 
+        // 'x' key toggles hex editor page viewer (not while editing input)
+        if (byte == 120 and self.focus != .input) {
+            if (self.hex_visible) {
+                self.hex_visible = false;
+            } else {
+                self.hex_visible = true;
+                self.hex_cursor = 0;
+                self.loadHexData();
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -763,6 +788,28 @@ const App = struct {
     }
 
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
+        // HexEditor arrow key navigation and ESC handling
+        if (self.hex_visible) {
+            if (b2 == null) {
+                self.hex_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'C' => { // Right — advance cursor
+                        if (self.hex_data_len > 0 and self.hex_cursor + 1 < self.hex_data_len) {
+                            self.hex_cursor += 1;
+                        }
+                    },
+                    'D' => { // Left — retreat cursor
+                        if (self.hex_cursor > 0) self.hex_cursor -= 1;
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // Activity feed arrow key navigation and ESC handling
         if (self.activity_visible) {
             if (b2 == null) {
@@ -963,7 +1010,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.radar_visible) {
+            if (self.hex_visible) {
+                self.hex_visible = false;
+            } else if (self.radar_visible) {
                 self.radar_visible = false;
             } else if (self.mind_visible) {
                 self.mind_visible = false;
@@ -1402,6 +1451,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render radar chart query stats
     if (app.radar_visible) {
         renderRadarChart(app, buf, area);
+    }
+
+    // Render hex editor page viewer
+    if (app.hex_visible) {
+        renderHexEditor(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2272,6 +2326,46 @@ fn renderRadarChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     chart.render(buf, popup_area);
 }
 
+fn renderHexEditor(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.hex_visible) return;
+
+    // Centered overlay: ~70% width, ~80% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 4 / 5, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const data_slice: []const u8 = if (app.hex_data_len > 0)
+        app.hex_data[0..app.hex_data_len]
+    else
+        &[_]u8{};
+
+    const editor = sailor.HexEditor.init()
+        .withData(data_slice)
+        .withCursor(app.hex_cursor)
+        .withBytesPerRow(16)
+        .withGroupSize(4)
+        .withShowAscii(true)
+        .withShowOffset(true)
+        .withCursorStyle(.{ .fg = .cyan, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Page Viewer (x/Esc:close  \xe2\x86\x90\xe2\x86\x92:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    editor.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2318,8 +2412,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -5280,4 +5374,167 @@ test "radar: left arrow clamps at 0" {
     app.handleEscapeSequence('[', 'D');
 
     try std.testing.expectEqual(@as(usize, 0), app.radar_focused);
+}
+
+// ── HexEditor Page Viewer Tests ──────────────────────────────────────
+
+test "hex: hex_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.hex_visible == false);
+}
+
+test "hex: hex_cursor starts at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.hex_cursor);
+}
+
+test "hex: 'x' key toggles hex_visible on" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.hex_visible == false);
+
+    app.handleKey(120); // 'x' key
+
+    try std.testing.expect(app.hex_visible == true);
+}
+
+test "hex: 'x' key toggles hex_visible off" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.hex_visible = true;
+    try std.testing.expect(app.hex_visible == true);
+
+    app.handleKey(120); // 'x' key
+
+    try std.testing.expect(app.hex_visible == false);
+}
+
+test "hex: 'x' key ignored in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    app.handleKey(120); // 'x' key
+
+    try std.testing.expect(app.hex_visible == false);
+}
+
+test "hex: ESC closes hex overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.hex_visible = true;
+    try std.testing.expect(app.hex_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.hex_visible == false);
+}
+
+test "hex: right arrow increments hex_cursor" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.hex_visible = true;
+    app.hex_cursor = 0;
+    app.hex_data_len = 64;
+
+    app.handleEscapeSequence('[', 'C'); // right arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.hex_cursor);
+}
+
+test "hex: left arrow decrements hex_cursor" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.hex_visible = true;
+    app.hex_cursor = 5;
+
+    app.handleEscapeSequence('[', 'D'); // left arrow
+
+    try std.testing.expectEqual(@as(usize, 4), app.hex_cursor);
+}
+
+test "hex: hex_cursor clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.hex_visible = true;
+    app.hex_cursor = 0;
+
+    app.handleEscapeSequence('[', 'D'); // left arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.hex_cursor);
+}
+
+test "hex: hex_cursor clamps at data boundary" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.hex_visible = true;
+    app.hex_data_len = 64;
+    app.hex_cursor = 63; // max index for 64-byte buffer
+
+    app.handleEscapeSequence('[', 'C'); // right arrow
+
+    try std.testing.expectEqual(@as(usize, 63), app.hex_cursor);
 }
