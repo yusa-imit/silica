@@ -202,6 +202,10 @@ const RADAR_SERIES_COUNT: usize = 2;
 
 const RADAR_AXES = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL", "Error" };
 
+// ── Treemap Table Space ──────────────────────────────────────────────
+
+const MAX_TREEMAP_ITEMS: usize = 64;
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -299,6 +303,10 @@ const App = struct {
     hex_cursor: usize = 0,
     hex_data: [4096]u8 = std.mem.zeroes([4096]u8),
     hex_data_len: usize = 0,
+
+    // Treemap table space overlay
+    treemap_visible: bool = false,
+    treemap_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -760,6 +768,17 @@ const App = struct {
             return;
         }
 
+        // 'w' key toggles treemap table space overlay (not while editing input)
+        if (byte == 119 and self.focus != .input) {
+            if (self.treemap_visible) {
+                self.treemap_visible = false;
+            } else {
+                self.treemap_visible = true;
+                self.treemap_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -788,6 +807,28 @@ const App = struct {
     }
 
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
+        // Treemap arrow key navigation and ESC handling
+        if (self.treemap_visible) {
+            if (b2 == null) {
+                self.treemap_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'B', 'C' => { // Down or Right — next item
+                        if (self.treemap_focused + 1 < MAX_TREEMAP_ITEMS) {
+                            self.treemap_focused += 1;
+                        }
+                    },
+                    'A', 'D' => { // Up or Left — previous item
+                        if (self.treemap_focused > 0) self.treemap_focused -= 1;
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // HexEditor arrow key navigation and ESC handling
         if (self.hex_visible) {
             if (b2 == null) {
@@ -1010,7 +1051,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.hex_visible) {
+            if (self.treemap_visible) {
+                self.treemap_visible = false;
+            } else if (self.hex_visible) {
                 self.hex_visible = false;
             } else if (self.radar_visible) {
                 self.radar_visible = false;
@@ -1456,6 +1499,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render hex editor page viewer
     if (app.hex_visible) {
         renderHexEditor(app, buf, area);
+    }
+
+    // Render treemap table space overlay
+    if (app.treemap_visible) {
+        renderTreemap(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2366,6 +2414,81 @@ fn renderHexEditor(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     editor.render(buf, popup_area);
 }
 
+fn renderTreemap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.treemap_visible) return;
+
+    // Centered overlay: ~80% width, ~85% height
+    const ow: u16 = @min(area.width * 4 / 5, area.width);
+    const oh: u16 = @min(area.height * 17 / 20, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Build treemap items from table stats
+    var items: [MAX_TREEMAP_ITEMS]sailor.TreemapItem = undefined;
+    var item_count: usize = 0;
+
+    const table_count = @min(app.schema_table_indices.items.len, MAX_TREEMAP_ITEMS);
+    for (app.schema_table_indices.items[0..table_count]) |table_idx| {
+        const table_name = app.schema_items.items[table_idx];
+        var value: f32 = 1.0;
+
+        // Try to get row count from stats; fall back to 1.0 per table
+        if (app.db.catalog.getTableStats(table_name) catch null) |stats| {
+            value = @max(1.0, @as(f32, @floatFromInt(stats.row_count)));
+        }
+
+        const item_style: tui.Style = if (item_count % 6 == 0)
+            .{ .fg = .black, .bg = .blue } // blue
+        else if (item_count % 6 == 1)
+            .{ .fg = .black, .bg = .green } // green
+        else if (item_count % 6 == 2)
+            .{ .fg = .black, .bg = .cyan } // cyan
+        else if (item_count % 6 == 3)
+            .{ .fg = .black, .bg = .yellow } // yellow
+        else if (item_count % 6 == 4)
+            .{ .fg = .black, .bg = .magenta } // magenta
+        else
+            .{ .fg = .black, .bg = .red }; // red
+
+        items[item_count] = .{
+            .label = table_name,
+            .value = value,
+            .style = item_style,
+        };
+        item_count += 1;
+    }
+
+    // If no tables, show a single placeholder
+    if (item_count == 0) {
+        items[0] = .{ .label = "(no tables)", .value = 1.0, .style = .{ .fg = .white } };
+        item_count = 1;
+    }
+
+    const focused = @min(app.treemap_focused, item_count - 1);
+
+    const tm = sailor.Treemap.init()
+        .withItems(items[0..item_count])
+        .withFocused(focused)
+        .withFocusedStyle(.{ .bold = true })
+        .withLabelStyle(.{ .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Table Space (\xe2\x86\x91\xe2\x86\x93\xe2\x86\x90\xe2\x86\x92:navigate  w/Esc:close) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    tm.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2412,8 +2535,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -5537,4 +5660,182 @@ test "hex: hex_cursor clamps at data boundary" {
     app.handleEscapeSequence('[', 'C'); // right arrow
 
     try std.testing.expectEqual(@as(usize, 63), app.hex_cursor);
+}
+
+// ── Treemap Table Hierarchy Overlay Tests ───────────────────────────────
+
+test "treemap: treemap_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.treemap_visible == false);
+}
+
+test "treemap: treemap_focused starts at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.treemap_focused);
+}
+
+test "treemap: 'w' key toggles treemap_visible on when not in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.treemap_visible == false);
+
+    app.handleKey(119); // 'w' key
+
+    try std.testing.expect(app.treemap_visible == true);
+}
+
+test "treemap: 'w' key toggles treemap_visible off when already open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.treemap_visible = true;
+    try std.testing.expect(app.treemap_visible == true);
+
+    app.handleKey(119); // 'w' key
+
+    try std.testing.expect(app.treemap_visible == false);
+}
+
+test "treemap: 'w' key does nothing when in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    app.handleKey(119); // 'w' key
+
+    try std.testing.expect(app.treemap_visible == false);
+}
+
+test "treemap: opening resets treemap_focused to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.treemap_focused = 5;
+
+    app.handleKey(119); // 'w' key to open
+
+    try std.testing.expectEqual(@as(usize, 0), app.treemap_focused);
+}
+
+test "treemap: bare ESC closes treemap overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.treemap_visible = true;
+    try std.testing.expect(app.treemap_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.treemap_visible == false);
+}
+
+test "treemap: down arrow increments treemap_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.treemap_visible = true;
+    app.treemap_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.treemap_focused);
+}
+
+test "treemap: right arrow increments treemap_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.treemap_visible = true;
+    app.treemap_focused = 10;
+
+    app.handleEscapeSequence('[', 'C'); // right arrow
+
+    try std.testing.expectEqual(@as(usize, 11), app.treemap_focused);
+}
+
+test "treemap: treemap_focused clamps at max (63)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.treemap_visible = true;
+    app.treemap_focused = 63; // MAX_TREEMAP_ITEMS - 1
+
+    app.handleEscapeSequence('[', 'C'); // right arrow
+
+    try std.testing.expectEqual(@as(usize, 63), app.treemap_focused);
+}
+
+test "treemap: treemap_focused clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.treemap_visible = true;
+    app.treemap_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.treemap_focused);
 }
