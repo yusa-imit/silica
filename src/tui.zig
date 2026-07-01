@@ -206,6 +206,13 @@ const RADAR_AXES = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL",
 
 const MAX_TREEMAP_ITEMS: usize = 64;
 
+// ── MatrixView Query Metrics ─────────────────────────────────────────
+
+const MATRIX_ROW_HEADERS = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL", "Error" };
+const MATRIX_COL_HEADERS = [_][]const u8{ "Count", "Avg ms", "Max ms" };
+const MATRIX_ROWS: usize = 6;
+const MATRIX_COLS: usize = 3;
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -307,6 +314,11 @@ const App = struct {
     // Treemap table space overlay
     treemap_visible: bool = false,
     treemap_focused: usize = 0,
+
+    // MatrixView query metrics overlay
+    matrix_visible: bool = false,
+    matrix_focused_row: usize = 0,
+    matrix_focused_col: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -779,6 +791,18 @@ const App = struct {
             return;
         }
 
+        // 'v' key toggles matrix query metrics overlay (not while editing input)
+        if (byte == 118 and self.focus != .input) {
+            if (self.matrix_visible) {
+                self.matrix_visible = false;
+            } else {
+                self.matrix_visible = true;
+                self.matrix_focused_row = 0;
+                self.matrix_focused_col = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -807,6 +831,36 @@ const App = struct {
     }
 
     fn handleEscapeSequence(self: *App, b2: ?u8, b3: ?u8) void {
+        // MatrixView arrow key navigation and ESC handling
+        if (self.matrix_visible) {
+            if (b2 == null) {
+                self.matrix_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'B' => { // Down — next row
+                        if (self.matrix_focused_row + 1 < MATRIX_ROWS) {
+                            self.matrix_focused_row += 1;
+                        }
+                    },
+                    'A' => { // Up — previous row
+                        if (self.matrix_focused_row > 0) self.matrix_focused_row -= 1;
+                    },
+                    'C' => { // Right — next col
+                        if (self.matrix_focused_col + 1 < MATRIX_COLS) {
+                            self.matrix_focused_col += 1;
+                        }
+                    },
+                    'D' => { // Left — previous col
+                        if (self.matrix_focused_col > 0) self.matrix_focused_col -= 1;
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // Treemap arrow key navigation and ESC handling
         if (self.treemap_visible) {
             if (b2 == null) {
@@ -1051,7 +1105,9 @@ const App = struct {
 
         // Bare ESC (b2 == null) closes the topmost visible overlay
         if (b2 == null) {
-            if (self.treemap_visible) {
+            if (self.matrix_visible) {
+                self.matrix_visible = false;
+            } else if (self.treemap_visible) {
                 self.treemap_visible = false;
             } else if (self.hex_visible) {
                 self.hex_visible = false;
@@ -1504,6 +1560,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render treemap table space overlay
     if (app.treemap_visible) {
         renderTreemap(app, buf, area);
+    }
+
+    // Render matrix view query metrics overlay
+    if (app.matrix_visible) {
+        renderMatrixView(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2489,6 +2550,88 @@ fn renderTreemap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     tm.render(buf, popup_area);
 }
 
+fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.matrix_visible) return;
+
+    // Centered overlay: 70% width, 60% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 3 / 5, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    // Compute metrics from query history
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    var counts: [MATRIX_ROWS]u32 = std.mem.zeroes([MATRIX_ROWS]u32);
+    var total_ms: [MATRIX_ROWS]u64 = std.mem.zeroes([MATRIX_ROWS]u64);
+    var max_ms: [MATRIX_ROWS]u64 = std.mem.zeroes([MATRIX_ROWS]u64);
+
+    for (app.query_history[0..actual_count]) |entry| {
+        const row_idx: usize = if (!entry.success) 5 else blk: {
+            const upper = entry.title[0..@min(entry.title_len, 6)];
+            if (std.mem.startsWith(u8, upper, "SELECT") or std.mem.startsWith(u8, upper, "select")) break :blk 0;
+            if (std.mem.startsWith(u8, upper, "INSERT") or std.mem.startsWith(u8, upper, "insert")) break :blk 1;
+            if (std.mem.startsWith(u8, upper, "UPDATE") or std.mem.startsWith(u8, upper, "update")) break :blk 2;
+            if (std.mem.startsWith(u8, upper, "DELETE") or std.mem.startsWith(u8, upper, "delete")) break :blk 3;
+            break :blk 4; // DDL
+        };
+        counts[row_idx] += 1;
+        total_ms[row_idx] += entry.duration_ms;
+        if (entry.duration_ms > max_ms[row_idx]) max_ms[row_idx] = entry.duration_ms;
+    }
+
+    // Build f32 matrix data: [6][3] = { count, avg_ms, max_ms }
+    var matrix_data: [MATRIX_ROWS][MATRIX_COLS]f32 = std.mem.zeroes([MATRIX_ROWS][MATRIX_COLS]f32);
+    var max_count: f32 = 1.0;
+    var max_avg: f32 = 1.0;
+    var max_max: f32 = 1.0;
+    for (0..MATRIX_ROWS) |i| {
+        matrix_data[i][0] = @floatFromInt(counts[i]);
+        matrix_data[i][1] = if (counts[i] > 0)
+            @as(f32, @floatFromInt(total_ms[i])) / @as(f32, @floatFromInt(counts[i]))
+        else
+            0.0;
+        matrix_data[i][2] = @floatFromInt(max_ms[i]);
+        if (matrix_data[i][0] > max_count) max_count = matrix_data[i][0];
+        if (matrix_data[i][1] > max_avg) max_avg = matrix_data[i][1];
+        if (matrix_data[i][2] > max_max) max_max = matrix_data[i][2];
+    }
+
+    var row_ptrs: [MATRIX_ROWS][]const f32 = undefined;
+    for (0..MATRIX_ROWS) |i| {
+        row_ptrs[i] = &matrix_data[i];
+    }
+
+    const mv = sailor.MatrixView.init()
+        .withData(&row_ptrs)
+        .withRowHeaders(&MATRIX_ROW_HEADERS)
+        .withColHeaders(&MATRIX_COL_HEADERS)
+        .withCellWidth(8)
+        .withShowValues(true)
+        .withFocusedRow(app.matrix_focused_row)
+        .withFocusedCol(app.matrix_focused_col)
+        .withMinVal(0.0)
+        .withMaxVal(max_count)
+        .withHeaderStyle(.{ .fg = .cyan, .bold = true })
+        .withFocusedStyle(.{ .fg = .yellow, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " Query Metrics (v/Esc:close  arrows:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    mv.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2535,8 +2678,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -5838,4 +5981,196 @@ test "treemap: treemap_focused clamps at 0" {
     app.handleEscapeSequence('[', 'A'); // up arrow
 
     try std.testing.expectEqual(@as(usize, 0), app.treemap_focused);
+}
+
+// ── MatrixView Query Metrics Overlay Tests ───────────────────────────
+
+test "matrix: matrix_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.matrix_visible == false);
+}
+
+test "matrix: matrix_focused_row starts at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.matrix_focused_row);
+}
+
+test "matrix: matrix_focused_col starts at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.matrix_focused_col);
+}
+
+test "matrix: 'v' key toggles matrix_visible on when not in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.matrix_visible == false);
+
+    app.handleKey(118); // 'v' key
+
+    try std.testing.expect(app.matrix_visible == true);
+}
+
+test "matrix: 'v' key toggles matrix_visible off when already open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    try std.testing.expect(app.matrix_visible == true);
+
+    app.handleKey(118); // 'v' key
+
+    try std.testing.expect(app.matrix_visible == false);
+}
+
+test "matrix: 'v' key does nothing in input focus" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    app.handleKey(118); // 'v' key
+
+    try std.testing.expect(app.matrix_visible == false);
+}
+
+test "matrix: opening resets matrix_focused_row and matrix_focused_col to 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.matrix_focused_row = 5;
+    app.matrix_focused_col = 2;
+
+    app.handleKey(118); // 'v' key to open
+
+    try std.testing.expectEqual(@as(usize, 0), app.matrix_focused_row);
+    try std.testing.expectEqual(@as(usize, 0), app.matrix_focused_col);
+}
+
+test "matrix: bare ESC closes matrix overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    try std.testing.expect(app.matrix_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.matrix_visible == false);
+}
+
+test "matrix: down arrow increments matrix_focused_row" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    app.matrix_focused_row = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.matrix_focused_row);
+}
+
+test "matrix: right arrow increments matrix_focused_col" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    app.matrix_focused_col = 0;
+
+    app.handleEscapeSequence('[', 'C'); // right arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.matrix_focused_col);
+}
+
+test "matrix: matrix_focused_row clamps at MATRIX_ROWS-1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    app.matrix_focused_row = 5; // MATRIX_ROWS - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 5), app.matrix_focused_row);
+}
+
+test "matrix: matrix_focused_col clamps at MATRIX_COLS-1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    app.matrix_focused_col = 2; // MATRIX_COLS - 1
+
+    app.handleEscapeSequence('[', 'C'); // right arrow
+
+    try std.testing.expectEqual(@as(usize, 2), app.matrix_focused_col);
 }
