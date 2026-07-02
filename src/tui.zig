@@ -226,6 +226,11 @@ const SANKEY_NODES = [SANKEY_NODE_COUNT]sailor.tui.widgets.SankeyNode{
     .{ .label = "Error", .column = 2, .style = .{ .fg = .red } },
 };
 
+// ── ChordDiagram SQL Operation Flow ──────────────────────────────────
+
+const CHORD_NODE_COUNT: usize = 5;
+const CHORD_NODES = [CHORD_NODE_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -336,6 +341,14 @@ const App = struct {
     // SankeyDiagram SQL data flow overlay
     sankey_visible: bool = false,
     sankey_focused: usize = 0,
+
+    // BubbleChart query performance overlay
+    bubble_visible: bool = false,
+    bubble_focused: usize = 0,
+
+    // ChordDiagram SQL operation flow overlay
+    chord_visible: bool = false,
+    chord_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -831,6 +844,28 @@ const App = struct {
             return;
         }
 
+        // 'u' key toggles bubble chart query performance overlay (not while editing input)
+        if (byte == 117 and self.focus != .input) {
+            if (self.bubble_visible) {
+                self.bubble_visible = false;
+            } else {
+                self.bubble_visible = true;
+                self.bubble_focused = 0;
+            }
+            return;
+        }
+
+        // 'c' key toggles chord diagram SQL operation flow overlay (not while editing input)
+        if (byte == 99 and self.focus != .input) {
+            if (self.chord_visible) {
+                self.chord_visible = false;
+            } else {
+                self.chord_visible = true;
+                self.chord_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1050,6 +1085,50 @@ const App = struct {
             return;
         }
 
+        // BubbleChart arrow key navigation and ESC handling
+        if (self.bubble_visible) {
+            if (b2 == null) {
+                self.bubble_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous bubble
+                        if (self.bubble_focused > 0) self.bubble_focused -= 1;
+                    },
+                    'B' => { // Down — next bubble
+                        if (self.bubble_focused + 1 < QUERY_HISTORY_MAX) {
+                            self.bubble_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // ChordDiagram arrow key navigation and ESC handling
+        if (self.chord_visible) {
+            if (b2 == null) {
+                self.chord_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous node
+                        if (self.chord_focused > 0) self.chord_focused -= 1;
+                    },
+                    'B' => { // Down — next node
+                        if (self.chord_focused + 1 < CHORD_NODE_COUNT) {
+                            self.chord_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // FlowChart arrow key navigation and ESC handling
         if (self.flow_visible) {
             if (b2 == null) {
@@ -1161,6 +1240,10 @@ const App = struct {
                 self.treemap_visible = false;
             } else if (self.sankey_visible) {
                 self.sankey_visible = false;
+            } else if (self.bubble_visible) {
+                self.bubble_visible = false;
+            } else if (self.chord_visible) {
+                self.chord_visible = false;
             } else if (self.hex_visible) {
                 self.hex_visible = false;
             } else if (self.radar_visible) {
@@ -1622,6 +1705,16 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render sankey SQL data flow overlay
     if (app.sankey_visible) {
         renderSankeyDiagram(app, buf, area);
+    }
+
+    // Render bubble chart query performance overlay
+    if (app.bubble_visible) {
+        renderBubbleChart(app, buf, area);
+    }
+
+    // Render chord diagram SQL flow overlay
+    if (app.chord_visible) {
+        renderChordDiagram(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2767,6 +2860,165 @@ fn renderSankeyDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     sk.render(buf, popup_area);
 }
 
+fn renderBubbleChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.bubble_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Find max duration for normalization
+    var max_duration: u64 = 1;
+    for (app.query_history[0..actual_count]) |entry| {
+        if (entry.duration_ms > max_duration) max_duration = entry.duration_ms;
+    }
+
+    var bubbles: [QUERY_HISTORY_MAX]sailor.Bubble = undefined;
+    var bubble_count: usize = 0;
+
+    if (actual_count == 0) {
+        bubbles[0] = sailor.Bubble{
+            .label = "no data",
+            .x = 0.0,
+            .y = 0.0,
+            .size = 0.3,
+            .style = .{ .fg = .bright_black },
+        };
+        bubble_count = 1;
+    } else {
+        for (app.query_history[0..actual_count], 0..) |entry, i| {
+            const x_val: f32 = @floatFromInt(i);
+            const y_val: f32 = @floatFromInt(entry.duration_ms);
+            const size: f32 = @as(f32, @floatFromInt(entry.duration_ms)) / @as(f32, @floatFromInt(max_duration));
+            const style: tui.Style = if (entry.success) .{ .fg = .green } else .{ .fg = .red };
+            bubbles[i] = sailor.Bubble{
+                .label = "",
+                .x = x_val,
+                .y = y_val,
+                .size = @max(0.1, size),
+                .style = style,
+            };
+        }
+        bubble_count = actual_count;
+    }
+
+    // Centered overlay: ~70% width, ~60% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 6 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const x_max_val: f32 = if (actual_count > 1) @as(f32, @floatFromInt(actual_count - 1)) else 1.0;
+    const y_max_val: f32 = @floatFromInt(max_duration);
+
+    const bc = sailor.BubbleChart.init()
+        .withBubbles(bubbles[0..bubble_count])
+        .withXMin(0.0)
+        .withXMax(x_max_val)
+        .withYMin(0.0)
+        .withYMax(y_max_val)
+        .withFocused(app.bubble_focused)
+        .withShowAxes(true)
+        .withShowLabels(false)
+        .withBubbleStyle(.{ .fg = .cyan })
+        .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
+        .withAxisStyle(.{ .fg = .bright_black })
+        .withBlock((tui.widgets.Block{
+            .title = " Query Performance (u/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    bc.render(buf, popup_area);
+}
+
+fn renderChordDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.chord_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Build 5x5 co-occurrence matrix from consecutive query type pairs
+    var matrix: [CHORD_NODE_COUNT][CHORD_NODE_COUNT]f32 = std.mem.zeroes([CHORD_NODE_COUNT][CHORD_NODE_COUNT]f32);
+
+    if (actual_count < 2) {
+        // Placeholder: typical DB usage pattern
+        matrix[0][1] = 2.0; // SELECT -> INSERT
+        matrix[0][2] = 1.0; // SELECT -> UPDATE
+        matrix[1][0] = 3.0; // INSERT -> SELECT
+        matrix[2][0] = 1.5; // UPDATE -> SELECT
+        matrix[3][4] = 0.5; // DELETE -> DDL
+        matrix[4][0] = 1.0; // DDL -> SELECT
+    } else {
+        var prev_type: usize = classifyQueryType(&app.query_history[0]);
+        for (app.query_history[1..actual_count]) |entry| {
+            const curr_type = classifyQueryType(&entry);
+            matrix[prev_type][curr_type] += 1.0;
+            prev_type = curr_type;
+        }
+    }
+
+    const row0: []const f32 = &matrix[0];
+    const row1: []const f32 = &matrix[1];
+    const row2: []const f32 = &matrix[2];
+    const row3: []const f32 = &matrix[3];
+    const row4: []const f32 = &matrix[4];
+    const mat_slices = [CHORD_NODE_COUNT][]const f32{ row0, row1, row2, row3, row4 };
+    const node_slices: []const []const u8 = &CHORD_NODES;
+
+    // Centered overlay: ~70% width, ~70% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 7 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const cd = sailor.ChordDiagram.init()
+        .withNodes(node_slices)
+        .withMatrix(&mat_slices)
+        .withFocused(app.chord_focused)
+        .withShowLabels(true)
+        .withArcStyle(.{ .fg = .cyan })
+        .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
+        .withStyle(.{ .fg = .white })
+        .withBlock((tui.widgets.Block{
+            .title = " SQL Operation Flow (c/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    cd.render(buf, popup_area);
+}
+
+fn classifyQueryType(entry: *const QueryHistoryEntry) usize {
+    const sql = entry.title[0..entry.title_len];
+    if (sql.len == 0) return 0;
+    // Find first non-space character sequence
+    var i: usize = 0;
+    while (i < sql.len and sql[i] == ' ') i += 1;
+    const rest = sql[i..];
+    if (rest.len >= 6 and std.ascii.eqlIgnoreCase(rest[0..6], "select")) return 0;
+    if (rest.len >= 6 and std.ascii.eqlIgnoreCase(rest[0..6], "insert")) return 1;
+    if (rest.len >= 6 and std.ascii.eqlIgnoreCase(rest[0..6], "update")) return 2;
+    if (rest.len >= 6 and std.ascii.eqlIgnoreCase(rest[0..6], "delete")) return 3;
+    // DDL: CREATE, DROP, ALTER, TRUNCATE, etc.
+    return 4;
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2813,8 +3065,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -6481,4 +6733,338 @@ test "sankey: opening sankey does not affect other overlays" {
     try std.testing.expect(app.sankey_visible == true);
     try std.testing.expect(app.matrix_visible == true);
     try std.testing.expectEqual(@as(usize, 3), app.matrix_focused_row);
+}
+
+// ── BubbleChart Query Performance Tests ──────────────────────────────────
+
+test "bubble: bubble_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.bubble_visible == false);
+}
+
+test "bubble: 'u' key opens bubble overlay when focus is schema" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.bubble_visible == false);
+
+    app.handleKey('u');
+
+    try std.testing.expect(app.bubble_visible == true);
+}
+
+test "bubble: 'u' key closes bubble overlay when already visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.bubble_visible = true;
+
+    app.handleKey('u');
+
+    try std.testing.expect(app.bubble_visible == false);
+}
+
+test "bubble: 'u' key does nothing when focus is input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.bubble_visible == false);
+
+    app.handleKey('u');
+
+    try std.testing.expect(app.bubble_visible == false);
+}
+
+test "bubble: 'u' key resets bubble_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.bubble_focused = 10;
+
+    app.handleKey('u');
+
+    try std.testing.expectEqual(@as(usize, 0), app.bubble_focused);
+}
+
+test "bubble: bare ESC closes bubble overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.bubble_visible = true;
+    try std.testing.expect(app.bubble_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.bubble_visible == false);
+}
+
+test "bubble: down arrow increments bubble_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.bubble_visible = true;
+    app.bubble_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.bubble_focused);
+}
+
+test "bubble: up arrow decrements bubble_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.bubble_visible = true;
+    app.bubble_focused = 5;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 4), app.bubble_focused);
+}
+
+test "bubble: up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.bubble_visible = true;
+    app.bubble_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.bubble_focused);
+}
+
+test "bubble: down arrow clamps at QUERY_HISTORY_MAX - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.bubble_visible = true;
+    app.bubble_focused = 15; // QUERY_HISTORY_MAX - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 15), app.bubble_focused);
+}
+
+// ── ChordDiagram SQL Operation Flow Tests ──────────────────────────────────
+
+test "chord: chord_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.chord_visible == false);
+}
+
+test "chord: 'c' key opens chord overlay when focus is schema" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.chord_visible == false);
+
+    app.handleKey('c');
+
+    try std.testing.expect(app.chord_visible == true);
+}
+
+test "chord: 'c' key closes chord overlay when already visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.chord_visible = true;
+
+    app.handleKey('c');
+
+    try std.testing.expect(app.chord_visible == false);
+}
+
+test "chord: 'c' key does nothing when focus is input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.chord_visible == false);
+
+    app.handleKey('c');
+
+    try std.testing.expect(app.chord_visible == false);
+}
+
+test "chord: 'c' key resets chord_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.chord_focused = 3;
+
+    app.handleKey('c');
+
+    try std.testing.expectEqual(@as(usize, 0), app.chord_focused);
+}
+
+test "chord: bare ESC closes chord overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.chord_visible = true;
+    try std.testing.expect(app.chord_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.chord_visible == false);
+}
+
+test "chord: down arrow increments chord_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.chord_visible = true;
+    app.chord_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.chord_focused);
+}
+
+test "chord: up arrow decrements chord_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.chord_visible = true;
+    app.chord_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.chord_focused);
+}
+
+test "chord: up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.chord_visible = true;
+    app.chord_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.chord_focused);
+}
+
+test "chord: down arrow clamps at CHORD_NODE_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.chord_visible = true;
+    app.chord_focused = 4; // CHORD_NODE_COUNT - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 4), app.chord_focused);
 }
