@@ -425,6 +425,19 @@ pub const WindowDef = struct {
 };
 
 /// A single CTE definition in a WITH clause.
+/// CYCLE clause for recursive CTEs (SQL:1999).
+/// Detects when recursion revisits a previously seen row (cycle detection).
+pub const CycleClause = struct {
+    /// Columns to track for cycle detection (e.g., "id")
+    columns: []const []const u8,
+    /// Column name added to CTE output that marks cycle rows
+    cycle_column: []const u8,
+    /// Value assigned to cycle_column when a cycle is detected
+    cycle_value: *const Expr,
+    /// Value assigned to cycle_column when no cycle (default)
+    no_cycle_value: *const Expr,
+};
+
 pub const CteDefinition = struct {
     /// CTE name (used as table reference in main query)
     name: []const u8,
@@ -432,6 +445,8 @@ pub const CteDefinition = struct {
     select: *const SelectStmt,
     /// Optional explicit column names for the CTE
     column_names: []const []const u8 = &.{},
+    /// Optional CYCLE clause for cycle detection in recursive CTEs
+    cycle: ?CycleClause = null,
 };
 
 /// Set operation type for UNION, INTERSECT, EXCEPT.

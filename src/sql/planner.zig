@@ -312,6 +312,8 @@ pub const CtePlan = struct {
     column_names: []const []const u8 = &.{},
     /// True if this CTE is recursive (WITH RECURSIVE and self-referencing).
     recursive: bool = false,
+    /// Optional CYCLE clause for cycle detection (SQL:1999).
+    cycle: ?ast.CycleClause = null,
 };
 
 /// The complete logical plan for a SQL statement.
@@ -429,6 +431,7 @@ pub const Planner = struct {
                 .plan = cte_inner.root,
                 .column_names = cte.column_names,
                 .recursive = is_recursive,
+                .cycle = cte.cycle,
             }) catch return error.OutOfMemory;
             // Register CTE name so later CTEs and the main query recognize it
             if (!stmt.recursive) {

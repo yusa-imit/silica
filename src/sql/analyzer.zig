@@ -1041,6 +1041,14 @@ pub const Analyzer = struct {
                     .flags = .{},
                 }) catch {};
             }
+            // CYCLE clause adds an extra column to the output
+            if (cte.cycle) |cy| {
+                cols.append(a, .{
+                    .name = cy.cycle_column,
+                    .column_type = .blob,
+                    .flags = .{},
+                }) catch {};
+            }
             return cols.toOwnedSlice(a) catch return &.{};
         }
 
@@ -1061,6 +1069,14 @@ pub const Analyzer = struct {
             };
             cols.append(a, .{
                 .name = col_name,
+                .column_type = .blob,
+                .flags = .{},
+            }) catch {};
+        }
+        // CYCLE clause adds an extra column to the output
+        if (cte.cycle) |cy| {
+            cols.append(a, .{
+                .name = cy.cycle_column,
                 .column_type = .blob,
                 .flags = .{},
             }) catch {};

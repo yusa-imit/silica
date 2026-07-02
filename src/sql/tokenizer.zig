@@ -212,6 +212,7 @@ pub const TokenType = enum {
     kw_matched,
     kw_source,
     kw_target,
+    kw_cycle,
 
     // Keywords — Aggregate functions
     kw_count,
@@ -942,6 +943,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "matched", .kw_matched },
         .{ "source", .kw_source },
         .{ "target", .kw_target },
+        .{ "cycle", .kw_cycle },
         // Aggregates
         .{ "count", .kw_count },
         .{ "sum", .kw_sum },
@@ -1946,4 +1948,9 @@ test "ALTER TABLE ENABLE ROW LEVEL SECURITY keywords" {
 test "window frame EXCLUDE keywords" {
     try expectSingleToken("exclude", .kw_exclude, "exclude");
     try expectSingleToken("others", .kw_others, "others");
+}
+
+test "CYCLE keyword for recursive CTE" {
+    try expectSingleToken("cycle", .kw_cycle, "cycle");
+    try expectSingleToken("CYCLE", .kw_cycle, "CYCLE");
 }

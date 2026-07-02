@@ -3473,6 +3473,30 @@ pub const Database = struct {
         const anchor_plan = set_op.left;
         const recursive_plan = set_op.right;
 
+        // CYCLE clause setup: evaluate TO/DEFAULT literal values
+        const has_cycle = cte.cycle != null;
+        var cycle_to_val: Value = .null_value;
+        var cycle_default_val: Value = .null_value;
+        defer {
+            if (has_cycle) {
+                cycle_to_val.free(self.allocator);
+                cycle_default_val.free(self.allocator);
+            }
+        }
+        if (cte.cycle) |cy| {
+            const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
+            cycle_to_val = evalExpr(self.allocator, cy.cycle_value, &empty_row, null) catch .{ .integer = 1 };
+            cycle_default_val = evalExpr(self.allocator, cy.no_cycle_value, &empty_row, null) catch .{ .integer = 0 };
+        }
+
+        // Cycle tracking: set of cycle keys seen so far (globally across all iterations)
+        var cycle_seen = std.StringHashMapUnmanaged(void){};
+        defer {
+            var it = cycle_seen.keyIterator();
+            while (it.next()) |key| self.allocator.free(key.*);
+            cycle_seen.deinit(self.allocator);
+        }
+
         // Step 1: Execute the anchor query
         const anchor_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
         anchor_ops.* = .{};
@@ -3481,18 +3505,56 @@ pub const Database = struct {
 
         var anchor_iter = self.buildIterator(anchor_plan, anchor_ops) catch return EngineError.ExecutionError;
 
-        // Collect anchor rows and determine column names
+        // Collect anchor rows and determine column names (without cycle col)
+        // all_rows: rows with cycle col appended (if CYCLE clause present)
+        // working_rows: rows without cycle col (feed to recursive step)
         var all_rows = std.ArrayListUnmanaged([]Value){};
         var col_names: ?[]const []const u8 = null;
+
+        // Cycle column indices in base cols (determined after first anchor row)
+        var cycle_col_indices_opt: ?[]usize = null;
+        defer if (cycle_col_indices_opt) |buf| self.allocator.free(buf);
 
         while (anchor_iter.next() catch return EngineError.ExecutionError) |row_data| {
             var row = row_data;
             if (col_names == null) {
                 col_names = try self.captureColNames(&row, cte.column_names);
+                // Find cycle column indices in base col_names
+                if (cte.cycle) |cy| {
+                    const indices = self.allocator.alloc(usize, cy.columns.len) catch return EngineError.OutOfMemory;
+                    for (cy.columns, 0..) |cycle_col, i| {
+                        indices[i] = col_names.?.len; // sentinel: not found = out of bounds
+                        for (col_names.?, 0..) |cn, j| {
+                            const base_cn = if (std.mem.indexOfScalar(u8, cn, '.')) |dot| cn[dot + 1 ..] else cn;
+                            if (std.ascii.eqlIgnoreCase(base_cn, cycle_col)) {
+                                indices[i] = j;
+                                break;
+                            }
+                        }
+                    }
+                    cycle_col_indices_opt = indices;
+                }
             }
-            const vals = try self.dupeRowValues(row.values);
+            const base_vals = try self.dupeRowValues(row.values);
             row.deinit();
-            all_rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
+
+            if (has_cycle) {
+                // Add base key to cycle_seen (anchor rows are never cycles)
+                const key = try self.computeCycleKey(base_vals, cycle_col_indices_opt orelse &.{});
+                if (!cycle_seen.contains(key)) {
+                    cycle_seen.put(self.allocator, key, {}) catch {
+                        self.allocator.free(key);
+                        return EngineError.OutOfMemory;
+                    };
+                } else {
+                    self.allocator.free(key);
+                }
+                // Append no_cycle_value to base vals
+                const full_vals = try self.appendCycleValue(base_vals, cycle_default_val);
+                all_rows.append(self.allocator, full_vals) catch return EngineError.OutOfMemory;
+            } else {
+                all_rows.append(self.allocator, base_vals) catch return EngineError.OutOfMemory;
+            }
         }
         anchor_iter.close();
 
@@ -3501,20 +3563,39 @@ pub const Database = struct {
             col_names = try self.buildEmptyColNames(cte.column_names);
         }
 
-        // Step 2: Iterative fixed-point — feed last iteration's rows as the working table
+        // Build extended column names (with cycle column appended) for output
+        const output_col_names: []const []const u8 = if (cte.cycle) |cy| blk: {
+            const extended = self.allocator.alloc([]const u8, col_names.?.len + 1) catch return EngineError.OutOfMemory;
+            for (col_names.?, 0..) |n, i| extended[i] = n;
+            extended[col_names.?.len] = cy.cycle_column;
+            // col_names is now owned by extended; don't free it separately
+            self.allocator.free(col_names.?);
+            col_names = null;
+            break :blk extended;
+        } else col_names.?;
+
+        // Step 2: Build initial working set from anchor rows (base cols only)
         var working_rows = std.ArrayListUnmanaged([]Value){};
-        // Copy anchor rows as initial working set
         for (all_rows.items) |row_vals| {
-            const duped = try self.dupeRowValuesSlice(row_vals);
-            working_rows.append(self.allocator, duped) catch return EngineError.OutOfMemory;
+            const base_len = if (has_cycle) row_vals.len - 1 else row_vals.len;
+            const base_copy = self.allocator.alloc(Value, base_len) catch return EngineError.OutOfMemory;
+            for (0..base_len) |i| base_copy[i] = row_vals[i].dupe(self.allocator) catch return EngineError.OutOfMemory;
+            working_rows.append(self.allocator, base_copy) catch return EngineError.OutOfMemory;
         }
+
+        // Working table column names are base only (without cycle col)
+        const base_col_names: []const []const u8 = if (has_cycle)
+            output_col_names[0 .. output_col_names.len - 1]
+        else
+            output_col_names;
 
         var iteration: usize = 0;
         while (iteration < max_recursive_cte_depth) : (iteration += 1) {
             if (working_rows.items.len == 0) break;
 
             // Create a MaterializedOp for the working table (current iteration's input)
-            const working_col_names = try self.dupeColNames(col_names.?);
+            // Working table uses base col names (without cycle col)
+            const working_col_names = try self.dupeColNames(base_col_names);
             const working_data = working_rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory;
             const working_mat = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
             working_mat.* = MaterializedOp.init(self.allocator, working_col_names, working_data);
@@ -3538,12 +3619,40 @@ pub const Database = struct {
             working_rows = .{};
             while (rec_iter.next() catch return EngineError.ExecutionError) |row_data| {
                 var row = row_data;
-                const vals = try self.dupeRowValues(row.values);
+                const base_vals = try self.dupeRowValues(row.values);
                 row.deinit();
-                // Add to both the complete result and the next iteration's working set
-                all_rows.append(self.allocator, vals) catch return EngineError.OutOfMemory;
-                const working_copy = try self.dupeRowValuesSlice(vals);
-                working_rows.append(self.allocator, working_copy) catch return EngineError.OutOfMemory;
+
+                if (has_cycle) {
+                    // Compute cycle key from base values
+                    const key = try self.computeCycleKey(base_vals, cycle_col_indices_opt orelse &.{});
+                    if (cycle_seen.contains(key)) {
+                        // Cycle detected: emit with cycle_to_val, don't recurse further
+                        self.allocator.free(key);
+                        const full_vals = try self.appendCycleValue(base_vals, cycle_to_val);
+                        all_rows.append(self.allocator, full_vals) catch return EngineError.OutOfMemory;
+                        // base_vals ownership transferred to full_vals (first n-1 elements)
+                    } else {
+                        // No cycle: emit with cycle_default_val and continue recursion
+                        cycle_seen.put(self.allocator, key, {}) catch {
+                            self.allocator.free(key);
+                            for (base_vals) |v| v.free(self.allocator);
+                            self.allocator.free(base_vals);
+                            return EngineError.OutOfMemory;
+                        };
+                        const base_len = base_vals.len; // save before appendCycleValue takes ownership
+                        const full_vals = try self.appendCycleValue(base_vals, cycle_default_val);
+                        all_rows.append(self.allocator, full_vals) catch return EngineError.OutOfMemory;
+                        // Add base copy to working set for next iteration
+                        const working_copy = self.allocator.alloc(Value, base_len) catch return EngineError.OutOfMemory;
+                        for (0..base_len) |i| working_copy[i] = full_vals[i].dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        working_rows.append(self.allocator, working_copy) catch return EngineError.OutOfMemory;
+                    }
+                } else {
+                    // No CYCLE clause: add to both complete result and next working set
+                    all_rows.append(self.allocator, base_vals) catch return EngineError.OutOfMemory;
+                    const working_copy = try self.dupeRowValuesSlice(base_vals);
+                    working_rows.append(self.allocator, working_copy) catch return EngineError.OutOfMemory;
+                }
             }
             rec_iter.close();
         }
@@ -3556,10 +3665,14 @@ pub const Database = struct {
         working_rows.deinit(self.allocator);
 
         // Build final MaterializedOp with all accumulated rows
-        const final_col_names = try self.dupeColNames(col_names.?);
-        // Free the original col_names
-        for (col_names.?) |c| self.allocator.free(@constCast(c));
-        self.allocator.free(col_names.?);
+        const final_col_names = try self.dupeColNames(output_col_names);
+        // Free the output_col_names inner strings and outer slice.
+        // In cycle case: output_col_names[0..n-1] are heap strings from captureColNames;
+        // output_col_names[n] is AST-owned (cycle_column) — must NOT be freed.
+        // In non-cycle case: all strings in output_col_names are heap-allocated.
+        const owned_count = if (has_cycle) output_col_names.len - 1 else output_col_names.len;
+        for (output_col_names[0..owned_count]) |c| self.allocator.free(@constCast(c));
+        self.allocator.free(@constCast(output_col_names));
 
         const final_mat = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
         final_mat.* = MaterializedOp.init(
@@ -3574,6 +3687,39 @@ pub const Database = struct {
             self.allocator.destroy(old_mat);
         }
         cte_map.put(self.allocator, cte.name, final_mat) catch return EngineError.OutOfMemory;
+    }
+
+    /// Compute a cycle key from specific column values (used by CYCLE clause).
+    fn computeCycleKey(self: *Database, vals: []const Value, col_indices: []const usize) EngineError![]const u8 {
+        var buf = std.ArrayList(u8){};
+        const alloc = self.allocator;
+        for (col_indices, 0..) |idx, i| {
+            if (i > 0) buf.append(alloc, 0) catch return EngineError.OutOfMemory; // null-byte separator
+            if (idx >= vals.len) {
+                buf.appendSlice(alloc, "\xff") catch return EngineError.OutOfMemory;
+                continue;
+            }
+            switch (vals[idx]) {
+                .null_value => buf.appendSlice(alloc, "\xfe") catch return EngineError.OutOfMemory,
+                .integer => |n| std.fmt.format(buf.writer(alloc), "{d}", .{n}) catch return EngineError.OutOfMemory,
+                .real => |r| std.fmt.format(buf.writer(alloc), "{d}", .{r}) catch return EngineError.OutOfMemory,
+                .text => |t| buf.appendSlice(alloc, t) catch return EngineError.OutOfMemory,
+                .blob => |b| buf.appendSlice(alloc, b) catch return EngineError.OutOfMemory,
+                .boolean => |b| buf.append(alloc, if (b) 1 else 0) catch return EngineError.OutOfMemory,
+                else => buf.appendSlice(alloc, "?") catch return EngineError.OutOfMemory,
+            }
+        }
+        return buf.toOwnedSlice(alloc) catch return EngineError.OutOfMemory;
+    }
+
+    /// Append a cycle marker value to a base row's values array.
+    /// Takes ownership of base_vals and returns a new slice with cycle_val appended.
+    fn appendCycleValue(self: *Database, base_vals: []Value, cycle_val: Value) EngineError![]Value {
+        const extended = self.allocator.alloc(Value, base_vals.len + 1) catch return EngineError.OutOfMemory;
+        @memcpy(extended[0..base_vals.len], base_vals);
+        self.allocator.free(base_vals);
+        extended[extended.len - 1] = cycle_val.dupe(self.allocator) catch return EngineError.OutOfMemory;
+        return extended;
     }
 
     /// Capture column names from a row, applying CTE column aliases if provided.
@@ -16826,6 +16972,209 @@ test "recursive CTE: with ORDER BY on result" {
     }
     try testing.expectEqual(@as(usize, 5), count);
     try testing.expectEqual(@as(i64, 5), prev);
+}
+
+// ── CYCLE Clause Tests (SQL:1999) ─────────────────────────────────
+
+test "CYCLE: basic cycle detection in recursive CTE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cycle_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE nodes (id INTEGER, parent_id INTEGER)");
+    _ = try db.exec("INSERT INTO nodes VALUES (1, NULL)");
+    _ = try db.exec("INSERT INTO nodes VALUES (2, 1)");
+    _ = try db.exec("INSERT INTO nodes VALUES (3, 2)");
+    // Node 4 creates a cycle: 4 → 3 → 2 → 4 (4's parent is 3, and we inject a back edge via 3's child)
+    _ = try db.exec("INSERT INTO nodes VALUES (4, 3)");
+    // Create cycle: add node 3 as child of 4 (already done implicitly — 4 → 3, 3 → 2, 2 → 1, and then 4 appears again)
+
+    var r = try db.execSQL(
+        "WITH RECURSIVE t(id, parent_id) AS (" ++
+            "SELECT id, parent_id FROM nodes WHERE id = 1 " ++
+            "UNION ALL " ++
+            "SELECT n.id, n.parent_id FROM nodes n JOIN t ON n.parent_id = t.id" ++
+            ") CYCLE id SET is_cycle TO 1 DEFAULT 0 " ++
+            "SELECT id, is_cycle FROM t ORDER BY id",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        // All reachable nodes should be returned
+        try testing.expect(row.values[0].integer >= 1);
+    }
+    try testing.expect(count >= 4); // All nodes reachable from id=1
+}
+
+test "CYCLE: cycle column defaults to 0 for non-cycle rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cycle_default.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Simple acyclic hierarchy: 1 → 2 → 3
+    var r = try db.execSQL(
+        "WITH RECURSIVE cnt(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM cnt WHERE n < 3" ++
+            ") CYCLE n SET is_cycle TO 1 DEFAULT 0 " ++
+            "SELECT n, is_cycle FROM cnt ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1_data = (try r.rows.?.next()).?;
+    defer row1_data.deinit();
+    try testing.expectEqual(@as(i64, 1), row1_data.values[0].integer);
+    try testing.expectEqual(@as(i64, 0), row1_data.values[1].integer); // no cycle
+
+    var row2_data = (try r.rows.?.next()).?;
+    defer row2_data.deinit();
+    try testing.expectEqual(@as(i64, 2), row2_data.values[0].integer);
+    try testing.expectEqual(@as(i64, 0), row2_data.values[1].integer); // no cycle
+
+    var row3_data = (try r.rows.?.next()).?;
+    defer row3_data.deinit();
+    try testing.expectEqual(@as(i64, 3), row3_data.values[0].integer);
+    try testing.expectEqual(@as(i64, 0), row3_data.values[1].integer); // no cycle
+
+    // No more rows
+    const none = try r.rows.?.next();
+    try testing.expect(none == null);
+}
+
+test "CYCLE: cycle terminates recursion" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cycle_terminates.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE edges (src INTEGER, dst INTEGER)");
+    // Create a cycle: 1→2, 2→3, 3→1 (triangle)
+    _ = try db.exec("INSERT INTO edges VALUES (1, 2)");
+    _ = try db.exec("INSERT INTO edges VALUES (2, 3)");
+    _ = try db.exec("INSERT INTO edges VALUES (3, 1)");
+
+    // Without CYCLE, this would loop forever; with CYCLE it terminates
+    var r = try db.execSQL(
+        "WITH RECURSIVE reach(n) AS (" ++
+            "SELECT 1 " ++
+            "UNION ALL " ++
+            "SELECT e.dst FROM edges e JOIN reach r ON e.src = r.n" ++
+            ") CYCLE n SET is_cycle TO 1 DEFAULT 0 " ++
+            "SELECT n, is_cycle FROM reach ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    var cycle_count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+        if (row.values[1].integer == 1) cycle_count += 1;
+    }
+    // 1 (anchor), 2, 3, then 1 again (cycle detected) = 4 rows
+    try testing.expect(count >= 3);
+    try testing.expect(cycle_count >= 1); // At least one cycle detected
+}
+
+test "CYCLE: filter on is_cycle excludes cycle rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cycle_filter.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    _ = try db.exec("CREATE TABLE edges (src INTEGER, dst INTEGER)");
+    _ = try db.exec("INSERT INTO edges VALUES (1, 2)");
+    _ = try db.exec("INSERT INTO edges VALUES (2, 3)");
+    _ = try db.exec("INSERT INTO edges VALUES (3, 1)"); // cycle back to 1
+
+    var r = try db.execSQL(
+        "WITH RECURSIVE reach(n) AS (" ++
+            "SELECT 1 " ++
+            "UNION ALL " ++
+            "SELECT e.dst FROM edges e JOIN reach r ON e.src = r.n" ++
+            ") CYCLE n SET is_cycle TO 1 DEFAULT 0 " ++
+            "SELECT n FROM reach WHERE is_cycle = 0 ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    // Only non-cycle rows: 1, 2, 3
+    var vals: [10]i64 = undefined;
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        vals[count] = row.values[0].integer;
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), count);
+    try testing.expectEqual(@as(i64, 1), vals[0]);
+    try testing.expectEqual(@as(i64, 2), vals[1]);
+    try testing.expectEqual(@as(i64, 3), vals[2]);
+}
+
+test "CYCLE: custom TO/DEFAULT values" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cycle_custom.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL(
+        "WITH RECURSIVE cnt(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM cnt WHERE n < 2" ++
+            ") CYCLE n SET status TO 'Y' DEFAULT 'N' " ++
+            "SELECT n, status FROM cnt ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var row1 = (try r.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+    try testing.expectEqualStrings("N", row1.values[1].text);
+
+    var row2 = (try r.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 2), row2.values[0].integer);
+    try testing.expectEqualStrings("N", row2.values[1].text);
+}
+
+test "CYCLE: without CYCLE clause still works (no regression)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_cycle_nocycle.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r = try db.execSQL(
+        "WITH RECURSIVE cnt(n) AS (" ++
+            "SELECT 1 UNION ALL SELECT n + 1 FROM cnt WHERE n < 5" ++
+            ") SELECT n FROM cnt ORDER BY n",
+    );
+    defer r.close(testing.allocator);
+
+    try testing.expect(r.rows != null);
+    var count: usize = 0;
+    while (try r.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
 }
 
 // ── Updatable View Tests ──────────────────────────────────────────

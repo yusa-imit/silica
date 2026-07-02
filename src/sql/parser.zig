@@ -640,6 +640,28 @@ pub const Parser = struct {
 
         const select_ptr = self.arena.create(ast.SelectStmt, select) catch return error.OutOfMemory;
 
+        // Optional CYCLE clause: CYCLE col [, col ...] SET cycle_col TO val DEFAULT val
+        var cycle: ?ast.CycleClause = null;
+        if (self.match(.kw_cycle)) {
+            var cycle_cols = std.ArrayListUnmanaged([]const u8){};
+            while (true) {
+                cycle_cols.append(a, try self.expectIdentifier()) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.kw_set);
+            const cycle_col_name = try self.expectIdentifier();
+            _ = try self.expect(.kw_to);
+            const cycle_val_expr = try self.parseExpr(0);
+            _ = try self.expect(.kw_default);
+            const no_cycle_val_expr = try self.parseExpr(0);
+            cycle = .{
+                .columns = cycle_cols.toOwnedSlice(a) catch return error.OutOfMemory,
+                .cycle_column = cycle_col_name,
+                .cycle_value = cycle_val_expr,
+                .no_cycle_value = no_cycle_val_expr,
+            };
+        }
+
         return .{
             .name = name,
             .select = select_ptr,
@@ -647,6 +669,7 @@ pub const Parser = struct {
                 col_names.toOwnedSlice(a) catch return error.OutOfMemory
             else
                 &.{},
+            .cycle = cycle,
         };
     }
 
@@ -7418,4 +7441,50 @@ test "parser: single-elem (a) = (1) parses as paren not row_constructor" {
     const right = where.binary_op.right;
     try std.testing.expect(right.* == .paren);
     try std.testing.expect(right.paren.* == .integer_literal);
+}
+
+test "parse CYCLE clause on recursive CTE" {
+    var r = try testParseWithArena(
+        "WITH RECURSIVE t(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM t WHERE id<5)" ++
+            " CYCLE id SET is_cycle TO 1 DEFAULT 0 SELECT * FROM t",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    const cte = sel.ctes[0];
+    try std.testing.expect(cte.cycle != null);
+    const cy = cte.cycle.?;
+    try std.testing.expectEqual(@as(usize, 1), cy.columns.len);
+    try std.testing.expectEqualStrings("id", cy.columns[0]);
+    try std.testing.expectEqualStrings("is_cycle", cy.cycle_column);
+    try std.testing.expect(cy.cycle_value.* == .integer_literal);
+    try std.testing.expectEqual(@as(i64, 1), cy.cycle_value.integer_literal);
+    try std.testing.expect(cy.no_cycle_value.* == .integer_literal);
+    try std.testing.expectEqual(@as(i64, 0), cy.no_cycle_value.integer_literal);
+}
+
+test "parse CYCLE clause with text TO/DEFAULT values" {
+    var r = try testParseWithArena(
+        "WITH RECURSIVE t(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM t WHERE id<3)" ++
+            " CYCLE id SET status TO 'Y' DEFAULT 'N' SELECT * FROM t",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    const cy = sel.ctes[0].cycle.?;
+    try std.testing.expectEqualStrings("status", cy.cycle_column);
+    // Values are string literals parsed as text
+    try std.testing.expect(cy.cycle_value.* == .string_literal);
+    try std.testing.expect(cy.no_cycle_value.* == .string_literal);
+}
+
+test "parse CYCLE clause without CYCLE (no cycle field)" {
+    var r = try testParseWithArena(
+        "WITH RECURSIVE cnt(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM cnt WHERE n<5)" ++
+            " SELECT * FROM cnt",
+    );
+    defer r.deinit();
+    const sel = r.stmt.select;
+    try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
+    try std.testing.expect(sel.ctes[0].cycle == null);
 }
