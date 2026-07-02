@@ -9625,14 +9625,16 @@ test "SELECT with ORDER BY" {
     var r3 = try db.execSQL("SELECT id, val FROM nums ORDER BY val ASC");
     defer r3.close(testing.allocator);
 
-    var prev_val: i64 = -1;
+    // Inserted (30,10,20) → ORDER BY val ASC → expect exactly (10,20,30)
+    const expected_vals = [_]i64{ 10, 20, 30 };
+    var idx: usize = 0;
     while (try r3.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
         defer row.deinit();
-        const val = row.getColumn("val").?.integer;
-        try testing.expect(val >= prev_val);
-        prev_val = val;
+        try testing.expectEqual(expected_vals[idx], row.getColumn("val").?.integer);
+        idx += 1;
     }
+    try testing.expectEqual(@as(usize, 3), idx);
 }
 
 test "ORDER BY on non-selected column" {
@@ -12318,8 +12320,8 @@ test "MVCC: multiple statements with CID progression" {
     var r3 = try db.execSQL("UPDATE t SET val = 'updated' WHERE id = 1");
     r3.close(testing.allocator);
 
-    // CID 3: SELECT should see both rows with updated value for id=1
-    var r4 = try db.execSQL("SELECT id, val FROM t");
+    // CID 3: SELECT should see both rows (2 versions of id=1 via MVCC, but visible count is 2)
+    var r4 = try db.execSQL("SELECT id, val FROM t ORDER BY id");
     var count: usize = 0;
     while (try r4.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
@@ -12327,8 +12329,7 @@ test "MVCC: multiple statements with CID progression" {
         count += 1;
     }
     r4.close(testing.allocator);
-    // Should see at least the 2 inserted rows (visibility may vary based on CID handling)
-    try testing.expect(count >= 2);
+    try testing.expectEqual(@as(usize, 2), count);
 
     try db.commitTransaction();
 }
@@ -14957,11 +14958,14 @@ test "auto-vacuum: commit count tracked across tables" {
     _ = try db.exec("INSERT INTO t2 VALUES (1)");
     _ = try db.exec("INSERT INTO t1 VALUES (2)");
 
-    // Each auto-commit DML with rows_affected > 0 triggers recordCommit
+    // recordCommit() increments ALL tracked tables' counters.
+    // t1 registered on commit 1; t2 on commit 2; so after 3 total commits:
+    //   t1.commits_since_vacuum = 3 (incremented by commits 1, 2, 3)
+    //   t2.commits_since_vacuum = 2 (incremented by commits 2 and 3)
     const s1 = db.auto_vacuum.getStats("t1").?;
     const s2 = db.auto_vacuum.getStats("t2").?;
-    try testing.expect(s1.commits_since_vacuum >= 1);
-    try testing.expect(s2.commits_since_vacuum >= 1);
+    try testing.expectEqual(@as(u64, 3), s1.commits_since_vacuum);
+    try testing.expectEqual(@as(u64, 2), s2.commits_since_vacuum);
 }
 
 // ── View integration tests ──────────────────────────────────────────────
@@ -16987,30 +16991,34 @@ test "CYCLE: basic cycle detection in recursive CTE" {
     _ = try db.exec("INSERT INTO nodes VALUES (1, NULL)");
     _ = try db.exec("INSERT INTO nodes VALUES (2, 1)");
     _ = try db.exec("INSERT INTO nodes VALUES (3, 2)");
-    // Node 4 creates a cycle: 4 → 3 → 2 → 4 (4's parent is 3, and we inject a back edge via 3's child)
     _ = try db.exec("INSERT INTO nodes VALUES (4, 3)");
-    // Create cycle: add node 3 as child of 4 (already done implicitly — 4 → 3, 3 → 2, 2 → 1, and then 4 appears again)
+    // Back edge: node 2 is also a child of node 4 → creates cycle 1→2→3→4→2 (cycle!)
+    _ = try db.exec("INSERT INTO nodes VALUES (2, 4)");
 
+    // ORDER BY id, is_cycle gives: (1,0),(2,0),(2,1),(3,0),(4,0)
     var r = try db.execSQL(
         "WITH RECURSIVE t(id, parent_id) AS (" ++
             "SELECT id, parent_id FROM nodes WHERE id = 1 " ++
             "UNION ALL " ++
             "SELECT n.id, n.parent_id FROM nodes n JOIN t ON n.parent_id = t.id" ++
             ") CYCLE id SET is_cycle TO 1 DEFAULT 0 " ++
-            "SELECT id, is_cycle FROM t ORDER BY id",
+            "SELECT id, is_cycle FROM t ORDER BY id, is_cycle",
     );
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
+    // Expect exactly 5 rows: (1,0),(2,0),(2,1),(3,0),(4,0)
+    const expected_ids = [_]i64{ 1, 2, 2, 3, 4 };
+    const expected_cyc = [_]i64{ 0, 0, 1, 0, 0 };
     var count: usize = 0;
     while (try r.rows.?.next()) |*rp| {
         var row = rp.*;
         defer row.deinit();
+        try testing.expectEqual(expected_ids[count], row.values[0].integer);
+        try testing.expectEqual(expected_cyc[count], row.values[1].integer);
         count += 1;
-        // All reachable nodes should be returned
-        try testing.expect(row.values[0].integer >= 1);
     }
-    try testing.expect(count >= 4); // All nodes reachable from id=1
+    try testing.expectEqual(@as(usize, 5), count);
 }
 
 test "CYCLE: cycle column defaults to 0 for non-cycle rows" {
@@ -17075,17 +17083,19 @@ test "CYCLE: cycle terminates recursion" {
     defer r.close(testing.allocator);
 
     try testing.expect(r.rows != null);
+    // Triangle 1→2→3→1: anchor=1(0), then 2(0), 3(0), 1 revisited(1)
+    // ORDER BY n gives: (1,0),(1,1),(2,0),(3,0) — 4 rows total, exactly 1 cycle row
+    const expected_n = [_]i64{ 1, 1, 2, 3 };
+    const expected_c = [_]i64{ 0, 1, 0, 0 };
     var count: usize = 0;
-    var cycle_count: usize = 0;
     while (try r.rows.?.next()) |*rp| {
         var row = rp.*;
         defer row.deinit();
+        try testing.expectEqual(expected_n[count], row.values[0].integer);
+        try testing.expectEqual(expected_c[count], row.values[1].integer);
         count += 1;
-        if (row.values[1].integer == 1) cycle_count += 1;
     }
-    // 1 (anchor), 2, 3, then 1 again (cycle detected) = 4 rows
-    try testing.expect(count >= 3);
-    try testing.expect(cycle_count >= 1); // At least one cycle detected
+    try testing.expectEqual(@as(usize, 4), count);
 }
 
 test "CYCLE: filter on is_cycle excludes cycle rows" {
@@ -24104,7 +24114,8 @@ test "Hash index rejects range queries and falls back to seq scan" {
             row_mut.deinit();
         }
     }
-    try testing.expect(count6 >= 2);
+    // amount > 150: rows 2 (200) and 3 (300) → exactly 2
+    try testing.expectEqual(@as(usize, 2), count6);
 
     // Query: amount < 250 - should still return results
     var r7 = try db.execSQL("SELECT id FROM transactions WHERE amount < 250");
@@ -24118,7 +24129,8 @@ test "Hash index rejects range queries and falls back to seq scan" {
             row_mut.deinit();
         }
     }
-    try testing.expect(count7 >= 2);
+    // amount < 250: rows 1 (100) and 2 (200) → exactly 2
+    try testing.expectEqual(@as(usize, 2), count7);
 
     // Query: amount BETWEEN 150 AND 250 - should still work
     var r8 = try db.execSQL("SELECT id FROM transactions WHERE amount BETWEEN 150 AND 250");
@@ -24132,7 +24144,8 @@ test "Hash index rejects range queries and falls back to seq scan" {
             row_mut.deinit();
         }
     }
-    try testing.expect(count8 >= 1);
+    // amount BETWEEN 150 AND 250: row 2 (200) only → exactly 1
+    try testing.expectEqual(@as(usize, 1), count8);
 }
 
 test "Hash index supports IN clause for multiple equality checks" {
@@ -24172,7 +24185,8 @@ test "Hash index supports IN clause for multiple equality checks" {
             row_mut.deinit();
         }
     }
-    try testing.expect(count >= 2);
+    // IN ('Electronics', 'Books') matches ids 1 and 2 → exactly 2
+    try testing.expectEqual(@as(usize, 2), count);
 }
 
 test "CREATE INDEX USING HASH IF NOT EXISTS" {
@@ -28329,10 +28343,10 @@ test "GROUPING() with GROUPING SETS — bitmask for two-arg GROUPING" {
     try testing.expectEqual(@as(usize, 5), row_count);
     // Exactly 1 grand total row where GROUPING(a, b) = 3
     try testing.expectEqual(@as(usize, 1), bitmask_3_count);
-    // At least 1 subtotal row where GROUPING(a, b) = 1
-    try testing.expect(bitmask_1_count >= 1);
-    // At least 2 detail rows where GROUPING(a, b) = 0
-    try testing.expect(bitmask_0_count >= 2);
+    // Exactly 2 subtotal rows where GROUPING(a, b) = 1 (one per distinct a value)
+    try testing.expectEqual(@as(usize, 2), bitmask_1_count);
+    // Exactly 2 detail rows where GROUPING(a, b) = 0 (one per (a,b) combination)
+    try testing.expectEqual(@as(usize, 2), bitmask_0_count);
 }
 
 test "GROUPING() returns 0 for regular GROUP BY" {
