@@ -213,6 +213,19 @@ const MATRIX_COL_HEADERS = [_][]const u8{ "Count", "Avg ms", "Max ms" };
 const MATRIX_ROWS: usize = 6;
 const MATRIX_COLS: usize = 3;
 
+// ── SankeyDiagram SQL Data Flow ──────────────────────────────────────
+
+const SANKEY_NODE_COUNT: usize = 6;
+
+const SANKEY_NODES = [SANKEY_NODE_COUNT]sailor.tui.widgets.SankeyNode{
+    .{ .label = "SELECT", .column = 0, .style = .{ .fg = .cyan } },
+    .{ .label = "DML", .column = 0, .style = .{ .fg = .green } },
+    .{ .label = "DDL", .column = 0, .style = .{ .fg = .yellow } },
+    .{ .label = "Execute", .column = 1, .style = .{ .fg = .white, .bold = true } },
+    .{ .label = "Success", .column = 2, .style = .{ .fg = .bright_green } },
+    .{ .label = "Error", .column = 2, .style = .{ .fg = .red } },
+};
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -319,6 +332,10 @@ const App = struct {
     matrix_visible: bool = false,
     matrix_focused_row: usize = 0,
     matrix_focused_col: usize = 0,
+
+    // SankeyDiagram SQL data flow overlay
+    sankey_visible: bool = false,
+    sankey_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -803,6 +820,17 @@ const App = struct {
             return;
         }
 
+        // 's' key toggles sankey SQL data flow overlay (not while editing input)
+        if (byte == 115 and self.focus != .input) {
+            if (self.sankey_visible) {
+                self.sankey_visible = false;
+            } else {
+                self.sankey_visible = true;
+                self.sankey_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1000,6 +1028,28 @@ const App = struct {
             return;
         }
 
+        // SankeyDiagram arrow key navigation and ESC handling
+        if (self.sankey_visible) {
+            if (b2 == null) {
+                self.sankey_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous node
+                        if (self.sankey_focused > 0) self.sankey_focused -= 1;
+                    },
+                    'B' => { // Down — next node
+                        if (self.sankey_focused + 1 < SANKEY_NODE_COUNT) {
+                            self.sankey_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // FlowChart arrow key navigation and ESC handling
         if (self.flow_visible) {
             if (b2 == null) {
@@ -1109,6 +1159,8 @@ const App = struct {
                 self.matrix_visible = false;
             } else if (self.treemap_visible) {
                 self.treemap_visible = false;
+            } else if (self.sankey_visible) {
+                self.sankey_visible = false;
             } else if (self.hex_visible) {
                 self.hex_visible = false;
             } else if (self.radar_visible) {
@@ -1565,6 +1617,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render matrix view query metrics overlay
     if (app.matrix_visible) {
         renderMatrixView(app, buf, area);
+    }
+
+    // Render sankey SQL data flow overlay
+    if (app.sankey_visible) {
+        renderSankeyDiagram(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -2247,7 +2304,7 @@ fn renderGanttChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         };
     }
 
-    const chart = sailor.GanttChart.init()
+    const chart = sailor.gantt.GanttChart.init()
         .withTasks(tasks[0..actual_count])
         .withFocused(app.gantt_focused)
         .withLabelWidth(22)
@@ -2632,6 +2689,84 @@ fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     mv.render(buf, popup_area);
 }
 
+fn renderSankeyDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.sankey_visible) return;
+
+    // Count query types from query_history
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+    var select_count: f32 = 0;
+    var dml_count: f32 = 0;
+    var ddl_count: f32 = 0;
+    var success_count: f32 = 0;
+    var error_count: f32 = 0;
+
+    for (app.query_history[0..actual_count]) |entry| {
+        const title = entry.title[0..entry.title_len];
+        if (std.ascii.startsWithIgnoreCase(title, "SELECT")) {
+            select_count += 1;
+        } else if (std.ascii.startsWithIgnoreCase(title, "INSERT") or
+            std.ascii.startsWithIgnoreCase(title, "UPDATE") or
+            std.ascii.startsWithIgnoreCase(title, "DELETE"))
+        {
+            dml_count += 1;
+        } else if (std.ascii.startsWithIgnoreCase(title, "CREATE") or
+            std.ascii.startsWithIgnoreCase(title, "DROP") or
+            std.ascii.startsWithIgnoreCase(title, "ALTER"))
+        {
+            ddl_count += 1;
+        } else if (title.len > 0) {
+            dml_count += 1;
+        }
+        if (entry.success) {
+            success_count += 1;
+        } else {
+            error_count += 1;
+        }
+    }
+
+    // Use placeholder flows when no data yet
+    const has_data = actual_count > 0;
+    const flows = [5]sailor.tui.widgets.SankeyFlow{
+        .{ .source = 0, .target = 3, .value = if (has_data) select_count else 2.0, .style = .{ .fg = .cyan } },
+        .{ .source = 1, .target = 3, .value = if (has_data) dml_count else 1.0, .style = .{ .fg = .green } },
+        .{ .source = 2, .target = 3, .value = if (has_data) ddl_count else 1.0, .style = .{ .fg = .yellow } },
+        .{ .source = 3, .target = 4, .value = if (has_data) success_count else 3.0, .style = .{ .fg = .bright_green } },
+        .{ .source = 3, .target = 5, .value = if (has_data) error_count else 1.0, .style = .{ .fg = .red } },
+    };
+
+    // Centered overlay: ~70% width, ~60% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 6 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const sk = sailor.tui.widgets.SankeyDiagram.init()
+        .withNodes(&SANKEY_NODES)
+        .withFlows(&flows)
+        .withFocused(app.sankey_focused)
+        .withNodeWidth(3)
+        .withColGap(10)
+        .withNodeStyle(.{ .fg = .white })
+        .withFlowStyle(.{ .fg = .bright_black })
+        .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
+        .withBlock((tui.widgets.Block{
+            .title = " SQL Data Flow (s/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    sk.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -2678,8 +2813,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -6173,4 +6308,177 @@ test "matrix: matrix_focused_col clamps at MATRIX_COLS-1" {
     app.handleEscapeSequence('[', 'C'); // right arrow
 
     try std.testing.expectEqual(@as(usize, 2), app.matrix_focused_col);
+}
+
+test "sankey: 's' key opens sankey overlay when focus is schema" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.sankey_visible == false);
+
+    app.handleKey('s');
+
+    try std.testing.expect(app.sankey_visible == true);
+}
+
+test "sankey: 's' key closes sankey overlay when already visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.sankey_visible = true;
+
+    app.handleKey('s');
+
+    try std.testing.expect(app.sankey_visible == false);
+}
+
+test "sankey: 's' key does nothing when focus is input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.sankey_visible == false);
+
+    app.handleKey('s');
+
+    try std.testing.expect(app.sankey_visible == false);
+}
+
+test "sankey: 's' key resets sankey_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.sankey_focused = 5;
+
+    app.handleKey('s');
+
+    try std.testing.expectEqual(@as(usize, 0), app.sankey_focused);
+}
+
+test "sankey: bare ESC closes sankey overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sankey_visible = true;
+    try std.testing.expect(app.sankey_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.sankey_visible == false);
+}
+
+test "sankey: down arrow increments sankey_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sankey_visible = true;
+    app.sankey_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.sankey_focused);
+}
+
+test "sankey: up arrow decrements sankey_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sankey_visible = true;
+    app.sankey_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.sankey_focused);
+}
+
+test "sankey: up arrow clamps at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sankey_visible = true;
+    app.sankey_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.sankey_focused);
+}
+
+test "sankey: down arrow clamps at SANKEY_NODE_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sankey_visible = true;
+    app.sankey_focused = 5; // SANKEY_NODE_COUNT - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 5), app.sankey_focused);
+}
+
+test "sankey: opening sankey does not affect other overlays" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.matrix_visible = true;
+    app.matrix_focused_row = 3;
+
+    app.handleKey('s');
+
+    try std.testing.expect(app.sankey_visible == true);
+    try std.testing.expect(app.matrix_visible == true);
+    try std.testing.expectEqual(@as(usize, 3), app.matrix_focused_row);
 }
