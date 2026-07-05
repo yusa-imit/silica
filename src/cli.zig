@@ -986,6 +986,9 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             };
             writer.print("Parsed: COPY {s} {s} {s}\n", .{ source_str, dir_str, c.path }) catch {};
         },
+        .truncate => |tr| {
+            writer.print("Parsed: TRUNCATE ({d} table(s))\n", .{tr.names.len}) catch {};
+        },
     }
 }
 

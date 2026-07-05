@@ -216,6 +216,7 @@ pub const Parser = struct {
             .kw_show => .{ .show = try self.parseShow() },
             .kw_reset => .{ .reset = try self.parseReset() },
             .kw_copy => .{ .copy = try self.parseCreateCopy() },
+            .kw_truncate => .{ .truncate = try self.parseTruncate() },
             else => {
                 try self.addError(t, "expected statement");
                 return error.ParseFailed;
@@ -1824,6 +1825,18 @@ pub const Parser = struct {
         if (self.check(.kw_policy)) return .{ .drop_policy = try self.parseDropPolicy() };
         try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY after DROP");
         return error.ParseFailed;
+    }
+
+    fn parseTruncate(self: *Parser) Error!ast.TruncateStmt {
+        _ = try self.expect(.kw_truncate);
+        _ = self.match(.kw_table); // optional TABLE keyword
+        const a = self.arena.allocator();
+        var names = std.ArrayListUnmanaged([]const u8){};
+        try names.append(a, try self.expectIdentifier());
+        while (self.match(.comma)) {
+            try names.append(a, try self.expectIdentifier());
+        }
+        return .{ .names = try names.toOwnedSlice(a) };
     }
 
     fn parseDropTable(self: *Parser) Error!ast.DropTableStmt {

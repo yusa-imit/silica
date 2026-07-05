@@ -7484,6 +7484,67 @@ pub const Database = struct {
                 self.commitWal() catch {};
                 return .{ .message = "DROP TABLE" };
             },
+            .truncate => |tr| {
+                self.standby_coordinator.checkWriteAllowed() catch |err| {
+                    arena.?.deinit();
+                    self.allocator.destroy(arena.?);
+                    arena = null;
+                    return switch (err) {
+                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        else => EngineError.ExecutionError,
+                    };
+                };
+
+                for (tr.names) |tbl_name| {
+                    var table_info = self.catalog.getTable(tbl_name) catch {
+                        return EngineError.TableNotFound;
+                    };
+                    defer table_info.deinit(self.allocator);
+
+                    var tree = BTree.init(self.pool, table_info.data_root_page_id);
+                    var cursor = Cursor.init(self.allocator, &tree);
+                    defer cursor.deinit();
+                    cursor.seekFirst() catch {
+                        continue;
+                    };
+
+                    var keys_to_delete = std.ArrayListUnmanaged([]u8){};
+                    defer {
+                        for (keys_to_delete.items) |k| self.allocator.free(k);
+                        keys_to_delete.deinit(self.allocator);
+                    }
+
+                    while (cursor.next() catch null) |entry| {
+                        defer self.allocator.free(entry.value);
+                        const raw = if (isVersionedRowData(entry.value))
+                            entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
+                        else
+                            entry.value;
+                        if (deserializeRow(self.allocator, raw)) |vals| {
+                            self.deleteIndexEntries(&table_info, vals);
+                            for (vals) |v| v.free(self.allocator);
+                            self.allocator.free(vals);
+                        } else |_| {}
+                        keys_to_delete.append(self.allocator, entry.key) catch {
+                            self.allocator.free(entry.key);
+                            continue;
+                        };
+                    }
+
+                    for (keys_to_delete.items) |k| {
+                        tree.delete(k) catch {};
+                    }
+
+                    if (tree.root_page_id != table_info.data_root_page_id) {
+                        self.updateTableRootPage(tbl_name, tree.root_page_id) catch {};
+                    }
+                }
+
+                arena.?.deinit();
+                self.allocator.destroy(arena.?);
+                self.commitWal() catch {};
+                return .{ .message = "TRUNCATE" };
+            },
             .vacuum => |v| {
                 const result = self.executeVacuum(v.table_name);
                 if (result) |_| {
@@ -36782,5 +36843,230 @@ test "row constructor: (a, b) = (1, 2) with NULL returns NULL" {
         }
     }
     try testing.expectEqual(@as(usize, 0), count);
+}
+
+test "TRUNCATE TABLE removes all rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert 3 rows
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 'hello'), (2, 'world'), (3, 'foo')");
+    defer r2.close(testing.allocator);
+
+    // Verify 3 rows exist
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM t");
+    defer r3.close(testing.allocator);
+    var row = (try r3.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+
+    // TRUNCATE TABLE
+    var r4 = try db.execSQL("TRUNCATE TABLE t");
+    defer r4.close(testing.allocator);
+
+    // Verify 0 rows exist
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM t");
+    defer r5.close(testing.allocator);
+    var row2 = (try r5.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 0), row2.values[0].integer);
+}
+
+test "TRUNCATE TABLE without TABLE keyword" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_2.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert rows
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO users VALUES (1, 'alice'), (2, 'bob')");
+    defer r2.close(testing.allocator);
+
+    // Verify 2 rows exist
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM users");
+    defer r3.close(testing.allocator);
+    var row = (try r3.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+
+    // TRUNCATE (without TABLE keyword)
+    var r4 = try db.execSQL("TRUNCATE users");
+    defer r4.close(testing.allocator);
+
+    // Verify 0 rows exist
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM users");
+    defer r5.close(testing.allocator);
+    var row2 = (try r5.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 0), row2.values[0].integer);
+}
+
+test "TRUNCATE TABLE on empty table succeeds" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_3.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create empty table
+    var r1 = try db.execSQL("CREATE TABLE empty_table (id INTEGER PRIMARY KEY)");
+    defer r1.close(testing.allocator);
+
+    // TRUNCATE empty table should succeed
+    var r2 = try db.execSQL("TRUNCATE TABLE empty_table");
+    defer r2.close(testing.allocator);
+
+    // Verify still empty
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM empty_table");
+    defer r3.close(testing.allocator);
+    var row = (try r3.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 0), row.values[0].integer);
+}
+
+test "TRUNCATE TABLE multiple tables" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_4.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create two tables
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER PRIMARY KEY, v TEXT)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("CREATE TABLE t2 (id INTEGER PRIMARY KEY, v TEXT)");
+    defer r2.close(testing.allocator);
+
+    // Insert rows into both
+    var r3 = try db.execSQL("INSERT INTO t1 VALUES (1, 'a'), (2, 'b')");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t2 VALUES (10, 'x'), (20, 'y'), (30, 'z')");
+    defer r4.close(testing.allocator);
+
+    // Verify rows exist
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM t1");
+    defer r5.close(testing.allocator);
+    var row1 = (try r5.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 2), row1.values[0].integer);
+
+    var r6 = try db.execSQL("SELECT COUNT(*) FROM t2");
+    defer r6.close(testing.allocator);
+    var row2 = (try r6.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 3), row2.values[0].integer);
+
+    // TRUNCATE both tables
+    var r7 = try db.execSQL("TRUNCATE TABLE t1, t2");
+    defer r7.close(testing.allocator);
+
+    // Verify both are empty
+    var r8 = try db.execSQL("SELECT COUNT(*) FROM t1");
+    defer r8.close(testing.allocator);
+    var row3 = (try r8.rows.?.next()).?;
+    defer row3.deinit();
+    try testing.expectEqual(@as(i64, 0), row3.values[0].integer);
+
+    var r9 = try db.execSQL("SELECT COUNT(*) FROM t2");
+    defer r9.close(testing.allocator);
+    var row4 = (try r9.rows.?.next()).?;
+    defer row4.deinit();
+    try testing.expectEqual(@as(i64, 0), row4.values[0].integer);
+}
+
+test "TRUNCATE TABLE preserves schema" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_5.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with specific schema
+    var r1 = try db.execSQL("CREATE TABLE schema_test (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert and then truncate
+    var r2 = try db.execSQL("INSERT INTO schema_test VALUES (1, 'alice', 30)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("TRUNCATE TABLE schema_test");
+    defer r3.close(testing.allocator);
+
+    // Insert new row with same schema — should work
+    var r4 = try db.execSQL("INSERT INTO schema_test VALUES (999, 'bob', 25)");
+    defer r4.close(testing.allocator);
+
+    // Verify new row exists
+    var r5 = try db.execSQL("SELECT id, name, age FROM schema_test WHERE id = 999");
+    defer r5.close(testing.allocator);
+    var row = (try r5.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 999), row.values[0].integer);
+    try testing.expectEqualStrings("bob", row.values[1].text);
+    try testing.expectEqual(@as(i64, 25), row.values[2].integer);
+}
+
+test "TRUNCATE TABLE clears secondary indexes" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_6.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with unique index
+    var r1 = try db.execSQL("CREATE TABLE indexed_table (id INTEGER PRIMARY KEY, email TEXT UNIQUE)");
+    defer r1.close(testing.allocator);
+
+    // Insert row
+    var r2 = try db.execSQL("INSERT INTO indexed_table VALUES (1, 'test@example.com')");
+    defer r2.close(testing.allocator);
+
+    // Verify row exists
+    var r3 = try db.execSQL("SELECT COUNT(*) FROM indexed_table");
+    defer r3.close(testing.allocator);
+    var row1 = (try r3.rows.?.next()).?;
+    defer row1.deinit();
+    try testing.expectEqual(@as(i64, 1), row1.values[0].integer);
+
+    // TRUNCATE
+    var r4 = try db.execSQL("TRUNCATE TABLE indexed_table");
+    defer r4.close(testing.allocator);
+
+    // After truncate, should be able to insert the same email again (index cleared)
+    var r5 = try db.execSQL("INSERT INTO indexed_table VALUES (2, 'test@example.com')");
+    defer r5.close(testing.allocator);
+
+    // Verify new row exists
+    var r6 = try db.execSQL("SELECT COUNT(*) FROM indexed_table");
+    defer r6.close(testing.allocator);
+    var row2 = (try r6.rows.?.next()).?;
+    defer row2.deinit();
+    try testing.expectEqual(@as(i64, 1), row2.values[0].integer);
+}
+
+test "TRUNCATE TABLE non-existent table returns error" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_truncate_7.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Try to truncate non-existent table
+    const result = db.execSQL("TRUNCATE TABLE nonexistent");
+
+    // Should return an error (not panic, not succeed)
+    try testing.expectError(EngineError.TableNotFound, result);
 }
 

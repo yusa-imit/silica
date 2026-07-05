@@ -376,6 +376,7 @@ pub const Analyzer = struct {
             .reindex => {},
             .explain => |s| self.analyze(s.stmt.*),
             .copy => {}, // COPY needs no semantic analysis
+            .truncate => {}, // TRUNCATE needs no semantic analysis
         }
     }
 

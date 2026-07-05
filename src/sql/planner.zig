@@ -335,6 +335,7 @@ pub const PlanType = enum {
     delete,
     create_table,
     drop_table,
+    truncate_table,
     create_index,
     drop_index,
     transaction,
@@ -404,6 +405,7 @@ pub const Planner = struct {
             .reindex => self.planTransaction(), // handled early in engine
             .explain => |s| self.planExplain(s),
             .copy => self.planTransaction(), // handled early in engine
+            .truncate => self.planTransaction(), // handled early in engine
         };
     }
 

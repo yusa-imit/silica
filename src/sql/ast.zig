@@ -634,6 +634,11 @@ pub const DropTableStmt = struct {
     name: []const u8,
 };
 
+/// TRUNCATE TABLE statement.
+pub const TruncateStmt = struct {
+    names: []const []const u8,
+};
+
 /// CREATE INDEX statement.
 pub const CreateIndexStmt = struct {
     if_not_exists: bool = false,
@@ -1097,6 +1102,7 @@ pub const Stmt = union(enum) {
     show: ShowStmt,
     reset: ResetStmt,
     copy: CopyStmt,
+    truncate: TruncateStmt,
 
     pub fn deinit(self: *const Stmt, allocator: Allocator) void {
         _ = self;
