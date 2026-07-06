@@ -241,6 +241,10 @@ const FUNNEL_STAGE_COUNT: usize = 4;
 
 const DOTPLOT_ITEM_COUNT: usize = 5;
 
+// ── RadialBar Database Health Metrics ────────────────────────────────────────
+
+const RADIALBAR_ARC_COUNT: usize = 4;
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -371,6 +375,10 @@ const App = struct {
     // DotPlot query duration per-type overlay
     dotplot_visible: bool = false,
     dotplot_focused: usize = 0,
+
+    // RadialBar database health metrics overlay
+    radialbar_visible: bool = false,
+    radialbar_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -921,6 +929,17 @@ const App = struct {
             return;
         }
 
+        // 'h' key toggles radial bar database health metrics overlay (not while editing input)
+        if (byte == 104 and self.focus != .input) {
+            if (self.radialbar_visible) {
+                self.radialbar_visible = false;
+            } else {
+                self.radialbar_visible = true;
+                self.radialbar_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1250,6 +1269,28 @@ const App = struct {
             return;
         }
 
+        // RadialBar arrow key navigation and ESC handling
+        if (self.radialbar_visible) {
+            if (b2 == null) {
+                self.radialbar_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous arc
+                        if (self.radialbar_focused > 0) self.radialbar_focused -= 1;
+                    },
+                    'B' => { // Down — next arc
+                        if (self.radialbar_focused + 1 < RADIALBAR_ARC_COUNT) {
+                            self.radialbar_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // FlowChart arrow key navigation and ESC handling
         if (self.flow_visible) {
             if (b2 == null) {
@@ -1371,6 +1412,8 @@ const App = struct {
                 self.funnel_visible = false;
             } else if (self.dotplot_visible) {
                 self.dotplot_visible = false;
+            } else if (self.radialbar_visible) {
+                self.radialbar_visible = false;
             } else if (self.hex_visible) {
                 self.hex_visible = false;
             } else if (self.radar_visible) {
@@ -1857,6 +1900,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render dot plot query duration per-type overlay
     if (app.dotplot_visible) {
         renderDotPlot(app, buf, area);
+    }
+
+    // Render radial bar database health metrics overlay
+    if (app.radialbar_visible) {
+        renderRadialBar(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3345,6 +3393,68 @@ fn renderDotPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     dp.render(buf, popup_area);
 }
 
+fn renderRadialBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.radialbar_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Compute health metric arcs from query_history
+    var success_rate: f32 = 0.95;
+    var fast_rate: f32 = 0.60;
+    var select_rate: f32 = 0.50;
+    var dml_rate: f32 = 0.30;
+
+    if (actual_count > 0) {
+        var succeeded: f32 = 0;
+        var fast: f32 = 0;
+        var selects: f32 = 0;
+        var dmls: f32 = 0;
+        const total: f32 = @floatFromInt(actual_count);
+        for (app.query_history[0..actual_count]) |entry| {
+            if (entry.success) succeeded += 1;
+            if (entry.success and entry.duration_ms < 100) fast += 1;
+            const qt = classifyQueryType(&entry);
+            if (qt == 0) selects += 1; // SELECT
+            if (qt == 1 or qt == 2 or qt == 3) dmls += 1; // INSERT/UPDATE/DELETE
+        }
+        success_rate = succeeded / total;
+        fast_rate = if (succeeded > 0) fast / total else 0;
+        select_rate = selects / total;
+        dml_rate = dmls / total;
+    }
+
+    const arcs = [RADIALBAR_ARC_COUNT]sailor.RadialArc{
+        .{ .label = "Success", .value = success_rate },
+        .{ .label = "Fast   ", .value = fast_rate },
+        .{ .label = "SELECT ", .value = select_rate },
+        .{ .label = "DML    ", .value = dml_rate },
+    };
+    const arc_slices: []const sailor.RadialArc = &arcs;
+
+    const popup_width: u16 = @min(52, area.width -| 4);
+    const popup_height: u16 = @min(16, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const rb = sailor.RadialBar.init()
+        .withArcs(arc_slices)
+        .withShowLabels(true)
+        .withShowValues(true)
+        .withFocused(app.radialbar_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " DB Health Metrics (h/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .green }));
+
+    rb.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -3392,7 +3502,7 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     }
 
     // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  Ctrl+C:quit";
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -7914,4 +8024,207 @@ test "dotplot: dotplot_focused starts at 0" {
     defer app.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), app.dotplot_focused);
+}
+
+// ── RadialBar Tests ─────────────────────────────────────────────────────────────
+
+test "radialbar: 'h' key toggles radialbar_visible to true when focus != .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.radialbar_visible);
+    app.handleKey(104); // 'h'
+    try std.testing.expect(app.radialbar_visible);
+}
+
+test "radialbar: 'h' key does not toggle when focus == .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.radialbar_visible);
+    app.handleKey(104); // 'h'
+    try std.testing.expect(!app.radialbar_visible);
+}
+
+test "radialbar: 'h' key closes radialbar (toggle off)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.handleKey(104); // 'h' to open
+    try std.testing.expect(app.radialbar_visible);
+
+    app.handleKey(104); // 'h' to close
+    try std.testing.expect(!app.radialbar_visible);
+}
+
+test "radialbar: 'h' key sets radialbar_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.radialbar_focused = 5; // Set to non-zero
+    app.handleKey(104); // 'h'
+    try std.testing.expect(app.radialbar_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.radialbar_focused);
+}
+
+test "radialbar: up arrow navigates radialbar_focused backward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radialbar_visible = true;
+    app.radialbar_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.radialbar_focused);
+}
+
+test "radialbar: down arrow navigates radialbar_focused forward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radialbar_visible = true;
+    app.radialbar_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.radialbar_focused);
+}
+
+test "radialbar: down arrow does not exceed RADIALBAR_ARC_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radialbar_visible = true;
+    app.radialbar_focused = 3; // RADIALBAR_ARC_COUNT - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 3), app.radialbar_focused);
+}
+
+test "radialbar: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radialbar_visible = true;
+    app.radialbar_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.radialbar_focused);
+}
+
+test "radialbar: ESC closes radialbar overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.radialbar_visible = true;
+    app.radialbar_focused = 2;
+
+    app.handleEscapeSequence(null, null); // ESC (b2=null, b3=null)
+
+    try std.testing.expect(!app.radialbar_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.radialbar_focused); // focused not reset on close
+}
+
+test "radialbar: radialbar_focused resets to 0 when toggled open again" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open and navigate
+    app.handleKey(104); // 'h'
+    app.handleEscapeSequence('[', 'B'); // down
+    app.handleEscapeSequence('[', 'B'); // down
+    try std.testing.expectEqual(@as(usize, 2), app.radialbar_focused);
+
+    // Close
+    app.handleKey(104); // 'h'
+    try std.testing.expect(!app.radialbar_visible);
+
+    // Reopen
+    app.handleKey(104); // 'h'
+    try std.testing.expect(app.radialbar_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.radialbar_focused);
+}
+
+test "radialbar: other overlays are unaffected when radialbar is toggled" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set some other overlays visible
+    app.dotplot_visible = true;
+    app.dotplot_focused = 2;
+    app.funnel_visible = true;
+    app.funnel_focused = 1;
+
+    // Toggle radialbar
+    app.handleKey(104); // 'h'
+
+    // Verify other overlays unchanged
+    try std.testing.expect(app.dotplot_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
+    try std.testing.expect(app.funnel_visible);
+    try std.testing.expectEqual(@as(usize, 1), app.funnel_focused);
 }
