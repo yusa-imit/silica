@@ -231,6 +231,12 @@ const SANKEY_NODES = [SANKEY_NODE_COUNT]sailor.tui.widgets.SankeyNode{
 const CHORD_NODE_COUNT: usize = 5;
 const CHORD_NODES = [CHORD_NODE_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
 
+const WATERFALL_BAR_COUNT: usize = 6;
+
+// ── FunnelChart SQL Query Pipeline ──────────────────────────────────────────
+
+const FUNNEL_STAGE_COUNT: usize = 4;
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -349,6 +355,14 @@ const App = struct {
     // ChordDiagram SQL operation flow overlay
     chord_visible: bool = false,
     chord_focused: usize = 0,
+
+    // WaterfallChart SQL operation breakdown overlay
+    waterfall_visible: bool = false,
+    waterfall_focused: usize = 0,
+
+    // FunnelChart SQL query success funnel overlay
+    funnel_visible: bool = false,
+    funnel_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -866,6 +880,28 @@ const App = struct {
             return;
         }
 
+        // 'e' key toggles waterfall chart SQL operation breakdown overlay (not while editing input)
+        if (byte == 101 and self.focus != .input) {
+            if (self.waterfall_visible) {
+                self.waterfall_visible = false;
+            } else {
+                self.waterfall_visible = true;
+                self.waterfall_focused = 0;
+            }
+            return;
+        }
+
+        // 'l' key toggles funnel chart SQL query success funnel overlay (not while editing input)
+        if (byte == 108 and self.focus != .input) {
+            if (self.funnel_visible) {
+                self.funnel_visible = false;
+            } else {
+                self.funnel_visible = true;
+                self.funnel_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1129,6 +1165,50 @@ const App = struct {
             return;
         }
 
+        // WaterfallChart arrow key navigation and ESC handling
+        if (self.waterfall_visible) {
+            if (b2 == null) {
+                self.waterfall_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous bar
+                        if (self.waterfall_focused > 0) self.waterfall_focused -= 1;
+                    },
+                    'B' => { // Down — next bar
+                        if (self.waterfall_focused + 1 < WATERFALL_BAR_COUNT) {
+                            self.waterfall_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // FunnelChart arrow key navigation and ESC handling
+        if (self.funnel_visible) {
+            if (b2 == null) {
+                self.funnel_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous stage
+                        if (self.funnel_focused > 0) self.funnel_focused -= 1;
+                    },
+                    'B' => { // Down — next stage
+                        if (self.funnel_focused + 1 < FUNNEL_STAGE_COUNT) {
+                            self.funnel_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // FlowChart arrow key navigation and ESC handling
         if (self.flow_visible) {
             if (b2 == null) {
@@ -1244,6 +1324,10 @@ const App = struct {
                 self.bubble_visible = false;
             } else if (self.chord_visible) {
                 self.chord_visible = false;
+            } else if (self.waterfall_visible) {
+                self.waterfall_visible = false;
+            } else if (self.funnel_visible) {
+                self.funnel_visible = false;
             } else if (self.hex_visible) {
                 self.hex_visible = false;
             } else if (self.radar_visible) {
@@ -1715,6 +1799,16 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render chord diagram SQL flow overlay
     if (app.chord_visible) {
         renderChordDiagram(app, buf, area);
+    }
+
+    // Render waterfall chart SQL operation breakdown overlay
+    if (app.waterfall_visible) {
+        renderWaterfallChart(app, buf, area);
+    }
+
+    // Render funnel chart SQL query success funnel overlay
+    if (app.funnel_visible) {
+        renderFunnelChart(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3004,6 +3098,66 @@ fn renderChordDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     cd.render(buf, popup_area);
 }
 
+fn renderWaterfallChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.waterfall_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Count each query type from history
+    var counts = [5]f32{ 0, 0, 0, 0, 0 }; // SELECT, INSERT, UPDATE, DELETE, DDL
+    if (actual_count == 0) {
+        // Placeholder: typical DB usage
+        counts[0] = 5.0; // SELECT
+        counts[1] = 3.0; // INSERT
+        counts[2] = 2.0; // UPDATE
+        counts[3] = 1.0; // DELETE
+        counts[4] = 1.0; // DDL
+    } else {
+        for (app.query_history[0..actual_count]) |entry| {
+            const t = classifyQueryType(&entry);
+            if (t < 5) counts[t] += 1.0;
+        }
+    }
+
+    const bars = [WATERFALL_BAR_COUNT]sailor.WaterfallBar{
+        .{ .label = "SELECT", .value = counts[0], .kind = .absolute },
+        .{ .label = "INSERT", .value = counts[1], .kind = .relative },
+        .{ .label = "UPDATE", .value = counts[2], .kind = .relative },
+        .{ .label = "DELETE", .value = counts[3], .kind = .relative },
+        .{ .label = "DDL",    .value = counts[4], .kind = .relative },
+        .{ .label = "Total",  .value = 0.0,        .kind = .total },
+    };
+
+    // Centered overlay: ~70% width, ~70% height
+    const ow: u16 = @min(area.width * 7 / 10, area.width);
+    const oh: u16 = @min(area.height * 7 / 10, area.height);
+    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
+    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
+    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
+
+    // Clear background
+    var py: u16 = oy;
+    while (py < oy + oh) : (py += 1) {
+        var px: u16 = ox;
+        while (px < ox + ow) : (px += 1) {
+            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
+        }
+    }
+
+    const bar_slices: []const sailor.WaterfallBar = &bars;
+    const wc = sailor.WaterfallChart.init()
+        .withBars(bar_slices)
+        .withFocused(app.waterfall_focused)
+        .withShowValues(true)
+        .withShowConnectors(true)
+        .withBlock((tui.widgets.Block{
+            .title = " SQL Query Breakdown (e/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    wc.render(buf, popup_area);
+}
+
 fn classifyQueryType(entry: *const QueryHistoryEntry) usize {
     const sql = entry.title[0..entry.title_len];
     if (sql.len == 0) return 0;
@@ -3017,6 +3171,65 @@ fn classifyQueryType(entry: *const QueryHistoryEntry) usize {
     if (rest.len >= 6 and std.ascii.eqlIgnoreCase(rest[0..6], "delete")) return 3;
     // DDL: CREATE, DROP, ALTER, TRUNCATE, etc.
     return 4;
+}
+
+fn renderFunnelChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.funnel_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Count stages from query_history
+    var total: f32 = @floatFromInt(actual_count);
+    var succeeded: f32 = 0;
+    var fast: f32 = 0;
+    var instant: f32 = 0;
+
+    if (actual_count == 0) {
+        // Placeholder data when no queries yet
+        total = 100;
+        succeeded = 75;
+        fast = 50;
+        instant = 20;
+    } else {
+        for (app.query_history[0..actual_count]) |entry| {
+            if (entry.success) {
+                succeeded += 1;
+                if (entry.duration_ms < 100) fast += 1;
+                if (entry.duration_ms < 10) instant += 1;
+            }
+        }
+    }
+
+    const stages = [FUNNEL_STAGE_COUNT]sailor.FunnelStage{
+        .{ .label = "Submitted", .value = total },
+        .{ .label = "Succeeded", .value = succeeded },
+        .{ .label = "Fast (<100ms)", .value = fast },
+        .{ .label = "Instant (<10ms)", .value = instant },
+    };
+    const stage_slices: []const sailor.FunnelStage = &stages;
+
+    const popup_width: u16 = @min(50, area.width -| 4);
+    const popup_height: u16 = @min(14, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const fc = sailor.FunnelChart.init()
+        .withStages(stage_slices)
+        .withShowValues(true)
+        .withShowPercentages(true)
+        .withFocused(app.funnel_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " SQL Query Funnel (l/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    fc.render(buf, popup_area);
 }
 
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
@@ -3065,8 +3278,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -7067,4 +7280,349 @@ test "chord: down arrow clamps at CHORD_NODE_COUNT - 1" {
     app.handleEscapeSequence('[', 'B'); // down arrow
 
     try std.testing.expectEqual(@as(usize, 4), app.chord_focused);
+}
+
+// ── WaterfallChart SQL Operation Breakdown Tests ────────────────────────────
+
+test "waterfall: waterfall_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.waterfall_visible == false);
+}
+
+test "waterfall: 'e' key opens waterfall overlay when focus is schema" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.waterfall_visible == false);
+
+    app.handleKey('e');
+
+    try std.testing.expect(app.waterfall_visible == true);
+}
+
+test "waterfall: 'e' key closes waterfall overlay when already visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.waterfall_visible = true;
+
+    app.handleKey('e');
+
+    try std.testing.expect(app.waterfall_visible == false);
+}
+
+test "waterfall: 'e' key does nothing when focus is input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.waterfall_visible == false);
+
+    app.handleKey('e');
+
+    try std.testing.expect(app.waterfall_visible == false);
+}
+
+test "waterfall: 'e' key resets waterfall_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.waterfall_focused = 3;
+
+    app.handleKey('e');
+
+    try std.testing.expectEqual(@as(usize, 0), app.waterfall_focused);
+}
+
+test "waterfall: ESC closes waterfall overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.waterfall_visible = true;
+    try std.testing.expect(app.waterfall_visible == true);
+
+    app.handleEscapeSequence(null, null); // bare ESC
+
+    try std.testing.expect(app.waterfall_visible == false);
+}
+
+test "waterfall: up arrow decrements waterfall_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.waterfall_visible = true;
+    app.waterfall_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.waterfall_focused);
+}
+
+test "waterfall: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.waterfall_visible = true;
+    app.waterfall_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.waterfall_focused);
+}
+
+test "waterfall: down arrow increments waterfall_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.waterfall_visible = true;
+    app.waterfall_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.waterfall_focused);
+}
+
+test "waterfall: down arrow does not exceed WATERFALL_BAR_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.waterfall_visible = true;
+    app.waterfall_focused = 5; // WATERFALL_BAR_COUNT - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 5), app.waterfall_focused);
+}
+
+// ── FunnelChart SQL Query Success Funnel Tests ───────────────────────────────
+
+test "funnel: funnel_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.funnel_visible == false);
+}
+
+test "funnel: 'l' key opens funnel overlay when focus is schema" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.funnel_visible == false);
+
+    app.handleKey('l');
+
+    try std.testing.expect(app.funnel_visible == true);
+}
+
+test "funnel: 'l' key closes funnel overlay when already visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.funnel_visible = true;
+
+    app.handleKey('l');
+
+    try std.testing.expect(app.funnel_visible == false);
+}
+
+test "funnel: 'l' key does nothing when focus is input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.funnel_visible == false);
+
+    app.handleKey('l');
+
+    try std.testing.expect(app.funnel_visible == false);
+}
+
+test "funnel: 'l' key resets funnel_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.funnel_focused = 3;
+
+    app.handleKey('l');
+
+    try std.testing.expectEqual(@as(usize, 0), app.funnel_focused);
+}
+
+test "funnel: ESC closes funnel overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.funnel_visible = true;
+
+    app.handleEscapeSequence(null, null);
+
+    try std.testing.expect(app.funnel_visible == false);
+}
+
+test "funnel: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.funnel_visible = true;
+    app.funnel_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.funnel_focused);
+}
+
+test "funnel: down arrow increments funnel_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.funnel_visible = true;
+    app.funnel_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.funnel_focused);
+}
+
+test "funnel: down arrow does not exceed FUNNEL_STAGE_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.funnel_visible = true;
+    app.funnel_focused = 3; // FUNNEL_STAGE_COUNT - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 3), app.funnel_focused);
+}
+
+test "funnel: up arrow decrements funnel_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.funnel_visible = true;
+    app.funnel_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.funnel_focused);
+}
+
+test "funnel: funnel_focused starts at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.funnel_focused);
 }
