@@ -7531,7 +7531,154 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .integer = 0 };
     }
 
+    // JSON_VALUE(json_expr, path) — SQL:2016 JSON path scalar extraction
+    // Returns a scalar value from JSON using SQL/JSON path (e.g. '$.key', '$.a[0].b').
+    // Returns NULL when the path doesn't exist or the value is JSON null.
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_value")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const json_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer json_val.free(allocator);
+        const path_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer path_val.free(allocator);
+        if (json_val == .null_value or path_val == .null_value) return Value.null_value;
+        const path_str = switch (path_val) {
+            .text => |t| t,
+            else => return EvalError.TypeError,
+        };
+        return evalSqlJsonValue(allocator, json_val, path_str, false);
+    }
+
+    // JSON_QUERY(json_expr, path) — SQL:2016 JSON path fragment extraction
+    // Returns a JSON fragment (object or array) at the given path.
+    // Returns NULL when the path doesn't exist.
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_query")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const json_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer json_val.free(allocator);
+        const path_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer path_val.free(allocator);
+        if (json_val == .null_value or path_val == .null_value) return Value.null_value;
+        const path_str = switch (path_val) {
+            .text => |t| t,
+            else => return EvalError.TypeError,
+        };
+        return evalSqlJsonValue(allocator, json_val, path_str, true);
+    }
+
+    // JSON_EXISTS(json_expr, path) — SQL:2016 JSON path existence check
+    // Returns true/false whether the path exists in the JSON value.
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_exists")) {
+        if (fc.args.len < 2) return EvalError.TypeError;
+        const json_val = try evalExpr(allocator, fc.args[0], row, catalog);
+        defer json_val.free(allocator);
+        const path_val = try evalExpr(allocator, fc.args[1], row, catalog);
+        defer path_val.free(allocator);
+        if (json_val == .null_value or path_val == .null_value) return Value{ .boolean = false };
+        const path_str = switch (path_val) {
+            .text => |t| t,
+            else => return EvalError.TypeError,
+        };
+        const result = evalSqlJsonValue(allocator, json_val, path_str, false) catch return Value{ .boolean = false };
+        defer result.free(allocator);
+        return Value{ .boolean = result != .null_value };
+    }
+
     return EvalError.UnsupportedExpression;
+}
+
+/// Navigate a SQL/JSON path (e.g. '$.key', '$.a[0].b') within a JSON value.
+/// `as_json` = true → return a JSON text fragment (for JSON_QUERY);
+/// `as_json` = false → return a scalar value (for JSON_VALUE).
+fn evalSqlJsonValue(allocator: Allocator, json_val: Value, path_str: []const u8, as_json: bool) EvalError!Value {
+    // Get JSON text from Value
+    const json_text = switch (json_val) {
+        .text => |t| t,
+        .blob => |b| b,
+        else => return EvalError.TypeError,
+    };
+
+    // Parse JSON
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, aa, json_text, .{}) catch return EvalError.TypeError;
+
+    // Navigate the SQL/JSON path
+    const current = sqlJsonNavigate(parsed.value, path_str) orelse return Value.null_value;
+
+    // Convert result to Value
+    if (as_json) {
+        // JSON_QUERY: return JSON text representation
+        switch (current) {
+            .object, .array => {
+                var buf = std.ArrayListUnmanaged(u8){};
+                defer buf.deinit(allocator);
+                std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
+                const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
+                return Value{ .text = json_result };
+            },
+            // JSON_QUERY requires an array or object; scalar paths return NULL
+            else => return Value.null_value,
+        }
+    } else {
+        // JSON_VALUE: return scalar as text (SQL:2016 default RETURNING type is text/nvarchar).
+        // Numeric types are formatted as text; booleans as "true"/"false".
+        return switch (current) {
+            .string => |s| Value{ .text = allocator.dupe(u8, s) catch return EvalError.OutOfMemory },
+            .integer => |v| Value{ .text = std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory },
+            .float => |v| Value{ .text = std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory },
+            .bool => |b| Value{ .text = allocator.dupe(u8, if (b) "true" else "false") catch return EvalError.OutOfMemory },
+            .null => Value.null_value,
+            // JSON_VALUE on an object/array returns NULL (use JSON_QUERY for those)
+            else => Value.null_value,
+        };
+    }
+}
+
+/// Walk a SQL/JSON path string (e.g. '$.a.b[0].c') over a std.json.Value.
+/// Returns null when any step along the path fails to navigate.
+fn sqlJsonNavigate(root: std.json.Value, path: []const u8) ?std.json.Value {
+    // Path must start with '$'
+    if (path.len == 0 or path[0] != '$') return null;
+    var pos: usize = 1;
+    var current = root;
+
+    while (pos < path.len) {
+        switch (path[pos]) {
+            '.' => {
+                pos += 1;
+                if (pos >= path.len) return null;
+                // Collect the key name (up to next '.' or '[')
+                var end = pos;
+                while (end < path.len and path[end] != '.' and path[end] != '[') end += 1;
+                if (end == pos) return null; // Empty key
+                const key = path[pos..end];
+                pos = end;
+                current = switch (current) {
+                    .object => |obj| obj.get(key) orelse return null,
+                    else => return null,
+                };
+            },
+            '[' => {
+                pos += 1;
+                // Collect digits up to ']'
+                var end = pos;
+                while (end < path.len and path[end] != ']') end += 1;
+                if (end >= path.len) return null;
+                const idx_str = path[pos..end];
+                pos = end + 1; // skip ']'
+                const idx = std.fmt.parseInt(usize, idx_str, 10) catch return null;
+                current = switch (current) {
+                    .array => |arr| if (idx < arr.items.len) arr.items[idx] else return null,
+                    else => return null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    return current;
 }
 
 /// Check if a function name is an aggregate function.
@@ -31582,4 +31729,170 @@ test "sampleAccept different seeds produce different sequences" {
     }
     // Different seeds should not produce identical 100-element sequences
     try std.testing.expect(same_count < 100);
+}
+
+// ============================================================================
+// JSON_VALUE, JSON_QUERY, JSON_EXISTS tests (SQL:2016)
+// ============================================================================
+
+test "JSON_VALUE extract string scalar from $.name" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_VALUE('{"name":"Alice"}', '$.name') → "Alice"
+    const json_expr = ast.Expr{ .string_literal = "{\"name\":\"Alice\"}" };
+    const path_expr = ast.Expr{ .string_literal = "$.name" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_VALUE", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("Alice", result.text);
+}
+
+test "JSON_VALUE extract integer from $.age" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_VALUE('{"age":30}', '$.age') → 30 (as text "30")
+    const json_expr = ast.Expr{ .string_literal = "{\"age\":30}" };
+    const path_expr = ast.Expr{ .string_literal = "$.age" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_VALUE", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("30", result.text);
+}
+
+test "JSON_VALUE extract nested value from $.address.city" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_VALUE('{"address":{"city":"NYC"}}', '$.address.city') → "NYC"
+    const json_expr = ast.Expr{ .string_literal = "{\"address\":{\"city\":\"NYC\"}}" };
+    const path_expr = ast.Expr{ .string_literal = "$.address.city" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_VALUE", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("NYC", result.text);
+}
+
+test "JSON_VALUE extract from array element $.tags[0]" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_VALUE('{"tags":["red","green","blue"]}', '$.tags[0]') → "red"
+    const json_expr = ast.Expr{ .string_literal = "{\"tags\":[\"red\",\"green\",\"blue\"]}" };
+    const path_expr = ast.Expr{ .string_literal = "$.tags[0]" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_VALUE", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    try std.testing.expectEqualStrings("red", result.text);
+}
+
+test "JSON_VALUE returns NULL when path does not exist" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_VALUE('{"name":"Alice"}', '$.nonexistent') → NULL
+    const json_expr = ast.Expr{ .string_literal = "{\"name\":\"Alice\"}" };
+    const path_expr = ast.Expr{ .string_literal = "$.nonexistent" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_VALUE", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "JSON_VALUE returns NULL when JSON input is NULL" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_VALUE(NULL, '$.name') → NULL
+    const json_expr = ast.Expr{ .null_literal = {} };
+    const path_expr = ast.Expr{ .string_literal = "$.name" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_VALUE", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .null_value);
+}
+
+test "JSON_QUERY extract JSON array $.tags" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_QUERY('{"tags":["a","b","c"]}', '$.tags') → ["a","b","c"] (as JSON text)
+    const json_expr = ast.Expr{ .string_literal = "{\"tags\":[\"a\",\"b\",\"c\"]}" };
+    const path_expr = ast.Expr{ .string_literal = "$.tags" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_QUERY", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // JSON_QUERY returns the array as a JSON text string
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "["));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "]"));
+}
+
+test "JSON_QUERY extract JSON object $.address" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_QUERY('{"address":{"city":"NYC","zip":"10001"}}', '$.address') → {"city":"NYC","zip":"10001"}
+    const json_expr = ast.Expr{ .string_literal = "{\"address\":{\"city\":\"NYC\",\"zip\":\"10001\"}}" };
+    const path_expr = ast.Expr{ .string_literal = "$.address" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_QUERY", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .text);
+    // JSON_QUERY returns the object as a JSON text string
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "{"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.text, 1, "}"));
+}
+
+test "JSON_EXISTS returns true when path exists" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_EXISTS('{"name":"Alice"}', '$.name') → true (1)
+    const json_expr = ast.Expr{ .string_literal = "{\"name\":\"Alice\"}" };
+    const path_expr = ast.Expr{ .string_literal = "$.name" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_EXISTS", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expectEqual(true, result.boolean);
+}
+
+test "JSON_EXISTS returns false when path does not exist" {
+    const allocator = std.testing.allocator;
+    const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
+
+    // JSON_EXISTS('{"name":"Alice"}', '$.nonexistent') → false (0)
+    const json_expr = ast.Expr{ .string_literal = "{\"name\":\"Alice\"}" };
+    const path_expr = ast.Expr{ .string_literal = "$.nonexistent" };
+    const args = [_]*const ast.Expr{ &json_expr, &path_expr };
+    const fc = .{ .name = "JSON_EXISTS", .args = &args, .distinct = false };
+
+    const result = try evalFunctionCall(allocator, fc, &empty_row, null);
+    defer result.free(allocator);
+    try std.testing.expect(result == .boolean);
+    try std.testing.expectEqual(false, result.boolean);
 }
