@@ -237,6 +237,10 @@ const WATERFALL_BAR_COUNT: usize = 6;
 
 const FUNNEL_STAGE_COUNT: usize = 4;
 
+// ── DotPlot Query Duration Per-Type ─────────────────────────────────────────
+
+const DOTPLOT_ITEM_COUNT: usize = 5;
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -363,6 +367,10 @@ const App = struct {
     // FunnelChart SQL query success funnel overlay
     funnel_visible: bool = false,
     funnel_focused: usize = 0,
+
+    // DotPlot query duration per-type overlay
+    dotplot_visible: bool = false,
+    dotplot_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -902,6 +910,17 @@ const App = struct {
             return;
         }
 
+        // 'd' key toggles dot plot query duration per-type overlay (not while editing input)
+        if (byte == 100 and self.focus != .input) {
+            if (self.dotplot_visible) {
+                self.dotplot_visible = false;
+            } else {
+                self.dotplot_visible = true;
+                self.dotplot_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1209,6 +1228,28 @@ const App = struct {
             return;
         }
 
+        // DotPlot arrow key navigation and ESC handling
+        if (self.dotplot_visible) {
+            if (b2 == null) {
+                self.dotplot_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous item
+                        if (self.dotplot_focused > 0) self.dotplot_focused -= 1;
+                    },
+                    'B' => { // Down — next item
+                        if (self.dotplot_focused + 1 < DOTPLOT_ITEM_COUNT) {
+                            self.dotplot_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
         // FlowChart arrow key navigation and ESC handling
         if (self.flow_visible) {
             if (b2 == null) {
@@ -1328,6 +1369,8 @@ const App = struct {
                 self.waterfall_visible = false;
             } else if (self.funnel_visible) {
                 self.funnel_visible = false;
+            } else if (self.dotplot_visible) {
+                self.dotplot_visible = false;
             } else if (self.hex_visible) {
                 self.hex_visible = false;
             } else if (self.radar_visible) {
@@ -1809,6 +1852,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render funnel chart SQL query success funnel overlay
     if (app.funnel_visible) {
         renderFunnelChart(app, buf, area);
+    }
+
+    // Render dot plot query duration per-type overlay
+    if (app.dotplot_visible) {
+        renderDotPlot(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3232,6 +3280,71 @@ fn renderFunnelChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     fc.render(buf, popup_area);
 }
 
+fn renderDotPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.dotplot_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Accumulate total duration and count per query type (0=SELECT 1=INSERT 2=UPDATE 3=DELETE 4=DDL)
+    var total_duration: [DOTPLOT_ITEM_COUNT]u64 = .{0} ** DOTPLOT_ITEM_COUNT;
+    var type_count: [DOTPLOT_ITEM_COUNT]u64 = .{0} ** DOTPLOT_ITEM_COUNT;
+    var avg_duration: [DOTPLOT_ITEM_COUNT]f32 = .{0.0} ** DOTPLOT_ITEM_COUNT;
+    var max_avg: f32 = 1.0;
+
+    if (actual_count == 0) {
+        // Placeholder data when no queries yet
+        avg_duration = .{ 12.5, 8.3, 15.7, 6.1, 42.0 };
+        max_avg = 42.0;
+    } else {
+        for (app.query_history[0..actual_count]) |entry| {
+            const t = classifyQueryType(&entry);
+            total_duration[t] += entry.duration_ms;
+            type_count[t] += 1;
+        }
+        for (0..DOTPLOT_ITEM_COUNT) |i| {
+            if (type_count[i] > 0) {
+                avg_duration[i] = @as(f32, @floatFromInt(total_duration[i])) /
+                    @as(f32, @floatFromInt(type_count[i]));
+                if (avg_duration[i] > max_avg) max_avg = avg_duration[i];
+            }
+        }
+    }
+
+    const items = [DOTPLOT_ITEM_COUNT]sailor.DotPlotItem{
+        .{ .label = "SELECT", .value = avg_duration[0] },
+        .{ .label = "INSERT", .value = avg_duration[1] },
+        .{ .label = "UPDATE", .value = avg_duration[2] },
+        .{ .label = "DELETE", .value = avg_duration[3] },
+        .{ .label = "DDL   ", .value = avg_duration[4] },
+    };
+    const item_slices: []const sailor.DotPlotItem = &items;
+
+    const popup_width: u16 = @min(52, area.width -| 4);
+    const popup_height: u16 = @min(12, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const dp = sailor.DotPlot.init()
+        .withItems(item_slices)
+        .withXMin(0.0)
+        .withXMax(max_avg)
+        .withShowLabels(true)
+        .withShowValues(true)
+        .withFocused(app.dotplot_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " Avg Query Duration by Type ms (d/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+
+    dp.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -3278,8 +3391,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -7625,4 +7738,180 @@ test "funnel: funnel_focused starts at 0" {
     defer app.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), app.funnel_focused);
+}
+
+test "dotplot: dotplot_visible starts false" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.dotplot_visible == false);
+}
+
+test "dotplot: 'd' key opens dotplot overlay when focus is schema" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.dotplot_visible == false);
+
+    app.handleKey('d');
+
+    try std.testing.expect(app.dotplot_visible == true);
+}
+
+test "dotplot: 'd' key closes dotplot overlay when already visible" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.dotplot_visible = true;
+
+    app.handleKey('d');
+
+    try std.testing.expect(app.dotplot_visible == false);
+}
+
+test "dotplot: 'd' key does nothing when focus is input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(app.dotplot_visible == false);
+
+    app.handleKey('d');
+
+    try std.testing.expect(app.dotplot_visible == false);
+}
+
+test "dotplot: 'd' key resets dotplot_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .results,
+    };
+    defer app.deinit();
+
+    app.dotplot_focused = 3;
+
+    app.handleKey('d');
+
+    try std.testing.expectEqual(@as(usize, 0), app.dotplot_focused);
+}
+
+test "dotplot: ESC closes dotplot overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.dotplot_visible = true;
+
+    app.handleEscapeSequence(null, null);
+
+    try std.testing.expect(app.dotplot_visible == false);
+}
+
+test "dotplot: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.dotplot_visible = true;
+    app.dotplot_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.dotplot_focused);
+}
+
+test "dotplot: down arrow increments dotplot_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.dotplot_visible = true;
+    app.dotplot_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.dotplot_focused);
+}
+
+test "dotplot: down arrow does not exceed DOTPLOT_ITEM_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.dotplot_visible = true;
+    app.dotplot_focused = 4; // DOTPLOT_ITEM_COUNT - 1
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 4), app.dotplot_focused);
+}
+
+test "dotplot: up arrow decrements dotplot_focused" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.dotplot_visible = true;
+    app.dotplot_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.dotplot_focused);
+}
+
+test "dotplot: dotplot_focused starts at 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), app.dotplot_focused);
 }
