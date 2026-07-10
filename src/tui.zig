@@ -245,6 +245,11 @@ const DOTPLOT_ITEM_COUNT: usize = 5;
 
 const RADIALBAR_ARC_COUNT: usize = 4;
 
+// ── StreamGraph Query Type Volume Over Time ──────────────────────────────────
+
+const STREAMGRAPH_LAYER_COUNT: usize = 5;
+const STREAMGRAPH_LAYER_LABELS = [STREAMGRAPH_LAYER_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -379,6 +384,10 @@ const App = struct {
     // RadialBar database health metrics overlay
     radialbar_visible: bool = false,
     radialbar_focused: usize = 0,
+
+    // StreamGraph query type volume over time overlay
+    streamgraph_visible: bool = false,
+    streamgraph_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -940,6 +949,17 @@ const App = struct {
             return;
         }
 
+        // 'y' key toggles stream graph query type volume over time overlay (not while editing input)
+        if (byte == 121 and self.focus != .input) {
+            if (self.streamgraph_visible) {
+                self.streamgraph_visible = false;
+            } else {
+                self.streamgraph_visible = true;
+                self.streamgraph_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1283,6 +1303,28 @@ const App = struct {
                     'B' => { // Down — next arc
                         if (self.radialbar_focused + 1 < RADIALBAR_ARC_COUNT) {
                             self.radialbar_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // StreamGraph arrow key navigation and ESC handling
+        if (self.streamgraph_visible) {
+            if (b2 == null) {
+                self.streamgraph_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous layer
+                        if (self.streamgraph_focused > 0) self.streamgraph_focused -= 1;
+                    },
+                    'B' => { // Down — next layer
+                        if (self.streamgraph_focused + 1 < STREAMGRAPH_LAYER_COUNT) {
+                            self.streamgraph_focused += 1;
                         }
                     },
                     else => {},
@@ -1905,6 +1947,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render radial bar database health metrics overlay
     if (app.radialbar_visible) {
         renderRadialBar(app, buf, area);
+    }
+
+    // Render stream graph query type volume over time overlay
+    if (app.streamgraph_visible) {
+        renderStreamGraph(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3455,6 +3502,48 @@ fn renderRadialBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     rb.render(buf, popup_area);
 }
 
+fn renderStreamGraph(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.streamgraph_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+    const point_count = @max(actual_count, 1);
+
+    // Per-layer duration_ms series over query history (time axis), bucketed by query type
+    var values: [STREAMGRAPH_LAYER_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes([STREAMGRAPH_LAYER_COUNT][QUERY_HISTORY_MAX]f32);
+    for (app.query_history[0..actual_count], 0..) |entry, i| {
+        const qt = classifyQueryType(&entry);
+        values[qt][i] = @floatFromInt(entry.duration_ms);
+    }
+
+    var layers: [STREAMGRAPH_LAYER_COUNT]sailor.StreamLayer = undefined;
+    for (0..STREAMGRAPH_LAYER_COUNT) |i| {
+        layers[i] = .{ .label = STREAMGRAPH_LAYER_LABELS[i], .values = values[i][0..point_count] };
+    }
+    const layer_slices: []const sailor.StreamLayer = &layers;
+
+    const popup_width: u16 = @min(60, area.width -| 4);
+    const popup_height: u16 = @min(16, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const sg = sailor.StreamGraph.init()
+        .withLayers(layer_slices)
+        .withShowLabels(true)
+        .withFocused(app.streamgraph_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " Query Type Volume Over Time (y/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .green }));
+
+    sg.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -3501,8 +3590,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -8227,4 +8316,220 @@ test "radialbar: other overlays are unaffected when radialbar is toggled" {
     try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
     try std.testing.expect(app.funnel_visible);
     try std.testing.expectEqual(@as(usize, 1), app.funnel_focused);
+}
+
+test "streamgraph: 'y' key toggles streamgraph_visible to true when focus != .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.streamgraph_visible);
+    app.handleKey(121); // 'y'
+    try std.testing.expect(app.streamgraph_visible);
+}
+
+test "streamgraph: 'y' key does not toggle when focus == .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.streamgraph_visible);
+    app.handleKey(121); // 'y'
+    try std.testing.expect(!app.streamgraph_visible);
+}
+
+test "streamgraph: 'y' key closes streamgraph (toggle off)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.handleKey(121); // 'y' to open
+    try std.testing.expect(app.streamgraph_visible);
+
+    app.handleKey(121); // 'y' to close
+    try std.testing.expect(!app.streamgraph_visible);
+}
+
+test "streamgraph: 'y' key sets streamgraph_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.streamgraph_focused = 3; // Set to non-zero
+    app.handleKey(121); // 'y'
+    try std.testing.expect(app.streamgraph_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.streamgraph_focused);
+}
+
+test "streamgraph: up arrow navigates streamgraph_focused backward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.streamgraph_visible = true;
+    app.streamgraph_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.streamgraph_focused);
+}
+
+test "streamgraph: down arrow navigates streamgraph_focused forward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.streamgraph_visible = true;
+    app.streamgraph_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.streamgraph_focused);
+}
+
+test "streamgraph: down arrow does not exceed STREAMGRAPH_LAYER_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.streamgraph_visible = true;
+    app.streamgraph_focused = STREAMGRAPH_LAYER_COUNT - 1;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(STREAMGRAPH_LAYER_COUNT - 1, app.streamgraph_focused);
+}
+
+test "streamgraph: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.streamgraph_visible = true;
+    app.streamgraph_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.streamgraph_focused);
+}
+
+test "streamgraph: ESC closes streamgraph overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.streamgraph_visible = true;
+    app.streamgraph_focused = 2;
+
+    app.handleEscapeSequence(null, null); // ESC (b2=null, b3=null)
+
+    try std.testing.expect(!app.streamgraph_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.streamgraph_focused); // focused not reset on close
+}
+
+test "streamgraph: streamgraph_focused resets to 0 when toggled open again" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open and navigate
+    app.handleKey(121); // 'y'
+    app.handleEscapeSequence('[', 'B'); // down
+    app.handleEscapeSequence('[', 'B'); // down
+    try std.testing.expectEqual(@as(usize, 2), app.streamgraph_focused);
+
+    // Close
+    app.handleKey(121); // 'y'
+    try std.testing.expect(!app.streamgraph_visible);
+
+    // Reopen
+    app.handleKey(121); // 'y'
+    try std.testing.expect(app.streamgraph_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.streamgraph_focused);
+}
+
+test "streamgraph: other overlays are unaffected when streamgraph is toggled" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set some other overlays visible
+    app.dotplot_visible = true;
+    app.dotplot_focused = 2;
+    app.radialbar_visible = true;
+    app.radialbar_focused = 1;
+
+    // Toggle streamgraph
+    app.handleKey(121); // 'y'
+
+    // Verify other overlays unchanged
+    try std.testing.expect(app.dotplot_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
+    try std.testing.expect(app.radialbar_visible);
+    try std.testing.expectEqual(@as(usize, 1), app.radialbar_focused);
+}
+
+test "streamgraph: classifyQueryType buckets query_history entries into distinct layers" {
+    var entry_select = QueryHistoryEntry{ .success = true, .duration_ms = 42 };
+    const select_sql = "SELECT * FROM t";
+    @memcpy(entry_select.title[0..select_sql.len], select_sql);
+    entry_select.title_len = select_sql.len;
+
+    var entry_insert = QueryHistoryEntry{ .success = true, .duration_ms = 7 };
+    const insert_sql = "INSERT INTO t VALUES (1)";
+    @memcpy(entry_insert.title[0..insert_sql.len], insert_sql);
+    entry_insert.title_len = insert_sql.len;
+
+    try std.testing.expectEqual(@as(usize, 0), classifyQueryType(&entry_select));
+    try std.testing.expectEqual(@as(usize, 1), classifyQueryType(&entry_insert));
 }
