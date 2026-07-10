@@ -214,6 +214,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.11.0 | Extended Graphics & Protocol Support | DONE | Sixel encoder/decoder (color palette optimization), Kitty graphics protocol, ANSI art rendering (block/braille/ASCII algorithms), particle system (fire/rain/snow/sparkle), gradient backgrounds, blur/transparency effects, transition animations |
 | v2.12.0–v2.48.0 | Various improvements | DONE | Migrated incrementally across sessions 348–400 |
 | v2.49.0 | Wizard Widget | DONE | Multi-step flow navigation widget (Step indicator row, contentArea geometry, nav hints, 8 builder methods) — Session 401 |
+| v2.50.0–v2.78.0 | Various improvements | DONE | Migrated incrementally across sessions 402–445, including RadialBar, DotPlot, FunnelChart TUI overlays |
+| v2.79.0 | StreamGraph widget | DONE | Themeriver-style stacked area chart with vertically centered silhouette baseline; symmetric layer stacking, focused layer highlighting, optional label column, block border support, MAX_LAYERS=8, no heap allocations — Session 447 |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
