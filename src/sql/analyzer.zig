@@ -1171,6 +1171,9 @@ pub const Analyzer = struct {
                 self.analyzeExpr(idf.left);
                 self.analyzeExpr(idf.right);
             },
+            .is_json => |ij| {
+                self.analyzeExpr(ij.expr);
+            },
             .like => |l| {
                 self.analyzeExpr(l.expr);
                 self.analyzeExpr(l.pattern);

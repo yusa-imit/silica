@@ -37070,3 +37070,146 @@ test "TRUNCATE TABLE non-existent table returns error" {
     try testing.expectError(EngineError.TableNotFound, result);
 }
 
+// ── IS JSON predicate tests (SQL:2016) ──────────────────────────────────────
+
+fn expectBooleanResult(db: *Database, sql: []const u8, expected: bool) !void {
+    var result = try db.execSQL(sql);
+    defer result.close(testing.allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .boolean);
+        try testing.expectEqual(expected, val.boolean);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS JSON: valid object literal returns TRUE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT '{\"a\":1}' IS JSON as result", true);
+}
+
+test "IS JSON: malformed text returns FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT 'not json' IS JSON as result", false);
+}
+
+test "IS NOT JSON: malformed text returns TRUE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT 'not json' IS NOT JSON as result", true);
+}
+
+test "IS JSON OBJECT: object matches, array does not" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT '{\"a\":1}' IS JSON OBJECT as result", true);
+    try expectBooleanResult(&db, "SELECT '[1,2,3]' IS JSON OBJECT as result", false);
+}
+
+test "IS JSON ARRAY: array matches, object does not" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT '[1,2,3]' IS JSON ARRAY as result", true);
+    try expectBooleanResult(&db, "SELECT '{\"a\":1}' IS JSON ARRAY as result", false);
+}
+
+test "IS JSON SCALAR: number matches, object/array do not" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT '42' IS JSON SCALAR as result", true);
+    try expectBooleanResult(&db, "SELECT '\"hello\"' IS JSON SCALAR as result", true);
+    try expectBooleanResult(&db, "SELECT '{\"a\":1}' IS JSON SCALAR as result", false);
+    try expectBooleanResult(&db, "SELECT '[1,2,3]' IS JSON SCALAR as result", false);
+}
+
+test "IS JSON: NULL operand yields NULL (unknown), not TRUE/FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    var result = try db.execSQL("SELECT NULL IS JSON as result");
+    defer result.close(allocator);
+    if (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .null_value);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    var result2 = try db.execSQL("SELECT NULL IS NOT JSON as result");
+    defer result2.close(allocator);
+    if (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        const val = row.getColumn("result").?;
+        try testing.expect(val == .null_value);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "IS JSON: non-string operand (integer) returns FALSE" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    try expectBooleanResult(&db, "SELECT 42 IS JSON as result", false);
+}
+
+test "IS JSON: filters rows in WHERE clause" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_is_json_where.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, payload TEXT)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("INSERT INTO docs VALUES (1, '{\"valid\":true}')");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO docs VALUES (2, 'not json at all')");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO docs VALUES (3, '[1,2,3]')");
+    defer r4.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT id FROM docs WHERE payload IS JSON ORDER BY id");
+    defer result.close(testing.allocator);
+    var ids = std.ArrayListUnmanaged(i64){};
+    defer ids.deinit(testing.allocator);
+    while (try result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try ids.append(testing.allocator, row.values[0].integer);
+    }
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 3), ids.items[1]);
+}
+

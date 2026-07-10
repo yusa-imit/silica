@@ -3884,12 +3884,47 @@ pub const Parser = struct {
                 .negated = negated,
             } }) catch return error.OutOfMemory;
         }
+        // IS [NOT] JSON [VALUE|OBJECT|ARRAY|SCALAR]  (SQL:2016)
+        if (self.match(.kw_json)) {
+            const json_type = self.parseJsonTypeCheck();
+            return self.arena.create(ast.Expr, .{ .is_json = .{
+                .expr = left,
+                .negated = negated,
+                .json_type = json_type,
+            } }) catch return error.OutOfMemory;
+        }
         // IS [NOT] NULL (original behavior)
         _ = try self.expect(.kw_null);
         return self.arena.create(ast.Expr, .{ .is_null = .{
             .expr = left,
             .negated = negated,
         } }) catch return error.OutOfMemory;
+    }
+
+    /// Parse the optional shape qualifier after `IS [NOT] JSON`.
+    /// VALUE/OBJECT/SCALAR are soft keywords (plain identifiers); ARRAY is
+    /// already a reserved keyword. Defaults to `.value` (accept any JSON).
+    fn parseJsonTypeCheck(self: *Parser) ast.JsonTypeCheck {
+        if (self.check(.kw_array)) {
+            _ = self.advance();
+            return .array;
+        }
+        if (self.check(.identifier)) {
+            const text = self.lexeme(self.peek());
+            if (std.ascii.eqlIgnoreCase(text, "object")) {
+                _ = self.advance();
+                return .object;
+            }
+            if (std.ascii.eqlIgnoreCase(text, "scalar")) {
+                _ = self.advance();
+                return .scalar;
+            }
+            if (std.ascii.eqlIgnoreCase(text, "value")) {
+                _ = self.advance();
+                return .value;
+            }
+        }
+        return .value;
     }
 
     fn peekNot(self: *const Parser) bool {

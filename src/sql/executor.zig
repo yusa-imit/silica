@@ -1866,6 +1866,24 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             return .{ .boolean = if (idf.negated) !result else result };
         },
 
+        .is_json => |ij| {
+            const val = try evalExpr(allocator, ij.expr, row, catalog);
+            defer val.free(allocator);
+            // Per SQL:2016 / PostgreSQL: a NULL operand makes the predicate unknown (NULL),
+            // not false — even under IS NOT JSON.
+            if (val == .null_value) return .null_value;
+            const text = switch (val) {
+                .text => |t| t,
+                .blob => |b| b,
+                else => {
+                    // Non-string operands are never valid JSON text.
+                    return .{ .boolean = ij.negated };
+                },
+            };
+            const result = evalIsJsonType(text, ij.json_type);
+            return .{ .boolean = if (ij.negated) !result else result };
+        },
+
         .between => |bt| {
             const val = try evalExpr(allocator, bt.expr, row, catalog);
             defer val.free(allocator);
@@ -7589,6 +7607,23 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 /// Navigate a SQL/JSON path (e.g. '$.key', '$.a[0].b') within a JSON value.
 /// `as_json` = true → return a JSON text fragment (for JSON_QUERY);
 /// `as_json` = false → return a scalar value (for JSON_VALUE).
+/// Check whether `text` is valid JSON matching the requested shape, for the
+/// `IS [NOT] JSON [VALUE|OBJECT|ARRAY|SCALAR]` predicate (SQL:2016).
+fn evalIsJsonType(text: []const u8, json_type: ast.JsonTypeCheck) bool {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), text, .{}) catch return false;
+    return switch (json_type) {
+        .value => true,
+        .object => parsed.value == .object,
+        .array => parsed.value == .array,
+        .scalar => switch (parsed.value) {
+            .object, .array => false,
+            else => true,
+        },
+    };
+}
+
 fn evalSqlJsonValue(allocator: Allocator, json_val: Value, path_str: []const u8, as_json: bool) EvalError!Value {
     // Get JSON text from Value
     const json_text = switch (json_val) {

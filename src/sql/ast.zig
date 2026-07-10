@@ -37,6 +37,15 @@ pub const DataType = enum {
     type_tsquery,
 };
 
+/// Which JSON shape `IS JSON` should accept. `.value` accepts any valid JSON
+/// document (the bare `IS JSON` form); the others narrow to a specific shape.
+pub const JsonTypeCheck = enum {
+    value,
+    object,
+    array,
+    scalar,
+};
+
 /// Column constraint in a CREATE TABLE statement.
 pub const ColumnConstraint = union(enum) {
     primary_key: struct {
@@ -257,6 +266,12 @@ pub const Expr = union(enum) {
         right: *const Expr,
         /// true = IS NOT DISTINCT FROM, false = IS DISTINCT FROM
         negated: bool = false,
+    },
+    /// expr IS [NOT] JSON [VALUE|OBJECT|ARRAY|SCALAR]  (SQL:2016)
+    is_json: struct {
+        expr: *const Expr,
+        negated: bool = false,
+        json_type: JsonTypeCheck = .value,
     },
     /// expr LIKE pattern
     like: struct {
