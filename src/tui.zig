@@ -250,6 +250,11 @@ const RADIALBAR_ARC_COUNT: usize = 4;
 const STREAMGRAPH_LAYER_COUNT: usize = 5;
 const STREAMGRAPH_LAYER_LABELS = [STREAMGRAPH_LAYER_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
 
+// ── ViolinPlot Query Duration Distribution by Type ───────────────────────────
+
+const VIOLIN_SERIES_COUNT: usize = 5;
+const VIOLIN_SERIES_LABELS = [VIOLIN_SERIES_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -388,6 +393,10 @@ const App = struct {
     // StreamGraph query type volume over time overlay
     streamgraph_visible: bool = false,
     streamgraph_focused: usize = 0,
+
+    // ViolinPlot query duration distribution by type overlay
+    violin_visible: bool = false,
+    violin_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -960,6 +969,17 @@ const App = struct {
             return;
         }
 
+        // 'j' key toggles violin plot query duration distribution overlay (not while editing input)
+        if (byte == 106 and self.focus != .input) {
+            if (self.violin_visible) {
+                self.violin_visible = false;
+            } else {
+                self.violin_visible = true;
+                self.violin_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1325,6 +1345,28 @@ const App = struct {
                     'B' => { // Down — next layer
                         if (self.streamgraph_focused + 1 < STREAMGRAPH_LAYER_COUNT) {
                             self.streamgraph_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // ViolinPlot arrow key navigation and ESC handling
+        if (self.violin_visible) {
+            if (b2 == null) {
+                self.violin_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous series
+                        if (self.violin_focused > 0) self.violin_focused -= 1;
+                    },
+                    'B' => { // Down — next series
+                        if (self.violin_focused + 1 < VIOLIN_SERIES_COUNT) {
+                            self.violin_focused += 1;
                         }
                     },
                     else => {},
@@ -1952,6 +1994,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render stream graph query type volume over time overlay
     if (app.streamgraph_visible) {
         renderStreamGraph(app, buf, area);
+    }
+
+    // Render violin plot query duration distribution overlay
+    if (app.violin_visible) {
+        renderViolinPlot(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3544,6 +3591,57 @@ fn renderStreamGraph(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     sg.render(buf, popup_area);
 }
 
+fn renderViolinPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.violin_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Duration_ms samples per query type — the full distribution, not just the average
+    var values: [VIOLIN_SERIES_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes([VIOLIN_SERIES_COUNT][QUERY_HISTORY_MAX]f32);
+    var counts: [VIOLIN_SERIES_COUNT]usize = .{0} ** VIOLIN_SERIES_COUNT;
+
+    if (actual_count == 0) {
+        // Placeholder data when no queries yet
+        const placeholder = [_]f32{ 10.0, 12.0, 11.0, 15.0, 9.0 };
+        @memcpy(values[0][0..placeholder.len], &placeholder);
+        counts[0] = placeholder.len;
+    } else {
+        for (app.query_history[0..actual_count]) |entry| {
+            const t = classifyQueryType(&entry);
+            values[t][counts[t]] = @floatFromInt(entry.duration_ms);
+            counts[t] += 1;
+        }
+    }
+
+    var series: [VIOLIN_SERIES_COUNT]sailor.ViolinSeries = undefined;
+    for (0..VIOLIN_SERIES_COUNT) |i| {
+        series[i] = .{ .label = VIOLIN_SERIES_LABELS[i], .values = values[i][0..counts[i]] };
+    }
+    const series_slices: []const sailor.ViolinSeries = &series;
+
+    const popup_width: u16 = @min(60, area.width -| 4);
+    const popup_height: u16 = @min(16, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const vp = sailor.ViolinPlot.init()
+        .withSeries(series_slices)
+        .withShowLabels(true)
+        .withFocused(app.violin_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " Query Duration Distribution by Type (j/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    vp.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -3590,8 +3688,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream j:violin Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -8532,4 +8630,205 @@ test "streamgraph: classifyQueryType buckets query_history entries into distinct
 
     try std.testing.expectEqual(@as(usize, 0), classifyQueryType(&entry_select));
     try std.testing.expectEqual(@as(usize, 1), classifyQueryType(&entry_insert));
+}
+
+test "violin: 'j' key toggles violin_visible to true when focus != .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.violin_visible);
+    app.handleKey(106); // 'j'
+    try std.testing.expect(app.violin_visible);
+}
+
+test "violin: 'j' key does not toggle when focus == .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.violin_visible);
+    app.handleKey(106); // 'j'
+    try std.testing.expect(!app.violin_visible);
+}
+
+test "violin: 'j' key closes violin plot (toggle off)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.handleKey(106); // 'j' to open
+    try std.testing.expect(app.violin_visible);
+
+    app.handleKey(106); // 'j' to close
+    try std.testing.expect(!app.violin_visible);
+}
+
+test "violin: 'j' key sets violin_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.violin_focused = 3; // Set to non-zero
+    app.handleKey(106); // 'j'
+    try std.testing.expect(app.violin_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.violin_focused);
+}
+
+test "violin: up arrow navigates violin_focused backward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.violin_visible = true;
+    app.violin_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.violin_focused);
+}
+
+test "violin: down arrow navigates violin_focused forward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.violin_visible = true;
+    app.violin_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.violin_focused);
+}
+
+test "violin: down arrow does not exceed VIOLIN_SERIES_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.violin_visible = true;
+    app.violin_focused = VIOLIN_SERIES_COUNT - 1;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(VIOLIN_SERIES_COUNT - 1, app.violin_focused);
+}
+
+test "violin: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.violin_visible = true;
+    app.violin_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.violin_focused);
+}
+
+test "violin: ESC closes violin overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.violin_visible = true;
+    app.violin_focused = 2;
+
+    app.handleEscapeSequence(null, null); // ESC (b2=null, b3=null)
+
+    try std.testing.expect(!app.violin_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.violin_focused); // focused not reset on close
+}
+
+test "violin: violin_focused resets to 0 when toggled open again" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open and navigate
+    app.handleKey(106); // 'j'
+    app.handleEscapeSequence('[', 'B'); // down
+    app.handleEscapeSequence('[', 'B'); // down
+    try std.testing.expectEqual(@as(usize, 2), app.violin_focused);
+
+    // Close
+    app.handleKey(106); // 'j'
+    try std.testing.expect(!app.violin_visible);
+
+    // Reopen
+    app.handleKey(106); // 'j'
+    try std.testing.expect(app.violin_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.violin_focused);
+}
+
+test "violin: other overlays are unaffected when violin is toggled" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set some other overlays visible
+    app.dotplot_visible = true;
+    app.dotplot_focused = 2;
+    app.streamgraph_visible = true;
+    app.streamgraph_focused = 1;
+
+    // Toggle violin
+    app.handleKey(106); // 'j'
+
+    // Verify other overlays unchanged
+    try std.testing.expect(app.dotplot_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
+    try std.testing.expect(app.streamgraph_visible);
+    try std.testing.expectEqual(@as(usize, 1), app.streamgraph_focused);
 }
