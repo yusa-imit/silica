@@ -33733,6 +33733,53 @@ test "json_object_agg: with GROUP BY produces per-group objects" {
     try testing.expectEqual(@as(usize, 2), count);
 }
 
+test "JSON_OBJECTAGG SQL:2016 spelling alias produces same result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE kv_std (k TEXT, v INTEGER)");
+    _ = try db.exec("INSERT INTO kv_std VALUES ('foo', 42), ('bar', 99)");
+
+    var r = try db.exec("SELECT JSON_OBJECTAGG(k, v) AS result FROM kv_std");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        const obj = row.values[0].text;
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"foo\":42"));
+        try testing.expect(std.mem.containsAtLeast(u8, obj, 1, "\"bar\":99"));
+    } else return error.TestUnexpectedResult;
+}
+
+test "JSON_ARRAYAGG SQL:2016 spelling alias produces same result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    _ = try db.exec("CREATE TABLE nums (id INTEGER, val INTEGER)");
+    _ = try db.exec("INSERT INTO nums VALUES (1, 10), (2, 20), (3, 30)");
+
+    var r = try db.exec("SELECT JSON_ARRAYAGG(val) FROM nums ORDER BY id");
+    defer r.close(allocator);
+
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .text);
+        const arr = row.values[0].text;
+        try testing.expect(std.mem.containsAtLeast(u8, arr, 1, "["));
+        try testing.expect(std.mem.containsAtLeast(u8, arr, 1, "]"));
+        try testing.expect(std.mem.containsAtLeast(u8, arr, 1, "10"));
+        try testing.expect(std.mem.containsAtLeast(u8, arr, 1, "20"));
+        try testing.expect(std.mem.containsAtLeast(u8, arr, 1, "30"));
+    } else return error.TestUnexpectedResult;
+}
+
 test "string_agg ORDER BY ASC produces alphabetically sorted result" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;

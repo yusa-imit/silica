@@ -7718,7 +7718,7 @@ fn sqlJsonNavigate(root: std.json.Value, path: []const u8) ?std.json.Value {
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "array_agg", "string_agg", "json_object_agg", "jsonb_object_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy", "grouping" };
+    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "json_arrayagg", "array_agg", "string_agg", "json_object_agg", "json_objectagg", "jsonb_object_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy", "grouping" };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -7740,10 +7740,12 @@ fn aggResultColName(fc: anytype) []const u8 {
     if (std.ascii.eqlIgnoreCase(fc.name, "avg")) return "avg";
     if (std.ascii.eqlIgnoreCase(fc.name, "min")) return "min";
     if (std.ascii.eqlIgnoreCase(fc.name, "max")) return "max";
-    if (std.ascii.eqlIgnoreCase(fc.name, "json_agg")) return "json_agg";
+    if (std.ascii.eqlIgnoreCase(fc.name, "json_agg") or
+        std.ascii.eqlIgnoreCase(fc.name, "json_arrayagg")) return "json_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "array_agg")) return "array_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "string_agg")) return "string_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "json_object_agg") or
+        std.ascii.eqlIgnoreCase(fc.name, "json_objectagg") or
         std.ascii.eqlIgnoreCase(fc.name, "jsonb_object_agg")) return "json_object_agg";
     if (std.ascii.eqlIgnoreCase(fc.name, "bool_and")) return "bool_and";
     if (std.ascii.eqlIgnoreCase(fc.name, "bool_or")) return "bool_or";

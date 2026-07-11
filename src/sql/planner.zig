@@ -1042,6 +1042,7 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "min")) return .min;
     if (std.mem.eql(u8, lower, "max")) return .max;
     if (std.mem.eql(u8, lower, "json_agg")) return .json_agg;
+    if (std.mem.eql(u8, lower, "json_arrayagg")) return .json_agg;
     if (std.mem.eql(u8, lower, "array_agg")) return .array_agg;
     if (std.mem.eql(u8, lower, "string_agg")) return .string_agg;
     if (std.mem.eql(u8, lower, "bool_and")) return .bool_and;
@@ -1072,6 +1073,7 @@ fn aggFuncFromName(name: []const u8) ?AggFunc {
     if (std.mem.eql(u8, lower, "mode")) return .mode;
     if (std.mem.eql(u8, lower, "grouping")) return .grouping;
     if (std.mem.eql(u8, lower, "json_object_agg") or
+        std.mem.eql(u8, lower, "json_objectagg") or
         std.mem.eql(u8, lower, "jsonb_object_agg")) return .json_object_agg;
     return null;
 }
@@ -1898,6 +1900,18 @@ test "aggFuncFromName" {
     try testing.expectEqual(AggFunc.json_agg, aggFuncFromName("json_agg").?);
     try testing.expectEqual(AggFunc.array_agg, aggFuncFromName("ARRAY_AGG").?);
     try testing.expect(aggFuncFromName("unknown") == null);
+}
+
+test "aggFuncFromName SQL:2016 JSON_ARRAYAGG alias" {
+    try testing.expectEqual(AggFunc.json_agg, aggFuncFromName("json_arrayagg").?);
+    try testing.expectEqual(AggFunc.json_agg, aggFuncFromName("JSON_ARRAYAGG").?);
+    try testing.expectEqual(AggFunc.json_agg, aggFuncFromName("Json_Arrayagg").?);
+}
+
+test "aggFuncFromName SQL:2016 JSON_OBJECTAGG alias" {
+    try testing.expectEqual(AggFunc.json_object_agg, aggFuncFromName("json_objectagg").?);
+    try testing.expectEqual(AggFunc.json_object_agg, aggFuncFromName("JSON_OBJECTAGG").?);
+    try testing.expectEqual(AggFunc.json_object_agg, aggFuncFromName("Json_Objectagg").?);
 }
 
 test "Scan with schema columns" {
