@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.49.0
-- **Latest available**: v2.49.0
+- **Current in silica**: v2.80.0
+- **Latest available**: v2.80.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
