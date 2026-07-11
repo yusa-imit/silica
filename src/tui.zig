@@ -255,6 +255,13 @@ const STREAMGRAPH_LAYER_LABELS = [STREAMGRAPH_LAYER_COUNT][]const u8{ "SELECT", 
 const VIOLIN_SERIES_COUNT: usize = 5;
 const VIOLIN_SERIES_LABELS = [VIOLIN_SERIES_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
 
+// ── SunburstChart Query Type & Duration Breakdown ────────────────────────────
+
+const SUNBURST_NODE_COUNT: usize = 5;
+const SUNBURST_NODE_LABELS = [SUNBURST_NODE_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+const SUNBURST_BUCKET_COUNT: usize = 3;
+const SUNBURST_BUCKET_LABELS = [SUNBURST_BUCKET_COUNT][]const u8{ "Fast", "Medium", "Slow" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -397,6 +404,10 @@ const App = struct {
     // ViolinPlot query duration distribution by type overlay
     violin_visible: bool = false,
     violin_focused: usize = 0,
+
+    // SunburstChart query type & duration breakdown overlay
+    sunburst_visible: bool = false,
+    sunburst_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -969,6 +980,17 @@ const App = struct {
             return;
         }
 
+        // 'k' key toggles sunburst chart query type & duration breakdown overlay (not while editing input)
+        if (byte == 107 and self.focus != .input) {
+            if (self.sunburst_visible) {
+                self.sunburst_visible = false;
+            } else {
+                self.sunburst_visible = true;
+                self.sunburst_focused = 0;
+            }
+            return;
+        }
+
         // 'j' key toggles violin plot query duration distribution overlay (not while editing input)
         if (byte == 106 and self.focus != .input) {
             if (self.violin_visible) {
@@ -1367,6 +1389,28 @@ const App = struct {
                     'B' => { // Down — next series
                         if (self.violin_focused + 1 < VIOLIN_SERIES_COUNT) {
                             self.violin_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // SunburstChart arrow key navigation and ESC handling
+        if (self.sunburst_visible) {
+            if (b2 == null) {
+                self.sunburst_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous top-level node
+                        if (self.sunburst_focused > 0) self.sunburst_focused -= 1;
+                    },
+                    'B' => { // Down — next top-level node
+                        if (self.sunburst_focused + 1 < SUNBURST_NODE_COUNT) {
+                            self.sunburst_focused += 1;
                         }
                     },
                     else => {},
@@ -1999,6 +2043,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render violin plot query duration distribution overlay
     if (app.violin_visible) {
         renderViolinPlot(app, buf, area);
+    }
+
+    // Render sunburst chart query type & duration breakdown overlay
+    if (app.sunburst_visible) {
+        renderSunburstChart(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3642,6 +3691,70 @@ fn renderViolinPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     vp.render(buf, popup_area);
 }
 
+fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.sunburst_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Count of queries per (query type, duration bucket): Fast <10ms, Medium 10-100ms, Slow >=100ms
+    var bucket_counts: [SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32 = std.mem.zeroes([SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32);
+
+    if (actual_count == 0) {
+        // Placeholder data when no queries yet
+        bucket_counts[0] = .{ 3.0, 1.0, 0.0 };
+    } else {
+        for (app.query_history[0..actual_count]) |entry| {
+            const t = classifyQueryType(&entry);
+            const bucket: usize = if (entry.duration_ms < 10)
+                0
+            else if (entry.duration_ms < 100)
+                1
+            else
+                2;
+            bucket_counts[t][bucket] += 1.0;
+        }
+    }
+
+    var children: [SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]sailor.SunburstNode = undefined;
+    var nodes: [SUNBURST_NODE_COUNT]sailor.SunburstNode = undefined;
+    for (0..SUNBURST_NODE_COUNT) |i| {
+        var child_count: usize = 0;
+        for (0..SUNBURST_BUCKET_COUNT) |b| {
+            if (bucket_counts[i][b] > 0) {
+                children[i][child_count] = .{ .label = SUNBURST_BUCKET_LABELS[b], .value = bucket_counts[i][b] };
+                child_count += 1;
+            }
+        }
+        var total: f32 = 0.0;
+        for (0..SUNBURST_BUCKET_COUNT) |b| total += bucket_counts[i][b];
+        nodes[i] = .{ .label = SUNBURST_NODE_LABELS[i], .value = total, .children = children[i][0..child_count] };
+    }
+    const node_slices: []const sailor.SunburstNode = &nodes;
+
+    const popup_width: u16 = @min(60, area.width -| 4);
+    const popup_height: u16 = @min(16, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const sb = sailor.SunburstChart.init()
+        .withNodes(node_slices)
+        .withShowLabels(true)
+        .withShowValues(true)
+        .withFocused(app.sunburst_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " Query Type & Duration Breakdown (k/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .yellow }));
+
+    sb.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -3688,8 +3801,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream j:violin Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream j:violin k:sunburst Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  k:sunburst  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -8831,4 +8944,217 @@ test "violin: other overlays are unaffected when violin is toggled" {
     try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
     try std.testing.expect(app.streamgraph_visible);
     try std.testing.expectEqual(@as(usize, 1), app.streamgraph_focused);
+}
+
+test "sunburst: sunburst_visible starts false on fresh App" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.sunburst_visible);
+}
+
+test "sunburst: 'k' key toggles sunburst_visible to true when focus != .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.sunburst_visible);
+    app.handleKey(107); // 'k'
+    try std.testing.expect(app.sunburst_visible);
+}
+
+test "sunburst: 'k' key does not toggle when focus == .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.sunburst_visible);
+    app.handleKey(107); // 'k'
+    try std.testing.expect(!app.sunburst_visible);
+}
+
+test "sunburst: 'k' key closes sunburst overlay (toggle off)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.handleKey(107); // 'k' to open
+    try std.testing.expect(app.sunburst_visible);
+
+    app.handleKey(107); // 'k' to close
+    try std.testing.expect(!app.sunburst_visible);
+}
+
+test "sunburst: 'k' key resets sunburst_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.sunburst_focused = 3; // Set to non-zero
+    app.handleKey(107); // 'k'
+    try std.testing.expect(app.sunburst_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.sunburst_focused);
+}
+
+test "sunburst: up arrow navigates sunburst_focused backward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sunburst_visible = true;
+    app.sunburst_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.sunburst_focused);
+}
+
+test "sunburst: down arrow navigates sunburst_focused forward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sunburst_visible = true;
+    app.sunburst_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.sunburst_focused);
+}
+
+test "sunburst: down arrow does not exceed SUNBURST_NODE_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sunburst_visible = true;
+    app.sunburst_focused = SUNBURST_NODE_COUNT - 1;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(SUNBURST_NODE_COUNT - 1, app.sunburst_focused);
+}
+
+test "sunburst: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sunburst_visible = true;
+    app.sunburst_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.sunburst_focused);
+}
+
+test "sunburst: ESC closes sunburst overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.sunburst_visible = true;
+    app.sunburst_focused = 2;
+
+    app.handleEscapeSequence(null, null); // ESC (b2=null, b3=null)
+
+    try std.testing.expect(!app.sunburst_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.sunburst_focused); // focused not reset on close
+}
+
+test "sunburst: sunburst_focused resets to 0 when toggled open again" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open and navigate
+    app.handleKey(107); // 'k'
+    app.handleEscapeSequence('[', 'B'); // down
+    app.handleEscapeSequence('[', 'B'); // down
+    try std.testing.expectEqual(@as(usize, 2), app.sunburst_focused);
+
+    // Close
+    app.handleKey(107); // 'k'
+    try std.testing.expect(!app.sunburst_visible);
+
+    // Reopen
+    app.handleKey(107); // 'k'
+    try std.testing.expect(app.sunburst_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.sunburst_focused);
+}
+
+test "sunburst: other overlays are unaffected when sunburst is toggled" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set some other overlays visible
+    app.dotplot_visible = true;
+    app.dotplot_focused = 2;
+    app.violin_visible = true;
+    app.violin_focused = 1;
+
+    // Toggle sunburst
+    app.handleKey(107); // 'k'
+
+    // Verify other overlays unchanged
+    try std.testing.expect(app.dotplot_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
+    try std.testing.expect(app.violin_visible);
+    try std.testing.expectEqual(@as(usize, 1), app.violin_focused);
 }

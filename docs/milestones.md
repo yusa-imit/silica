@@ -217,7 +217,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.50.0–v2.78.0 | Various improvements | DONE | Migrated incrementally across sessions 402–445, including RadialBar, DotPlot, FunnelChart TUI overlays |
 | v2.79.0 | StreamGraph widget | DONE | Themeriver-style stacked area chart with vertically centered silhouette baseline; symmetric layer stacking, focused layer highlighting, optional label column, block border support, MAX_LAYERS=8, no heap allocations — Session 447 |
 | v2.80.0 | ViolinPlot widget | DONE | Query duration distribution overlay, kernel density estimation, MAX_SERIES support, no heap allocations — Session 449 |
-| v2.81.0 | SunburstChart widget | READY | Hierarchical radial chart (concentric rings of arcs); SunburstNode label/value/children/style, MAX_DEPTH=4, MAX_NODES=8, no heap allocations; TUI overlay integration pending — Session 450 |
+| v2.81.0 | SunburstChart widget | DONE | Hierarchical radial chart (concentric rings of arcs); SunburstNode label/value/children/style, MAX_DEPTH=4, MAX_NODES=8, no heap allocations; TUI overlay integrated — Query Type & Duration Breakdown ('k' key), 2-level hierarchy (query type -> Fast/Medium/Slow duration buckets) — Session 451 |
 | v2.82.0 | BoxPlot widget | READY | Box-and-whisker plot with five-number-summary (min/Q1/median/Q3/max) + outlier detection (1.5×IQR); fiveNumberSummary() public helper, MAX_SERIES=8, MAX_SAMPLES=64, no heap allocations; TUI overlay integration pending — Session 450 |
 
 **High-priority sailor upgrades for silica**:
