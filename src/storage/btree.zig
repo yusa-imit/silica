@@ -348,7 +348,11 @@ pub const BTree = struct {
                 return .{ .split = null };
             }
 
-            // Need to split internal node
+            // Need to split internal node. splitInternal reads cells from a
+            // snapshot of the page, so the child pointer at insert_pos must be
+            // repointed to the new right-hand child before snapshotting —
+            // otherwise the new page ends up unreferenced and its keys are lost.
+            updateChildPointer(re_frame.data, page_size, re_count, insert_pos, split.new_page_id);
             const internal_split = try self.splitInternal(re_frame, page_id, insert_pos, child_page_id, split.new_page_id, split.promoted_key);
             return .{ .split = internal_split };
         }
@@ -4355,3 +4359,121 @@ test "BTree InvalidNodeType error on get from non-leaf/internal page" {
 // NOTE: MergeError test removed due to Zig 0.15.2 compiler bug (LLVM "Instruction does not dominate")
 // MergeError is tested implicitly through existing merge tests - corruption during merge would
 // trigger the error path in mergeLeaves() when insertLeafCell fails on corrupted data.
+
+test "BTree depth invariant: all leaves at same depth after heavy insert+delete cycle" {
+    const allocator = std.testing.allocator;
+    const path = "test_btree_depth_invariant.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        initLeafPage(raw, pager.page_size, root_id);
+        try pager.writePage(root_id, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 300);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, root_id);
+
+    var key_buf: [16]u8 = undefined;
+    var val_buf: [16]u8 = undefined;
+
+    const N: u32 = 300;
+
+    // Insert enough keys with small pages to force multiple levels of splits.
+    for (0..N) |i| {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>8}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "val{d:0>8}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    try expectAllLeavesSameDepth(&pool, root_id);
+
+    // All keys must survive the bulk insert, including through any internal
+    // node splits (multi-level tree growth) that occur along the way.
+    for (0..N) |j| {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>8}", .{j}) catch unreachable;
+        const v = try tree.get(allocator, k);
+        try std.testing.expect(v != null);
+        allocator.free(v.?);
+    }
+
+    // Delete every third key to force leaf merges/borrows, interleaved with the
+    // survivors so the tree stays unbalanced in shape, not just size.
+    var i: u32 = 0;
+    while (i < N) : (i += 3) {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>8}", .{i}) catch unreachable;
+        try tree.delete(k);
+    }
+
+    try expectAllLeavesSameDepth(&pool, root_id);
+
+    // Reinsert half the deleted keys plus new keys beyond the original range,
+    // forcing more splits on top of the post-merge tree shape.
+    i = 0;
+    while (i < N) : (i += 6) {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>8}", .{i}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "val{d:0>8}", .{i}) catch unreachable;
+        try tree.insert(k, v);
+    }
+    for (N..N + 100) |j| {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>8}", .{j}) catch unreachable;
+        const v = std.fmt.bufPrint(&val_buf, "val{d:0>8}", .{j}) catch unreachable;
+        try tree.insert(k, v);
+    }
+
+    try expectAllLeavesSameDepth(&pool, root_id);
+
+    // Delete almost everything to force cascading merges back toward the root.
+    for (0..N + 100) |j| {
+        const k = std.fmt.bufPrint(&key_buf, "key{d:0>8}", .{j}) catch unreachable;
+        tree.delete(k) catch {};
+    }
+
+    try expectAllLeavesSameDepth(&pool, root_id);
+}
+
+// Walks every root-to-leaf path in the tree and asserts they all end at the
+// same depth (root = depth 0). Internal nodes reference children via both
+// numbered cells (left_child) and the trailing right_child pointer.
+fn expectAllLeavesSameDepth(pool: *BufferPool, root_id: u32) !void {
+    const WorkItem = struct { page_id: u32, depth: u32 };
+
+    var stack = std.ArrayList(WorkItem){};
+    defer stack.deinit(std.testing.allocator);
+    try stack.append(std.testing.allocator, .{ .page_id = root_id, .depth = 0 });
+
+    var leaf_depth: ?u32 = null;
+
+    while (stack.pop()) |item| {
+        const frame = try pool.fetchPage(item.page_id);
+        defer pool.unpinPage(item.page_id, false);
+
+        const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
+
+        switch (header.page_type) {
+            .leaf => {
+                if (leaf_depth) |expected| {
+                    try std.testing.expectEqual(expected, item.depth);
+                } else {
+                    leaf_depth = item.depth;
+                }
+            },
+            .internal => {
+                for (0..header.cell_count) |idx| {
+                    const cell = readInternalCell(frame.data, pool.pager.page_size, @intCast(idx));
+                    try stack.append(std.testing.allocator, .{ .page_id = cell.left_child, .depth = item.depth + 1 });
+                }
+                const right_child = getRightChild(frame.data);
+                try stack.append(std.testing.allocator, .{ .page_id = right_child, .depth = item.depth + 1 });
+            },
+            else => return error.InvalidNodeType,
+        }
+    }
+}
