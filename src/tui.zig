@@ -262,6 +262,11 @@ const SUNBURST_NODE_LABELS = [SUNBURST_NODE_COUNT][]const u8{ "SELECT", "INSERT"
 const SUNBURST_BUCKET_COUNT: usize = 3;
 const SUNBURST_BUCKET_LABELS = [SUNBURST_BUCKET_COUNT][]const u8{ "Fast", "Medium", "Slow" };
 
+// ── BoxPlot Query Duration Distribution by Type ────────────────────────────
+
+const BOXPLOT_SERIES_COUNT: usize = 5;
+const BOXPLOT_SERIES_LABELS = [BOXPLOT_SERIES_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+
 // ── Application State ────────────────────────────────────────────────
 
 const App = struct {
@@ -408,6 +413,10 @@ const App = struct {
     // SunburstChart query type & duration breakdown overlay
     sunburst_visible: bool = false,
     sunburst_focused: usize = 0,
+
+    // BoxPlot query duration distribution by type overlay
+    boxplot_visible: bool = false,
+    boxplot_focused: usize = 0,
 
     fn init(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) App {
         return .{
@@ -1002,6 +1011,17 @@ const App = struct {
             return;
         }
 
+        // 'o' key toggles boxplot query duration distribution overlay (not while editing input)
+        if (byte == 111 and self.focus != .input) {
+            if (self.boxplot_visible) {
+                self.boxplot_visible = false;
+            } else {
+                self.boxplot_visible = true;
+                self.boxplot_focused = 0;
+            }
+            return;
+        }
+
         // Tab switches focus
         if (byte == 9) {
             self.focus = switch (self.focus) {
@@ -1411,6 +1431,28 @@ const App = struct {
                     'B' => { // Down — next top-level node
                         if (self.sunburst_focused + 1 < SUNBURST_NODE_COUNT) {
                             self.sunburst_focused += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
+
+        // BoxPlot arrow key navigation and ESC handling
+        if (self.boxplot_visible) {
+            if (b2 == null) {
+                self.boxplot_visible = false;
+                return;
+            }
+            if (b2.? == '[') {
+                switch (b3 orelse 0) {
+                    'A' => { // Up — previous series
+                        if (self.boxplot_focused > 0) self.boxplot_focused -= 1;
+                    },
+                    'B' => { // Down — next series
+                        if (self.boxplot_focused + 1 < BOXPLOT_SERIES_COUNT) {
+                            self.boxplot_focused += 1;
                         }
                     },
                     else => {},
@@ -2048,6 +2090,11 @@ fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     // Render sunburst chart query type & duration breakdown overlay
     if (app.sunburst_visible) {
         renderSunburstChart(app, buf, area);
+    }
+
+    // Render boxplot query duration distribution overlay
+    if (app.boxplot_visible) {
+        renderBoxPlot(app, buf, area);
     }
 
     // Render ring menu (on top of everything)
@@ -3755,6 +3802,58 @@ fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     sb.render(buf, popup_area);
 }
 
+fn renderBoxPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.boxplot_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Duration_ms samples per query type — the full distribution, not just the average
+    var values: [BOXPLOT_SERIES_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes([BOXPLOT_SERIES_COUNT][QUERY_HISTORY_MAX]f32);
+    var counts: [BOXPLOT_SERIES_COUNT]usize = .{0} ** BOXPLOT_SERIES_COUNT;
+
+    if (actual_count == 0) {
+        // Placeholder data when no queries yet
+        const placeholder = [_]f32{ 10.0, 12.0, 11.0, 15.0, 9.0 };
+        @memcpy(values[0][0..placeholder.len], &placeholder);
+        counts[0] = placeholder.len;
+    } else {
+        for (app.query_history[0..actual_count]) |entry| {
+            const t = classifyQueryType(&entry);
+            values[t][counts[t]] = @floatFromInt(entry.duration_ms);
+            counts[t] += 1;
+        }
+    }
+
+    var series: [BOXPLOT_SERIES_COUNT]sailor.BoxPlotSeries = undefined;
+    for (0..BOXPLOT_SERIES_COUNT) |i| {
+        series[i] = .{ .label = BOXPLOT_SERIES_LABELS[i], .values = values[i][0..counts[i]] };
+    }
+    const series_slices: []const sailor.BoxPlotSeries = &series;
+
+    const popup_width: u16 = @min(60, area.width -| 4);
+    const popup_height: u16 = @min(16, area.height -| 4);
+    const popup_x = area.x + (area.width -| popup_width) / 2;
+    const popup_y = area.y + (area.height -| popup_height) / 2;
+    const popup_area = tui.Rect{
+        .x = popup_x,
+        .y = popup_y,
+        .width = popup_width,
+        .height = popup_height,
+    };
+
+    const bp = sailor.BoxPlot.init()
+        .withSeries(series_slices)
+        .withShowLabels(true)
+        .withShowOutliers(true)
+        .withFocused(app.boxplot_focused)
+        .withBlock((tui.widgets.Block{
+            .title = " Query Duration Distribution (o/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+            .borders = .all,
+        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+
+    bp.render(buf, popup_area);
+}
+
 fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (area.width == 0 or area.height == 0) return;
 
@@ -3801,8 +3900,8 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream j:violin k:sunburst Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  k:sunburst  Ctrl+C:quit";
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream j:violin k:sunburst o:boxplot Ctrl+C:quit
+    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  k:sunburst  o:boxplot  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -9157,4 +9256,217 @@ test "sunburst: other overlays are unaffected when sunburst is toggled" {
     try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
     try std.testing.expect(app.violin_visible);
     try std.testing.expectEqual(@as(usize, 1), app.violin_focused);
+}
+
+test "boxplot: boxplot_visible starts false on fresh App" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.boxplot_visible);
+}
+
+test "boxplot: 'o' key toggles boxplot_visible to true when focus != .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.boxplot_visible);
+    app.handleKey(111); // 'o'
+    try std.testing.expect(app.boxplot_visible);
+}
+
+test "boxplot: 'o' key does not toggle when focus == .input" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .input,
+    };
+    defer app.deinit();
+
+    try std.testing.expect(!app.boxplot_visible);
+    app.handleKey(111); // 'o'
+    try std.testing.expect(!app.boxplot_visible);
+}
+
+test "boxplot: 'o' key closes boxplot overlay (toggle off)" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.handleKey(111); // 'o' to open
+    try std.testing.expect(app.boxplot_visible);
+
+    app.handleKey(111); // 'o' to close
+    try std.testing.expect(!app.boxplot_visible);
+}
+
+test "boxplot: 'o' key resets boxplot_focused to 0 on open" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    app.boxplot_focused = 3; // Set to non-zero
+    app.handleKey(111); // 'o'
+    try std.testing.expect(app.boxplot_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.boxplot_focused);
+}
+
+test "boxplot: up arrow navigates boxplot_focused backward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.boxplot_visible = true;
+    app.boxplot_focused = 2;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.boxplot_focused);
+}
+
+test "boxplot: down arrow navigates boxplot_focused forward" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.boxplot_visible = true;
+    app.boxplot_focused = 0;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(@as(usize, 1), app.boxplot_focused);
+}
+
+test "boxplot: down arrow does not exceed BOXPLOT_SERIES_COUNT - 1" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.boxplot_visible = true;
+    app.boxplot_focused = BOXPLOT_SERIES_COUNT - 1;
+
+    app.handleEscapeSequence('[', 'B'); // down arrow
+
+    try std.testing.expectEqual(BOXPLOT_SERIES_COUNT - 1, app.boxplot_focused);
+}
+
+test "boxplot: up arrow does not go below 0" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.boxplot_visible = true;
+    app.boxplot_focused = 0;
+
+    app.handleEscapeSequence('[', 'A'); // up arrow
+
+    try std.testing.expectEqual(@as(usize, 0), app.boxplot_focused);
+}
+
+test "boxplot: ESC closes boxplot overlay" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+    };
+    defer app.deinit();
+
+    app.boxplot_visible = true;
+    app.boxplot_focused = 2;
+
+    app.handleEscapeSequence(null, null); // ESC (b2=null, b3=null)
+
+    try std.testing.expect(!app.boxplot_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.boxplot_focused); // focused not reset on close
+}
+
+test "boxplot: boxplot_focused resets to 0 when toggled open again" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Open and navigate
+    app.handleKey(111); // 'o'
+    app.handleEscapeSequence('[', 'B'); // down
+    app.handleEscapeSequence('[', 'B'); // down
+    try std.testing.expectEqual(@as(usize, 2), app.boxplot_focused);
+
+    // Close
+    app.handleKey(111); // 'o'
+    try std.testing.expect(!app.boxplot_visible);
+
+    // Reopen
+    app.handleKey(111); // 'o'
+    try std.testing.expect(app.boxplot_visible);
+    try std.testing.expectEqual(@as(usize, 0), app.boxplot_focused);
+}
+
+test "boxplot: other overlays are unaffected when boxplot is toggled" {
+    const allocator = std.testing.allocator;
+    var app = App{
+        .allocator = allocator,
+        .db = undefined,
+        .db_path = "test.db",
+        .focus = .schema,
+    };
+    defer app.deinit();
+
+    // Set some other overlays visible
+    app.dotplot_visible = true;
+    app.dotplot_focused = 2;
+    app.sunburst_visible = true;
+    app.sunburst_focused = 1;
+
+    // Toggle boxplot
+    app.handleKey(111); // 'o'
+
+    // Verify other overlays unchanged
+    try std.testing.expect(app.dotplot_visible);
+    try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
+    try std.testing.expect(app.sunburst_visible);
+    try std.testing.expectEqual(@as(usize, 1), app.sunburst_focused);
 }
