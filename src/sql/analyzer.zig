@@ -342,7 +342,7 @@ pub const Analyzer = struct {
             .insert => |s| self.analyzeInsert(&s),
             .update => |s| self.analyzeUpdate(&s),
             .delete => |s| self.analyzeDelete(&s),
-            .merge => {}, // MERGE needs semantic analysis (TODO)
+            .merge => |s| self.analyzeMerge(&s),
             .create_table => |s| self.analyzeCreateTable(&s),
             .set, .show, .reset => {}, // Config commands need no semantic analysis
             .drop_table => |s| self.analyzeDropTable(&s),
@@ -657,6 +657,76 @@ pub const Analyzer = struct {
         _ = self.addTableToScope(stmt.table, null);
 
         if (stmt.where) |w| self.analyzeExpr(w);
+    }
+
+    fn analyzeMerge(self: *Analyzer, stmt: *const ast.MergeStmt) void {
+        if (!self.schema.tableExists(stmt.target)) {
+            self.addError(.table_not_found, "table not found: '{s}'", .{stmt.target});
+            return;
+        }
+
+        const target_info = self.schema.getTable(self.allocator, stmt.target) orelse return;
+
+        if (!self.addTableToScope(stmt.target, stmt.target_alias)) return;
+
+        switch (stmt.source) {
+            .table => |t| {
+                if (!self.addTableToScope(t.name, t.alias)) return;
+            },
+            .subquery => {
+                // Subqueries create their own scope — skip for now (matches resolveTableRef)
+            },
+        }
+
+        self.analyzeExpr(stmt.on);
+
+        for (stmt.when_clauses) |wc| {
+            if (wc.extra_cond) |ec| self.analyzeExpr(ec);
+
+            switch (wc.action) {
+                .update => |u| {
+                    for (u.assignments) |assignment| {
+                        var found = false;
+                        for (target_info.columns) |col| {
+                            if (std.ascii.eqlIgnoreCase(col.name, assignment.column)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ assignment.column, stmt.target });
+                        }
+                        self.analyzeExpr(assignment.value);
+                    }
+                },
+                .delete => {},
+                .insert => |ins| {
+                    if (ins.columns) |cols| {
+                        for (cols) |col_name| {
+                            var found = false;
+                            for (target_info.columns) |tc| {
+                                if (std.ascii.eqlIgnoreCase(tc.name, col_name)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ col_name, stmt.target });
+                            }
+                        }
+                        if (ins.values.len != cols.len) {
+                            self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ cols.len, ins.values.len });
+                        }
+                    } else if (ins.values.len != target_info.columns.len) {
+                        self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ target_info.columns.len, ins.values.len });
+                    }
+
+                    for (ins.values) |val| {
+                        self.analyzeExpr(val);
+                    }
+                },
+            }
+        }
     }
 
     fn analyzeCreateTable(self: *Analyzer, stmt: *const ast.CreateTableStmt) void {
@@ -3094,5 +3164,504 @@ test "ALTER TABLE RLS: FORCE without ENABLE fails" {
 
     analyzer.analyzeAlterTableRLS(&stmt);
     try std.testing.expect(analyzer.hasErrors());
+}
+
+// ── MERGE Statement Analysis Tests ──────────────────────────────────
+
+test "MERGE with nonexistent target table" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    // Build a simple MERGE statement with nonexistent target
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .delete,
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "nonexistent", // Doesn't exist!
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(analyzer.hasErrors());
+    try std.testing.expectEqual(ErrorKind.table_not_found, analyzer.errors.items[0].kind);
+}
+
+test "MERGE with nonexistent source table" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "nonexistent", .alias = null }, // Doesn't exist!
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .delete,
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(analyzer.hasErrors());
+    var found_table_error = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .table_not_found) found_table_error = true;
+    }
+    try std.testing.expect(found_table_error);
+}
+
+test "MERGE ON condition with nonexistent column" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    // ON condition references nonexistent column
+    const on_expr = ast.Expr{
+        .column_ref = .{ .name = "nonexistent", .prefix = null },
+    };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .delete,
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(analyzer.hasErrors());
+    var found_col_error = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_not_found) found_col_error = true;
+    }
+    try std.testing.expect(found_col_error);
+}
+
+test "MERGE with valid target, source, and ON condition" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "value", .column_type = .text, .flags = .{} },
+    });
+
+    // ON target.id = source.id (valid columns)
+    const on_expr = ast.Expr{
+        .binary_op = .{
+            .op = .equal,
+            .left = &ast.Expr{ .column_ref = .{ .name = "id", .prefix = "target" } },
+            .right = &ast.Expr{ .column_ref = .{ .name = "id", .prefix = "source" } },
+        },
+    };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = "source" },
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .delete,
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = "target",
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "MERGE WHEN MATCHED THEN UPDATE with nonexistent column" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+
+    // UPDATE tries to set nonexistent column
+    const val_expr = ast.Expr{ .string_literal = "new_value" };
+    const assign = ast.Assignment{
+        .column = "nonexistent", // Column doesn't exist in target!
+        .value = &val_expr,
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .{ .update = .{ .assignments = &.{assign} } },
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(analyzer.hasErrors());
+    var found_col_error = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_not_found) found_col_error = true;
+    }
+    try std.testing.expect(found_col_error);
+}
+
+test "MERGE WHEN MATCHED THEN UPDATE with valid column" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "status", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+
+    // UPDATE sets valid column
+    const val_expr = ast.Expr{ .string_literal = "active" };
+    const assign = ast.Assignment{
+        .column = "status", // Valid column in target
+        .value = &val_expr,
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .{ .update = .{ .assignments = &.{assign} } },
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "MERGE WHEN NOT MATCHED THEN INSERT with nonexistent column" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+
+    // INSERT tries to insert into nonexistent column
+    const val_expr = ast.Expr{ .integer_literal = 42 };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .not_matched,
+        .action = .{
+            .insert = .{
+                .columns = &.{"nonexistent"}, // Column doesn't exist!
+                .values = &.{&val_expr},
+            },
+        },
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(analyzer.hasErrors());
+    var found_col_error = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_not_found) found_col_error = true;
+    }
+    try std.testing.expect(found_col_error);
+}
+
+test "MERGE WHEN NOT MATCHED THEN INSERT with valid columns and matching value count" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+
+    // INSERT with valid columns and matching value count
+    const val1 = ast.Expr{ .integer_literal = 100 };
+    const val2 = ast.Expr{ .string_literal = "alice" };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .not_matched,
+        .action = .{
+            .insert = .{
+                .columns = &.{ "id", "name" },
+                .values = &.{ &val1, &val2 },
+            },
+        },
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "MERGE WHEN NOT MATCHED THEN INSERT with mismatched value count" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+
+    // INSERT has 2 columns but only 1 value
+    const val1 = ast.Expr{ .integer_literal = 100 };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .not_matched,
+        .action = .{
+            .insert = .{
+                .columns = &.{ "id", "name" }, // 2 columns
+                .values = &.{&val1}, // Only 1 value!
+            },
+        },
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(analyzer.hasErrors());
+    var found_mismatch = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_count_mismatch) found_mismatch = true;
+    }
+    try std.testing.expect(found_mismatch);
+}
+
+test "MERGE WHEN MATCHED THEN DELETE with valid tables" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+    schema.addTable("source", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .table = .{ .name = "source", .alias = null },
+    };
+
+    // DELETE action (no column validation needed)
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .delete,
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    analyzer.analyze(.{ .merge = stmt });
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "MERGE with subquery source does not crash" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("target", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+    });
+
+    // Create a simple SELECT statement for the subquery
+    const select_col = ast.ResultColumn{ .expr = .{
+        .value = &ast.Expr{ .integer_literal = 1 },
+        .alias = null,
+    } };
+    const select_stmt = ast.SelectStmt{
+        .distinct = false,
+        .columns = &.{select_col},
+        .from = null,
+        .joins = &.{},
+        .where = null,
+        .group_by = &.{},
+        .having = null,
+        .ctes = &.{},
+        .window_defs = &.{},
+        .order_by = &.{},
+        .limit = null,
+        .offset = null,
+        .set_operation = null,
+    };
+
+    const on_expr = ast.Expr{ .integer_literal = 1 };
+    const merge_source = ast.MergeSource{
+        .subquery = .{
+            .select = &select_stmt,
+            .alias = "src",
+        },
+    };
+    const when_clause = ast.MergeWhenClause{
+        .condition = .matched,
+        .action = .delete,
+    };
+
+    const stmt = ast.MergeStmt{
+        .target = "target",
+        .target_alias = null,
+        .source = merge_source,
+        .on = &on_expr,
+        .when_clauses = &.{when_clause},
+    };
+
+    var analyzer = Analyzer.init(allocator, schema.provider());
+    defer analyzer.deinit();
+
+    // Should not crash/panic
+    analyzer.analyze(.{ .merge = stmt });
+    // We just verify it doesn't crash; error status doesn't matter for subquery test
+    _ = analyzer.hasErrors();
 }
 
