@@ -29,6 +29,7 @@ const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const page_mod = @import("../storage/page.zig");
 const ast = @import("ast.zig");
 const stats_mod = @import("stats.zig");
+const mvcc_mod = @import("../tx/mvcc.zig");
 
 const BTree = btree_mod.BTree;
 const Cursor = btree_mod.Cursor;
@@ -590,6 +591,8 @@ pub const Catalog = struct {
     pool: *BufferPool,
     /// Opaque pointer to SubqueryEvaluator vtable (set by Database after construction).
     subquery_evaluator: ?*anyopaque = null,
+    /// Current transaction ID (set by Database.execSQL for active transactions).
+    current_xid: u32 = mvcc_mod.INVALID_XID,
 
     /// Initialize the schema catalog. If `is_new_db` is true, the schema
     /// root page will be initialized as an empty B+Tree leaf.

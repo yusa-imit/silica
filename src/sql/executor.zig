@@ -4206,6 +4206,12 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
     if (std.ascii.eqlIgnoreCase(fc.name, "txid_current")) {
         if (fc.args.len != 0) return EvalError.TypeError;
+        if (catalog) |cat| {
+            if (cat.current_xid != mvcc_mod.INVALID_XID) {
+                return Value{ .integer = @intCast(cat.current_xid) };
+            }
+        }
+        // Autocommit / no catalog: no explicit transaction xid to report.
         return Value{ .integer = 1 };
     }
 
@@ -31401,7 +31407,7 @@ test "clock_timestamp() returns timestamp value (not null)" {
     try std.testing.expect(result.timestamp > 0);
 }
 
-test "txid_current() returns stub value 1" {
+test "txid_current() with null catalog returns fallback stub value 1" {
     const allocator = std.testing.allocator;
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
@@ -31410,8 +31416,9 @@ test "txid_current() returns stub value 1" {
     defer result.free(allocator);
 
     try std.testing.expect(result == .integer);
-    // txid_current is a placeholder stub returning 1; update this test when
-    // wired to the real TransactionManager current XID.
+    // When catalog is null (e.g., direct function call without transaction context),
+    // txid_current() returns the fallback stub value 1.
+    // Real transaction ID behavior is tested in engine.zig integration tests.
     try std.testing.expectEqual(@as(i64, 1), result.integer);
 }
 

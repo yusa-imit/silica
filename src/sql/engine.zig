@@ -7400,6 +7400,9 @@ pub const Database = struct {
         _ = self.schema_arena.reset(.retain_capacity);
         // Set up subquery evaluation (lazy self-referential init)
         self.ensureSubqueryEvaluator();
+        // Reflect the active explicit transaction's xid so txid_current() can
+        // return the real value; autocommit statements have no explicit xid.
+        self.catalog.current_xid = if (self.current_txn) |txn| txn.xid else mvcc_mod.INVALID_XID;
 
         // Parse first to determine statement type
         var arena: ?*AstArena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
@@ -32796,7 +32799,7 @@ test "clock_timestamp() returns non-NULL timestamp" {
     }
 }
 
-test "txid_current() returns positive integer" {
+test "txid_current() in autocommit returns positive integer" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -32813,6 +32816,149 @@ test "txid_current() returns positive integer" {
     } else {
         return error.TestUnexpectedResult;
     }
+}
+
+test "txid_current() in explicit transaction returns real xid >= FIRST_NORMAL_XID" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Start explicit transaction
+    {
+        var r = try db.execSQL("BEGIN");
+        r.close(allocator);
+    }
+
+    // Get txid within transaction
+    var r = try db.execSQL("SELECT txid_current()");
+    defer r.close(allocator);
+
+    var xid: i64 = 0;
+    if (try r.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try testing.expect(row.values[0] == .integer);
+        xid = row.values[0].integer;
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Commit transaction
+    {
+        var r2 = try db.execSQL("COMMIT");
+        r2.close(allocator);
+    }
+
+    // Within explicit transaction, xid should NOT be the stub value 1
+    // and should be >= FIRST_NORMAL_XID (2)
+    try testing.expect(xid != 1);
+    try testing.expect(xid >= 2);
+}
+
+test "txid_current() returns same xid for multiple calls in same transaction" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // Start explicit transaction
+    {
+        var r = try db.execSQL("BEGIN");
+        r.close(allocator);
+    }
+
+    // First call to txid_current()
+    var xid1: i64 = 0;
+    {
+        var r = try db.execSQL("SELECT txid_current()");
+        defer r.close(allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            xid1 = row.values[0].integer;
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Second call to txid_current() in same transaction
+    var xid2: i64 = 0;
+    {
+        var r = try db.execSQL("SELECT txid_current()");
+        defer r.close(allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            xid2 = row.values[0].integer;
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Commit transaction
+    {
+        var r = try db.execSQL("COMMIT");
+        r.close(allocator);
+    }
+
+    // Both calls should return the same xid
+    try testing.expectEqual(xid1, xid2);
+}
+
+test "txid_current() returns different xids for separate transactions" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var db = try Database.open(allocator, ":memory:", .{});
+    defer db.close();
+
+    // First transaction
+    var xid1: i64 = 0;
+    {
+        var r = try db.execSQL("BEGIN");
+        r.close(allocator);
+    }
+    {
+        var r = try db.execSQL("SELECT txid_current()");
+        defer r.close(allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            xid1 = row.values[0].integer;
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+    {
+        var r = try db.execSQL("COMMIT");
+        r.close(allocator);
+    }
+
+    // Second transaction
+    var xid2: i64 = 0;
+    {
+        var r = try db.execSQL("BEGIN");
+        r.close(allocator);
+    }
+    {
+        var r = try db.execSQL("SELECT txid_current()");
+        defer r.close(allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            xid2 = row.values[0].integer;
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+    {
+        var r = try db.execSQL("COMMIT");
+        r.close(allocator);
+    }
+
+    // Different transactions should return different xids (monotonically increasing)
+    try testing.expect(xid1 != xid2);
+    try testing.expect(xid2 > xid1);
 }
 
 test "num_nulls with mixed NULL and non-NULL" {
