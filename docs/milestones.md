@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.83.0
-- **Latest available**: v2.83.0
+- **Current in silica**: v2.84.0
+- **Latest available**: v2.84.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -220,6 +220,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.81.0 | SunburstChart widget | DONE | Hierarchical radial chart (concentric rings of arcs); SunburstNode label/value/children/style, MAX_DEPTH=4, MAX_NODES=8, no heap allocations; TUI overlay integrated — Query Type & Duration Breakdown ('k' key), 2-level hierarchy (query type -> Fast/Medium/Slow duration buckets) — Session 451 |
 | v2.82.0 | BoxPlot widget | DONE | Box-and-whisker plot with five-number-summary (min/Q1/median/Q3/max) + outlier detection (1.5×IQR); fiveNumberSummary() public helper, MAX_SERIES=8, MAX_SAMPLES=64, no heap allocations; TUI overlay integrated — Query Duration Distribution by Type ('o' key) — Session 453 |
 | v2.83.0 | CandlestickChart widget | DONE | OHLC financial candlestick chart; `CandlestickChart` + `Candle` (label, open/high/low/close, style), wick+body rendering, bullish/bearish coloring, shared global price scale, MAX_CANDLES=64, no heap allocations; row-mapping clamp bugfix for malformed OHLC data; no TUI overlay use case identified yet (silica has no financial/price time-series data) — Session 453 |
+| v2.83.1 | bug fix | DONE | Windows piped-stdin readByte() hang fix, clipboard trailing newline fix, empty-env-var test skip on Windows — Session 456 |
+| v2.84.0 | BulletChart widget | DONE | Few-style KPI bullet graph (value vs. target vs. qualitative ranges), one row per bullet, range bands + value bar + target tick, MAX_BULLETS=32; no TUI overlay use case identified yet (no natural KPI-vs-target metric in silica) — Session 457 |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
