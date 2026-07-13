@@ -4046,6 +4046,7 @@ pub const Database = struct {
         const input = try self.buildIterator(sort.input, ops);
         const sort_op = self.allocator.create(SortOp) catch return EngineError.OutOfMemory;
         sort_op.* = SortOp.init(self.allocator, input, sort.order_by);
+        sort_op.catalog = &self.catalog;
         ops.sort = sort_op;
         return sort_op.iterator();
     }
@@ -7720,7 +7721,17 @@ pub const Database = struct {
                 return .{ .message = "DROP DOMAIN" };
             },
             .create_function => |cf| {
-                self.catalog.createFunction(cf) catch |err| {
+                // Unquote the function body: parseStringLiteral returns WITH outer quotes
+                // but executor needs raw SQL. Strip ' delimiters and unescape '' -> '.
+                var mutable_cf = cf;
+                if (cf.body.len >= 2 and cf.body[0] == '\'' and cf.body[cf.body.len - 1] == '\'') {
+                    const inner = cf.body[1 .. cf.body.len - 1];
+                    const unquoted = std.mem.replaceOwned(u8, infra_alloc.allocator(), inner, "''", "'") catch {
+                        return EngineError.OutOfMemory;
+                    };
+                    mutable_cf.body = unquoted;
+                }
+                self.catalog.createFunction(mutable_cf) catch |err| {
                     return switch (err) {
                         error.TableAlreadyExists => EngineError.TableAlreadyExists,
                         error.OutOfMemory => EngineError.OutOfMemory,
@@ -21739,8 +21750,16 @@ test "CREATE FUNCTION and DROP FUNCTION integration" {
 
     var row = (try result2.rows.?.next()).?;
     defer row.deinit();
-    // Currently functions return string representation (type conversion TBD)
-    try testing.expectEqualStrings("10", row.values[0].text);
+    // Function should return INTEGER value 10, not text "10"
+    // Currently the bug is that it returns text, so this test FAILS
+    switch (row.values[0]) {
+        .integer => |v| try testing.expectEqual(@as(i64, 10), v),
+        .text => {
+            // BUG: function returned text instead of integer
+            try testing.expect(false);
+        },
+        else => try testing.expect(false),
+    }
 
     // DROP FUNCTION
     var result5 = try db.exec("DROP FUNCTION get_ten");
@@ -21751,6 +21770,181 @@ test "CREATE FUNCTION and DROP FUNCTION integration" {
     var result6 = try db.exec("DROP FUNCTION IF EXISTS nonexistent_func");
     defer result6.close(testing.allocator);
     try testing.expectEqualStrings("DROP FUNCTION", result6.message);
+}
+
+test "SQL function with expression body evaluates correctly (named parameter)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_sql_function_expression.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    // Create a function that takes a parameter and adds 1 using named parameter syntax
+    var result1 = try db.exec(
+        \\CREATE FUNCTION add_one(x INTEGER)
+        \\RETURNS INTEGER
+        \\LANGUAGE sql
+        \\AS 'x + 1'
+    );
+    defer result1.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE FUNCTION", result1.message);
+
+    // Call the function with argument 5; should return 6 as an integer
+    var result2 = try db.exec("SELECT add_one(5) AS result");
+    defer result2.close(testing.allocator);
+
+    var row = (try result2.rows.?.next()).?;
+    defer row.deinit();
+    // Should return INTEGER 6 (regression test for named parameter binding)
+    switch (row.values[0]) {
+        .integer => |v| try testing.expectEqual(@as(i64, 6), v),
+        else => try testing.expect(false), // Expect integer type
+    }
+}
+
+test "SQL function with $1 positional parameter evaluates correctly" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_sql_function_dollar_param.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    // Create a function using PostgreSQL-style $1 positional parameter
+    var result1 = try db.exec(
+        \\CREATE FUNCTION add_one_dollar(x INTEGER)
+        \\RETURNS INTEGER
+        \\LANGUAGE sql
+        \\AS 'SELECT $1 + 1'
+    );
+    defer result1.close(testing.allocator);
+    try testing.expectEqualStrings("CREATE FUNCTION", result1.message);
+
+    // Call the function with argument 5; should return 6
+    // Currently FAILS: positional params return NULL
+    var result2 = try db.exec("SELECT add_one_dollar(5) AS result");
+    defer result2.close(testing.allocator);
+
+    var row = (try result2.rows.?.next()).?;
+    defer row.deinit();
+    // Should return INTEGER 6 (currently returns NULL due to unsupported bind_parameter)
+    switch (row.values[0]) {
+        .integer => |v| try testing.expectEqual(@as(i64, 6), v),
+        .null_value => {
+            // BUG: positional parameter $1 not supported, returns NULL
+            try testing.expect(false);
+        },
+        else => try testing.expect(false),
+    }
+}
+
+test "SQL function in WHERE clause returns correct rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_sql_function_where.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    // Create test table
+    var result0 = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+    defer result0.close(testing.allocator);
+
+    _ = try db.exec("INSERT INTO t VALUES (1, 'a')");
+    _ = try db.exec("INSERT INTO t VALUES (2, 'b')");
+    _ = try db.exec("INSERT INTO t VALUES (3, 'c')");
+
+    // Create a function that returns a constant
+    var result1 = try db.exec(
+        \\CREATE FUNCTION get_ten()
+        \\RETURNS INTEGER
+        \\LANGUAGE sql
+        \\AS '10'
+    );
+    defer result1.close(testing.allocator);
+
+    // Query using function in WHERE clause (should match rows where id=10, i.e., none)
+    var result2 = try db.exec("SELECT * FROM t WHERE id = get_ten()");
+    defer result2.close(testing.allocator);
+
+    // Should have 0 rows (no id equals 10)
+    var count: usize = 0;
+    while (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 0), count);
+
+    // Now query using function in WHERE with a value that matches
+    var result3 = try db.exec("SELECT * FROM t WHERE id = 2 AND get_ten() = 10");
+    defer result3.close(testing.allocator);
+
+    // Should have 1 row (row with id=2)
+    var count2: usize = 0;
+    while (try result3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count2 += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count2);
+}
+
+test "SQL function in ORDER BY clause affects sort order" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_sql_function_order_by.db";
+    var db = try Database.open(testing.allocator, path, .{});
+    defer {
+        db.close();
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+
+    // Create test table
+    var result0 = try db.exec("CREATE TABLE numbers (id INTEGER, num INTEGER)");
+    defer result0.close(testing.allocator);
+
+    _ = try db.exec("INSERT INTO numbers VALUES (1, 5)");
+    _ = try db.exec("INSERT INTO numbers VALUES (2, 3)");
+    _ = try db.exec("INSERT INTO numbers VALUES (3, 7)");
+
+    // Create a function that negates its input
+    var result1 = try db.exec(
+        \\CREATE FUNCTION negate(x INTEGER)
+        \\RETURNS INTEGER
+        \\LANGUAGE sql
+        \\AS '-x'
+    );
+    defer result1.close(testing.allocator);
+
+    // Query with ORDER BY using the function
+    // If negate() works: 7->-7, 5->-5, 3->-3, so sorted DESC by negate is 7,5,3
+    // If negate() fails (returns NULL): order is undefined
+    var result2 = try db.exec("SELECT id, num FROM numbers ORDER BY negate(num)");
+    defer result2.close(testing.allocator);
+
+    var ids = std.ArrayListUnmanaged(i64){};
+    defer ids.deinit(testing.allocator);
+    while (try result2.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        switch (row.values[0]) {
+            .integer => |v| ids.append(testing.allocator, v) catch unreachable,
+            else => ids.append(testing.allocator, -999) catch unreachable, // Sentinel for non-integer
+        }
+    }
+
+    // Expected order (if negate works): id=3 (num=7), id=1 (num=5), id=2 (num=3)
+    // because negate(7)=-7, negate(5)=-5, negate(3)=-3, ascending
+    try testing.expectEqual(@as(usize, 3), ids.items.len);
+    // If SortOp catalog bug exists, the function returns NULL/fails, order may be undefined
+    // So this test will likely FAIL (check if ids are in expected order)
+    try testing.expectEqual(@as(i64, 3), ids.items[0]); // num=7, negate=-7
+    try testing.expectEqual(@as(i64, 1), ids.items[1]); // num=5, negate=-5
+    try testing.expectEqual(@as(i64, 2), ids.items[2]); // num=3, negate=-3
 }
 
 // TODO(Milestone 13 limitation): SQL-language functions not fully functional

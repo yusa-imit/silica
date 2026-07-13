@@ -2088,9 +2088,19 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             return .{ .array = elems };
         },
 
+        .bind_parameter => |param| {
+            // Resolve positional parameters ($1, $2, etc.) by looking them up
+            // in the current row (which contains function parameters).
+            // The parser converts $N to 0-based index (N-1), so $1 = param 0, $2 = param 1, etc.
+            if (param < row.values.len) {
+                return row.values[param].dupe(allocator) catch return EvalError.OutOfMemory;
+            }
+            // If positional parameter index is out of range, return NULL
+            return .null_value;
+        },
+
         // Unsupported in row-level evaluation (aggregates handled in AggregateExecutor)
         .blob_literal,
-        .bind_parameter,
         .ordered_set_agg,
         => return EvalError.UnsupportedExpression,
     }
@@ -4531,21 +4541,29 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         };
         defer param_row.deinit();
 
-            // Parse and evaluate the function body as an expression
+            // Parse and evaluate the function body
             const result = switch (func_info.return_type) {
                 .scalar => |_| blk: {
-                    // Parse the function body as a SQL expression
-                    // The body should be a SQL expression like "UPPER($1) || ' ' || $2"
-                    // Wrap it in a SELECT statement to parse it
-                    const select_sql = std.fmt.allocPrint(allocator, "SELECT {s}", .{func_info.body}) catch {
-                        break :blk Value.null_value;
-                    };
-                    defer allocator.free(select_sql);
+                    // SQL function bodies can be either:
+                    // 1. A bare expression: 'x + 1' → wrap in SELECT
+                    // 2. A SELECT statement: 'SELECT x + 1' → use as-is
+                    const trimmed_body = std.mem.trim(u8, func_info.body, " \t\n\r");
+                    const is_select_stmt = trimmed_body.len >= 6 and
+                        std.ascii.eqlIgnoreCase(trimmed_body[0..6], "SELECT");
+
+                    const sql_to_parse = if (is_select_stmt)
+                        func_info.body
+                    else
+                        std.fmt.allocPrint(allocator, "SELECT {s}", .{func_info.body}) catch {
+                            break :blk Value.null_value;
+                        };
+
+                    defer if (!is_select_stmt) allocator.free(sql_to_parse);
 
                     var ast_arena = ast.AstArena.init(allocator);
                     defer ast_arena.deinit();
 
-                    var parser = parser_mod.Parser.init(allocator, select_sql, &ast_arena) catch {
+                    var parser = parser_mod.Parser.init(allocator, sql_to_parse, &ast_arena) catch {
                         // Parser initialization failed
                         break :blk Value.null_value;
                     };
@@ -8641,6 +8659,7 @@ pub const SortOp = struct {
     allocator: Allocator,
     input: RowIterator,
     order_by: []const ast.OrderByItem,
+    catalog: ?*Catalog = null,
     rows: std.ArrayListUnmanaged(Row) = .{},
     index: usize = 0,
     materialized: bool = false,
@@ -8661,7 +8680,11 @@ pub const SortOp = struct {
         }
 
         // Sort using order_by expressions
-        const ctx = SortContext{ .order_by = self.order_by, .allocator = self.allocator };
+        const ctx = SortContext{
+            .order_by = self.order_by,
+            .allocator = self.allocator,
+            .catalog = self.catalog,
+        };
         std.sort.block(Row, self.rows.items, ctx, SortContext.lessThan);
 
         self.materialized = true;
@@ -8697,12 +8720,13 @@ pub const SortOp = struct {
     const SortContext = struct {
         order_by: []const ast.OrderByItem,
         allocator: Allocator,
+        catalog: ?*Catalog = null,
 
         fn lessThan(ctx: SortContext, a: Row, b: Row) bool {
             for (ctx.order_by) |ob| {
-                const av = evalExpr(ctx.allocator, ob.expr, &a, null) catch Value.null_value;
+                const av = evalExpr(ctx.allocator, ob.expr, &a, ctx.catalog) catch Value.null_value;
                 defer av.free(ctx.allocator);
-                const bv = evalExpr(ctx.allocator, ob.expr, &b, null) catch Value.null_value;
+                const bv = evalExpr(ctx.allocator, ob.expr, &b, ctx.catalog) catch Value.null_value;
                 defer bv.free(ctx.allocator);
 
                 // Handle NULL ordering
