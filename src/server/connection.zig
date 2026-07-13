@@ -170,7 +170,7 @@ pub const Connection = struct {
             // Get first row to determine columns
             if (try rows_iter.next()) |first_row| {
                 // Send RowDescription
-                try self.sendRowDescription(writer, first_row.columns);
+                try self.sendRowDescription(writer, first_row.columns, first_row.values);
 
                 // Send first DataRow
                 try self.sendDataRow(writer, first_row, first_row.columns);
@@ -365,7 +365,7 @@ pub const Connection = struct {
             // Get first row to determine columns
             if (try rows_iter.next()) |first_row| {
                 // Send RowDescription
-                try self.sendRowDescription(writer, first_row.columns);
+                try self.sendRowDescription(writer, first_row.columns, first_row.values);
 
                 // Send first DataRow
                 try self.sendDataRow(writer, first_row, first_row.columns);
@@ -421,22 +421,68 @@ pub const Connection = struct {
         try ready.write(writer);
     }
 
+    /// Map a runtime Value to its PostgreSQL wire-protocol type OID.
+    fn typeOidForValue(self: *Connection, value: Value) i32 {
+        _ = self;
+        return switch (value) {
+            .integer => 20, // INT8
+            .real => 701, // FLOAT8
+            .text => 25, // TEXT
+            .blob => 17, // BYTEA
+            .boolean => 16, // BOOL
+            .date => 1082, // DATE
+            .time => 1083, // TIME
+            .timestamp => 1114, // TIMESTAMP
+            .interval => 1186, // INTERVAL
+            .numeric => 1700, // NUMERIC
+            .uuid => 2950, // UUID
+            .array => 2277, // ANYARRAY
+            .tsvector => 3614, // TSVECTOR
+            .tsquery => 3615, // TSQUERY
+            .null_value => 25, // default to TEXT for NULL
+        };
+    }
+
+    /// Map a runtime Value to its PostgreSQL wire-protocol type size (-1 = variable length).
+    fn typeSizeForValue(self: *Connection, value: Value) i16 {
+        _ = self;
+        return switch (value) {
+            .integer => 8,
+            .real => 8,
+            .text => -1,
+            .blob => -1,
+            .boolean => 1,
+            .date => 4,
+            .time => 8,
+            .timestamp => 8,
+            .interval => 16,
+            .numeric => -1,
+            .uuid => 16,
+            .array => -1,
+            .tsvector => -1,
+            .tsquery => -1,
+            .null_value => -1,
+        };
+    }
+
     /// Send RowDescription message
     fn sendRowDescription(
         self: *Connection,
         writer: anytype,
         columns: []const []const u8,
+        values: []const Value,
     ) !void {
         const fields = try self.allocator.alloc(wire.RowDescription.Field, columns.len);
         defer self.allocator.free(fields);
 
         for (columns, 0..) |col_name, i| {
+            const value = values[i];
             fields[i] = .{
                 .name = col_name,
                 .table_oid = 0, // Not implemented yet
                 .column_attr_number = @intCast(i + 1),
-                .type_oid = 25, // TEXT OID (default for now)
-                .type_size = -1, // variable length
+                .type_oid = self.typeOidForValue(value),
+                .type_size = self.typeSizeForValue(value),
                 .type_modifier = -1,
                 .format_code = 0, // text format
             };
@@ -2032,4 +2078,424 @@ test "handleExecute - with parameter binding" {
         if (byte == 'D') row_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), row_count);
+}
+
+// ── Type OID Mapping Tests ──────────────────────────────────────────
+
+test "typeOidForValue - integer type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_integer.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const int_value = Value{ .integer = 42 };
+    const oid = conn.typeOidForValue(int_value);
+    try std.testing.expectEqual(@as(i32, 20), oid); // INT8 OID in PostgreSQL
+}
+
+test "typeOidForValue - text type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_text.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const text_value = Value{ .text = "hello" };
+    const oid = conn.typeOidForValue(text_value);
+    try std.testing.expectEqual(@as(i32, 25), oid); // TEXT OID
+}
+
+test "typeOidForValue - boolean type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_boolean.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const bool_value = Value{ .boolean = true };
+    const oid = conn.typeOidForValue(bool_value);
+    try std.testing.expectEqual(@as(i32, 16), oid); // BOOL OID
+}
+
+test "typeOidForValue - real type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_real.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const real_value = Value{ .real = 3.14 };
+    const oid = conn.typeOidForValue(real_value);
+    try std.testing.expectEqual(@as(i32, 701), oid); // FLOAT8 OID
+}
+
+test "typeOidForValue - date type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_date.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const date_value = Value{ .date = 18993 }; // Some date
+    const oid = conn.typeOidForValue(date_value);
+    try std.testing.expectEqual(@as(i32, 1082), oid); // DATE OID
+}
+
+test "typeOidForValue - timestamp type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_timestamp.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const timestamp_value = Value{ .timestamp = 1609459200000000 }; // Some timestamp
+    const oid = conn.typeOidForValue(timestamp_value);
+    try std.testing.expectEqual(@as(i32, 1114), oid); // TIMESTAMP OID
+}
+
+test "typeOidForValue - numeric type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_numeric.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const numeric_value = Value{ .numeric = .{ .value = 12345, .scale = 2 } };
+    const oid = conn.typeOidForValue(numeric_value);
+    try std.testing.expectEqual(@as(i32, 1700), oid); // NUMERIC OID
+}
+
+test "typeOidForValue - uuid type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_uuid.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const uuid_bytes = [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
+        [_]u8{0x90} ++ [_]u8{0xab} ++ [_]u8{0xcd} ++ [_]u8{0xef} ++
+        [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
+        [_]u8{0x90} ++ [_]u8{0xab} ++ [_]u8{0xcd} ++ [_]u8{0xef};
+    const uuid_value = Value{ .uuid = uuid_bytes };
+    const oid = conn.typeOidForValue(uuid_value);
+    try std.testing.expectEqual(@as(i32, 2950), oid); // UUID OID
+}
+
+test "typeOidForValue - null type mapping" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_oid_null.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const null_value = Value.null_value;
+    const oid = conn.typeOidForValue(null_value);
+    try std.testing.expectEqual(@as(i32, 25), oid); // TEXT OID (default for NULL)
+}
+
+test "typeSizeForValue - integer type size" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_integer.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const int_value = Value{ .integer = 42 };
+    const size = conn.typeSizeForValue(int_value);
+    try std.testing.expectEqual(@as(i16, 8), size); // INT8 is 8 bytes
+}
+
+test "typeSizeForValue - boolean type size" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_boolean.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const bool_value = Value{ .boolean = true };
+    const size = conn.typeSizeForValue(bool_value);
+    try std.testing.expectEqual(@as(i16, 1), size); // BOOL is 1 byte
+}
+
+test "typeSizeForValue - text type size (variable length)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_text.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const text_value = Value{ .text = "hello" };
+    const size = conn.typeSizeForValue(text_value);
+    try std.testing.expectEqual(@as(i16, -1), size); // TEXT is variable length
+}
+
+test "typeSizeForValue - real type size" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_real.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const real_value = Value{ .real = 3.14 };
+    const size = conn.typeSizeForValue(real_value);
+    try std.testing.expectEqual(@as(i16, 8), size); // FLOAT8 is 8 bytes
+}
+
+test "typeSizeForValue - date type size" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_date.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const date_value = Value{ .date = 18993 };
+    const size = conn.typeSizeForValue(date_value);
+    try std.testing.expectEqual(@as(i16, 4), size); // DATE is 4 bytes
+}
+
+test "typeSizeForValue - uuid type size" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_uuid.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const uuid_bytes = [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
+        [_]u8{0x90} ++ [_]u8{0xab} ++ [_]u8{0xcd} ++ [_]u8{0xef} ++
+        [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
+        [_]u8{0x90} ++ [_]u8{0xab} ++ [_]u8{0xcd} ++ [_]u8{0xef};
+    const uuid_value = Value{ .uuid = uuid_bytes };
+    const size = conn.typeSizeForValue(uuid_value);
+    try std.testing.expectEqual(@as(i16, 16), size); // UUID is 16 bytes
+}
+
+test "typeSizeForValue - null type size" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_type_size_null.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const null_value = Value.null_value;
+    const size = conn.typeSizeForValue(null_value);
+    try std.testing.expectEqual(@as(i16, -1), size); // NULL defaults to variable length
+}
+
+test "sendRowDescription with mixed types produces correct OIDs" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_row_desc_mixed.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a row with mixed types: integer, text, boolean
+    const column_names = [_][]const u8{ "id", "name", "active" };
+    const values = try allocator.alloc(Value, 3);
+    defer allocator.free(values);
+
+    values[0] = Value{ .integer = 1 };
+    values[1] = Value{ .text = "test" };
+    values[2] = Value{ .boolean = true };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    // Call sendRowDescription with the row values
+    try conn.sendRowDescription(buf.writer(allocator), column_names, values);
+
+    // Verify message type is 'T' (RowDescription)
+    try std.testing.expectEqual(@as(u8, 'T'), buf.items[0]);
+
+    // Parse field count from bytes 5-7 (after length)
+    const field_count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 3), field_count);
+
+    // Extract and verify OIDs from the wire format
+    // RowDescription wire format (per field):
+    //   name (null-terminated string) + table_oid (i32) + column_attr_number (i16)
+    //   + type_oid (i32) + type_size (i16) + type_modifier (i32) + format_code (i16)
+
+    // Parse first field (id: integer)
+    var offset: usize = 7; // Start after message type (1) + length (4) + field_count (2)
+
+    // Skip field name "id" + null terminator
+    offset += "id".len + 1;
+    // Skip table_oid (4 bytes)
+    offset += 4;
+    // Skip column_attr_number (2 bytes)
+    offset += 2;
+    // Read type_oid for first column (should be 20 for integer)
+    const first_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    try std.testing.expectEqual(@as(i32, 20), first_oid); // INT8 OID
+
+    offset += 4; // Skip type_oid
+    offset += 2; // Skip type_size
+    offset += 4; // Skip type_modifier
+    offset += 2; // Skip format_code
+
+    // Parse second field (name: text)
+    // Skip field name "name" + null terminator
+    offset += "name".len + 1;
+    // Skip table_oid (4 bytes)
+    offset += 4;
+    // Skip column_attr_number (2 bytes)
+    offset += 2;
+    // Read type_oid for second column (should be 25 for text)
+    const second_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    try std.testing.expectEqual(@as(i32, 25), second_oid); // TEXT OID
+
+    offset += 4; // Skip type_oid
+    offset += 2; // Skip type_size
+    offset += 4; // Skip type_modifier
+    offset += 2; // Skip format_code
+
+    // Parse third field (active: boolean)
+    // Skip field name "active" + null terminator
+    offset += "active".len + 1;
+    // Skip table_oid (4 bytes)
+    offset += 4;
+    // Skip column_attr_number (2 bytes)
+    offset += 2;
+    // Read type_oid for third column (should be 16 for boolean)
+    const third_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    try std.testing.expectEqual(@as(i32, 16), third_oid); // BOOL OID
+}
+
+test "sendRowDescription with NULL values defaults to TEXT OID" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_row_desc_null.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.init(allocator, db_path);
+    defer db.deinit();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a row with all NULL values
+    const column_names = [_][]const u8{ "col1", "col2" };
+    const values = try allocator.alloc(Value, 2);
+    defer allocator.free(values);
+
+    values[0] = Value.null_value;
+    values[1] = Value.null_value;
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.sendRowDescription(buf.writer(allocator), column_names, values);
+
+    // Verify message type
+    try std.testing.expectEqual(@as(u8, 'T'), buf.items[0]);
+
+    // Parse field count
+    const field_count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 2), field_count);
+
+    // Parse OID for first column (should default to 25 for NULL)
+    var offset: usize = 7;
+    offset += "col1".len + 1; // Skip field name
+    offset += 4; // Skip table_oid
+    offset += 2; // Skip column_attr_number
+    const first_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    try std.testing.expectEqual(@as(i32, 25), first_oid); // TEXT OID for NULL
+
+    offset += 4; // Skip type_oid
+    offset += 2; // Skip type_size
+    offset += 4; // Skip type_modifier
+    offset += 2; // Skip format_code
+
+    // Parse OID for second column
+    offset += "col2".len + 1; // Skip field name
+    offset += 4; // Skip table_oid
+    offset += 2; // Skip column_attr_number
+    const second_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    try std.testing.expectEqual(@as(i32, 25), second_oid); // TEXT OID for NULL
 }
