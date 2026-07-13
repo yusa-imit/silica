@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.84.0
-- **Latest available**: v2.84.0
+- **Current in silica**: v2.86.0
+- **Latest available**: v2.86.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -222,6 +222,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.83.0 | CandlestickChart widget | DONE | OHLC financial candlestick chart; `CandlestickChart` + `Candle` (label, open/high/low/close, style), wick+body rendering, bullish/bearish coloring, shared global price scale, MAX_CANDLES=64, no heap allocations; row-mapping clamp bugfix for malformed OHLC data; no TUI overlay use case identified yet (silica has no financial/price time-series data) — Session 453 |
 | v2.83.1 | bug fix | DONE | Windows piped-stdin readByte() hang fix, clipboard trailing newline fix, empty-env-var test skip on Windows — Session 456 |
 | v2.84.0 | BulletChart widget | DONE | Few-style KPI bullet graph (value vs. target vs. qualitative ranges), one row per bullet, range bands + value bar + target tick, MAX_BULLETS=32; no TUI overlay use case identified yet (no natural KPI-vs-target metric in silica) — Session 457 |
+| v2.85.0 | ParallelCoordinates widget | DONE | Multi-dimensional data viz via parallel vertical axes + per-item polylines; `ParallelCoordinates` + `PCAxis`(label, min, max) + `PCItem`(label, values, style), MAX_AXES=8, MAX_ITEMS=16, no heap allocations; no TUI overlay use case identified yet — Session 459 |
+| v2.86.0 | ParetoChart widget | DONE | 80/20 QA visualization: descending-sorted bars + cumulative percent line + threshold marker; `ParetoChart` + `ParetoItem`(label, value, style), MAX_ITEMS=32, no heap allocations; no TUI overlay use case identified yet — Session 459 |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
