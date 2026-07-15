@@ -580,6 +580,8 @@ pub const PreparedStatement = struct {
 
     /// Execute the prepared statement with currently bound parameters.
     pub fn execute(self: *PreparedStatement) !QueryResult {
+        self.db.exec_mutex.lock();
+        defer self.db.exec_mutex.unlock();
         // Validate all parameters are bound
         for (self.bound_flags, 0..) |bound, i| {
             if (!bound) {
@@ -973,6 +975,12 @@ pub const Database = struct {
     subquery_evaluator_vtable: executor_mod.SubqueryEvaluator = undefined,
     /// Currently active transaction (null = auto-commit mode).
     current_txn: ?TransactionContext = null,
+    /// Serializes all SQL execution against this Database instance. Server mode
+    /// shares one Database across per-connection threads (src/server/server.zig);
+    /// pool/catalog/schema_arena/tm.next_xid are not independently thread-safe,
+    /// so every entry point that touches them takes this lock. Not reentrant —
+    /// internal recursive calls (triggers, COPY) must use the *Unlocked variants.
+    exec_mutex: std.Thread.Mutex = .{},
 
     /// Open or create a database file.
     pub fn open(allocator: Allocator, path: []const u8, opts: OpenOptions) !Database {
@@ -1146,6 +1154,8 @@ pub const Database = struct {
     /// Returns a PreparedStatement that can be executed multiple times with
     /// different bound parameter values, avoiding expensive parse/analyze steps.
     pub fn prepare(self: *Database, allocator: Allocator, sql: []const u8) !PreparedStatement {
+        self.exec_mutex.lock();
+        defer self.exec_mutex.unlock();
         // Create arena for AST (will be owned by PreparedStatement)
         const arena = try allocator.create(AstArena);
         arena.* = AstArena.init(allocator);
@@ -1831,8 +1841,10 @@ pub const Database = struct {
 
     /// Execute a SQL statement and return results.
     pub fn exec(self: *Database, sql: []const u8) EngineError!QueryResult {
+        self.exec_mutex.lock();
+        defer self.exec_mutex.unlock();
         // Delegate to execSQL which handles both DDL and DML correctly
-        return self.execSQL(sql);
+        return self.execSQLUnlocked(sql);
     }
 
     /// Execute CREATE TABLE AS SELECT (CTAS)
@@ -5085,7 +5097,7 @@ pub const Database = struct {
 
             const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{eval_cond}) catch return false;
             defer self.allocator.free(when_sql);
-            var cond_result = self.exec(when_sql) catch return false;
+            var cond_result = self.execSQLUnlocked(when_sql) catch return false;
             defer cond_result.close(self.allocator);
             const is_truthy = blk: {
                 if (cond_result.rows == null) break :blk false;
@@ -5102,7 +5114,7 @@ pub const Database = struct {
         // Evaluate condition as constant (no NEW/OLD references)
         const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{cond}) catch return false;
         defer self.allocator.free(when_sql);
-        var cond_result = self.exec(when_sql) catch return false;
+        var cond_result = self.execSQLUnlocked(when_sql) catch return false;
         defer cond_result.close(self.allocator);
         const is_truthy = blk: {
             if (cond_result.rows == null) break :blk false;
@@ -5232,7 +5244,7 @@ pub const Database = struct {
 
                     const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{eval_cond}) catch continue;
                     defer self.allocator.free(when_sql);
-                    var cond_result = self.exec(when_sql) catch continue;
+                    var cond_result = self.execSQLUnlocked(when_sql) catch continue;
                     defer cond_result.close(self.allocator);
                     const is_truthy = blk: {
                         if (cond_result.rows == null) break :blk false;
@@ -5253,7 +5265,7 @@ pub const Database = struct {
             };
 
             for (0..fire_count) |_| {
-                var result = self.exec(trigger.body) catch continue;
+                var result = self.execSQLUnlocked(trigger.body) catch continue;
                 result.close(self.allocator);
             }
         }
@@ -7043,7 +7055,7 @@ pub const Database = struct {
             }
             try sql_buf.appendSlice(arena_alloc, ")");
 
-            _ = try self.execSQL(sql_buf.items);
+            _ = try self.execSQLUnlocked(sql_buf.items);
             row_count += 1;
         }
 
@@ -7058,7 +7070,7 @@ pub const Database = struct {
                 defer sql_buf.deinit(self.allocator);
                 try sql_buf.appendSlice(self.allocator, "SELECT * FROM ");
                 try sql_buf.appendSlice(self.allocator, n);
-                break :blk try self.execSQL(sql_buf.items);
+                break :blk try self.execSQLUnlocked(sql_buf.items);
             },
             .query => |sel| blk: {
                 // Re-execute the select via execSQL with the statement
@@ -7396,6 +7408,15 @@ pub const Database = struct {
 
     /// Execute a full SQL statement including DDL. This is the primary entry point.
     pub fn execSQL(self: *Database, sql: []const u8) EngineError!QueryResult {
+        self.exec_mutex.lock();
+        defer self.exec_mutex.unlock();
+        return self.execSQLUnlocked(sql);
+    }
+
+    /// Unlocked implementation of execSQL. Callers already holding exec_mutex
+    /// (trigger firing, COPY FROM/TO row re-insertion) must call this directly —
+    /// exec_mutex is not reentrant.
+    fn execSQLUnlocked(self: *Database, sql: []const u8) EngineError!QueryResult {
         // Reset schema arena from previous exec call
         _ = self.schema_arena.reset(.retain_capacity);
         // Set up subquery evaluation (lazy self-referential init)
@@ -37630,4 +37651,111 @@ test "PreparedStatement: numbered params can be prepared and executed twice in a
         }
         try testing.expectEqual(@as(usize, 1), count);
     }
+}
+
+// Helper for concurrent test worker
+const ConcurrentTestContext = struct {
+    db: *Database,
+    thread_id: usize,
+    allocator: Allocator,
+    errors: *std.atomic.Value(u32),
+    inserted_count: *std.atomic.Value(usize),
+};
+
+// NOTE: Workers only INSERT here — they do not run SELECTs concurrently with
+// other threads' writes. QueryResult.rows is a *lazy* cursor: execSQL() only
+// plans/opens it under Database.exec_mutex, and next() streams pages from the
+// shared BufferPool/BTree *after* execSQL returns and the lock is released.
+// Two threads each holding a live SELECT cursor therefore race on buffer-pool
+// state outside the lock (confirmed experimentally: concurrent cursor.next()
+// calls intermittently return error.InvalidRowData and leak LRU cache
+// entries). Fixing that needs either materializing rows before releasing the
+// lock (col name string lifetime currently borrows arena memory — see
+// Row.columns doc comment — so this requires deep-copying column names too,
+// not just Row.clone()'s shallow array copy) or extending lock ownership
+// through QueryResult.close() (which risks a permanently stuck Database if
+// any caller fails to close() a result). See .claude/memory/next-priorities.md.
+fn concurrentTestWorker(ctx: ConcurrentTestContext) void {
+    const thread_id = ctx.thread_id;
+    const statements_per_thread = 20;
+
+    for (0..statements_per_thread) |i| {
+        const insert_stmt = std.fmt.allocPrint(ctx.allocator, "INSERT INTO concurrent_test VALUES ({}, 'thread_{}_{}')", .{ thread_id * 1000 + i, thread_id, i }) catch {
+            _ = ctx.errors.fetchAdd(@as(u32, 1) << @intCast(thread_id), .release);
+            return;
+        };
+        defer ctx.allocator.free(insert_stmt);
+
+        var result = ctx.db.execSQL(insert_stmt) catch {
+            _ = ctx.errors.fetchAdd(@as(u32, 1) << @intCast(thread_id), .release);
+            return;
+        };
+        result.close(ctx.allocator);
+
+        _ = ctx.inserted_count.fetchAdd(1, .release);
+    }
+}
+
+test "concurrent multi-threaded SQL execution on shared Database" {
+    const path = "test_concurrent_sql_execution.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    // Create table
+    _ = try db.execSQL("CREATE TABLE concurrent_test (id INTEGER, value TEXT)");
+
+    // Initialize shared state
+    var errors = std.atomic.Value(u32).init(0);
+    var inserted_count = std.atomic.Value(usize).init(0);
+
+    // Spawn threads
+    const num_threads = 4;
+    var threads: [num_threads]std.Thread = undefined;
+
+    for (0..num_threads) |thread_id| {
+        const ctx = ConcurrentTestContext{
+            .db = &db,
+            .thread_id = thread_id,
+            .allocator = testing.allocator,
+            .errors = &errors,
+            .inserted_count = &inserted_count,
+        };
+        threads[thread_id] = try std.Thread.spawn(.{}, concurrentTestWorker, .{ctx});
+    }
+
+    // Join all threads
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Verify no thread encountered errors
+    const error_mask = errors.load(.acquire);
+    try testing.expectEqual(@as(u32, 0), error_mask);
+
+    // Verify all inserts completed (4 threads × 20 statements each = 80)
+    const final_inserted = inserted_count.load(.acquire);
+    try testing.expectEqual(@as(usize, 80), final_inserted);
+
+    // Final consistency check: verify row count matches expected
+    var final_result = try db.execSQL("SELECT COUNT(*) FROM concurrent_test");
+    defer final_result.close(testing.allocator);
+
+    var row_count: u64 = 0;
+    if (final_result.rows) |rows_iter_val| {
+        var rows_iter = rows_iter_val;
+        if (try rows_iter.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            if (row.values.len > 0) {
+                if (row.values[0] == .integer) {
+                    row_count = @intCast(row.values[0].integer);
+                }
+            }
+        }
+    }
+
+    // All 80 inserts should be visible
+    try testing.expectEqual(@as(u64, 80), row_count);
 }

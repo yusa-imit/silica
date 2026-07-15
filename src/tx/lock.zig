@@ -327,6 +327,8 @@ pub const LockManager = struct {
     table_locks: std.AutoHashMapUnmanaged(u32, TableLockList),
     /// Wait-for graph for deadlock detection.
     wait_for: WaitForGraph,
+    /// Mutex protecting all mutable fields (row_locks, table_locks, wait_for).
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: Allocator) LockManager {
         return .{
@@ -365,6 +367,9 @@ pub const LockManager = struct {
         target: LockTarget,
         mode: LockMode,
     ) LockError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         // Check for existing lock
         if (self.row_locks.getPtr(target)) |existing| {
             // Check if current transaction already holds this lock
@@ -401,6 +406,9 @@ pub const LockManager = struct {
 
     /// Release a specific row-level lock.
     pub fn releaseRowLock(self: *LockManager, xid: u32, target: LockTarget) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (self.row_locks.getPtr(target)) |info| {
             const is_empty = info.removeHolder(xid);
             if (is_empty) {
@@ -413,6 +421,9 @@ pub const LockManager = struct {
     /// Check if a row has a conflicting lock for the given mode.
     /// Returns true if acquiring the lock would conflict.
     pub fn hasConflict(self: *LockManager, xid: u32, target: LockTarget, mode: LockMode) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const existing = self.row_locks.get(target) orelse return false;
 
         // If we already hold it, check for upgrade scenario
@@ -431,6 +442,9 @@ pub const LockManager = struct {
     /// Get the first lock holder for a row (for conflict reporting).
     /// Returns null if no lock exists.
     pub fn getRowLockHolder(self: *LockManager, target: LockTarget) ?u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = self.row_locks.get(target) orelse return null;
         if (info.holders.items.len == 0) return null;
         return info.holders.items[0];
@@ -445,6 +459,9 @@ pub const LockManager = struct {
         table_page_id: u32,
         mode: TableLockMode,
     ) LockError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const gop = try self.table_locks.getOrPut(self.allocator, table_page_id);
         if (!gop.found_existing) {
             gop.value_ptr.* = .{};
@@ -476,6 +493,9 @@ pub const LockManager = struct {
 
     /// Release a table-level lock.
     pub fn releaseTableLock(self: *LockManager, xid: u32, table_page_id: u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (self.table_locks.getPtr(table_page_id)) |list| {
             var idx: usize = 0;
             while (idx < list.items.len) {
@@ -499,6 +519,9 @@ pub const LockManager = struct {
 
     /// Release ALL locks held by a transaction (called on commit/rollback).
     pub fn releaseAllLocks(self: *LockManager, xid: u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         // Remove from wait-for graph
         self.wait_for.removeNode(self.allocator, xid);
 
@@ -555,6 +578,9 @@ pub const LockManager = struct {
     /// Record that `waiter_xid` is waiting for a lock held by `blocker_xid`.
     /// Then check for deadlock cycles. Returns DeadlockDetected if a cycle exists.
     pub fn addWaitEdge(self: *LockManager, waiter_xid: u32, blocker_xid: u32) LockError!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         try self.wait_for.addEdge(self.allocator, waiter_xid, blocker_xid);
         if (self.wait_for.hasCycle(self.allocator, waiter_xid)) {
             // Remove the edge that caused the cycle before returning error
@@ -565,12 +591,18 @@ pub const LockManager = struct {
 
     /// Remove all wait-for edges for a transaction (called on commit/abort).
     pub fn removeWaiter(self: *LockManager, xid: u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         self.wait_for.removeNode(self.allocator, xid);
     }
 
     /// Check if acquiring a row lock would cause a deadlock.
     /// Returns the blocker XID if deadlock would occur, null otherwise.
     pub fn wouldDeadlock(self: *LockManager, waiter_xid: u32, target: LockTarget) ?u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const existing = self.row_locks.get(target) orelse return null;
 
         // Find blockers for this lock
@@ -589,11 +621,17 @@ pub const LockManager = struct {
 
     /// Count total active row locks.
     pub fn activeRowLockCount(self: *LockManager) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         return self.row_locks.count();
     }
 
     /// Count total active table locks.
     pub fn activeTableLockCount(self: *LockManager) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         var count: usize = 0;
         var it = self.table_locks.iterator();
         while (it.next()) |entry| {
@@ -604,6 +642,9 @@ pub const LockManager = struct {
 
     /// Return the number of active wait-for edges.
     pub fn activeWaitEdgeCount(self: *LockManager) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         return self.wait_for.edgeCount();
     }
 };
