@@ -306,6 +306,62 @@ pub const Close = struct {
     }
 };
 
+/// Describe message (describe statement or portal)
+pub const Describe = struct {
+    target_type: u8, // 'S' for statement, 'P' for portal
+    name: []const u8,
+
+    pub fn parse(payload: []const u8) !Describe {
+        if (payload.len < 2) return error.InvalidMessage;
+
+        // Describe type ('S' or 'P')
+        const target_type = payload[0];
+
+        // Validate target type
+        if (target_type != 'S' and target_type != 'P') return error.InvalidMessage;
+
+        // Name (null-terminated string)
+        const name_start = 1;
+        const name_end = std.mem.indexOfScalar(u8, payload[name_start..], 0) orelse return error.InvalidMessage;
+        const name = payload[name_start .. name_start + name_end];
+
+        return Describe{
+            .target_type = target_type,
+            .name = name,
+        };
+    }
+};
+
+/// ParameterDescription message (backend → client, list of parameter types)
+pub const ParameterDescription = struct {
+    param_types: []const i32, // OID array
+
+    pub fn write(self: ParameterDescription, writer: anytype) !void {
+        try writer.writeByte(@intFromEnum(BackendMessageType.parameter_description));
+
+        // Calculate total length
+        const total_len: i32 = 4 + 2 + (@as(i32, @intCast(self.param_types.len)) * 4);
+        try writer.writeInt(i32, total_len, .big);
+
+        // Parameter count
+        try writer.writeInt(i16, @intCast(self.param_types.len), .big);
+
+        // Parameter OIDs
+        for (self.param_types) |oid| {
+            try writer.writeInt(i32, oid, .big);
+        }
+    }
+};
+
+/// NoData message (backend → client, response when Describe returns no result columns)
+pub const NoData = struct {
+    pub fn write(self: NoData, writer: anytype) !void {
+        _ = self;
+        try writer.writeByte(@intFromEnum(BackendMessageType.no_data));
+        try writer.writeInt(i32, 4, .big); // length field only (no payload)
+    }
+};
+
 /// RowDescription message (column metadata)
 pub const RowDescription = struct {
     pub const Field = struct {
@@ -1178,4 +1234,168 @@ test "PasswordMessage - missing null terminator" {
     const payload = "secret";
     const result = PasswordMessage.parse(payload);
     try std.testing.expectError(error.InvalidMessage, result);
+}
+
+// ── Describe, ParameterDescription, NoData Tests ─────────────────
+
+test "Describe.parse - statement target" {
+    const allocator = std.testing.allocator;
+
+    // Payload: 'S' + "stmt1\0"
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.append(allocator, 'S');
+    try payload.appendSlice(allocator, "stmt1\x00");
+
+    const describe = try Describe.parse(payload.items);
+    try std.testing.expectEqual(@as(u8, 'S'), describe.target_type);
+    try std.testing.expectEqualStrings("stmt1", describe.name);
+}
+
+test "Describe.parse - portal target" {
+    const allocator = std.testing.allocator;
+
+    // Payload: 'P' + "portal1\0"
+    var payload = std.ArrayListUnmanaged(u8){};
+    defer payload.deinit(allocator);
+
+    try payload.append(allocator, 'P');
+    try payload.appendSlice(allocator, "portal1\x00");
+
+    const describe = try Describe.parse(payload.items);
+    try std.testing.expectEqual(@as(u8, 'P'), describe.target_type);
+    try std.testing.expectEqualStrings("portal1", describe.name);
+}
+
+test "Describe.parse - unnamed statement (empty name)" {
+    const payload = "S\x00";
+    const describe = try Describe.parse(payload);
+    try std.testing.expectEqual(@as(u8, 'S'), describe.target_type);
+    try std.testing.expectEqual(@as(usize, 0), describe.name.len);
+}
+
+test "Describe.parse - truncated (missing null terminator)" {
+    const payload = "Sstmt1"; // missing null terminator
+    const result = Describe.parse(payload);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Describe.parse - truncated (too short)" {
+    const payload = "";
+    const result = Describe.parse(payload);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "Describe.parse - invalid target type" {
+    const payload = "X\x00"; // 'X' is not 'S' or 'P'
+    const result = Describe.parse(payload);
+    try std.testing.expectError(error.InvalidMessage, result);
+}
+
+test "ParameterDescription.write - zero parameters" {
+    const allocator = std.testing.allocator;
+
+    const param_desc = ParameterDescription{ .param_types = &.{} };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try param_desc.write(buf.writer(allocator));
+
+    // Expected: 't' + length(4) + count(0) = 6 bytes
+    try std.testing.expectEqual(@as(u8, 't'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 6), len); // 4 + 2 (count only)
+    const count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 0), count);
+}
+
+test "ParameterDescription.write - single parameter" {
+    const allocator = std.testing.allocator;
+
+    const param_types = [_]i32{23}; // INT4 OID
+    const param_desc = ParameterDescription{ .param_types = &param_types };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try param_desc.write(buf.writer(allocator));
+
+    // Expected: 't' + length(4) + count(1) + oid(23) = 11 bytes
+    try std.testing.expectEqual(@as(u8, 't'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 10), len); // 4 + 2 + 4
+    const count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 1), count);
+    const oid = std.mem.readInt(i32, buf.items[7..11], .big);
+    try std.testing.expectEqual(@as(i32, 23), oid);
+}
+
+test "ParameterDescription.write - multiple parameters" {
+    const allocator = std.testing.allocator;
+
+    const param_types = [_]i32{ 23, 25, 16 }; // INT4, TEXT, BOOL
+    const param_desc = ParameterDescription{ .param_types = &param_types };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try param_desc.write(buf.writer(allocator));
+
+    // Parse and verify
+    try std.testing.expectEqual(@as(u8, 't'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 18), len); // 4 + 2 + 4*3
+    const count = std.mem.readInt(i16, buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 3), count);
+
+    const oid1 = std.mem.readInt(i32, buf.items[7..11], .big);
+    const oid2 = std.mem.readInt(i32, buf.items[11..15], .big);
+    const oid3 = std.mem.readInt(i32, buf.items[15..19], .big);
+    try std.testing.expectEqual(@as(i32, 23), oid1);
+    try std.testing.expectEqual(@as(i32, 25), oid2);
+    try std.testing.expectEqual(@as(i32, 16), oid3);
+}
+
+test "NoData.write - produces correct 5-byte message" {
+    const allocator = std.testing.allocator;
+
+    const no_data = NoData{};
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try no_data.write(buf.writer(allocator));
+
+    // Expected: 'n' + length(4) = 5 bytes total
+    try std.testing.expectEqual(@as(usize, 5), buf.items.len);
+    try std.testing.expectEqual(@as(u8, 'n'), buf.items[0]);
+    const len = std.mem.readInt(i32, buf.items[1..5], .big);
+    try std.testing.expectEqual(@as(i32, 4), len); // length field only
+}
+
+test "Close message distinguishes Describe from Close (sanity check)" {
+    const allocator = std.testing.allocator;
+
+    // Close is 'C' + 'S'/'P' + name
+    var close_payload = std.ArrayListUnmanaged(u8){};
+    defer close_payload.deinit(allocator);
+    try close_payload.append(allocator, 'S');
+    try close_payload.appendSlice(allocator, "stmt1\x00");
+
+    // Describe is 'D' but payload is 'S' + name (no Close prefix)
+    var describe_payload = std.ArrayListUnmanaged(u8){};
+    defer describe_payload.deinit(allocator);
+    try describe_payload.append(allocator, 'S');
+    try describe_payload.appendSlice(allocator, "stmt1\x00");
+
+    // Both should parse (Close.parse and Describe.parse are different)
+    const close = try Close.parse(close_payload.items);
+    try std.testing.expectEqual(@as(u8, 'S'), close.close_type);
+    try std.testing.expectEqualStrings("stmt1", close.name);
+
+    const describe = try Describe.parse(describe_payload.items);
+    try std.testing.expectEqual(@as(u8, 'S'), describe.target_type);
+    try std.testing.expectEqualStrings("stmt1", describe.name);
 }

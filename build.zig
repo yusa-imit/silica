@@ -56,9 +56,14 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the Silica CLI");
     run_step.dependOn(&run_cmd.step);
 
+    // Optional test name filter: zig build test -Dtest-filter="some substring"
+    const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
+    const test_filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
+
     // Unit tests for library
     const lib_unit_tests = b.addTest(.{
         .root_module = mod,
+        .filters = test_filters,
     });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 

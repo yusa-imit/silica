@@ -368,6 +368,10 @@ pub const Server = struct {
                     const execute_msg = try wire.Execute.parse(msg.payload);
                     try conn.handleExecute(execute_msg.portal_name, execute_msg.max_rows, writer);
                 },
+                'D' => { // Describe
+                    const describe_msg = try wire.Describe.parse(msg.payload);
+                    try conn.handleDescribe(describe_msg.target_type, describe_msg.name, writer);
+                },
                 'C' => { // Close
                     const close_msg = try wire.Close.parse(msg.payload);
                     try conn.handleClose(close_msg.close_type, close_msg.name, writer);

@@ -328,6 +328,371 @@ pub const LogicalPlan = struct {
     locking_clauses: []const ast.LockingClause = &.{},
 };
 
+// ── Output Schema (for wire protocol Describe) ──────────────────
+
+/// A field in the output schema of a query result.
+pub const OutputField = struct {
+    /// Column name or alias
+    name: []const u8,
+    /// PostgreSQL type OID (23 = INT4, 25 = TEXT, 20 = INT8, 16 = BOOL, 1700 = NUMERIC, etc.)
+    type_oid: i32,
+};
+
+/// The schema of columns that a query will return.
+pub const OutputSchema = struct {
+    /// True if the query returns result rows, false for DDL/DML without RETURNING
+    returns_rows: bool,
+    /// Field metadata for each output column (empty if returns_rows = false)
+    fields: []const OutputField,
+};
+
+/// Convert a ColumnType to its PostgreSQL wire protocol OID.
+fn columnTypeToOid(ct: ColumnType) i32 {
+    return switch (ct) {
+        .integer => 23, // INT4
+        .real => 701, // FLOAT8
+        .text => 25, // TEXT
+        .blob => 17, // BYTEA
+        .boolean => 16, // BOOL
+        .date => 1082, // DATE
+        .time => 1083, // TIME
+        .timestamp => 1114, // TIMESTAMP
+        .interval => 1186, // INTERVAL
+        .numeric => 1700, // NUMERIC
+        .uuid => 2950, // UUID
+        .array => 2277, // ANYARRAY
+        .json => 114, // JSON
+        .jsonb => 3802, // JSONB
+        .tsvector => 3614, // TSVECTOR
+        .tsquery => 3615, // TSQUERY
+        .untyped => 25, // default to TEXT
+    };
+}
+
+/// Resolve the type of an expression within a query context.
+/// `default_table` is the table to search for unqualified column references
+/// (typically the underlying scan table of the enclosing plan node).
+/// Returns the OID for the expression's type, or 25 (TEXT) if unable to determine.
+fn resolveExprType(
+    expr: *const ast.Expr,
+    schema: analyzer_mod.SchemaProvider,
+    allocator: Allocator,
+    default_table: ?[]const u8,
+) i32 {
+    switch (expr.*) {
+        .integer_literal => return 20, // INT8
+        .float_literal => return 701, // FLOAT8
+        .string_literal => return 25, // TEXT
+        .boolean_literal => return 16, // BOOL
+        .null_literal => return 25, // default to TEXT for NULL
+        .blob_literal => return 17, // BYTEA
+        .column_ref => |col_ref| {
+            // Look up column type from schema: use the explicit table prefix if
+            // present, otherwise fall back to the enclosing scan's table.
+            const table_name = col_ref.prefix orelse default_table orelse return 25;
+            if (schema.getTable(allocator, table_name)) |table| {
+                for (table.columns) |col| {
+                    if (std.mem.eql(u8, col.name, col_ref.name)) {
+                        return columnTypeToOid(col.column_type);
+                    }
+                }
+            }
+            return 25; // default to TEXT
+        },
+        .cast => |cast| {
+            // Return the target type of the cast
+            const target_type = catalog_mod.columnTypeFromAst(cast.target_type);
+            return columnTypeToOid(target_type);
+        },
+        .function_call => |func| {
+            // Simple heuristic: check if it's an aggregate function
+            if (std.mem.eql(u8, func.name, "COUNT") or std.mem.eql(u8, func.name, "count") or
+                std.mem.eql(u8, func.name, "Count")) {
+                return 20; // INT8 (bigint)
+            } else if (std.mem.eql(u8, func.name, "SUM") or std.mem.eql(u8, func.name, "sum") or
+                      std.mem.eql(u8, func.name, "Sum") or
+                      std.mem.eql(u8, func.name, "AVG") or std.mem.eql(u8, func.name, "avg") or
+                      std.mem.eql(u8, func.name, "Avg")) {
+                return 1700; // NUMERIC
+            } else if (std.mem.eql(u8, func.name, "MIN") or std.mem.eql(u8, func.name, "min") or
+                      std.mem.eql(u8, func.name, "Min") or
+                      std.mem.eql(u8, func.name, "MAX") or std.mem.eql(u8, func.name, "max") or
+                      std.mem.eql(u8, func.name, "Max")) {
+                // MIN/MAX return the argument type if available
+                if (func.args.len > 0) {
+                    return resolveExprType(func.args[0], schema, allocator, default_table);
+                }
+                return 25; // default to TEXT
+            } else if (std.mem.eql(u8, func.name, "UPPER") or std.mem.eql(u8, func.name, "upper") or
+                      std.mem.eql(u8, func.name, "LOWER") or std.mem.eql(u8, func.name, "lower") or
+                      std.mem.eql(u8, func.name, "SUBSTR") or std.mem.eql(u8, func.name, "substr") or
+                      std.mem.eql(u8, func.name, "LENGTH") or std.mem.eql(u8, func.name, "length")) {
+                return 25; // TEXT functions return TEXT
+            }
+            // Default to TEXT for unknown functions
+            return 25; // TEXT
+        },
+        .unary_op => |op| {
+            // Unary operations typically preserve or coerce the argument type
+            return resolveExprType(op.operand, schema, allocator, default_table);
+        },
+        .binary_op => |op| {
+            // Binary operations: for most ops (especially arithmetic), use the left operand type
+            // More sophisticated type coercion would go here
+            return resolveExprType(op.left, schema, allocator, default_table);
+        },
+        else => {
+            // For all other expression types, default to TEXT
+            return 25;
+        },
+    }
+}
+
+/// Walk down single-input plan nodes to find the table name of the underlying scan,
+/// for expanding an unqualified SELECT * when the Project node doesn't carry a table name.
+fn findScanTable(node: *const PlanNode) ?[]const u8 {
+    return switch (node.*) {
+        .scan => |s| s.table,
+        .filter => |f| findScanTable(f.input),
+        .sort => |s| findScanTable(s.input),
+        .limit => |l| findScanTable(l.input),
+        .distinct => |d| findScanTable(d.input),
+        .aggregate => |a| findScanTable(a.input),
+        .window => |w| findScanTable(w.input),
+        else => null,
+    };
+}
+
+/// Helper function to derive schema from a plan node recursively.
+/// Assumes plan metadata has already been checked.
+fn deriveOutputSchemaFromNode(
+    node: *const PlanNode,
+    schema: analyzer_mod.SchemaProvider,
+    allocator: Allocator,
+) !OutputSchema {
+    switch (node.*) {
+        .project => |proj| {
+            // SELECT statement with explicit columns
+            var fields = std.ArrayListUnmanaged(OutputField){};
+            const default_table = findScanTable(proj.input);
+
+            for (proj.columns) |col| {
+                if (col.expr.* == .column_ref and std.mem.eql(u8, col.expr.column_ref.name, "*")) {
+                    // SELECT * or SELECT t.* — expand to the underlying table's columns
+                    const table_name = col.expr.column_ref.prefix orelse default_table;
+                    if (table_name) |tname| {
+                        if (schema.getTable(allocator, tname)) |table| {
+                            for (table.columns) |tcol| {
+                                try fields.append(allocator, OutputField{
+                                    .name = tcol.name,
+                                    .type_oid = columnTypeToOid(tcol.column_type),
+                                });
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                const col_type = resolveExprType(col.expr, schema, allocator, default_table);
+                const field_name = if (col.alias) |alias|
+                    alias
+                else
+                    switch (col.expr.*) {
+                        .column_ref => |col_ref| col_ref.name,
+                        .function_call => |func| func.name,
+                        else => "?column?",
+                    };
+
+                try fields.append(allocator, OutputField{
+                    .name = field_name,
+                    .type_oid = col_type,
+                });
+            }
+
+            return OutputSchema{
+                .returns_rows = true,
+                .fields = try fields.toOwnedSlice(allocator),
+            };
+        },
+        .aggregate => |agg| {
+            // GROUP BY or aggregate functions
+            var fields = try allocator.alloc(OutputField, agg.aggregates.len);
+
+            const default_table = findScanTable(agg.input);
+            for (agg.aggregates, 0..) |agg_expr, i| {
+                const col_type = switch (agg_expr.func) {
+                    .count, .count_star => 20, // INT8
+                    .sum, .avg => 1700, // NUMERIC
+                    .min, .max => if (agg_expr.arg) |arg| resolveExprType(arg, schema, allocator, default_table) else 25,
+                    else => 25, // default to TEXT for other aggregates
+                };
+
+                const field_name = if (agg_expr.alias) |alias|
+                    alias
+                else
+                    switch (agg_expr.func) {
+                        .count, .count_star => "count",
+                        .sum => "sum",
+                        .avg => "avg",
+                        .min => "min",
+                        .max => "max",
+                        else => "?aggregate?",
+                    };
+
+                fields[i] = OutputField{
+                    .name = field_name,
+                    .type_oid = col_type,
+                };
+            }
+
+            return OutputSchema{
+                .returns_rows = true,
+                .fields = fields,
+            };
+        },
+        .values => |vals| {
+            // INSERT ... VALUES
+            // Check if there's a RETURNING clause
+            if (vals.returning) |ret| {
+                var fields = std.ArrayListUnmanaged(OutputField){};
+
+                for (ret) |result_col| {
+                    switch (result_col) {
+                        .expr => |expr_item| {
+                            const col_type = resolveExprType(expr_item.value, schema, allocator, vals.table);
+                            const field_name = if (expr_item.alias) |alias|
+                                alias
+                            else
+                                switch (expr_item.value.*) {
+                                    .column_ref => |col_ref| col_ref.name,
+                                    else => "?column?",
+                                };
+                            try fields.append(allocator, OutputField{
+                                .name = field_name,
+                                .type_oid = col_type,
+                            });
+                        },
+                        .all_columns => {
+                            // SELECT * - expand to all table columns
+                            if (schema.getTable(allocator, vals.table)) |table| {
+                                for (table.columns) |col| {
+                                    try fields.append(allocator, OutputField{
+                                        .name = col.name,
+                                        .type_oid = columnTypeToOid(col.column_type),
+                                    });
+                                }
+                            }
+                        },
+                        .table_all_columns => |table_name| {
+                            // SELECT t.* - expand specific table's columns
+                            if (schema.getTable(allocator, table_name)) |table| {
+                                for (table.columns) |col| {
+                                    try fields.append(allocator, OutputField{
+                                        .name = col.name,
+                                        .type_oid = columnTypeToOid(col.column_type),
+                                    });
+                                }
+                            }
+                        },
+                    }
+                }
+
+                return OutputSchema{
+                    .returns_rows = true,
+                    .fields = try fields.toOwnedSlice(allocator),
+                };
+            } else {
+                // No RETURNING clause
+                return OutputSchema{
+                    .returns_rows = false,
+                    .fields = &.{},
+                };
+            }
+        },
+        .empty => {
+            // DDL or DML without RETURNING
+            return OutputSchema{
+                .returns_rows = false,
+                .fields = &.{},
+            };
+        },
+        .scan => |scan| {
+            // Bare scan without projection should expand all columns
+            if (schema.getTable(allocator, scan.table)) |table| {
+                var fields = try allocator.alloc(OutputField, table.columns.len);
+
+                for (table.columns, 0..) |col, i| {
+                    fields[i] = OutputField{
+                        .name = col.name,
+                        .type_oid = columnTypeToOid(col.column_type),
+                    };
+                }
+
+                return OutputSchema{
+                    .returns_rows = true,
+                    .fields = fields,
+                };
+            }
+            return OutputSchema{
+                .returns_rows = true,
+                .fields = &.{},
+            };
+        },
+        // For other plan types (filter, sort, limit, etc.), recurse into child
+        .filter => |f| return deriveOutputSchemaFromNode(f.input, schema, allocator),
+        .sort => |s| return deriveOutputSchemaFromNode(s.input, schema, allocator),
+        .limit => |l| return deriveOutputSchemaFromNode(l.input, schema, allocator),
+        .distinct => |d| return deriveOutputSchemaFromNode(d.input, schema, allocator),
+        .join => {
+            // JOIN should have been wrapped in a Project node
+            // If not, return empty schema
+            return OutputSchema{
+                .returns_rows = true,
+                .fields = &.{},
+            };
+        },
+        else => {
+            return OutputSchema{
+                .returns_rows = false,
+                .fields = &.{},
+            };
+        },
+    }
+}
+
+/// Public interface for deriving output schema from a complete LogicalPlan.
+/// Handles plan-level metadata (RETURNING clause, plan type) and delegates to helper.
+pub fn deriveOutputSchema(
+    plan: *const LogicalPlan,
+    schema: analyzer_mod.SchemaProvider,
+    allocator: Allocator,
+) !OutputSchema {
+    // For DDL or DML without RETURNING, return false immediately
+    switch (plan.plan_type) {
+        .insert, .update, .delete => {
+            if (plan.returning == null) {
+                return OutputSchema{
+                    .returns_rows = false,
+                    .fields = &.{},
+                };
+            }
+            // If there IS a RETURNING clause, process it via the plan tree
+        },
+        .create_table, .drop_table, .truncate_table, .create_index, .drop_index, .transaction, .explain => {
+            return OutputSchema{
+                .returns_rows = false,
+                .fields = &.{},
+            };
+        },
+        .select_query => {
+            // SELECT queries always return rows (schema comes from the plan tree)
+        },
+    }
+
+    // Now process the plan tree to derive columns
+    return deriveOutputSchemaFromNode(plan.root, schema, allocator);
+}
+
 pub const PlanType = enum {
     select_query,
     insert,
@@ -2905,4 +3270,290 @@ test "plan ALTER TABLE NO FORCE RLS" {
         &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
+}
+
+// ── OutputSchema Derivation Tests ───────────────────────────────
+
+test "deriveOutputSchema - SELECT with simple columns" {
+    const allocator = testing.allocator;
+
+    // Parse and plan "SELECT id, name FROM users"
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT id, name FROM users",
+        &arena, &schema);
+
+    // Derive output schema from the plan
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // SELECT should return rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 2 fields: id and name
+    try testing.expectEqual(@as(usize, 2), output_schema.fields.len);
+
+    // First field: "id" with integer type OID (23)
+    try testing.expectEqualStrings("id", output_schema.fields[0].name);
+    try testing.expectEqual(@as(i32, 23), output_schema.fields[0].type_oid);
+
+    // Second field: "name" with text type OID (25)
+    try testing.expectEqualStrings("name", output_schema.fields[1].name);
+    try testing.expectEqual(@as(i32, 25), output_schema.fields[1].type_oid);
+}
+
+test "deriveOutputSchema - SELECT with COUNT aggregate" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT COUNT(*) FROM users",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // Aggregate returns rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 1 field for COUNT
+    try testing.expectEqual(@as(usize, 1), output_schema.fields.len);
+
+    // COUNT(*) returns bigint (OID 20)
+    try testing.expectEqual(@as(i32, 20), output_schema.fields[0].type_oid);
+}
+
+test "deriveOutputSchema - INSERT without RETURNING" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "INSERT INTO users VALUES (1, 'test')",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // INSERT without RETURNING does not return rows
+    try testing.expect(!output_schema.returns_rows);
+
+    // No output columns
+    try testing.expectEqual(@as(usize, 0), output_schema.fields.len);
+}
+
+test "deriveOutputSchema - INSERT with RETURNING" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "INSERT INTO users VALUES (1, 'test') RETURNING id",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // INSERT with RETURNING returns rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 1 field for RETURNING id
+    try testing.expectEqual(@as(usize, 1), output_schema.fields.len);
+    try testing.expectEqualStrings("id", output_schema.fields[0].name);
+    try testing.expectEqual(@as(i32, 23), output_schema.fields[0].type_oid); // INTEGER
+}
+
+test "deriveOutputSchema - UPDATE without RETURNING" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "UPDATE users SET name = 'updated' WHERE id = 1",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // UPDATE without RETURNING does not return rows
+    try testing.expect(!output_schema.returns_rows);
+}
+
+test "deriveOutputSchema - DELETE without RETURNING" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "DELETE FROM users WHERE id = 1",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // DELETE without RETURNING does not return rows
+    try testing.expect(!output_schema.returns_rows);
+}
+
+test "deriveOutputSchema - CREATE TABLE (DDL)" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "CREATE TABLE new_table (id INTEGER, name TEXT)",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // DDL does not return rows
+    try testing.expect(!output_schema.returns_rows);
+}
+
+test "deriveOutputSchema - SELECT with function call in projection" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT UPPER(name) FROM users",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // SELECT returns rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 1 field
+    try testing.expectEqual(@as(usize, 1), output_schema.fields.len);
+
+    // UPPER() returns text (OID 25)
+    try testing.expectEqual(@as(i32, 25), output_schema.fields[0].type_oid);
+}
+
+test "deriveOutputSchema - SELECT with column alias" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT id AS user_id, name AS full_name FROM users",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // SELECT returns rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 2 fields with aliases
+    try testing.expectEqual(@as(usize, 2), output_schema.fields.len);
+    try testing.expectEqualStrings("user_id", output_schema.fields[0].name);
+    try testing.expectEqualStrings("full_name", output_schema.fields[1].name);
+}
+
+test "deriveOutputSchema - SELECT with SUM aggregate" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT SUM(id) FROM users",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // Aggregate returns rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 1 field for SUM (numeric type OID 1700)
+    try testing.expectEqual(@as(usize, 1), output_schema.fields.len);
+    try testing.expectEqual(@as(i32, 1700), output_schema.fields[0].type_oid);
+}
+
+test "deriveOutputSchema - SELECT with MIN/MAX aggregates" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT MIN(id), MAX(id) FROM users",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // Aggregates return rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should have 2 fields
+    try testing.expectEqual(@as(usize, 2), output_schema.fields.len);
+
+    // MIN/MAX preserve argument type (integer OID 23)
+    try testing.expectEqual(@as(i32, 23), output_schema.fields[0].type_oid);
+    try testing.expectEqual(@as(i32, 23), output_schema.fields[1].type_oid);
+}
+
+test "deriveOutputSchema - SELECT * from table" {
+    const allocator = testing.allocator;
+
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT * FROM users",
+        &arena, &schema);
+
+    const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
+    defer allocator.free(output_schema.fields);
+
+    // SELECT * returns rows
+    try testing.expect(output_schema.returns_rows);
+
+    // Should expand to all columns in users table (id, name, email, age)
+    try testing.expectEqual(@as(usize, 4), output_schema.fields.len);
+    try testing.expectEqualStrings("id", output_schema.fields[0].name);
+    try testing.expectEqualStrings("name", output_schema.fields[1].name);
+    try testing.expectEqualStrings("email", output_schema.fields[2].name);
+    try testing.expectEqualStrings("age", output_schema.fields[3].name);
 }

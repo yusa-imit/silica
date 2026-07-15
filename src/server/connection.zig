@@ -132,17 +132,19 @@ pub const Connection = struct {
     }
 
     pub fn deinit(self: *Connection) void {
-        // Clean up prepared statements
-        var stmt_iter = self.prepared_statements.valueIterator();
-        while (stmt_iter.next()) |stmt| {
-            stmt.deinit();
+        // Clean up prepared statements (keys are owned copies made in handleParse)
+        var stmt_iter = self.prepared_statements.iterator();
+        while (stmt_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit();
         }
         self.prepared_statements.deinit(self.allocator);
 
-        // Clean up portals
-        var portal_iter = self.portals.valueIterator();
-        while (portal_iter.next()) |portal| {
-            portal.deinit();
+        // Clean up portals (keys are owned copies made in handleBind)
+        var portal_iter = self.portals.iterator();
+        while (portal_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit();
         }
         self.portals.deinit(self.allocator);
 
@@ -168,7 +170,10 @@ pub const Connection = struct {
         // Determine if query returns rows
         if (result.rows) |rows_iter| {
             // Get first row to determine columns
-            if (try rows_iter.next()) |first_row| {
+            if (try rows_iter.next()) |first_row_val| {
+                var first_row = first_row_val;
+                defer first_row.deinit();
+
                 // Send RowDescription
                 try self.sendRowDescription(writer, first_row.columns, first_row.values);
 
@@ -176,7 +181,9 @@ pub const Connection = struct {
                 try self.sendDataRow(writer, first_row, first_row.columns);
 
                 // Send remaining DataRows
-                while (try rows_iter.next()) |row| {
+                while (try rows_iter.next()) |row_val| {
+                    var row = row_val;
+                    defer row.deinit();
                     try self.sendDataRow(writer, row, row.columns);
                 }
             }
@@ -205,11 +212,11 @@ pub const Connection = struct {
             parse_msg.statement_name;
 
         // Check if statement already exists
-        if (self.prepared_statements.get(stmt_name)) |existing| {
-            // Replace existing statement
-            var old = existing;
+        if (self.prepared_statements.fetchRemove(stmt_name)) |kv| {
+            // Replace existing statement — free both the owned key and the value
+            self.allocator.free(kv.key);
+            var old = kv.value;
             old.deinit();
-            _ = self.prepared_statements.remove(stmt_name);
         }
 
         // Create new prepared statement
@@ -260,10 +267,10 @@ pub const Connection = struct {
             bind_msg.portal_name;
 
         // Check if portal already exists
-        if (self.portals.get(portal_name)) |existing| {
-            var old = existing;
+        if (self.portals.fetchRemove(portal_name)) |kv| {
+            self.allocator.free(kv.key);
+            var old = kv.value;
             old.deinit();
-            _ = self.portals.remove(portal_name);
         }
 
         // Copy statement name
@@ -363,7 +370,11 @@ pub const Connection = struct {
 
         if (result.rows) |rows_iter| {
             // Get first row to determine columns
-            if (try rows_iter.next()) |first_row| {
+            const maybe_first = try rows_iter.next();
+            if (maybe_first) |first_row_val| {
+                var first_row = first_row_val;
+                defer first_row.deinit();
+
                 // Send RowDescription
                 try self.sendRowDescription(writer, first_row.columns, first_row.values);
 
@@ -373,7 +384,8 @@ pub const Connection = struct {
 
                 // Send remaining DataRows up to limit
                 while (rows_sent < limit) {
-                    const row = (try rows_iter.next()) orelse break;
+                    var row = (try rows_iter.next()) orelse break;
+                    defer row.deinit();
                     try self.sendDataRow(writer, row, row.columns);
                     rows_sent += 1;
                 }
@@ -412,6 +424,97 @@ pub const Connection = struct {
         // Send CloseComplete
         try writer.writeByte(@intFromEnum(wire.BackendMessageType.close_complete));
         try writer.writeInt(i32, 4, .big);
+    }
+
+    /// Handle Describe message (extended query protocol)
+    pub fn handleDescribe(
+        self: *Connection,
+        describe_type: u8, // 'S' for statement, 'P' for portal
+        name: []const u8,
+        writer: anytype,
+    ) !void {
+        if (describe_type == 'S') {
+            // Describe prepared statement
+            const stmt = self.prepared_statements.get(name) orelse {
+                try self.sendError(writer, error.StatementNotFound);
+                return;
+            };
+
+            const param_desc = wire.ParameterDescription{ .param_types = stmt.param_types };
+            try param_desc.write(writer);
+
+            try self.sendDescribeSchema(writer, stmt.query);
+        } else if (describe_type == 'P') {
+            // Describe portal
+            const portal = self.portals.get(name) orelse {
+                try self.sendError(writer, error.PortalNotFound);
+                return;
+            };
+            const stmt = self.prepared_statements.get(portal.statement_name) orelse {
+                try self.sendError(writer, error.StatementNotFound);
+                return;
+            };
+
+            // Portal Describe does NOT send ParameterDescription.
+            try self.sendDescribeSchema(writer, stmt.query);
+        } else {
+            try self.sendError(writer, error.InvalidMessage);
+        }
+    }
+
+    /// Parse and plan `query`, then send RowDescription (if it yields rows) or NoData.
+    /// Parse/plan failures fall back to NoData — Describe must not error out a valid
+    /// prepared statement just because static schema derivation couldn't complete.
+    fn sendDescribeSchema(self: *Connection, writer: anytype, query: []const u8) !void {
+        var arena = silica.ast.AstArena.init(self.allocator);
+        defer arena.deinit();
+
+        var p = silica.parser.Parser.init(self.allocator, query, &arena) catch {
+            try (wire.NoData{}).write(writer);
+            return;
+        };
+        defer p.deinit();
+
+        const parsed = p.parseStatement() catch null;
+        const stmt = parsed orelse {
+            try (wire.NoData{}).write(writer);
+            return;
+        };
+
+        var planner = silica.planner.Planner.init(&arena, self.db.schemaProvider());
+        const plan = planner.plan(stmt) catch {
+            try (wire.NoData{}).write(writer);
+            return;
+        };
+
+        const output_schema = silica.planner.deriveOutputSchema(&plan, self.db.schemaProvider(), self.allocator) catch {
+            try (wire.NoData{}).write(writer);
+            return;
+        };
+        defer self.allocator.free(output_schema.fields);
+
+        if (!output_schema.returns_rows) {
+            try (wire.NoData{}).write(writer);
+            return;
+        }
+
+        const fields = try self.allocator.alloc(wire.RowDescription.Field, output_schema.fields.len);
+        defer self.allocator.free(fields);
+
+        for (output_schema.fields, 0..) |field, i| {
+            fields[i] = .{
+                .name = field.name,
+                .table_oid = 0, // Not implemented yet
+                .column_attr_number = @intCast(i + 1),
+                .type_oid = field.type_oid,
+                .type_size = typeSizeForOid(field.type_oid),
+                .type_modifier = -1,
+                .format_code = 0, // text format
+            };
+        }
+
+        const row_desc = wire.RowDescription{ .fields = fields };
+        try row_desc.write(writer, self.allocator);
     }
 
     /// Handle Sync message (extended query protocol)
@@ -462,6 +565,23 @@ pub const Connection = struct {
             .tsvector => -1,
             .tsquery => -1,
             .null_value => -1,
+        };
+    }
+
+    /// Map a PostgreSQL type OID to its wire-protocol type size (-1 = variable length).
+    /// Mirrors `typeSizeForValue` but keyed by OID for static (Describe-time) schemas.
+    fn typeSizeForOid(oid: i32) i16 {
+        return switch (oid) {
+            20 => 8, // INT8
+            23 => 4, // INT4
+            701 => 8, // FLOAT8
+            16 => 1, // BOOL
+            1082 => 4, // DATE
+            1083 => 8, // TIME
+            1114 => 8, // TIMESTAMP
+            1186 => 16, // INTERVAL
+            2950 => 16, // UUID
+            else => -1, // TEXT, NUMERIC, BYTEA, arrays, JSON(B), tsvector/tsquery, etc.
         };
     }
 
@@ -620,6 +740,10 @@ pub const Connection = struct {
             error.StatementNotFound => "26000", // invalid_sql_statement_name
             error.PortalNotFound => "34000", // invalid_cursor_name
             error.ParameterCountMismatch => "07001", // wrong_number_of_parameters
+            error.DuplicateKey => "23505", // unique_violation
+            error.TableAlreadyExists => "42P07", // duplicate_table
+            error.SerializationFailure => "40001", // serialization_failure
+            error.DeadlockDetected => "40P01", // deadlock_detected
             else => "XX000", // internal_error
         };
     }
@@ -650,8 +774,8 @@ test "Connection init/deinit" {
     const db_path = "test_connection.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "testuser", "testdb");
     defer conn.deinit();
@@ -668,8 +792,8 @@ test "valueToText - integer" {
     const db_path = "test_value_int.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -687,8 +811,8 @@ test "valueToText - text" {
     const db_path = "test_value_text.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -706,13 +830,13 @@ test "valueToText - null" {
     const db_path = "test_value_null.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
-    const value = Value{ .null = {} };
+    const value = Value.null_value;
     const text = try conn.valueToText(value);
     defer allocator.free(text);
 
@@ -725,8 +849,8 @@ test "getSQLState - error mapping" {
     const db_path = "test_sqlstate.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -741,14 +865,14 @@ test "getCommandTag - OK" {
     const db_path = "test_cmdtag.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
     var result = try db.execSQL("CREATE TABLE test (id INTEGER)");
-    defer result.close();
+    defer result.close(allocator);
 
     const tag = try conn.getCommandTag(&result);
     try std.testing.expectEqualStrings("OK", tag);
@@ -760,8 +884,8 @@ test "handleParse - store prepared statement" {
     const db_path = "test_parse.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -795,8 +919,8 @@ test "handleBind - create portal" {
     const db_path = "test_bind.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -846,8 +970,8 @@ test "handleClose - statement" {
     const db_path = "test_close_stmt.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -885,8 +1009,8 @@ test "handleSync - send ReadyForQuery" {
     const db_path = "test_sync.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -906,8 +1030,8 @@ test "valueToText - real" {
     const db_path = "test_value_real.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -925,8 +1049,8 @@ test "valueToText - boolean true" {
     const db_path = "test_value_bool_true.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -944,8 +1068,8 @@ test "valueToText - boolean false" {
     const db_path = "test_value_bool_false.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -963,8 +1087,8 @@ test "valueToText - blob hex encoding" {
     const db_path = "test_value_blob.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -983,8 +1107,8 @@ test "valueToText - uuid formatting" {
     const db_path = "test_value_uuid.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1003,13 +1127,13 @@ test "valueToText - json passthrough" {
     const db_path = "test_value_json.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
-    const value = Value{ .json = "{\"key\":\"value\"}" };
+    const value = Value{ .text = "{\"key\":\"value\"}" };
     const text = try conn.valueToText(value);
     defer allocator.free(text);
 
@@ -1022,8 +1146,8 @@ test "handleParse - replace existing statement" {
     const db_path = "test_parse_replace.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1064,8 +1188,8 @@ test "handleParse - unnamed statement" {
     const db_path = "test_parse_unnamed.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1093,8 +1217,8 @@ test "handleBind - parameter count mismatch" {
     const db_path = "test_bind_mismatch.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1138,8 +1262,8 @@ test "handleBind - statement not found" {
     const db_path = "test_bind_notfound.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1171,8 +1295,8 @@ test "handleBind - unnamed portal" {
     const db_path = "test_bind_unnamed.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1217,8 +1341,8 @@ test "handleClose - portal" {
     const db_path = "test_close_portal.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1271,8 +1395,8 @@ test "handleClose - nonexistent statement (no error)" {
     const db_path = "test_close_noexist.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1292,8 +1416,8 @@ test "getSQLState - various errors" {
     const db_path = "test_sqlstate_all.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1414,8 +1538,8 @@ test "valueToText - very long text (>1MB)" {
     const db_path = "test_value_long.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1439,8 +1563,8 @@ test "valueToText - empty text" {
     const db_path = "test_value_empty.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1458,8 +1582,8 @@ test "valueToText - text with null bytes" {
     const db_path = "test_value_nullbytes.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1478,8 +1602,8 @@ test "valueToText - integer min/max values" {
     const db_path = "test_value_minmax.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1503,8 +1627,8 @@ test "valueToText - real edge values" {
     const db_path = "test_value_real_edge.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1534,8 +1658,8 @@ test "valueToText - blob empty" {
     const db_path = "test_value_blob_empty.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1555,8 +1679,8 @@ test "valueToText - blob with all byte values" {
     const db_path = "test_value_blob_all.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1581,8 +1705,8 @@ test "getSQLState - comprehensive error mapping" {
     const db_path = "test_sqlstate_comprehensive.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1601,8 +1725,8 @@ test "handleParse - very long statement name (255 chars)" {
     const db_path = "test_parse_long.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1633,8 +1757,8 @@ test "handleParse - statement name with special characters" {
     const db_path = "test_parse_special.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1660,8 +1784,8 @@ test "handleBind - very long portal name" {
     const db_path = "test_bind_long.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1684,10 +1808,14 @@ test "handleBind - very long portal name" {
     @memset(long_portal, 'P');
 
     const param_values = [_][]const u8{"42"};
+    const param_formats = [_]i16{0};
+    const result_formats = [_]i16{0};
     const bind_msg = wire.Bind{
         .portal_name = long_portal,
         .statement_name = "test_stmt",
+        .param_formats = &param_formats,
         .param_values = &param_values,
+        .result_formats = &result_formats,
     };
 
     var bind_buf = std.ArrayListUnmanaged(u8){};
@@ -1703,8 +1831,8 @@ test "handleClose - close same statement twice (idempotent)" {
     const db_path = "test_close_twice.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1721,18 +1849,13 @@ test "handleClose - close same statement twice (idempotent)" {
     try conn.handleParse(parse_msg, parse_buf.writer(allocator));
 
     // Close it twice - should not error
-    const close_msg = wire.Close{
-        .target_type = .statement,
-        .target_name = "stmt",
-    };
-
     var close_buf1 = std.ArrayListUnmanaged(u8){};
     defer close_buf1.deinit(allocator);
-    try conn.handleClose(close_msg, close_buf1.writer(allocator));
+    try conn.handleClose('S', "stmt", close_buf1.writer(allocator));
 
     var close_buf2 = std.ArrayListUnmanaged(u8){};
     defer close_buf2.deinit(allocator);
-    try conn.handleClose(close_msg, close_buf2.writer(allocator)); // Second close should be no-op
+    try conn.handleClose('S', "stmt", close_buf2.writer(allocator)); // Second close should be no-op
 
     try std.testing.expect(!conn.prepared_statements.contains("stmt"));
 }
@@ -1776,8 +1899,8 @@ test "handleParse - many statements stress" {
     const db_path = "test_parse_many.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1808,8 +1931,8 @@ test "valueToText - all Value type variants coverage" {
     const db_path = "test_value_variants.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -1832,17 +1955,17 @@ test "valueToText - all Value type variants coverage" {
     // Null
     const null_result = try conn.valueToText(Value.null_value);
     defer allocator.free(null_result);
-    try std.testing.expectEqualStrings("", null_result);
+    try std.testing.expectEqualStrings("NULL", null_result);
 
     // Boolean true
     const true_result = try conn.valueToText(Value{ .boolean = true });
     defer allocator.free(true_result);
-    try std.testing.expectEqualStrings("t", true_result);
+    try std.testing.expectEqualStrings("true", true_result);
 
     // Boolean false
     const false_result = try conn.valueToText(Value{ .boolean = false });
     defer allocator.free(false_result);
-    try std.testing.expectEqualStrings("f", false_result);
+    try std.testing.expectEqualStrings("false", false_result);
 
     // UUID
     const uuid_bytes = [_]u8{0x12} ++ [_]u8{0x34} ++ [_]u8{0x56} ++ [_]u8{0x78} ++
@@ -1854,7 +1977,7 @@ test "valueToText - all Value type variants coverage" {
     try std.testing.expectEqualStrings("12345678-90ab-cdef-1234-567890abcdef", uuid_result);
 
     // JSON
-    const json_result = try conn.valueToText(Value{ .json = "{\"key\":\"value\"}" });
+    const json_result = try conn.valueToText(Value{ .text = "{\"key\":\"value\"}" });
     defer allocator.free(json_result);
     try std.testing.expectEqualStrings("{\"key\":\"value\"}", json_result);
 }
@@ -1865,8 +1988,8 @@ test "handleExecute - max_rows limit" {
     const db_path = "test_execute_maxrows.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     // Create test table with multiple rows
     _ = try db.execSQL("CREATE TABLE test_rows (id INTEGER, value TEXT)");
@@ -1970,8 +2093,8 @@ test "handleExecute - max_rows with negative value" {
     const db_path = "test_execute_negative.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     // Create test table
     _ = try db.execSQL("CREATE TABLE test_neg (id INTEGER)");
@@ -2027,8 +2150,8 @@ test "handleExecute - with parameter binding" {
     const db_path = "test_execute_params.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     // Create test table
     _ = try db.execSQL("CREATE TABLE test_params (id INTEGER, name TEXT, value INTEGER)");
@@ -2088,8 +2211,8 @@ test "typeOidForValue - integer type mapping" {
     const db_path = "test_type_oid_integer.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2105,8 +2228,8 @@ test "typeOidForValue - text type mapping" {
     const db_path = "test_type_oid_text.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2122,8 +2245,8 @@ test "typeOidForValue - boolean type mapping" {
     const db_path = "test_type_oid_boolean.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2139,8 +2262,8 @@ test "typeOidForValue - real type mapping" {
     const db_path = "test_type_oid_real.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2156,8 +2279,8 @@ test "typeOidForValue - date type mapping" {
     const db_path = "test_type_oid_date.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2173,8 +2296,8 @@ test "typeOidForValue - timestamp type mapping" {
     const db_path = "test_type_oid_timestamp.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2190,8 +2313,8 @@ test "typeOidForValue - numeric type mapping" {
     const db_path = "test_type_oid_numeric.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2207,8 +2330,8 @@ test "typeOidForValue - uuid type mapping" {
     const db_path = "test_type_oid_uuid.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2228,8 +2351,8 @@ test "typeOidForValue - null type mapping" {
     const db_path = "test_type_oid_null.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2245,8 +2368,8 @@ test "typeSizeForValue - integer type size" {
     const db_path = "test_type_size_integer.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2262,8 +2385,8 @@ test "typeSizeForValue - boolean type size" {
     const db_path = "test_type_size_boolean.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2279,8 +2402,8 @@ test "typeSizeForValue - text type size (variable length)" {
     const db_path = "test_type_size_text.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2296,8 +2419,8 @@ test "typeSizeForValue - real type size" {
     const db_path = "test_type_size_real.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2313,8 +2436,8 @@ test "typeSizeForValue - date type size" {
     const db_path = "test_type_size_date.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2330,8 +2453,8 @@ test "typeSizeForValue - uuid type size" {
     const db_path = "test_type_size_uuid.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2351,8 +2474,8 @@ test "typeSizeForValue - null type size" {
     const db_path = "test_type_size_null.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2368,8 +2491,8 @@ test "sendRowDescription with mixed types produces correct OIDs" {
     const db_path = "test_row_desc_mixed.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2387,7 +2510,7 @@ test "sendRowDescription with mixed types produces correct OIDs" {
     defer buf.deinit(allocator);
 
     // Call sendRowDescription with the row values
-    try conn.sendRowDescription(buf.writer(allocator), column_names, values);
+    try conn.sendRowDescription(buf.writer(allocator), &column_names, values);
 
     // Verify message type is 'T' (RowDescription)
     try std.testing.expectEqual(@as(u8, 'T'), buf.items[0]);
@@ -2411,7 +2534,7 @@ test "sendRowDescription with mixed types produces correct OIDs" {
     // Skip column_attr_number (2 bytes)
     offset += 2;
     // Read type_oid for first column (should be 20 for integer)
-    const first_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    const first_oid = std.mem.readInt(i32, buf.items[offset..][0..4], .big);
     try std.testing.expectEqual(@as(i32, 20), first_oid); // INT8 OID
 
     offset += 4; // Skip type_oid
@@ -2427,7 +2550,7 @@ test "sendRowDescription with mixed types produces correct OIDs" {
     // Skip column_attr_number (2 bytes)
     offset += 2;
     // Read type_oid for second column (should be 25 for text)
-    const second_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    const second_oid = std.mem.readInt(i32, buf.items[offset..][0..4], .big);
     try std.testing.expectEqual(@as(i32, 25), second_oid); // TEXT OID
 
     offset += 4; // Skip type_oid
@@ -2443,7 +2566,7 @@ test "sendRowDescription with mixed types produces correct OIDs" {
     // Skip column_attr_number (2 bytes)
     offset += 2;
     // Read type_oid for third column (should be 16 for boolean)
-    const third_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    const third_oid = std.mem.readInt(i32, buf.items[offset..][0..4], .big);
     try std.testing.expectEqual(@as(i32, 16), third_oid); // BOOL OID
 }
 
@@ -2453,8 +2576,8 @@ test "sendRowDescription with NULL values defaults to TEXT OID" {
     const db_path = "test_row_desc_null.db";
     defer std.fs.cwd().deleteFile(db_path) catch {};
 
-    var db = try Database.init(allocator, db_path);
-    defer db.deinit();
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
 
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
@@ -2470,7 +2593,7 @@ test "sendRowDescription with NULL values defaults to TEXT OID" {
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(allocator);
 
-    try conn.sendRowDescription(buf.writer(allocator), column_names, values);
+    try conn.sendRowDescription(buf.writer(allocator), &column_names, values);
 
     // Verify message type
     try std.testing.expectEqual(@as(u8, 'T'), buf.items[0]);
@@ -2484,7 +2607,7 @@ test "sendRowDescription with NULL values defaults to TEXT OID" {
     offset += "col1".len + 1; // Skip field name
     offset += 4; // Skip table_oid
     offset += 2; // Skip column_attr_number
-    const first_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    const first_oid = std.mem.readInt(i32, buf.items[offset..][0..4], .big);
     try std.testing.expectEqual(@as(i32, 25), first_oid); // TEXT OID for NULL
 
     offset += 4; // Skip type_oid
@@ -2496,6 +2619,315 @@ test "sendRowDescription with NULL values defaults to TEXT OID" {
     offset += "col2".len + 1; // Skip field name
     offset += 4; // Skip table_oid
     offset += 2; // Skip column_attr_number
-    const second_oid = std.mem.readInt(i32, buf.items[offset .. offset + 4], .big);
+    const second_oid = std.mem.readInt(i32, buf.items[offset..][0..4], .big);
     try std.testing.expectEqual(@as(i32, 25), second_oid); // TEXT OID for NULL
+}
+
+// ── Describe Message Tests ─────────────────────────────────────
+
+test "handleDescribe - unknown statement (returns error)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_unknown_stmt.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Try to describe non-existent statement
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "nonexistent", buf.writer(allocator));
+
+    // Should send ErrorResponse (message type 'E')
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+}
+
+test "handleDescribe - unknown portal (returns error)" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_unknown_portal.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Try to describe non-existent portal
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleDescribe('P', "nonexistent", buf.writer(allocator));
+
+    // Should send ErrorResponse
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+}
+
+test "handleDescribe - statement with parameters" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_stmt_params.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a prepared statement with parameters
+    const param_types = [_]i32{ 23, 25 }; // INT4, TEXT
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT $1, $2",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Describe the statement
+    var describe_buf = std.ArrayListUnmanaged(u8){};
+    defer describe_buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "stmt1", describe_buf.writer(allocator));
+
+    // Should start with ParameterDescription ('t')
+    try std.testing.expectEqual(@as(u8, 't'), describe_buf.items[0]);
+
+    // Verify parameter count is 2
+    const param_len = std.mem.readInt(i32, describe_buf.items[1..5], .big);
+    try std.testing.expect(param_len > 0);
+    const param_count = std.mem.readInt(i16, describe_buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 2), param_count);
+}
+
+test "handleDescribe - statement with zero parameters" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_stmt_no_params.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a prepared statement without parameters
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT 1",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Describe the statement
+    var describe_buf = std.ArrayListUnmanaged(u8){};
+    defer describe_buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "stmt1", describe_buf.writer(allocator));
+
+    // Should still send ParameterDescription (with count 0)
+    try std.testing.expectEqual(@as(u8, 't'), describe_buf.items[0]);
+    const param_len = std.mem.readInt(i32, describe_buf.items[1..5], .big);
+    try std.testing.expect(param_len >= 6); // At least length + count
+    const param_count = std.mem.readInt(i16, describe_buf.items[5..7], .big);
+    try std.testing.expectEqual(@as(i16, 0), param_count);
+}
+
+test "handleDescribe - portal with bound parameters" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_portal_bound.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a prepared statement
+    const param_types = [_]i32{23};
+    const parse_msg = wire.Parse{
+        .statement_name = "stmt1",
+        .query = "SELECT $1",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Bind to create portal
+    const param_values = [_][]const u8{"42"};
+    const result_formats = [_]i16{0};
+    const param_formats = [_]i16{0};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "stmt1",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var bind_buf = std.ArrayListUnmanaged(u8){};
+    defer bind_buf.deinit(allocator);
+    try conn.handleBind(bind_msg, bind_buf.writer(allocator));
+
+    // Describe the portal
+    var describe_buf = std.ArrayListUnmanaged(u8){};
+    defer describe_buf.deinit(allocator);
+
+    try conn.handleDescribe('P', "portal1", describe_buf.writer(allocator));
+
+    // Portal Describe should NOT send ParameterDescription
+    // It should go straight to RowDescription or NoData
+    // Check that first message is NOT 't' (ParameterDescription)
+    try std.testing.expect(describe_buf.items[0] != 't');
+}
+
+test "handleDescribe - INSERT without RETURNING returns NoData" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_insert_nodata.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a prepared statement for INSERT
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "insert_stmt",
+        .query = "INSERT INTO t VALUES (1)",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Describe the statement
+    var describe_buf = std.ArrayListUnmanaged(u8){};
+    defer describe_buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "insert_stmt", describe_buf.writer(allocator));
+
+    // Should contain ParameterDescription
+    try std.testing.expectEqual(@as(u8, 't'), describe_buf.items[0]);
+
+    // After ParameterDescription, should see NoData ('n')
+    // Find NoData in the buffer (it should follow ParameterDescription)
+    const param_desc_len_offset = 1;
+    const param_desc_len = std.mem.readInt(i32, describe_buf.items[param_desc_len_offset..][0..4], .big);
+    // Message layout is [type_byte(1)][length(4 incl. itself)][payload]; the length
+    // field already counts itself, so the next message starts right after it.
+    const no_data_offset: usize = 1 + @as(usize, @intCast(param_desc_len));
+
+    if (no_data_offset < describe_buf.items.len) {
+        try std.testing.expectEqual(@as(u8, 'n'), describe_buf.items[no_data_offset]);
+    }
+}
+
+test "handleDescribe - SELECT with columns returns RowDescription" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_select_rowdesc.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a prepared statement for SELECT
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "select_stmt",
+        .query = "SELECT 1 AS id, 'test' AS name",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Describe the statement
+    var describe_buf = std.ArrayListUnmanaged(u8){};
+    defer describe_buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "select_stmt", describe_buf.writer(allocator));
+
+    // Should start with ParameterDescription
+    try std.testing.expectEqual(@as(u8, 't'), describe_buf.items[0]);
+
+    // After ParameterDescription, should find RowDescription ('T')
+    // Calculate offset: 1 (type) + 4 (length) + 2 (count) + 0 (no params) = 7
+    try std.testing.expect(describe_buf.items.len > 7);
+    try std.testing.expectEqual(@as(u8, 'T'), describe_buf.items[7]);
+}
+
+test "handleDescribe - SELECT with zero rows still sends RowDescription" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_empty_select.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    // Create a prepared statement for SELECT with WHERE that matches nothing
+    const param_types = [_]i32{};
+    const parse_msg = wire.Parse{
+        .statement_name = "empty_select",
+        .query = "SELECT id FROM nonexistent_table WHERE 1=0",
+        .param_types = &param_types,
+    };
+
+    var parse_buf = std.ArrayListUnmanaged(u8){};
+    defer parse_buf.deinit(allocator);
+    try conn.handleParse(parse_msg, parse_buf.writer(allocator));
+
+    // Describe the statement
+    var describe_buf = std.ArrayListUnmanaged(u8){};
+    defer describe_buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "empty_select", describe_buf.writer(allocator));
+
+    // CRITICAL: Even though query returns 0 rows, Describe must return RowDescription,
+    // NOT NoData. This is because Describe is static (determined from query shape),
+    // not dynamic (from actual result).
+    try std.testing.expectEqual(@as(u8, 't'), describe_buf.items[0]);
+
+    // Should have RowDescription, not NoData
+    try std.testing.expect(describe_buf.items.len > 7);
+    // Look for RowDescription (should be after ParameterDescription)
+    var found_row_desc = false;
+    for (describe_buf.items[7..]) |byte| {
+        if (byte == 'T') {
+            found_row_desc = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_row_desc);
 }

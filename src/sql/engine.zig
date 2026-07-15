@@ -9222,7 +9222,7 @@ pub const Database = struct {
 
     // ── SchemaProvider adapter ────────────────────────────────────────
 
-    fn schemaProvider(self: *Database) SchemaProvider {
+    pub fn schemaProvider(self: *Database) SchemaProvider {
         return .{
             .ptr = @ptrCast(self),
             .vtable = &.{
@@ -37600,3 +37600,34 @@ test "IS JSON: filters rows in WHERE clause" {
     try testing.expectEqual(@as(i64, 3), ids.items[1]);
 }
 
+
+test "PreparedStatement: numbered params can be prepared and executed twice in a row" {
+    const path = "test_prepared_numbered_params_twice.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try Database.open(testing.allocator, path, .{});
+    defer db.close();
+
+    _ = try db.execSQL("CREATE TABLE test_params (id INTEGER, name TEXT, value INTEGER)");
+    _ = try db.execSQL("INSERT INTO test_params VALUES (1, 'alice', 100)");
+    _ = try db.execSQL("INSERT INTO test_params VALUES (2, 'bob', 200)");
+    _ = try db.execSQL("INSERT INTO test_params VALUES (3, 'charlie', 300)");
+
+    const query = "SELECT * FROM test_params WHERE name = $1 AND value > $2";
+    for (0..2) |_| {
+        var stmt = try db.prepare(testing.allocator, query);
+        defer stmt.close();
+        try stmt.bind(0, Value{ .text = "bob" });
+        try stmt.bind(1, Value{ .integer = 100 });
+        var result = try stmt.execute();
+        defer result.close(testing.allocator);
+        var count: usize = 0;
+        if (result.rows) |rows_iter| {
+            while (try rows_iter.next()) |*row_ptr| {
+                var row = row_ptr.*;
+                defer row.deinit();
+                count += 1;
+            }
+        }
+        try testing.expectEqual(@as(usize, 1), count);
+    }
+}
