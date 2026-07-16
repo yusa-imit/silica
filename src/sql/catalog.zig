@@ -50,6 +50,17 @@ pub const IndexType = enum(u8) {
     gin = 3,
 };
 
+/// GIN operator class — identifies which native GIN storage strategy an
+/// index uses. `.none` means the index is not a native GIN index (either a
+/// non-GIN index, or a legacy `.gin`-typed index still on the B+Tree
+/// fallback path).
+pub const GinOpClass = enum(u8) {
+    none = 0,
+    array_ops = 1,
+    jsonb_ops = 2,
+    tsvector_ops = 3,
+};
+
 /// Index build state for concurrent index creation.
 pub const IndexState = enum(u8) {
     /// Index is being built (concurrent writes allowed during build).
@@ -178,6 +189,8 @@ pub const IndexInfo = struct {
     is_unique: bool = false,
     /// Index build state (building, valid, invalid)
     state: IndexState = .valid,
+    /// Native GIN storage strategy (`.none` for non-GIN or legacy B+Tree-fallback GIN indexes)
+    gin_opclass: GinOpClass = .none,
 };
 
 /// Complete table metadata.
@@ -270,6 +283,7 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         for (idx.included_columns) |included_col| {
             size += 2 + included_col.len; // name_len + name
         }
+        size += 1; // gin_opclass: u8
     }
 
     const buf = try allocator.alloc(u8, size);
@@ -363,6 +377,8 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
             @memcpy(buf[pos..][0..included_col.len], included_col);
             pos += included_col.len;
         }
+        buf[pos] = @intFromEnum(idx.gin_opclass);
+        pos += 1;
     }
 
     std.debug.assert(pos == size);
@@ -547,6 +563,14 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                     }
                 } else {
                     idx.included_columns = &.{};
+                }
+
+                // gin_opclass (optional — backward compatible, defaults to .none)
+                if (pos + 1 <= data.len) {
+                    idx.gin_opclass = @enumFromInt(data[pos]);
+                    pos += 1;
+                } else {
+                    idx.gin_opclass = .none; // Backward compatibility: old DBs have no native GIN support
                 }
 
                 idxs_initialized += 1;
@@ -8339,4 +8363,161 @@ test "Index state persists through serialization/deserialization" {
     try std.testing.expectEqual(@as(u32, 250), idx_restored.root_page_id);
     try std.testing.expect(!idx_restored.is_unique);
     try std.testing.expectEqual(IndexType.btree, idx_restored.index_type);
+}
+
+// ── GIN OPCLASS TESTS (GIN INDEX NATIVE STORAGE) ──────────────────────────
+
+test "GinOpClass enum has correct values" {
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(GinOpClass.none));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(GinOpClass.array_ops));
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(GinOpClass.jsonb_ops));
+    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(GinOpClass.tsvector_ops));
+}
+
+test "serialize and deserialize IndexInfo with gin_opclass jsonb_ops" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "data", .column_type = .jsonb, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_data_jsonb_gin",
+            .column_name = "data",
+            .column_index = 1,
+            .root_page_id = 100,
+            .index_type = .gin,
+            .is_unique = false,
+            .state = .valid,
+            .gin_opclass = .jsonb_ops,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 42);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "docs", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_data_jsonb_gin", idx.index_name);
+    try std.testing.expectEqualStrings("data", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 100), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.gin, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.jsonb_ops, idx.gin_opclass);
+}
+
+test "serialize and deserialize IndexInfo with gin_opclass array_ops" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "tags", .column_type = .array, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_tags_array_gin",
+            .column_name = "tags",
+            .column_index = 1,
+            .root_page_id = 150,
+            .index_type = .gin,
+            .is_unique = false,
+            .state = .valid,
+            .gin_opclass = .array_ops,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 43);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "items", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_tags_array_gin", idx.index_name);
+    try std.testing.expectEqualStrings("tags", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 150), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.gin, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.array_ops, idx.gin_opclass);
+}
+
+test "backward compatibility: deserialize old format without gin_opclass defaults to none" {
+    const allocator = std.testing.allocator;
+
+    // Manually construct old format data (without gin_opclass byte at the end)
+    // Format: [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
+    // Old index format (with state): [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
+    //                                  [col_index:u16][root_page_id:u32][is_unique:u8][index_type:u8][state:u8][included_count:u16][...]
+    // Missing: gin_opclass (1 byte) at the very end
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    // data_root_page_id
+    try buf.writer(allocator).writeInt(u32, 80, .little);
+
+    // column_count = 2
+    try buf.writer(allocator).writeInt(u16, 2, .little);
+
+    // Column 1: "id", integer, primary_key + not_null
+    try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
+    try buf.appendSlice(allocator, "id");
+    try buf.append(allocator, @intFromEnum(ColumnType.integer));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+
+    // Column 2: "data", jsonb
+    try buf.writer(allocator).writeInt(u16, 4, .little); // name_len
+    try buf.appendSlice(allocator, "data");
+    try buf.append(allocator, @intFromEnum(ColumnType.jsonb));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{})));
+
+    // table_constraint_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+
+    // index_count = 1
+    try buf.writer(allocator).writeInt(u16, 1, .little);
+
+    // Index: "idx_data_gin"
+    try buf.writer(allocator).writeInt(u16, 12, .little); // index_name_len
+    try buf.appendSlice(allocator, "idx_data_gin");
+    try buf.writer(allocator).writeInt(u16, 4, .little); // column_name_len
+    try buf.appendSlice(allocator, "data");
+    try buf.writer(allocator).writeInt(u16, 1, .little); // column_index
+    try buf.writer(allocator).writeInt(u32, 200, .little); // root_page_id
+    // is_unique
+    try buf.append(allocator, @as(u8, 0));
+    // index_type = gin (3)
+    try buf.append(allocator, @intFromEnum(IndexType.gin));
+    // state = valid (1)
+    try buf.append(allocator, @intFromEnum(IndexState.valid));
+    // included_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+    // NO gin_opclass byte — this is old format
+
+    const data = try buf.toOwnedSlice(allocator);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "legacy_gin_table", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_data_gin", idx.index_name);
+    try std.testing.expectEqualStrings("data", idx.column_name);
+    try std.testing.expectEqual(IndexType.gin, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    // CRITICAL: gin_opclass should default to .none for backward compatibility
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
 }
