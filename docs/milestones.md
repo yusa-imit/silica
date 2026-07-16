@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.91.0
-- **Latest available**: v2.91.0
+- **Current in silica**: v2.92.0
+- **Latest available**: v2.92.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -229,6 +229,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.89.0 | BumpChart widget | DONE | Multi-time-point rank-over-time lines per category with direction glyphs; `BumpChart` + `BumpSeries`(label, ranks, style), MAX_SERIES=8, MAX_TIMEPOINTS=16, no heap allocations; no TUI overlay use case identified yet — Session 465 |
 | v2.90.0 | MosaicPlot widget | DONE | Marimekko-style two-dimensional proportional chart (variable-width columns × stacked variable-height segments); `MosaicPlot` + `MosaicColumn` + `MosaicSegment`(label, value, style), MAX_COLUMNS=16, MAX_SEGMENTS_PER_COLUMN=8, no heap allocations; no TUI overlay use case identified yet — Session 465 |
 | v2.91.0 | IcicleChart widget | DONE | Axis-aligned hierarchical chart (alternative to SunburstChart's radial layout); stacked horizontal bands per tree depth, cumulative-floor width formula consistent with MosaicPlot/SunburstChart; `IcicleChart` + `IcicleNode`, focus-path highlighting, independent show_labels/show_values toggles, MAX_DEPTH=6, MAX_CHILDREN_PER_NODE=8, no heap allocations; no TUI overlay use case identified yet — Session 468 |
+| v2.92.0 | ToggleSwitch widget | DONE | Boolean on/off slider-style form control (fixed 6-cell bracketed track, sliding knob ◯/◉); `ToggleSwitchGroup` manages a set with radio-like exclusive-toggle focus navigation, skipping disabled items on wrap; silica's TUI overlays are keypress-toggled (no widget-based settings form), so no direct use case identified yet — Session 470 |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
