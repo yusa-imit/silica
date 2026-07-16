@@ -31,6 +31,7 @@ const Row = executor_mod.Row;
 // ══════════════════════════════════════════════════════════════════════════
 
 fn createTestDb(allocator: std.mem.Allocator, path: []const u8) !Database {
+    std.fs.cwd().deleteFile(path) catch {};
     return Database.open(allocator, path, .{ .page_size = 4096 });
 }
 
