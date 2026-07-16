@@ -2931,3 +2931,129 @@ test "handleDescribe - SELECT with zero rows still sends RowDescription" {
     }
     try std.testing.expect(found_row_desc);
 }
+
+test "handleBind - error sets awaiting_sync true and does not send ReadyForQuery" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_bind_error_awaiting_sync.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const param_values = [_][]const u8{"42"};
+    const result_formats = [_]i16{0};
+    const param_formats = [_]i16{0};
+    const bind_msg = wire.Bind{
+        .portal_name = "portal1",
+        .statement_name = "nonexistent_stmt",
+        .param_formats = &param_formats,
+        .param_values = &param_values,
+        .result_formats = &result_formats,
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleBind(bind_msg, buf.writer(allocator));
+
+    try std.testing.expect(conn.awaiting_sync);
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOfScalar(u8, buf.items, 'Z'));
+}
+
+test "handleExecute - error sets awaiting_sync true and does not send ReadyForQuery" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_execute_error_awaiting_sync.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleExecute("nonexistent_portal", 0, buf.writer(allocator));
+
+    try std.testing.expect(conn.awaiting_sync);
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOfScalar(u8, buf.items, 'Z'));
+}
+
+test "handleDescribe - error sets awaiting_sync true and does not send ReadyForQuery" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_describe_error_awaiting_sync.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleDescribe('S', "nonexistent_stmt", buf.writer(allocator));
+
+    try std.testing.expect(conn.awaiting_sync);
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOfScalar(u8, buf.items, 'Z'));
+}
+
+test "handleSync - resets awaiting_sync and sends ReadyForQuery" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_sync_reset_awaiting_sync.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    conn.awaiting_sync = true;
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleSync(buf.writer(allocator));
+
+    try std.testing.expect(!conn.awaiting_sync);
+    try std.testing.expectEqual(@as(u8, 'Z'), buf.items[0]);
+}
+
+test "handleSimpleQuery - error does not set awaiting_sync and sends ReadyForQuery" {
+    const allocator = std.testing.allocator;
+
+    const db_path = "test_simple_query_error.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var db = try Database.open(allocator, db_path, .{});
+    defer db.close();
+
+    var conn = try Connection.init(allocator, &db, "user", "db");
+    defer conn.deinit();
+
+    const query_msg = wire.Query{
+        .query = "SELECT * FROM nonexistent_table_xyz",
+    };
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    try conn.handleSimpleQuery(query_msg, buf.writer(allocator));
+
+    try std.testing.expect(!conn.awaiting_sync);
+    try std.testing.expectEqual(@as(u8, 'E'), buf.items[0]);
+    try std.testing.expect(std.mem.indexOfScalar(u8, buf.items, 'Z') != null);
+}
