@@ -168,6 +168,160 @@ pub const ArrayInt32OpClass = struct {
     }
 };
 
+// ── Real-world Operator Class: ArrayOpsOpClass ─────────────────────────
+
+/// ArrayOpsOpClass — operator class for `array_ops`: GIN support for SQL
+/// ARRAY columns via `@>` (contains) and `&&` (overlaps).
+///
+/// Indexed value wire format independently reimplements (the storage layer
+/// must not import the sql layer) the tag+payload `Value` serialization
+/// used by src/sql/executor.zig's `serializeValue`: a leading tag byte
+/// selects the payload shape (0x00 null, 0x01 integer i64 LE, 0x02 real f64
+/// bits LE, 0x03 text u32-len+bytes, 0x04 blob u32-len+bytes, 0x05 boolean 1
+/// byte, 0x06 date i32 LE, 0x07 time i64 LE, 0x08 timestamp i64 LE, 0x09
+/// interval i32+i32+i64, 0x0A numeric u8-scale+i128 LE, 0x0B uuid 16 bytes,
+/// 0x0C array u32-count + N nested tag+payload values, 0x0F tsvector
+/// u32-len+bytes, 0x10 tsquery u32-len+bytes). `column_value`/`query_value`
+/// must be a 0x0C array value; each element becomes one GIN key (its own
+/// tag+payload span, verbatim).
+pub const ArrayOpsOpClass = struct {
+    /// Lexicographic byte comparison. GIN's entry-tree ordering only needs a
+    /// consistent total order for tree placement/lookup, not a semantically
+    /// meaningful (e.g. numeric) order, so plain memcmp-with-length-tiebreak
+    /// suffices and stays type-agnostic across the polymorphic key encoding.
+    pub fn compare(_: std.mem.Allocator, a: []const u8, b: []const u8) OpClassError!i8 {
+        const shared_len = @min(a.len, b.len);
+        const cmp = std.mem.order(u8, a[0..shared_len], b[0..shared_len]);
+        return switch (cmp) {
+            .lt => -1,
+            .gt => 1,
+            .eq => if (a.len < b.len) -1 else if (a.len > b.len) @as(i8, 1) else 0,
+        };
+    }
+
+    /// Total bytes (including the leading tag byte) consumed by one
+    /// tag+payload value at the start of `data`. Used to skip over array
+    /// elements without allocating/decoding their contents.
+    fn valueSpanLen(data: []const u8) OpClassError!usize {
+        if (data.len < 1) return error.InvalidKey;
+        const tag = data[0];
+        return switch (tag) {
+            0x00 => 1, // null
+            0x01, 0x02, 0x07, 0x08 => blk: { // integer/real/time/timestamp: 8-byte payload
+                if (data.len < 9) return error.InvalidKey;
+                break :blk 9;
+            },
+            0x03, 0x04 => blk: { // text/blob: u32 len prefix + bytes
+                if (data.len < 5) return error.InvalidKey;
+                const len = std.mem.readInt(u32, data[1..5], .little);
+                if (data.len < 5 + @as(usize, len)) return error.InvalidKey;
+                break :blk 5 + @as(usize, len);
+            },
+            0x05 => blk: { // boolean: 1 byte
+                if (data.len < 2) return error.InvalidKey;
+                break :blk 2;
+            },
+            0x06 => blk: { // date: 4-byte payload
+                if (data.len < 5) return error.InvalidKey;
+                break :blk 5;
+            },
+            0x09 => blk: { // interval: i32 + i32 + i64
+                if (data.len < 17) return error.InvalidKey;
+                break :blk 17;
+            },
+            0x0A => blk: { // numeric: u8 scale + i128
+                if (data.len < 18) return error.InvalidKey;
+                break :blk 18;
+            },
+            0x0B => blk: { // uuid: 16 bytes
+                if (data.len < 17) return error.InvalidKey;
+                break :blk 17;
+            },
+            0x0C => blk: { // nested array: u32 count + N nested values
+                if (data.len < 5) return error.InvalidKey;
+                const count = std.mem.readInt(u32, data[1..5], .little);
+                var pos: usize = 5;
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    pos += try valueSpanLen(data[pos..]);
+                }
+                break :blk pos;
+            },
+            0x0F, 0x10 => blk: { // tsvector/tsquery: u32 len prefix + bytes
+                if (data.len < 5) return error.InvalidKey;
+                const len = std.mem.readInt(u32, data[1..5], .little);
+                if (data.len < 5 + @as(usize, len)) return error.InvalidKey;
+                break :blk 5 + @as(usize, len);
+            },
+            else => error.InvalidKey,
+        };
+    }
+
+    /// Extract one key per array element (the element's own tag+payload
+    /// bytes, verbatim). `column_value` must start with the array tag 0x0C.
+    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+        if (column_value.len < 5 or column_value[0] != 0x0C) return error.InvalidKey;
+        const count = std.mem.readInt(u32, column_value[1..5], .little);
+        // Reject counts that can't possibly fit before allocating `count` key
+        // slots — each element needs at least 1 byte (the null tag), so a
+        // corrupted/malformed count claiming more elements than remaining
+        // bytes would otherwise attempt a huge allocation up front.
+        if (@as(usize, count) > column_value.len - 5) return error.InvalidKey;
+
+        const keys = try allocator.alloc([]const u8, count);
+        var inited: usize = 0;
+        errdefer {
+            for (keys[0..inited]) |k| allocator.free(k);
+            allocator.free(keys);
+        }
+
+        var pos: usize = 5;
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const span = try valueSpanLen(column_value[pos..]);
+            keys[i] = try allocator.dupe(u8, column_value[pos..][0..span]);
+            pos += span;
+            inited += 1;
+        }
+        return keys;
+    }
+
+    /// Query-side extraction: identical format/semantics to extractValue —
+    /// the right-hand side of `@>`/`&&` is serialized the same way.
+    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+        return extractValue(allocator, query_value);
+    }
+
+    /// Strategy 0 (@>): every query key's posting list must be non-empty.
+    /// Strategy 1 (&&): at least one query key's posting list must be non-empty.
+    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+        return switch (strategy) {
+            0 => blk: { // @> (contains all)
+                for (posting_lists) |list| {
+                    if (list.len == 0) break :blk false;
+                }
+                break :blk true;
+            },
+            1 => blk: { // && (overlaps)
+                for (posting_lists) |list| {
+                    if (list.len > 0) break :blk true;
+                }
+                break :blk false;
+            },
+            else => error.InvalidKey,
+        };
+    }
+
+    pub fn getOpClass() OpClass {
+        return .{
+            .compare = compare,
+            .extractValue = extractValue,
+            .extractQuery = extractQuery,
+            .consistent = consistent,
+        };
+    }
+};
+
 // ── GIN Tree Structure ─────────────────────────────────────────────────
 
 pub const GIN = struct {
@@ -1243,6 +1397,382 @@ test "ArrayInt32OpClass consistent invalid strategy" {
 
     const result = ArrayInt32OpClass.consistent(allocator, &posting_lists, &query_keys, 99);
     try std.testing.expectError(error.InvalidKey, result);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Operator Class: ArrayOpsOpClass Tests (~18 tests)
+// ────────────────────────────────────────────────────────────────────
+// ArrayOpsOpClass implements array_ops: serialized SQL ARRAY with polymorphic
+// element types (tag+payload wire format). Each array element becomes one key.
+// Comparison is lexicographic (byte-wise). Strategies: 0=@> (contains all),
+// 1=&& (overlaps).
+
+test "ArrayOpsOpClass extractValue single integer element" {
+    const allocator = std.testing.allocator;
+
+    // Array[1 element]: tag=0x0C, count=1 (u32 LE), then 1 i64 element (tag 0x01 + 8 bytes LE)
+    // Wire format: [0x0C, 0x01,0x00,0x00,0x00, 0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00]
+    //             (tag)  (count LE)         (tag) (value LE = 1)
+    var input: [14]u8 = undefined;
+    input[0] = 0x0C; // array tag
+    std.mem.writeInt(u32, input[1..5], 1, .little); // count = 1
+    input[5] = 0x01; // integer tag
+    std.mem.writeInt(i64, input[6..14], 42, .little); // value = 42
+
+    const keys = try ArrayOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqual(@as(usize, 9), keys[0].len); // tag(1) + i64(8)
+    try std.testing.expectEqual(@as(u8, 0x01), keys[0][0]); // tag preserved
+    try std.testing.expectEqual(@as(i64, 42), std.mem.readInt(i64, keys[0][1..9], .little));
+}
+
+test "ArrayOpsOpClass extractValue multiple element array" {
+    const allocator = std.testing.allocator;
+
+    // Array[2 elements]: [i64(10), i64(20)]
+    // Total: tag(1) + count(4) + elem0_tag(1) + elem0_value(8) + elem1_tag(1) + elem1_value(8)
+    var input: [23]u8 = undefined;
+    input[0] = 0x0C;
+    std.mem.writeInt(u32, input[1..5], 2, .little); // count = 2
+    input[5] = 0x01;
+    std.mem.writeInt(i64, input[6..14], 10, .little);
+    input[14] = 0x01;
+    std.mem.writeInt(i64, input[15..23], 20, .little);
+
+    const keys = try ArrayOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+    try std.testing.expectEqual(@as(usize, 9), keys[0].len);
+    try std.testing.expectEqual(@as(usize, 9), keys[1].len);
+    try std.testing.expectEqual(@as(i64, 10), std.mem.readInt(i64, keys[0][1..9], .little));
+    try std.testing.expectEqual(@as(i64, 20), std.mem.readInt(i64, keys[1][1..9], .little));
+}
+
+test "ArrayOpsOpClass extractValue empty array" {
+    const allocator = std.testing.allocator;
+
+    var input: [5]u8 = undefined;
+    input[0] = 0x0C;
+    std.mem.writeInt(u32, input[1..5], 0, .little); // count = 0
+
+    const keys = try ArrayOpsOpClass.extractValue(allocator, &input);
+    defer allocator.free(keys);
+
+    try std.testing.expectEqual(@as(usize, 0), keys.len);
+}
+
+test "ArrayOpsOpClass extractValue count exceeds remaining buffer rejected before allocating" {
+    const allocator = std.testing.allocator;
+
+    // count claims ~4 billion elements but the buffer has zero bytes left —
+    // must be rejected before attempting `allocator.alloc([]const u8, count)`.
+    var input: [5]u8 = undefined;
+    input[0] = 0x0C;
+    std.mem.writeInt(u32, input[1..5], 0xFFFFFFFF, .little);
+
+    const result = ArrayOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "ArrayOpsOpClass extractValue input too short for count field" {
+    const allocator = std.testing.allocator;
+
+    var input: [1]u8 = undefined;
+    input[0] = 0x0C; // only tag, no count bytes
+
+    const result = ArrayOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "ArrayOpsOpClass extractValue non-array leading tag" {
+    const allocator = std.testing.allocator;
+
+    var input: [9]u8 = undefined;
+    input[0] = 0x01; // integer tag, not array
+    std.mem.writeInt(i64, input[1..9], 42, .little);
+
+    const result = ArrayOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "ArrayOpsOpClass extractValue truncated element data" {
+    const allocator = std.testing.allocator;
+
+    // Claim 2 elements but only provide 1 complete element
+    var input: [14]u8 = undefined;
+    input[0] = 0x0C;
+    std.mem.writeInt(u32, input[1..5], 2, .little); // count = 2
+    input[5] = 0x01;
+    std.mem.writeInt(i64, input[6..14], 10, .little);
+    // Missing second element
+
+    const result = ArrayOpsOpClass.extractValue(allocator, input[0..14]); // truncated: only 14 bytes
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "ArrayOpsOpClass extractValue array with text element" {
+    const allocator = std.testing.allocator;
+
+    // Array[1]: text value "hello"
+    // Wire: [0x0C, count=1, 0x03, length=5, "hello"]
+    var input: [5 + 1 + 4 + 4 + 5]u8 = undefined;
+    var pos: usize = 0;
+    input[pos] = 0x0C;
+    pos += 1;
+    std.mem.writeInt(u32, input[pos..][0..4], 1, .little); // count = 1
+    pos += 4;
+    input[pos] = 0x03; // text tag
+    pos += 1;
+    std.mem.writeInt(u32, input[pos..][0..4], 5, .little); // length = 5
+    pos += 4;
+    @memcpy(input[pos..][0..5], "hello");
+
+    const keys = try ArrayOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqual(@as(usize, 1 + 4 + 5), keys[0].len); // tag + length_prefix + text
+    try std.testing.expectEqual(@as(u8, 0x03), keys[0][0]); // tag preserved
+    try std.testing.expectEqual(@as(u32, 5), std.mem.readInt(u32, keys[0][1..5], .little));
+    try std.testing.expectEqualSlices(u8, "hello", keys[0][5..10]);
+}
+
+test "ArrayOpsOpClass extractQuery returns same extraction as extractValue" {
+    const allocator = std.testing.allocator;
+
+    var input: [23]u8 = undefined;
+    input[0] = 0x0C;
+    std.mem.writeInt(u32, input[1..5], 2, .little); // count = 2
+    input[5] = 0x01;
+    std.mem.writeInt(i64, input[6..14], 100, .little);
+    input[14] = 0x01;
+    std.mem.writeInt(i64, input[15..23], 200, .little);
+
+    const keys = try ArrayOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+    try std.testing.expectEqual(@as(i64, 100), std.mem.readInt(i64, keys[0][1..9], .little));
+    try std.testing.expectEqual(@as(i64, 200), std.mem.readInt(i64, keys[1][1..9], .little));
+}
+
+test "ArrayOpsOpClass compare equal keys" {
+    const allocator = std.testing.allocator;
+
+    // Two integer keys with value 42
+    var key_a: [9]u8 = undefined;
+    var key_b: [9]u8 = undefined;
+    key_a[0] = 0x01;
+    std.mem.writeInt(i64, key_a[1..9], 42, .little);
+    key_b[0] = 0x01;
+    std.mem.writeInt(i64, key_b[1..9], 42, .little);
+
+    const result = try ArrayOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, 0), result);
+}
+
+test "ArrayOpsOpClass compare less than" {
+    const allocator = std.testing.allocator;
+
+    // Two integer keys: 10 vs 20
+    var key_a: [9]u8 = undefined;
+    var key_b: [9]u8 = undefined;
+    key_a[0] = 0x01;
+    std.mem.writeInt(i64, key_a[1..9], 10, .little);
+    key_b[0] = 0x01;
+    std.mem.writeInt(i64, key_b[1..9], 20, .little);
+
+    const result = try ArrayOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, -1), result);
+}
+
+test "ArrayOpsOpClass compare greater than" {
+    const allocator = std.testing.allocator;
+
+    // Two integer keys: 100 vs 50
+    var key_a: [9]u8 = undefined;
+    var key_b: [9]u8 = undefined;
+    key_a[0] = 0x01;
+    std.mem.writeInt(i64, key_a[1..9], 100, .little);
+    key_b[0] = 0x01;
+    std.mem.writeInt(i64, key_b[1..9], 50, .little);
+
+    const result = try ArrayOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, 1), result);
+}
+
+test "ArrayOpsOpClass compare antisymmetry" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [9]u8 = undefined;
+    var key_b: [9]u8 = undefined;
+    key_a[0] = 0x01;
+    std.mem.writeInt(i64, key_a[1..9], 5, .little);
+    key_b[0] = 0x01;
+    std.mem.writeInt(i64, key_b[1..9], 15, .little);
+
+    const cmp_ab = try ArrayOpsOpClass.compare(allocator, &key_a, &key_b);
+    const cmp_ba = try ArrayOpsOpClass.compare(allocator, &key_b, &key_a);
+
+    // cmp_ab should be -1, cmp_ba should be 1 (opposite signs)
+    try std.testing.expectEqual(@as(i8, -cmp_ab), cmp_ba);
+}
+
+test "ArrayOpsOpClass consistent contains all strategy all present" {
+    const allocator = std.testing.allocator;
+
+    const item1 = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const item2 = [_]ItemPointer{.{ .page_id = 2, .tuple_offset = 5 }};
+    const posting_lists = [_][]const ItemPointer{ &item1, &item2 };
+
+    var key1: [9]u8 = undefined;
+    var key2: [9]u8 = undefined;
+    key1[0] = 0x01;
+    std.mem.writeInt(i64, key1[1..9], 1, .little);
+    key2[0] = 0x01;
+    std.mem.writeInt(i64, key2[1..9], 2, .little);
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try ArrayOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 0);
+    try std.testing.expect(result);
+}
+
+test "ArrayOpsOpClass consistent contains all strategy one missing" {
+    const allocator = std.testing.allocator;
+
+    const item1 = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const empty: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{ &item1, &empty };
+
+    var key1: [9]u8 = undefined;
+    var key2: [9]u8 = undefined;
+    key1[0] = 0x01;
+    std.mem.writeInt(i64, key1[1..9], 1, .little);
+    key2[0] = 0x01;
+    std.mem.writeInt(i64, key2[1..9], 2, .little);
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try ArrayOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 0);
+    try std.testing.expect(!result);
+}
+
+test "ArrayOpsOpClass consistent contains all strategy zero query keys" {
+    const allocator = std.testing.allocator;
+
+    const empty_lists: [0][]const ItemPointer = undefined;
+    const empty_keys: [0][]const u8 = undefined;
+
+    const result = try ArrayOpsOpClass.consistent(allocator, &empty_lists, &empty_keys, 0);
+    try std.testing.expect(result); // vacuously true
+}
+
+test "ArrayOpsOpClass consistent overlaps strategy at least one present" {
+    const allocator = std.testing.allocator;
+
+    const empty: [0]ItemPointer = undefined;
+    const item2 = [_]ItemPointer{.{ .page_id = 2, .tuple_offset = 3 }};
+    const posting_lists = [_][]const ItemPointer{ &empty, &item2 };
+
+    var key1: [9]u8 = undefined;
+    var key2: [9]u8 = undefined;
+    key1[0] = 0x01;
+    std.mem.writeInt(i64, key1[1..9], 1, .little);
+    key2[0] = 0x01;
+    std.mem.writeInt(i64, key2[1..9], 2, .little);
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try ArrayOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 1);
+    try std.testing.expect(result);
+}
+
+test "ArrayOpsOpClass consistent overlaps strategy all empty" {
+    const allocator = std.testing.allocator;
+
+    const empty1: [0]ItemPointer = undefined;
+    const empty2: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{ &empty1, &empty2 };
+
+    var key1: [9]u8 = undefined;
+    var key2: [9]u8 = undefined;
+    key1[0] = 0x01;
+    std.mem.writeInt(i64, key1[1..9], 1, .little);
+    key2[0] = 0x01;
+    std.mem.writeInt(i64, key2[1..9], 2, .little);
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try ArrayOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 1);
+    try std.testing.expect(!result);
+}
+
+test "ArrayOpsOpClass consistent invalid strategy" {
+    const allocator = std.testing.allocator;
+
+    const empty: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{&empty};
+
+    var key1: [9]u8 = undefined;
+    key1[0] = 0x01;
+    std.mem.writeInt(i64, key1[1..9], 1, .little);
+    const query_keys = [_][]const u8{&key1};
+
+    const result = ArrayOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 99);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "ArrayOpsOpClass getOpClass returns valid opclass" {
+    const opclass = ArrayOpsOpClass.getOpClass();
+
+    // Smoke test: verify all function pointers are non-null by calling them once
+    const allocator = std.testing.allocator;
+
+    // Test compare
+    var key_a: [9]u8 = undefined;
+    key_a[0] = 0x01;
+    std.mem.writeInt(i64, key_a[1..9], 1, .little);
+    const cmp_result = try opclass.compare(allocator, &key_a, &key_a);
+    try std.testing.expectEqual(@as(i8, 0), cmp_result);
+
+    // Test extractValue
+    var arr: [14]u8 = undefined;
+    arr[0] = 0x0C;
+    std.mem.writeInt(u32, arr[1..5], 1, .little);
+    arr[5] = 0x01;
+    std.mem.writeInt(i64, arr[6..14], 42, .little);
+    const keys = try opclass.extractValue(allocator, &arr);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+
+    // Test extractQuery (delegate to extractValue)
+    const query_keys = try opclass.extractQuery(allocator, &arr);
+    defer {
+        for (query_keys) |key| allocator.free(key);
+        allocator.free(query_keys);
+    }
+    try std.testing.expectEqual(@as(usize, 1), query_keys.len);
+
+    // Test consistent
+    const item = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const posting_lists = [_][]const ItemPointer{&item};
+    const consistent_result = try opclass.consistent(allocator, &posting_lists, query_keys, 0);
+    try std.testing.expect(consistent_result);
 }
 
 // ────────────────────────────────────────────────────────────────────
