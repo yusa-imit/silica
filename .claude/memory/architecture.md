@@ -97,7 +97,7 @@ util (checksum, varint) → storage (page, btree, buffer_pool) → tx (wal, lock
 **Resolution (Option A, adopted)**: restrict native GIN to rowid tables (row_key is exactly 8 bytes); pack the row_key bit-for-bit into the existing `ItemPointer` u64 field (ignore its page_id/offset semantics, treat as opaque 8-byte handle). Text/composite-PK tables keep the B+Tree fallback forever. This needs zero low-level page-format change to `gin_index.zig`.
 
 **7-step phased plan** (each step TDD, green, B+Tree fallback intact until final cutover — gated behind a new `IndexInfo.gin_opclass` field that no existing catalog sets, so steps 1-6 are invisible to current behavior):
-1. `catalog.zig`: add `IndexInfo.gin_opclass` enum (none/array_ops/jsonb_ops/tsvector_ops), backward-compatible optional-byte serialization (mirror existing pattern at catalog.zig:502-510).
+1. ✅ DONE (session 469, commit 36e7b3b) `catalog.zig`: add `IndexInfo.gin_opclass` enum (none/array_ops/jsonb_ops/tsvector_ops), backward-compatible optional-byte serialization (mirror existing pattern at catalog.zig:502-510).
 2. `gin_index.zig`: implement `array_ops`/`jsonb_ops`/`tsvector_ops` opclasses (extractValue/extractQuery/compare/consistent) + column-value→wire-format serializers. Pure, unit-tested in isolation.
 3. `gin_index.zig`: make `GIN.search` strategy-aware (intersect for `@>`/`?&`, union for `&&`/`?|`) + dedup sorted-merge.
 4. `engine.zig` CREATE INDEX: add `.gin` native page-init arm + opclass resolution from column type; error clearly on unsupported column/PK type (don't silently fall back for *new* indexes).
