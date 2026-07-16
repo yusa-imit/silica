@@ -500,6 +500,7 @@ pub const GIN = struct {
     }
 
     /// Append tuple_id to posting list at given entry index.
+    /// For inline lists, uses insertion-sort to maintain sorted order.
     fn appendToPostingList(self: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
         const posting_info = readPostingInfo(page, idx);
 
@@ -543,25 +544,46 @@ pub const GIN = struct {
         // Phase 1 simplification: append fixed u64 tuple ID (no varint deltas)
         const new_tid = tuple_id.toU64();
 
-        // Verify sortedness: new TID must be > last TID
-        if (current_count > 0) {
-            const last_tid_pos = data_offset + ((current_count - 1) * 8);
-            const last_tid = std.mem.readInt(u64, page[last_tid_pos..][0..8], .little);
-            if (new_tid <= last_tid) {
-                return error.PostingListNotSorted;
+        // Find insertion position to maintain sorted order (insertion-sort)
+        var insert_pos: usize = current_count;
+        for (0..current_count) |i| {
+            const tid_offset = data_offset + (i * 8);
+            if (tid_offset + 8 > page.len) {
+                return error.InvalidOffset;
+            }
+            const tid = std.mem.readInt(u64, page[tid_offset..][0..8], .little);
+            if (new_tid == tid) {
+                return; // Duplicate — already indexed
+            }
+            if (new_tid < tid) {
+                insert_pos = i;
+                break;
             }
         }
 
-        // Calculate append position (after current_count tuple IDs)
-        const append_pos = data_offset + (current_count * 8);
+        // Calculate insertion position offset
+        const insert_offset = data_offset + (insert_pos * 8);
 
         // Check space availability
-        if (append_pos + 8 > page.len) {
+        if (insert_offset + 8 > page.len) {
             return error.PageFull;
         }
 
-        // Write new tuple ID
-        std.mem.writeInt(u64, page[append_pos..][0..8], new_tid, .little);
+        // Shift elements right to make room at insert_pos
+        var i: usize = current_count;
+        while (i > insert_pos) {
+            i -= 1;
+            const src_offset = data_offset + (i * 8);
+            const dst_offset = src_offset + 8;
+            if (src_offset + 8 > page.len or dst_offset + 8 > page.len) {
+                return error.InvalidOffset;
+            }
+            const val = std.mem.readInt(u64, page[src_offset..][0..8], .little);
+            std.mem.writeInt(u64, page[dst_offset..][0..8], val, .little);
+        }
+
+        // Write new tuple ID at insertion position
+        std.mem.writeInt(u64, page[insert_offset..][0..8], new_tid, .little);
 
         // Update posting_info count
         const new_count = current_count + 1;
@@ -740,11 +762,143 @@ pub const GIN = struct {
 
     /// Remove tuple_id from posting list at given entry index.
     fn removeFromPostingList(self: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
-        _ = self;
-        _ = page;
-        _ = idx;
-        _ = tuple_id;
-        // Simplified implementation
+        const posting_info = readPostingInfo(page, idx);
+
+        if (isInlinePostingList(posting_info)) {
+            // Inline case: find tuple_id and shift remaining entries left
+            try self.removeFromInlinePostingList(page, idx, tuple_id);
+        } else {
+            // Tree case: walk page chain and remove from posting tree
+            const tree_page_id = posting_info & 0x7FFFFFFF;
+            try self.removeFromPostingTree(tree_page_id, tuple_id);
+        }
+    }
+
+    /// Remove tuple_id from an inline posting list at entry index.
+    /// Shifts remaining entries left, decrements count.
+    fn removeFromInlinePostingList(self: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
+        _ = self; // Not needed for inline case
+        const posting_info = readPostingInfo(page, idx);
+        const tuple_count = posting_info & 0x7FFFFFFF;
+
+        if (tuple_count == 0) {
+            return error.EntryNotFound;
+        }
+
+        // Read the offset pointer to locate the posting data
+        const entry_count = readEntryCount(page);
+        const offset_ptrs_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
+        const data_offset_ptr = offset_ptrs_base + (idx * 4);
+
+        if (data_offset_ptr + 4 > page.len) {
+            return error.EntryNotFound;
+        }
+
+        const data_offset = std.mem.readInt(u32, page[data_offset_ptr..][0..4], .little);
+        if (data_offset == 0 or data_offset + 8 > page.len) {
+            return error.EntryNotFound;
+        }
+
+        const target_u64 = tuple_id.toU64();
+        var found_idx: ?usize = null;
+
+        // Search for the tuple_id in the inline list
+        for (0..tuple_count) |i| {
+            const tid_offset = data_offset + (i * 8);
+            if (tid_offset + 8 > page.len) break;
+            const tid = std.mem.readInt(u64, page[tid_offset..][0..8], .little);
+            if (tid == target_u64) {
+                found_idx = i;
+                break;
+            }
+        }
+
+        if (found_idx == null) {
+            return error.EntryNotFound;
+        }
+
+        const remove_idx = found_idx.?;
+
+        // Shift remaining entries left to close the gap
+        for (remove_idx..tuple_count - 1) |i| {
+            const src_offset = data_offset + ((i + 1) * 8);
+            const dst_offset = data_offset + (i * 8);
+            if (src_offset + 8 > page.len) break;
+            const val = std.mem.readInt(u64, page[src_offset..][0..8], .little);
+            std.mem.writeInt(u64, page[dst_offset..][0..8], val, .little);
+        }
+
+        // Decrement count and write back posting_info
+        const new_count = tuple_count - 1;
+        const new_posting_info = new_count; // Keep high bit 0 for inline
+        const info_offset = GIN_HEADER_SIZE + (idx * GIN_ENTRY_HEADER_SIZE) + 2;
+        std.mem.writeInt(u32, page[info_offset..][0..4], new_posting_info, .little);
+    }
+
+    /// Remove tuple_id from a posting tree chain.
+    /// Walks the page chain, finds and removes the tuple on its page, decrements page count.
+    fn removeFromPostingTree(self: *GIN, root_tree_page_id: u32, tuple_id: ItemPointer) !void {
+        const target_u64 = tuple_id.toU64();
+        var current_page_id = root_tree_page_id;
+
+        const max_chain_pages = self.pool.pager.page_count + 1;
+        var pages_visited: u32 = 0;
+
+        while (current_page_id != 0) {
+            pages_visited += 1;
+            if (pages_visited > max_chain_pages) return error.InvalidKey; // cycle or corruption
+
+            const tree_frame = try self.pool.fetchPage(current_page_id);
+            var found_idx: ?usize = null;
+
+            const current_count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+            const next_page_id = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
+
+            // Search for tuple_id on this page
+            for (0..current_count) |i| {
+                const tid_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+                if (tid_offset + 8 > tree_frame.data.len) {
+                    self.pool.unpinPage(current_page_id, false);
+                    return error.InvalidKey;
+                }
+                const tid = std.mem.readInt(u64, tree_frame.data[tid_offset..][0..8], .little);
+                if (tid == target_u64) {
+                    found_idx = i;
+                    break;
+                }
+            }
+
+            if (found_idx != null) {
+                // Found it on this page — remove it
+                const remove_idx = found_idx.?;
+
+                // Shift remaining entries left to close the gap
+                for (remove_idx..current_count - 1) |i| {
+                    const src_offset = POSTING_TREE_HEADER_SIZE + ((i + 1) * 8);
+                    const dst_offset = POSTING_TREE_HEADER_SIZE + (i * 8);
+                    if (src_offset + 8 > tree_frame.data.len) {
+                        self.pool.unpinPage(current_page_id, false);
+                        return error.InvalidKey;
+                    }
+                    const val = std.mem.readInt(u64, tree_frame.data[src_offset..][0..8], .little);
+                    std.mem.writeInt(u64, tree_frame.data[dst_offset..][0..8], val, .little);
+                }
+
+                // Decrement count
+                const new_count = current_count - 1;
+                std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(new_count), .little);
+                tree_frame.markDirty();
+                self.pool.unpinPage(current_page_id, true);
+                return;
+            }
+
+            // Not found on this page — continue to next
+            self.pool.unpinPage(current_page_id, false);
+            current_page_id = next_page_id;
+        }
+
+        // Tuple not found in the entire posting tree
+        return error.EntryNotFound;
     }
 
     /// Insert a new entry into the page.
@@ -1297,10 +1451,18 @@ test "appendToPostingList enforces sortedness" {
     const tid2 = ItemPointer{ .page_id = 1, .tuple_offset = 5 };
     try gin.appendToPostingList(root_frame.data, 0, tid2);
 
-    // Try to append smaller tuple ID (should fail)
+    // Append smaller tuple ID (should succeed via insertion-sort, inserting in middle)
     const tid3 = ItemPointer{ .page_id = 1, .tuple_offset = 3 };
-    const result = gin.appendToPostingList(root_frame.data, 0, tid3);
-    try std.testing.expectError(error.PostingListNotSorted, result);
+    try gin.appendToPostingList(root_frame.data, 0, tid3);
+
+    // Verify the list is sorted after insertion-sort
+    const inline_list = try gin.readInlinePostingList(root_frame.data, 0);
+    defer allocator.free(inline_list);
+    try std.testing.expectEqual(@as(usize, 3), inline_list.len);
+    for (inline_list[0 .. inline_list.len - 1], 1..) |curr, i| {
+        const next = inline_list[i];
+        try std.testing.expect(curr.toU64() < next.toU64());
+    }
 }
 
 test "appendToPostingList converts to posting tree at MAX_INLINE_TUPLES capacity" {
@@ -2072,10 +2234,16 @@ test "GIN appendToPostingList returns PostingListNotSorted when new_tid <= last_
     const first_tid = ItemPointer{ .page_id = 100, .tuple_offset = 50 };
     std.mem.writeInt(u64, root_frame.data[data_start..][0..8], first_tid.toU64(), .little);
 
-    // Try to append a tuple with lower or equal ID
+    // Append a tuple with lower ID (should succeed via insertion-sort, inserting at beginning)
     const new_tid = ItemPointer{ .page_id = 50, .tuple_offset = 25 }; // Lower than first
-    const result = gin.appendToPostingList(root_frame.data, 0, new_tid);
-    try std.testing.expectError(error.PostingListNotSorted, result);
+    try gin.appendToPostingList(root_frame.data, 0, new_tid);
+
+    // Verify the list is sorted with the new tuple at the beginning
+    const inline_list = try gin.readInlinePostingList(root_frame.data, 0);
+    defer allocator.free(inline_list);
+    try std.testing.expectEqual(@as(usize, 2), inline_list.len);
+    try std.testing.expectEqual(new_tid.toU64(), inline_list[0].toU64());
+    try std.testing.expectEqual(first_tid.toU64(), inline_list[1].toU64());
 }
 
 test "GIN readInlinePostingList handles corrupted tuple_count gracefully" {
@@ -2175,4 +2343,255 @@ test "GIN posting tree chains multiple pages for very high-cardinality keys" {
     for (1..81) |page_id| {
         try std.testing.expect(seen[page_id]);
     }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Real Deletion Tests for removeFromPostingList
+// ────────────────────────────────────────────────────────────────────
+
+test "GIN delete one tuple from inline posting list with multiple tuples" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_delete_inline_one.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert 4 different tuples under the same key (42)
+    const key_value: u32 = 42;
+    const tuples = [_]ItemPointer{
+        .{ .page_id = 100, .tuple_offset = 0 },
+        .{ .page_id = 100, .tuple_offset = 5 },
+        .{ .page_id = 101, .tuple_offset = 2 },
+        .{ .page_id = 102, .tuple_offset = 10 },
+    };
+
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little);
+    std.mem.writeInt(u32, col_value[4..8], key_value, .little);
+
+    for (tuples) |tid| {
+        try gin.insert(&col_value, tid);
+    }
+
+    // Verify all 4 tuples are present before deletion
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], key_value, .little);
+
+    const before_result = try gin.search(&query, 0);
+    defer allocator.free(before_result);
+    try std.testing.expectEqual(@as(usize, 4), before_result.len);
+
+    // Delete the second tuple (100, 5)
+    const to_delete = tuples[1];
+    try gin.delete(&col_value, to_delete);
+
+    // Verify only 3 tuples remain and the deleted one is gone
+    var after_result = try gin.search(&query, 0);
+    defer allocator.free(after_result);
+    try std.testing.expectEqual(@as(usize, 3), after_result.len);
+
+    // Verify the deleted tuple is not in the result
+    for (after_result) |tid| {
+        try std.testing.expect(!(tid.page_id == to_delete.page_id and tid.tuple_offset == to_delete.tuple_offset));
+    }
+
+    // Verify remaining tuples are still sorted
+    for (after_result[0 .. after_result.len - 1]) |curr| {
+        const next = after_result[after_result.len - 1];
+        try std.testing.expect(curr.toU64() < next.toU64());
+    }
+}
+
+test "GIN delete then re-insert tuple in inline posting list maintains consistency" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_delete_reinsert_inline.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert 3 tuples under the same key
+    const key_value: u32 = 999;
+    const tuple1 = ItemPointer{ .page_id = 50, .tuple_offset = 0 };
+    const tuple2 = ItemPointer{ .page_id = 60, .tuple_offset = 10 };
+    const tuple3 = ItemPointer{ .page_id = 70, .tuple_offset = 20 };
+
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little);
+    std.mem.writeInt(u32, col_value[4..8], key_value, .little);
+
+    try gin.insert(&col_value, tuple1);
+    try gin.insert(&col_value, tuple2);
+    try gin.insert(&col_value, tuple3);
+
+    // Verify 3 tuples present
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], key_value, .little);
+
+    const result1 = try gin.search(&query, 0);
+    defer allocator.free(result1);
+    try std.testing.expectEqual(@as(usize, 3), result1.len);
+
+    // Delete tuple2
+    try gin.delete(&col_value, tuple2);
+
+    // Verify 2 tuples remain
+    const result2 = try gin.search(&query, 0);
+    defer allocator.free(result2);
+    try std.testing.expectEqual(@as(usize, 2), result2.len);
+
+    // Re-insert a different tuple (tuple2 replacement)
+    const tuple2_new = ItemPointer{ .page_id = 65, .tuple_offset = 15 };
+    try gin.insert(&col_value, tuple2_new);
+
+    // Verify 3 tuples now, including the new one
+    var result3 = try gin.search(&query, 0);
+    defer allocator.free(result3);
+    try std.testing.expectEqual(@as(usize, 3), result3.len);
+
+    // Verify the new tuple is present
+    var found_new = false;
+    for (result3) |tid| {
+        if (tid.page_id == tuple2_new.page_id and tid.tuple_offset == tuple2_new.tuple_offset) {
+            found_new = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_new);
+
+    // Verify result is still sorted
+    for (result3[0 .. result3.len - 1], 1..) |curr, i| {
+        const next = result3[i];
+        try std.testing.expect(curr.toU64() < next.toU64());
+    }
+}
+
+test "GIN delete one tuple from posting tree maintains sortedness" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_delete_tree_one.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert 18 tuples under the same key to force conversion to posting tree
+    const key_value: u32 = 777;
+    const num_tuples = 18;
+
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little);
+    std.mem.writeInt(u32, col_value[4..8], key_value, .little);
+
+    var inserted_tuples = try allocator.alloc(ItemPointer, num_tuples);
+    defer allocator.free(inserted_tuples);
+
+    for (0..num_tuples) |i| {
+        const tid = ItemPointer{ .page_id = @intCast(200 + i), .tuple_offset = 0 };
+        inserted_tuples[i] = tid;
+        try gin.insert(&col_value, tid);
+    }
+
+    // Verify all 18 tuples are present
+    var query: [8]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 1, .little);
+    std.mem.writeInt(u32, query[4..8], key_value, .little);
+
+    const before_result = try gin.search(&query, 0);
+    defer allocator.free(before_result);
+    try std.testing.expectEqual(@as(usize, 18), before_result.len);
+
+    // Verify it's in a posting tree (high bit set in posting_info)
+    const root_frame = try gin.fetchOrInitRootPage();
+    defer pool.unpinPage(root_id, false);
+    const posting_info = readPostingInfo(root_frame.data, 0);
+    try std.testing.expect((posting_info & 0x80000000) != 0);
+
+    // Delete a tuple from the middle (e.g., 9th tuple)
+    const to_delete = inserted_tuples[9];
+    try gin.delete(&col_value, to_delete);
+
+    // Verify 17 tuples remain
+    var after_result = try gin.search(&query, 0);
+    defer allocator.free(after_result);
+    try std.testing.expectEqual(@as(usize, 17), after_result.len);
+
+    // Verify the deleted tuple is gone
+    for (after_result) |tid| {
+        try std.testing.expect(!(tid.page_id == to_delete.page_id and tid.tuple_offset == to_delete.tuple_offset));
+    }
+
+    // Verify remaining tuples are sorted
+    for (after_result[0 .. after_result.len - 1], 1..) |curr, i| {
+        const next = after_result[i];
+        try std.testing.expect(curr.toU64() < next.toU64());
+    }
+}
+
+test "GIN delete non-existent tuple_id within existing key's posting list should error" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_delete_nonexistent_tuple.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert 3 tuples under a key
+    const key_value: u32 = 555;
+    const existing_tuples = [_]ItemPointer{
+        .{ .page_id = 30, .tuple_offset = 0 },
+        .{ .page_id = 40, .tuple_offset = 0 },
+        .{ .page_id = 50, .tuple_offset = 0 },
+    };
+
+    var col_value: [8]u8 = undefined;
+    std.mem.writeInt(u32, col_value[0..4], 1, .little);
+    std.mem.writeInt(u32, col_value[4..8], key_value, .little);
+
+    for (existing_tuples) |tid| {
+        try gin.insert(&col_value, tid);
+    }
+
+    // Try to delete a tuple_id that was never inserted under this key
+    const nonexistent_tuple = ItemPointer{ .page_id = 999, .tuple_offset = 999 };
+
+    // Expected behavior: Deleting a tuple_id that doesn't exist within the key's posting list
+    // should return an error (entry not found within the posting list).
+    // This is different from deleting a key that was never inserted at all.
+    // The key EXISTS but this specific tuple_id was never added to it.
+    // Current status: removeFromPostingList is a no-op stub, so delete will silently succeed.
+    // This test will FAIL until removeFromPostingList correctly searches for the tuple_id
+    // and returns error.EntryNotFound if not found.
+    const result = gin.delete(&col_value, nonexistent_tuple);
+    try std.testing.expectError(error.EntryNotFound, result);
 }
