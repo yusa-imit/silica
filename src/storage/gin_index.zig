@@ -675,21 +675,25 @@ pub const TsvectorOpsOpClass = struct {
             if (sep_pos) |sep| {
                 // Found separator
                 const lexeme = text[pos..sep];
-                const lex_dup = try allocator.dupe(u8, lexeme);
-                lexemes.append(allocator, lex_dup) catch |err| {
-                    allocator.free(lex_dup);
-                    return err;
-                };
-                pos = sep + 3;
-            } else {
-                // No more separators
-                if (pos < text.len) {
-                    const lexeme = text[pos..];
+                if (lexeme.len > 0) {
                     const lex_dup = try allocator.dupe(u8, lexeme);
                     lexemes.append(allocator, lex_dup) catch |err| {
                         allocator.free(lex_dup);
                         return err;
                     };
+                }
+                pos = sep + 3;
+            } else {
+                // No more separators
+                if (pos < text.len) {
+                    const lexeme = text[pos..];
+                    if (lexeme.len > 0) {
+                        const lex_dup = try allocator.dupe(u8, lexeme);
+                        lexemes.append(allocator, lex_dup) catch |err| {
+                            allocator.free(lex_dup);
+                            return err;
+                        };
+                    }
                 }
                 break;
             }
@@ -2691,6 +2695,89 @@ test "TsvectorOpsOpClass extractQuery truncated length prefix" {
 
     const result = TsvectorOpsOpClass.extractQuery(allocator, &input);
     try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass extractQuery length exceeds buffer" {
+    const allocator = std.testing.allocator;
+
+    // Length prefix claims more bytes than actually present (for tsquery tag 0x10)
+    var input: [5]u8 = undefined;
+    input[0] = 0x10; // tsquery tag
+    std.mem.writeInt(u32, input[1..5], 1000, .little); // claims 1000 bytes
+
+    const result = TsvectorOpsOpClass.extractQuery(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass extractQuery leading separator produces one key" {
+    const allocator = std.testing.allocator;
+
+    // tsquery with leading separator: " & cat"
+    // Bug: current code produces 2 keys (empty string and "cat")
+    // Expected: exactly 1 key "cat"
+    const text = " & cat";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Should be exactly 1 key "cat", not 2 keys with empty string first
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqualSlices(u8, "cat", keys[0]);
+}
+
+test "TsvectorOpsOpClass extractQuery trailing separator produces one key" {
+    const allocator = std.testing.allocator;
+
+    // tsquery with trailing separator: "cat & "
+    // Bug: current code produces 2 keys ("cat" and empty string)
+    // Expected: exactly 1 key "cat"
+    const text = "cat & ";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Should be exactly 1 key "cat", not 2 keys with empty string at end
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqualSlices(u8, "cat", keys[0]);
+}
+
+test "TsvectorOpsOpClass extractQuery consecutive separators produces correct count" {
+    const allocator = std.testing.allocator;
+
+    // tsquery with consecutive separators: "cat &  & dog"
+    // (double space before the & and after)
+    // Bug: current code produces 3 keys ("cat", empty string, "dog")
+    // Expected: exactly 2 keys "cat" and "dog"
+    const text = "cat &  & dog";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Should be exactly 2 keys "cat" and "dog", no empty key in between
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+    try std.testing.expectEqualSlices(u8, "cat", keys[0]);
+    try std.testing.expectEqualSlices(u8, "dog", keys[1]);
 }
 
 test "TsvectorOpsOpClass compare equal keys" {
