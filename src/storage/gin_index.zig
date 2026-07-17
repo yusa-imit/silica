@@ -168,6 +168,20 @@ pub const ArrayInt32OpClass = struct {
     }
 };
 
+/// Lexicographic byte comparison shared by opclasses whose GIN entry-tree
+/// ordering only needs a consistent total order (not a semantically
+/// meaningful one) — plain memcmp-with-length-tiebreak, type-agnostic across
+/// polymorphic key encodings.
+fn lexCompareKeys(a: []const u8, b: []const u8) i8 {
+    const shared_len = @min(a.len, b.len);
+    const cmp = std.mem.order(u8, a[0..shared_len], b[0..shared_len]);
+    return switch (cmp) {
+        .lt => -1,
+        .gt => 1,
+        .eq => if (a.len < b.len) -1 else if (a.len > b.len) @as(i8, 1) else 0,
+    };
+}
+
 // ── Real-world Operator Class: ArrayOpsOpClass ─────────────────────────
 
 /// ArrayOpsOpClass — operator class for `array_ops`: GIN support for SQL
@@ -190,13 +204,7 @@ pub const ArrayOpsOpClass = struct {
     /// meaningful (e.g. numeric) order, so plain memcmp-with-length-tiebreak
     /// suffices and stays type-agnostic across the polymorphic key encoding.
     pub fn compare(_: std.mem.Allocator, a: []const u8, b: []const u8) OpClassError!i8 {
-        const shared_len = @min(a.len, b.len);
-        const cmp = std.mem.order(u8, a[0..shared_len], b[0..shared_len]);
-        return switch (cmp) {
-            .lt => -1,
-            .gt => 1,
-            .eq => if (a.len < b.len) -1 else if (a.len > b.len) @as(i8, 1) else 0,
-        };
+        return lexCompareKeys(a, b);
     }
 
     /// Total bytes (including the leading tag byte) consumed by one
@@ -307,6 +315,220 @@ pub const ArrayOpsOpClass = struct {
                     if (list.len > 0) break :blk true;
                 }
                 break :blk false;
+            },
+            else => error.InvalidKey,
+        };
+    }
+
+    pub fn getOpClass() OpClass {
+        return .{
+            .compare = compare,
+            .extractValue = extractValue,
+            .extractQuery = extractQuery,
+            .consistent = consistent,
+        };
+    }
+};
+
+// ── Real-world Operator Class: JsonbOpsOpClass ─────────────────────────
+
+/// JsonbOpsOpClass — operator class for `jsonb_ops`: GIN support for the
+/// `@>` (containment) operator on JSON/JSONB columns.
+///
+/// Silica stores JSON/JSONB column values as raw JSON text (`Value.text`,
+/// see src/sql/executor.zig's `type_json`/`type_jsonb` handling) — there is
+/// no dedicated json/jsonb tag in the tag+payload wire scheme, so
+/// `column_value`/`query_value` here must be tag 0x03 (text): `[0x03][u32
+/// len LE][json text bytes]`.
+///
+/// Indexed entries are produced by a recursive walk shared by extractValue
+/// AND extractQuery — this is required for soundness: `@>` GIN-accelerated
+/// scans must never produce false negatives, which holds as long as every
+/// key/kv-pair/element the query's own walk would emit is also emitted by
+/// the row's walk whenever the row genuinely contains the query (recursive
+/// containment implies the same entries appear somewhere in the row's own
+/// flattened entry set, just not necessarily at the same nesting depth —
+/// that's why this opclass is lossy and a downstream recheck against the
+/// real `jsonContains` is mandatory, never optional).
+///
+/// Entry shapes (each is its own GIN key):
+///   - object key existence, any depth:      0x01 ++ u32 keylen ++ key
+///   - object key + scalar value, any depth: 0x02 ++ u32 keylen ++ key ++ scalarEncode(value)
+///   - array scalar element, any depth:      0x03 ++ scalarEncode(value)
+///   - bare scalar document root:            0x03 ++ scalarEncode(value) (same shape as array element — the "this scalar exists" query is identical either way)
+///
+/// `scalarEncode` is a local tag+payload scheme (independent of executor.zig's):
+///   0x00 null, 0x01 bool (1B), 0x02 integer i64 LE (8B), 0x03 float f64-bits LE (8B),
+///   0x04 string (u32 len + bytes), 0x05 number_string (u32 len + bytes, overflow literals).
+pub const JsonbOpsOpClass = struct {
+    pub fn compare(_: std.mem.Allocator, a: []const u8, b: []const u8) OpClassError!i8 {
+        return lexCompareKeys(a, b);
+    }
+
+    fn isScalarJson(node: std.json.Value) bool {
+        return switch (node) {
+            .object, .array => false,
+            else => true,
+        };
+    }
+
+    /// Encode a scalar std.json.Value as tag+payload bytes. Caller owns the
+    /// returned slice.
+    fn scalarEncode(allocator: std.mem.Allocator, node: std.json.Value) OpClassError![]u8 {
+        return switch (node) {
+            .null => blk: {
+                const buf = try allocator.alloc(u8, 1);
+                buf[0] = 0x00;
+                break :blk buf;
+            },
+            .bool => |b| blk: {
+                const buf = try allocator.alloc(u8, 2);
+                buf[0] = 0x01;
+                buf[1] = if (b) 1 else 0;
+                break :blk buf;
+            },
+            .integer => |i| blk: {
+                const buf = try allocator.alloc(u8, 9);
+                buf[0] = 0x02;
+                std.mem.writeInt(i64, buf[1..9], i, .little);
+                break :blk buf;
+            },
+            .float => |f| blk: {
+                const buf = try allocator.alloc(u8, 9);
+                buf[0] = 0x03;
+                std.mem.writeInt(u64, buf[1..9], @bitCast(f), .little);
+                break :blk buf;
+            },
+            .string => |s| blk: {
+                const buf = try allocator.alloc(u8, 5 + s.len);
+                buf[0] = 0x04;
+                std.mem.writeInt(u32, buf[1..5], @intCast(s.len), .little);
+                @memcpy(buf[5..], s);
+                break :blk buf;
+            },
+            .number_string => |s| blk: {
+                const buf = try allocator.alloc(u8, 5 + s.len);
+                buf[0] = 0x05;
+                std.mem.writeInt(u32, buf[1..5], @intCast(s.len), .little);
+                @memcpy(buf[5..], s);
+                break :blk buf;
+            },
+            .object, .array => error.InvalidKey, // scalarEncode is for leaf values only
+        };
+    }
+
+    /// Recursively walk a parsed JSON node, appending GIN entries for every
+    /// object key/kv-pair and array scalar element at every nesting depth.
+    /// Scalar leaves are a no-op here (the parent object/array branch, or
+    /// the top-level extractValue/extractQuery caller for a bare-scalar
+    /// root, is responsible for emitting the leaf's own entry — this keeps
+    /// each entry emitted exactly once).
+    fn walk(allocator: std.mem.Allocator, node: std.json.Value, entries: *std.ArrayList([]const u8)) OpClassError!void {
+        switch (node) {
+            .object => |obj| {
+                var it = obj.iterator();
+                while (it.next()) |entry| {
+                    const key = entry.key_ptr.*;
+                    const kbuf = try allocator.alloc(u8, 5 + key.len);
+                    kbuf[0] = 0x01;
+                    std.mem.writeInt(u32, kbuf[1..5], @intCast(key.len), .little);
+                    @memcpy(kbuf[5..], key);
+                    entries.append(allocator, kbuf) catch |err| {
+                        allocator.free(kbuf);
+                        return err;
+                    };
+
+                    if (isScalarJson(entry.value_ptr.*)) {
+                        const sval = try scalarEncode(allocator, entry.value_ptr.*);
+                        defer allocator.free(sval);
+                        const kvbuf = try allocator.alloc(u8, 5 + key.len + sval.len);
+                        kvbuf[0] = 0x02;
+                        std.mem.writeInt(u32, kvbuf[1..5], @intCast(key.len), .little);
+                        @memcpy(kvbuf[5 .. 5 + key.len], key);
+                        @memcpy(kvbuf[5 + key.len ..], sval);
+                        entries.append(allocator, kvbuf) catch |err| {
+                            allocator.free(kvbuf);
+                            return err;
+                        };
+                    }
+
+                    try walk(allocator, entry.value_ptr.*, entries);
+                }
+            },
+            .array => |arr| {
+                for (arr.items) |elem| {
+                    if (isScalarJson(elem)) {
+                        const sval = try scalarEncode(allocator, elem);
+                        defer allocator.free(sval);
+                        const ebuf = try allocator.alloc(u8, 1 + sval.len);
+                        ebuf[0] = 0x03;
+                        @memcpy(ebuf[1..], sval);
+                        entries.append(allocator, ebuf) catch |err| {
+                            allocator.free(ebuf);
+                            return err;
+                        };
+                    }
+                    try walk(allocator, elem, entries);
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Parse the tag-0x03 wire format and walk the JSON document, producing
+    /// one GIN key per entry (see the type doc comment for entry shapes).
+    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+        if (column_value.len < 5 or column_value[0] != 0x03) return error.InvalidKey;
+        const len = std.mem.readInt(u32, column_value[1..5], .little);
+        if (column_value.len < 5 + @as(usize, len)) return error.InvalidKey;
+        const json_text = column_value[5..][0..len];
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch return error.InvalidKey;
+
+        var entries = std.ArrayList([]const u8){};
+        errdefer {
+            for (entries.items) |e| allocator.free(e);
+            entries.deinit(allocator);
+        }
+
+        switch (parsed.value) {
+            .object, .array => try walk(allocator, parsed.value, &entries),
+            else => {
+                const sval = try scalarEncode(allocator, parsed.value);
+                defer allocator.free(sval);
+                const ebuf = try allocator.alloc(u8, 1 + sval.len);
+                ebuf[0] = 0x03;
+                @memcpy(ebuf[1..], sval);
+                entries.append(allocator, ebuf) catch |err| {
+                    allocator.free(ebuf);
+                    return err;
+                };
+            },
+        }
+
+        return try entries.toOwnedSlice(allocator);
+    }
+
+    /// Query-side extraction: identical format/semantics to extractValue —
+    /// the right-hand side of `@>` is serialized the same way and must
+    /// share the exact same recursive walker for soundness (see type doc).
+    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+        return extractValue(allocator, query_value);
+    }
+
+    /// Strategy 0 (`@>`, contains): every query key's posting list must be
+    /// non-empty. No other strategy is supported yet — `?`/`?|`/`?&` need a
+    /// plain-text/text-array query wire format the current single-shape
+    /// `extractQuery` signature can't cleanly express; deferred.
+    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+        return switch (strategy) {
+            0 => blk: {
+                for (posting_lists) |list| {
+                    if (list.len == 0) break :blk false;
+                }
+                break :blk true;
             },
             else => error.InvalidKey,
         };
@@ -1773,6 +1995,341 @@ test "ArrayOpsOpClass getOpClass returns valid opclass" {
     const posting_lists = [_][]const ItemPointer{&item};
     const consistent_result = try opclass.consistent(allocator, &posting_lists, query_keys, 0);
     try std.testing.expect(consistent_result);
+}
+
+// ── Operator Class: JsonbOpsOpClass Tests ──────────────────────────────
+// JsonbOpsOpClass implements jsonb_ops: serialized JSON/JSONB with recursive
+// key extraction (object keys + array elements). Supports only strategy 0 (@>).
+// Wire format: tag 0x03 (text) LE u32 length + JSON bytes. Recursive walker
+// emits key-exists entries (0x01+keylen+key) and key-value entries (0x02+...,
+// if scalar), plus array-element scalar entries (0x03+scalarEncode).
+
+test "JsonbOpsOpClass compare equal keys" {
+    const allocator = std.testing.allocator;
+
+    // Two text keys with same content: "hello"
+    var key_a: [10]u8 = undefined;
+    var key_b: [10]u8 = undefined;
+    @memcpy(key_a[0..5], "hello");
+    @memcpy(key_b[0..5], "hello");
+
+    const result = try JsonbOpsOpClass.compare(allocator, key_a[0..5], key_b[0..5]);
+    try std.testing.expectEqual(@as(i8, 0), result);
+}
+
+test "JsonbOpsOpClass compare less than" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [5]u8 = undefined;
+    var key_b: [5]u8 = undefined;
+    @memcpy(key_a[0..5], "apple");
+    @memcpy(key_b[0..5], "zebra");
+
+    const result = try JsonbOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, -1), result);
+}
+
+test "JsonbOpsOpClass compare greater than" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [4]u8 = undefined;
+    var key_b: [4]u8 = undefined;
+    @memcpy(key_a[0..4], "zulu");
+    @memcpy(key_b[0..4], "alfa");
+
+    const result = try JsonbOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, 1), result);
+}
+
+test "JsonbOpsOpClass compare antisymmetry" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [3]u8 = undefined;
+    var key_b: [3]u8 = undefined;
+    @memcpy(key_a[0..3], "cat");
+    @memcpy(key_b[0..3], "dog");
+
+    const cmp_ab = try JsonbOpsOpClass.compare(allocator, &key_a, &key_b);
+    const cmp_ba = try JsonbOpsOpClass.compare(allocator, &key_b, &key_a);
+
+    try std.testing.expectEqual(@as(i8, -cmp_ab), cmp_ba);
+}
+
+test "JsonbOpsOpClass extractValue simple object with integer and string keys" {
+    const allocator = std.testing.allocator;
+
+    // JSON: {"a":1,"b":"hi"}
+    // Wire format: [0x03, len(u32 LE), json text]
+    const json_text = "{\"a\":1,\"b\":\"hi\"}";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03; // tag
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const keys = try JsonbOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Expected: key-exists for "a", key-value for "a"(1), key-exists for "b", key-value for "b"("hi")
+    // That's 4 entries total
+    try std.testing.expectEqual(@as(usize, 4), keys.len);
+
+    // Verify first entry is key-exists for "a": 0x01 + u32(1) + "a"
+    try std.testing.expectEqual(@as(u8, 0x01), keys[0][0]);
+    const a_keylen = std.mem.readInt(u32, keys[0][1..5], .little);
+    try std.testing.expectEqual(@as(u32, 1), a_keylen);
+    try std.testing.expectEqualSlices(u8, "a", keys[0][5..6]);
+}
+
+test "JsonbOpsOpClass extractValue nested object" {
+    const allocator = std.testing.allocator;
+
+    // JSON: {"a":{"b":1}}
+    // Outer key "a" should have key-exists only (value is object, not scalar)
+    // Inner key "b" should have key-exists and key-value (value is scalar 1)
+    const json_text = "{\"a\":{\"b\":1}}";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const keys = try JsonbOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Expected: key-exists for "a", key-exists for "b", key-value for "b"(1)
+    try std.testing.expect(keys.len >= 3);
+}
+
+test "JsonbOpsOpClass extractValue array of scalars" {
+    const allocator = std.testing.allocator;
+
+    // JSON: [1,2,3]
+    // Should produce: element-scalar for 1, element-scalar for 2, element-scalar for 3
+    const json_text = "[1,2,3]";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const keys = try JsonbOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Array elements should produce entries
+    try std.testing.expect(keys.len >= 3);
+}
+
+test "JsonbOpsOpClass extractValue array containing object" {
+    const allocator = std.testing.allocator;
+
+    // JSON: [{"x":1}]
+    // Should produce both object key entries and array element entries
+    const json_text = "[{\"x\":1}]";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const keys = try JsonbOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Should have entries for the nested key "x"
+    try std.testing.expect(keys.len >= 2);
+}
+
+test "JsonbOpsOpClass extractValue bare scalar root" {
+    const allocator = std.testing.allocator;
+
+    // JSON: 5 (bare scalar)
+    // Should produce exactly one entry: 0x03 + scalarEncode(5)
+    const json_text = "5";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const keys = try JsonbOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqual(@as(u8, 0x03), keys[0][0]); // array-element-scalar tag
+}
+
+test "JsonbOpsOpClass extractValue malformed tag" {
+    const allocator = std.testing.allocator;
+
+    // Wrong leading tag (not 0x03)
+    var input: [10]u8 = undefined;
+    input[0] = 0x01; // integer tag, not text
+    std.mem.writeInt(u32, input[1..5], 5, .little);
+
+    const result = JsonbOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "JsonbOpsOpClass extractValue truncated length prefix" {
+    const allocator = std.testing.allocator;
+
+    // Tag 0x03 claims more bytes than actually present
+    var input: [5]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], 1000, .little); // claims 1000 bytes
+
+    const result = JsonbOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "JsonbOpsOpClass extractValue non-JSON text" {
+    const allocator = std.testing.allocator;
+
+    // Valid tag 0x03 but invalid JSON text
+    const invalid_json = "not { valid json";
+    var input: [5 + invalid_json.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(invalid_json.len), .little);
+    @memcpy(input[5..], invalid_json);
+
+    const result = JsonbOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "JsonbOpsOpClass extractQuery equivalence with extractValue" {
+    const allocator = std.testing.allocator;
+
+    // JSON: {"key":"value"}
+    const json_text = "{\"key\":\"value\"}";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const value_keys = try JsonbOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (value_keys) |key| allocator.free(key);
+        allocator.free(value_keys);
+    }
+
+    const query_keys = try JsonbOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (query_keys) |key| allocator.free(key);
+        allocator.free(query_keys);
+    }
+
+    try std.testing.expectEqual(value_keys.len, query_keys.len);
+}
+
+test "JsonbOpsOpClass consistent contains all strategy all present" {
+    const allocator = std.testing.allocator;
+
+    const item1 = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const item2 = [_]ItemPointer{.{ .page_id = 2, .tuple_offset = 5 }};
+    const posting_lists = [_][]const ItemPointer{ &item1, &item2 };
+
+    var key1: [1]u8 = undefined;
+    var key2: [1]u8 = undefined;
+    key1[0] = 'a';
+    key2[0] = 'b';
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try JsonbOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 0);
+    try std.testing.expect(result);
+}
+
+test "JsonbOpsOpClass consistent contains all strategy one missing" {
+    const allocator = std.testing.allocator;
+
+    const item1 = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const empty: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{ &item1, &empty };
+
+    var key1: [1]u8 = undefined;
+    var key2: [1]u8 = undefined;
+    key1[0] = 'a';
+    key2[0] = 'b';
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try JsonbOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 0);
+    try std.testing.expect(!result);
+}
+
+test "JsonbOpsOpClass consistent contains all strategy zero query keys" {
+    const allocator = std.testing.allocator;
+
+    const empty_lists: [0][]const ItemPointer = undefined;
+    const empty_keys: [0][]const u8 = undefined;
+
+    const result = try JsonbOpsOpClass.consistent(allocator, &empty_lists, &empty_keys, 0);
+    try std.testing.expect(result); // vacuously true
+}
+
+test "JsonbOpsOpClass consistent unsupported strategy" {
+    const allocator = std.testing.allocator;
+
+    const empty: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{&empty};
+
+    var key1: [1]u8 = undefined;
+    key1[0] = 'a';
+    const query_keys = [_][]const u8{&key1};
+
+    const result = JsonbOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 99);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "JsonbOpsOpClass getOpClass returns valid opclass" {
+    const opclass = JsonbOpsOpClass.getOpClass();
+
+    // Smoke test: verify all function pointers are non-null by calling them once
+    const allocator = std.testing.allocator;
+
+    // Test compare
+    var key_a: [5]u8 = undefined;
+    @memcpy(key_a[0..5], "hello");
+    const cmp_result = try opclass.compare(allocator, &key_a, &key_a);
+    try std.testing.expectEqual(@as(i8, 0), cmp_result);
+
+    // Test extractValue
+    const json_text = "{\"x\":1}";
+    var input: [5 + json_text.len]u8 = undefined;
+    input[0] = 0x03;
+    std.mem.writeInt(u32, input[1..5], @intCast(json_text.len), .little);
+    @memcpy(input[5..], json_text);
+
+    const keys = try opclass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+    try std.testing.expect(keys.len > 0);
+
+    // Test extractQuery
+    const query_keys = try opclass.extractQuery(allocator, &input);
+    defer {
+        for (query_keys) |key| allocator.free(key);
+        allocator.free(query_keys);
+    }
+    try std.testing.expectEqual(keys.len, query_keys.len);
+
+    // Test consistent
+    const item = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const posting_lists = [_][]const ItemPointer{&item};
+    if (query_keys.len > 0) {
+        const consistent_result = try opclass.consistent(allocator, &posting_lists, query_keys[0..1], 0);
+        try std.testing.expect(consistent_result);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
