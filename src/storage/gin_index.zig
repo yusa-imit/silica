@@ -832,10 +832,32 @@ pub const GIN = struct {
             return try self.allocator.alloc(ItemPointer, 0);
         }
 
-        // For now, return intersection of all posting lists (contains-all strategy)
-        // This is a simplified implementation
         if (posting_lists.len == 0) {
             return try self.allocator.alloc(ItemPointer, 0);
+        }
+
+        // Strategy 1 (overlaps, e.g. &&/?|): union of all posting lists, deduped.
+        // Every other strategy (e.g. 0 = @>/contains-all, ?&): intersection.
+        if (strategy == 1) {
+            var result = std.ArrayList(ItemPointer){};
+            defer result.deinit(self.allocator);
+
+            for (posting_lists) |list| {
+                for (list) |item| {
+                    var already_present = false;
+                    for (result.items) |existing| {
+                        if (item.page_id == existing.page_id and item.tuple_offset == existing.tuple_offset) {
+                            already_present = true;
+                            break;
+                        }
+                    }
+                    if (!already_present) {
+                        try result.append(self.allocator, item);
+                    }
+                }
+            }
+
+            return try result.toOwnedSlice(self.allocator);
         }
 
         // Find the shortest posting list to iterate
@@ -3701,6 +3723,178 @@ test "GIN search with overlaps strategy checks any key" {
     const result2 = try gin.search(&query2, 1); // strategy 1 = &&
     defer allocator.free(result2);
     try std.testing.expectEqual(@as(usize, 0), result2.len);
+}
+
+test "GIN search with overlaps strategy (OR) returns union of posting lists" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_overlaps_union.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert three rows with partial overlaps:
+    // Row A: [1, 2]
+    // Row B: [2, 3]
+    // Row C: [4]
+    var row_a: [12]u8 = undefined;
+    std.mem.writeInt(u32, row_a[0..4], 2, .little);
+    std.mem.writeInt(u32, row_a[4..8], 1, .little);
+    std.mem.writeInt(u32, row_a[8..12], 2, .little);
+    const tid_a = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row_a, tid_a);
+
+    var row_b: [12]u8 = undefined;
+    std.mem.writeInt(u32, row_b[0..4], 2, .little);
+    std.mem.writeInt(u32, row_b[4..8], 2, .little);
+    std.mem.writeInt(u32, row_b[8..12], 3, .little);
+    const tid_b = ItemPointer{ .page_id = 100, .tuple_offset = 1 };
+    try gin.insert(&row_b, tid_b);
+
+    var row_c: [8]u8 = undefined;
+    std.mem.writeInt(u32, row_c[0..4], 1, .little);
+    std.mem.writeInt(u32, row_c[4..8], 4, .little);
+    const tid_c = ItemPointer{ .page_id = 100, .tuple_offset = 2 };
+    try gin.insert(&row_c, tid_c);
+
+    // Query: WHERE col && ARRAY[1, 3] (overlaps: rows with 1 OR 3)
+    // Expected: Row A (has key 1) and Row B (has key 3)
+    var query: [12]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 2, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+    std.mem.writeInt(u32, query[8..12], 3, .little);
+    const result = try gin.search(&query, 1); // strategy 1 = overlaps (OR)
+    defer allocator.free(result);
+
+    // Should return exactly 2 rows: tid_a and tid_b (union of overlapping rows)
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+
+    // Verify both rows are present (order may vary, so check both)
+    var found_a = false;
+    var found_b = false;
+    for (result) |item| {
+        if (item.page_id == tid_a.page_id and item.tuple_offset == tid_a.tuple_offset) {
+            found_a = true;
+        }
+        if (item.page_id == tid_b.page_id and item.tuple_offset == tid_b.tuple_offset) {
+            found_b = true;
+        }
+    }
+    try std.testing.expect(found_a);
+    try std.testing.expect(found_b);
+}
+
+test "GIN search with contains strategy (AND) returns intersection (regression guard)" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_contains_regression.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Same data setup:
+    // Row A: [1, 2]
+    // Row B: [2, 3]
+    // Row C: [4]
+    var row_a: [12]u8 = undefined;
+    std.mem.writeInt(u32, row_a[0..4], 2, .little);
+    std.mem.writeInt(u32, row_a[4..8], 1, .little);
+    std.mem.writeInt(u32, row_a[8..12], 2, .little);
+    const tid_a = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row_a, tid_a);
+
+    var row_b: [12]u8 = undefined;
+    std.mem.writeInt(u32, row_b[0..4], 2, .little);
+    std.mem.writeInt(u32, row_b[4..8], 2, .little);
+    std.mem.writeInt(u32, row_b[8..12], 3, .little);
+    const tid_b = ItemPointer{ .page_id = 100, .tuple_offset = 1 };
+    try gin.insert(&row_b, tid_b);
+
+    var row_c: [8]u8 = undefined;
+    std.mem.writeInt(u32, row_c[0..4], 1, .little);
+    std.mem.writeInt(u32, row_c[4..8], 4, .little);
+    const tid_c = ItemPointer{ .page_id = 100, .tuple_offset = 2 };
+    try gin.insert(&row_c, tid_c);
+
+    // Query: WHERE col @> ARRAY[1, 2] (contains: rows with BOTH 1 AND 2)
+    // Expected: Row A only (A has both keys, B has only key 2, C has key 4)
+    var query: [12]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 2, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+    std.mem.writeInt(u32, query[8..12], 2, .little);
+    const result = try gin.search(&query, 0); // strategy 0 = contains (AND)
+    defer allocator.free(result);
+
+    // Should return exactly 1 row: tid_a (intersection of keys 1 and 2)
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tid_a.page_id, result[0].page_id);
+    try std.testing.expectEqual(tid_a.tuple_offset, result[0].tuple_offset);
+
+    // Verify that querying for keys with no intersection returns empty
+    var query2: [12]u8 = undefined;
+    std.mem.writeInt(u32, query2[0..4], 2, .little);
+    std.mem.writeInt(u32, query2[4..8], 1, .little);
+    std.mem.writeInt(u32, query2[8..12], 3, .little);
+    const result2 = try gin.search(&query2, 0); // strategy 0 = contains (AND)
+    defer allocator.free(result2);
+
+    // Should return empty (no row has both 1 AND 3)
+    try std.testing.expectEqual(@as(usize, 0), result2.len);
+}
+
+test "GIN search with overlaps strategy deduplicates results" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_overlaps_dedup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Single row with multiple keys:
+    // Row A: [1, 2, 3]
+    var row_a: [16]u8 = undefined;
+    std.mem.writeInt(u32, row_a[0..4], 3, .little);
+    std.mem.writeInt(u32, row_a[4..8], 1, .little);
+    std.mem.writeInt(u32, row_a[8..12], 2, .little);
+    std.mem.writeInt(u32, row_a[12..16], 3, .little);
+    const tid_a = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row_a, tid_a);
+
+    // Query: WHERE col && ARRAY[1, 2, 3] (overlaps: rows with ANY of {1, 2, 3})
+    // Expected: Row A exactly once (not three times, even though it matches all query keys)
+    var query: [16]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 3, .little);
+    std.mem.writeInt(u32, query[4..8], 1, .little);
+    std.mem.writeInt(u32, query[8..12], 2, .little);
+    std.mem.writeInt(u32, query[12..16], 3, .little);
+    const result = try gin.search(&query, 1); // strategy 1 = overlaps (OR)
+    defer allocator.free(result);
+
+    // Should return exactly 1 row (deduplicated): tid_a
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(tid_a.page_id, result[0].page_id);
+    try std.testing.expectEqual(tid_a.tuple_offset, result[0].tuple_offset);
 }
 
 test "GIN ItemPointer encoding round-trip" {
