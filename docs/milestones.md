@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.92.1
-- **Latest available**: v2.92.1
+- **Current in silica**: v2.93.0
+- **Latest available**: v2.93.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -231,6 +231,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.91.0 | IcicleChart widget | DONE | Axis-aligned hierarchical chart (alternative to SunburstChart's radial layout); stacked horizontal bands per tree depth, cumulative-floor width formula consistent with MosaicPlot/SunburstChart; `IcicleChart` + `IcicleNode`, focus-path highlighting, independent show_labels/show_values toggles, MAX_DEPTH=6, MAX_CHILDREN_PER_NODE=8, no heap allocations; no TUI overlay use case identified yet — Session 468 |
 | v2.92.0 | ToggleSwitch widget | DONE | Boolean on/off slider-style form control (fixed 6-cell bracketed track, sliding knob ◯/◉); `ToggleSwitchGroup` manages a set with radio-like exclusive-toggle focus navigation, skipping disabled items on wrap; silica's TUI overlays are keypress-toggled (no widget-based settings form), so no direct use case identified yet — Session 470 |
 | v2.92.1 | bug fix (FlowChart render order) | DONE | Edges (arrows/labels) were rendering before nodes, so node borders overwrote them; fixed render order (nodes then edges). Also strengthened 15 weak disjunction assertions in bubble_chart/flowchart/gantt/gantt_chart/matrix_view tests. Silica's `renderFlowChart` (src/tui.zig, query pipeline overlay) uses sailor.FlowChart — existing FlowChart overlay tests (src/tui.zig ~6302+) pass unchanged post-upgrade — Session 471 |
+| v2.93.0 | CalendarHeatmap widget | DONE | GitHub-style contribution/activity heatmap (date-indexed values → week-column × weekday-row grid, 5-level intensity shading, month/weekday labels, focused-cell highlighting); also adds `Calendar.setRange()`. No TUI overlay use case identified yet — Session 473 |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
