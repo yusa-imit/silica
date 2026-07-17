@@ -544,6 +544,184 @@ pub const JsonbOpsOpClass = struct {
     }
 };
 
+// ── Real-world Operator Class: TsvectorOpsOpClass ──────────────────────
+
+/// TsvectorOpsOpClass — operator class for `tsvector_ops`: GIN support for
+/// full-text search with `@@` (match) operator on TSVECTOR columns.
+///
+/// Wire format:
+///   - tsvector column value: tag 0x0F + u32 LE len + text bytes
+///     Text format: space-separated sorted-unique lexemes from textToTsvector
+///     (lowercased, stemmed, stop-word-filtered)
+///   - tsquery query value: tag 0x10 + u32 LE len + text bytes
+///     Text format: space-ampersand-space joined lexemes from textToTsquery
+///     (lowercased, stemmed, stop-word-filtered; AND-only semantics currently)
+///
+/// Each lexeme in the text becomes one GIN key (indexed separately).
+/// `@@` is strategy 0 (AND semantics): all query keys must match.
+pub const TsvectorOpsOpClass = struct {
+    pub fn compare(_: std.mem.Allocator, a: []const u8, b: []const u8) OpClassError!i8 {
+        return lexCompareKeys(a, b);
+    }
+
+    /// Extract lexemes from a tsvector column value.
+    /// Input format: [0x0F][u32 len LE][text bytes]
+    /// Text format: space-separated lexemes (e.g., "cat dog run")
+    /// Returns: slice of duped lexemes, one per GIN key.
+    /// Empty text → empty slice (not an error).
+    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+        // Validate tag and length prefix
+        if (column_value.len < 5 or column_value[0] != 0x0F) return error.InvalidKey;
+        const len = std.mem.readInt(u32, column_value[1..5], .little);
+        if (column_value.len < 5 + @as(usize, len)) return error.InvalidKey;
+
+        const text = column_value[5..][0..len];
+
+        // If empty text, return empty slice
+        if (text.len == 0) {
+            const keys = try allocator.alloc([]const u8, 0);
+            return keys;
+        }
+
+        // Split on single space " "
+        var lexemes = std.ArrayList([]const u8){};
+        errdefer {
+            for (lexemes.items) |lex| allocator.free(lex);
+            lexemes.deinit(allocator);
+        }
+
+        var pos: usize = 0;
+        while (pos < text.len) {
+            // Find next space starting from pos
+            var sep_pos: ?usize = null;
+            var i = pos;
+            while (i < text.len) {
+                if (text[i] == ' ') {
+                    sep_pos = i;
+                    break;
+                }
+                i += 1;
+            }
+
+            if (sep_pos) |sep| {
+                // Found separator
+                const lexeme = text[pos..sep];
+                if (lexeme.len > 0) {
+                    const lex_dup = try allocator.dupe(u8, lexeme);
+                    lexemes.append(allocator, lex_dup) catch |err| {
+                        allocator.free(lex_dup);
+                        return err;
+                    };
+                }
+                pos = sep + 1;
+            } else {
+                // No more separators
+                if (pos < text.len) {
+                    const lexeme = text[pos..];
+                    if (lexeme.len > 0) {
+                        const lex_dup = try allocator.dupe(u8, lexeme);
+                        lexemes.append(allocator, lex_dup) catch |err| {
+                            allocator.free(lex_dup);
+                            return err;
+                        };
+                    }
+                }
+                break;
+            }
+        }
+
+        return try lexemes.toOwnedSlice(allocator);
+    }
+
+    /// Extract lexemes from a tsquery query value.
+    /// Input format: [0x10][u32 len LE][text bytes]
+    /// Text format: space-ampersand-space joined lexemes (e.g., "cat & dog & run")
+    /// Returns: slice of duped lexemes, one per GIN key.
+    /// Empty text → empty slice (not an error).
+    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+        // Validate tag and length prefix
+        if (query_value.len < 5 or query_value[0] != 0x10) return error.InvalidKey;
+        const len = std.mem.readInt(u32, query_value[1..5], .little);
+        if (query_value.len < 5 + @as(usize, len)) return error.InvalidKey;
+
+        const text = query_value[5..][0..len];
+
+        // If empty text, return empty slice
+        if (text.len == 0) {
+            const keys = try allocator.alloc([]const u8, 0);
+            return keys;
+        }
+
+        // Split on " & " (space-ampersand-space)
+        var lexemes = std.ArrayList([]const u8){};
+        errdefer {
+            for (lexemes.items) |lex| allocator.free(lex);
+            lexemes.deinit(allocator);
+        }
+
+        var pos: usize = 0;
+        while (pos < text.len) {
+            // Find next " & " starting from pos
+            var sep_pos: ?usize = null;
+            var i = pos;
+            while (i + 3 <= text.len) {
+                if (text[i] == ' ' and text[i + 1] == '&' and text[i + 2] == ' ') {
+                    sep_pos = i;
+                    break;
+                }
+                i += 1;
+            }
+
+            if (sep_pos) |sep| {
+                // Found separator
+                const lexeme = text[pos..sep];
+                const lex_dup = try allocator.dupe(u8, lexeme);
+                lexemes.append(allocator, lex_dup) catch |err| {
+                    allocator.free(lex_dup);
+                    return err;
+                };
+                pos = sep + 3;
+            } else {
+                // No more separators
+                if (pos < text.len) {
+                    const lexeme = text[pos..];
+                    const lex_dup = try allocator.dupe(u8, lexeme);
+                    lexemes.append(allocator, lex_dup) catch |err| {
+                        allocator.free(lex_dup);
+                        return err;
+                    };
+                }
+                break;
+            }
+        }
+
+        return try lexemes.toOwnedSlice(allocator);
+    }
+
+    /// Strategy 0 (@@, match with AND semantics): all query keys must have
+    /// non-empty posting lists. Invalid strategies return error.
+    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+        return switch (strategy) {
+            0 => blk: {
+                for (posting_lists) |list| {
+                    if (list.len == 0) break :blk false;
+                }
+                break :blk true;
+            },
+            else => error.InvalidKey,
+        };
+    }
+
+    pub fn getOpClass() OpClass {
+        return .{
+            .compare = compare,
+            .extractValue = extractValue,
+            .extractQuery = extractQuery,
+            .consistent = consistent,
+        };
+    }
+};
+
 // ── GIN Tree Structure ─────────────────────────────────────────────────
 
 pub const GIN = struct {
@@ -2322,6 +2500,322 @@ test "JsonbOpsOpClass getOpClass returns valid opclass" {
         allocator.free(query_keys);
     }
     try std.testing.expectEqual(keys.len, query_keys.len);
+
+    // Test consistent
+    const item = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const posting_lists = [_][]const ItemPointer{&item};
+    if (query_keys.len > 0) {
+        const consistent_result = try opclass.consistent(allocator, &posting_lists, query_keys[0..1], 0);
+        try std.testing.expect(consistent_result);
+    }
+}
+
+// ── Operator Class: TsvectorOpsOpClass Tests ───────────────────────────
+// TsvectorOpsOpClass implements tsvector_ops: full-text search with tsvector
+// column values and tsquery predicates. Supports only strategy 0 (@@).
+// Wire format: tag 0x0F (tsvector) or 0x10 (tsquery), u32 LE len + raw text.
+// tsvector: space-separated sorted-unique lexemes (e.g. "cat dog run")
+// tsquery: space-ampersand-space joined lexemes (e.g. "cat & dog & run")
+
+test "TsvectorOpsOpClass extractValue single lexeme" {
+    const allocator = std.testing.allocator;
+
+    // tsvector with single lexeme: "hello"
+    const text = "hello";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x0F; // tsvector tag
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqualSlices(u8, "hello", keys[0]);
+}
+
+test "TsvectorOpsOpClass extractValue multiple lexemes" {
+    const allocator = std.testing.allocator;
+
+    // tsvector with multiple space-separated lexemes: "cat dog run"
+    const text = "cat dog run";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x0F;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), keys.len);
+    try std.testing.expectEqualSlices(u8, "cat", keys[0]);
+    try std.testing.expectEqualSlices(u8, "dog", keys[1]);
+    try std.testing.expectEqualSlices(u8, "run", keys[2]);
+}
+
+test "TsvectorOpsOpClass extractValue empty tsvector" {
+    const allocator = std.testing.allocator;
+
+    // Empty tsvector text (valid, 0 keys)
+    const text = "";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x0F;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+
+    const keys = try TsvectorOpsOpClass.extractValue(allocator, &input);
+    defer allocator.free(keys);
+
+    try std.testing.expectEqual(@as(usize, 0), keys.len);
+}
+
+test "TsvectorOpsOpClass extractValue wrong tag rejected" {
+    const allocator = std.testing.allocator;
+
+    // Wrong tag (0x03 instead of 0x0F)
+    const text = "hello";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x03; // text tag, not tsvector
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const result = TsvectorOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass extractValue truncated length prefix" {
+    const allocator = std.testing.allocator;
+
+    // Only 1 byte (tag) but no length prefix
+    var input: [1]u8 = undefined;
+    input[0] = 0x0F;
+
+    const result = TsvectorOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass extractValue length exceeds buffer" {
+    const allocator = std.testing.allocator;
+
+    // Length prefix claims more bytes than actually present
+    var input: [5]u8 = undefined;
+    input[0] = 0x0F;
+    std.mem.writeInt(u32, input[1..5], 1000, .little); // claims 1000 bytes
+
+    const result = TsvectorOpsOpClass.extractValue(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass extractQuery single lexeme" {
+    const allocator = std.testing.allocator;
+
+    // tsquery with single lexeme: "hello"
+    const text = "hello";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10; // tsquery tag
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), keys.len);
+    try std.testing.expectEqualSlices(u8, "hello", keys[0]);
+}
+
+test "TsvectorOpsOpClass extractQuery multiple lexemes with AND" {
+    const allocator = std.testing.allocator;
+
+    // tsquery with multiple lexemes joined by " & ": "cat & dog & run"
+    const text = "cat & dog & run";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try TsvectorOpsOpClass.extractQuery(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), keys.len);
+    try std.testing.expectEqualSlices(u8, "cat", keys[0]);
+    try std.testing.expectEqualSlices(u8, "dog", keys[1]);
+    try std.testing.expectEqualSlices(u8, "run", keys[2]);
+}
+
+test "TsvectorOpsOpClass extractQuery empty tsquery" {
+    const allocator = std.testing.allocator;
+
+    // Empty tsquery text (valid, 0 keys)
+    const text = "";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+
+    const keys = try TsvectorOpsOpClass.extractQuery(allocator, &input);
+    defer allocator.free(keys);
+
+    try std.testing.expectEqual(@as(usize, 0), keys.len);
+}
+
+test "TsvectorOpsOpClass extractQuery wrong tag rejected" {
+    const allocator = std.testing.allocator;
+
+    // Wrong tag (0x03 instead of 0x10)
+    const text = "hello";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x03; // text tag, not tsquery
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const result = TsvectorOpsOpClass.extractQuery(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass extractQuery truncated length prefix" {
+    const allocator = std.testing.allocator;
+
+    // Only 1 byte (tag) but no length prefix
+    var input: [1]u8 = undefined;
+    input[0] = 0x10;
+
+    const result = TsvectorOpsOpClass.extractQuery(allocator, &input);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass compare equal keys" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [5]u8 = undefined;
+    var key_b: [5]u8 = undefined;
+    @memcpy(key_a[0..5], "hello");
+    @memcpy(key_b[0..5], "hello");
+
+    const result = try TsvectorOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, 0), result);
+}
+
+test "TsvectorOpsOpClass compare less than" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [3]u8 = undefined;
+    var key_b: [3]u8 = undefined;
+    @memcpy(key_a[0..3], "abc");
+    @memcpy(key_b[0..3], "xyz");
+
+    const result = try TsvectorOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, -1), result);
+}
+
+test "TsvectorOpsOpClass compare greater than" {
+    const allocator = std.testing.allocator;
+
+    var key_a: [3]u8 = undefined;
+    var key_b: [3]u8 = undefined;
+    @memcpy(key_a[0..3], "xyz");
+    @memcpy(key_b[0..3], "abc");
+
+    const result = try TsvectorOpsOpClass.compare(allocator, &key_a, &key_b);
+    try std.testing.expectEqual(@as(i8, 1), result);
+}
+
+test "TsvectorOpsOpClass consistent strategy 0 all query keys present" {
+    const allocator = std.testing.allocator;
+
+    const item1 = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const item2 = [_]ItemPointer{.{ .page_id = 2, .tuple_offset = 5 }};
+    const posting_lists = [_][]const ItemPointer{ &item1, &item2 };
+
+    var key1: [3]u8 = undefined;
+    var key2: [3]u8 = undefined;
+    @memcpy(key1[0..3], "cat");
+    @memcpy(key2[0..3], "dog");
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try TsvectorOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 0);
+    try std.testing.expect(result);
+}
+
+test "TsvectorOpsOpClass consistent strategy 0 one query key missing" {
+    const allocator = std.testing.allocator;
+
+    const item1 = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
+    const empty: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{ &item1, &empty };
+
+    var key1: [3]u8 = undefined;
+    var key2: [3]u8 = undefined;
+    @memcpy(key1[0..3], "cat");
+    @memcpy(key2[0..3], "dog");
+    const query_keys = [_][]const u8{ &key1, &key2 };
+
+    const result = try TsvectorOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 0);
+    try std.testing.expect(!result);
+}
+
+test "TsvectorOpsOpClass consistent invalid strategy" {
+    const allocator = std.testing.allocator;
+
+    const empty: [0]ItemPointer = undefined;
+    const posting_lists = [_][]const ItemPointer{&empty};
+
+    var key1: [3]u8 = undefined;
+    @memcpy(key1[0..3], "cat");
+    const query_keys = [_][]const u8{&key1};
+
+    const result = TsvectorOpsOpClass.consistent(allocator, &posting_lists, &query_keys, 99);
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "TsvectorOpsOpClass getOpClass returns valid opclass" {
+    const opclass = TsvectorOpsOpClass.getOpClass();
+
+    // Smoke test: verify all function pointers are wired and produce expected results
+    const allocator = std.testing.allocator;
+
+    // Test compare
+    var key_a: [5]u8 = undefined;
+    @memcpy(key_a[0..5], "hello");
+    const cmp_result = try opclass.compare(allocator, &key_a, &key_a);
+    try std.testing.expectEqual(@as(i8, 0), cmp_result);
+
+    // Test extractValue
+    const text = "foo bar";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x0F;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const keys = try opclass.extractValue(allocator, &input);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+
+    // Test extractQuery
+    const query_text = "foo & bar";
+    var query_input: [5 + query_text.len]u8 = undefined;
+    query_input[0] = 0x10;
+    std.mem.writeInt(u32, query_input[1..5], @intCast(query_text.len), .little);
+    @memcpy(query_input[5..], query_text);
+
+    const query_keys = try opclass.extractQuery(allocator, &query_input);
+    defer {
+        for (query_keys) |key| allocator.free(key);
+        allocator.free(query_keys);
+    }
+    try std.testing.expectEqual(@as(usize, 2), query_keys.len);
 
     // Test consistent
     const item = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
