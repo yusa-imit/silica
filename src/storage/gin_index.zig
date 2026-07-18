@@ -4457,3 +4457,156 @@ test "GIN delete non-existent tuple_id within existing key's posting list should
     const result = gin.delete(&col_value, nonexistent_tuple);
     try std.testing.expectError(error.EntryNotFound, result);
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Allocation Failure Tests for Opclass Functions
+// ────────────────────────────────────────────────────────────────────
+
+test "TsvectorOpsOpClass extractValue allocation failure on lexeme dupe" {
+    // Use FailingAllocator to trigger allocation failure during lexeme duplication
+    // Verify that cleanup doesn't leak (detected by testing.allocator's own leak detection)
+    const backing_allocator = std.testing.allocator;
+    var failing_allocator = std.testing.FailingAllocator.init(backing_allocator, .{
+        .fail_index = 1, // Fail on the SECOND allocation (first is ArrayList init)
+    });
+
+    // tsvector with 3 lexemes
+    const text = "cat dog run";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x0F;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const result = TsvectorOpsOpClass.extractValue(failing_allocator.allocator(), &input);
+
+    // Should fail gracefully with OutOfMemory
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "TsvectorOpsOpClass extractQuery allocation failure on lexeme dupe" {
+    // Use FailingAllocator to trigger allocation failure during lexeme duplication
+    // This tests the " & " separator splitting path
+    const backing_allocator = std.testing.allocator;
+    var failing_allocator = std.testing.FailingAllocator.init(backing_allocator, .{
+        .fail_index = 1, // Fail on the SECOND allocation
+    });
+
+    // tsquery with 2 lexemes joined by " & "
+    const text = "cat & dog";
+    var input: [5 + text.len]u8 = undefined;
+    input[0] = 0x10;
+    std.mem.writeInt(u32, input[1..5], @intCast(text.len), .little);
+    @memcpy(input[5..], text);
+
+    const result = TsvectorOpsOpClass.extractQuery(failing_allocator.allocator(), &input);
+
+    // Should fail gracefully with OutOfMemory
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "GIN search with zero extracted query keys edge case" {
+    const test_allocator = std.testing.allocator;
+    const path = "test_gin_zero_query_keys.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(test_allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(test_allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(test_allocator, &pool, root_id, opclass);
+
+    // Insert some data with key 99
+    var row: [8]u8 = undefined;
+    std.mem.writeInt(u32, row[0..4], 1, .little); // count = 1
+    std.mem.writeInt(u32, row[4..8], 99, .little);
+    const tid = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row, tid);
+
+    // Query with ZERO elements (empty array)
+    var query: [5]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 0, .little); // count = 0 elements
+    query[4] = 0x0C; // array tag
+
+    const result = try gin.search(&query, 0);
+    defer test_allocator.free(result);
+
+    // With zero query keys, search should handle gracefully
+    // The consistent check would be vacuously true (all 0 query keys are present)
+    // This test verifies that zero-key queries don't crash the search function
+}
+
+test "ArrayOpsOpClass extractValue with nested array count exceeding buffer" {
+    const allocator = std.testing.allocator;
+
+    // Create array with nested array that claims impossible count
+    // Format: [0x0C][count=1][nested_array_tag=0x0C][nested_count=1000]
+    var input: [10]u8 = undefined;
+    input[0] = 0x0C; // outer array tag
+    std.mem.writeInt(u32, input[1..5], 1, .little); // count = 1 element
+    input[5] = 0x0C; // nested array tag
+    std.mem.writeInt(u32, input[6..10], 1000, .little); // nested count claims 1000 elements (impossible)
+
+    const result = ArrayOpsOpClass.extractValue(allocator, &input);
+
+    // Should reject gracefully
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "ArrayOpsOpClass extractValue deeply nested array with truncated inner array" {
+    const allocator = std.testing.allocator;
+
+    // Create nested array structure but truncate the inner array
+    // Format: [0x0C][count=1][nested_array_tag=0x0C][truncated_length_prefix]
+    var input: [8]u8 = undefined;
+    input[0] = 0x0C; // outer array tag
+    std.mem.writeInt(u32, input[1..5], 1, .little); // count = 1 element
+    input[5] = 0x0C; // nested array tag
+    input[6] = 0xFF; // partial length prefix (only 1 byte instead of 4)
+    input[7] = 0xFF;
+
+    const result = ArrayOpsOpClass.extractValue(allocator, &input);
+
+    // Should reject gracefully (buffer too short for nested array length prefix)
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "GIN search with all empty posting lists for strategy 0" {
+    const allocator = std.testing.allocator;
+    const path = "test_gin_all_empty_postings.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const root_id = try pager.allocPage();
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    const opclass = ArrayInt32OpClass.getOpClass();
+    var gin = try GIN.init(allocator, &pool, root_id, opclass);
+
+    // Insert data with key 1
+    var row1: [8]u8 = undefined;
+    std.mem.writeInt(u32, row1[0..4], 1, .little);
+    std.mem.writeInt(u32, row1[4..8], 1, .little);
+    const tid1 = ItemPointer{ .page_id = 100, .tuple_offset = 0 };
+    try gin.insert(&row1, tid1);
+
+    // Query with keys that don't match (2, 3)
+    // For strategy 0 (@>), all keys must be present
+    // Key 2 and 3 have empty posting lists
+    var query: [12]u8 = undefined;
+    std.mem.writeInt(u32, query[0..4], 2, .little);
+    std.mem.writeInt(u32, query[4..8], 2, .little);
+    std.mem.writeInt(u32, query[8..12], 3, .little);
+
+    const result = try gin.search(&query, 0);
+    defer allocator.free(result);
+
+    // Should return empty because consistent() returns false (empty posting lists)
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
