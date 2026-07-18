@@ -1629,6 +1629,19 @@ pub fn serializeRow(allocator: Allocator, values: []const Value) ![]u8 {
     return buf;
 }
 
+/// Serialize a single Value into its tag+payload wire format (same format
+/// `serializeRow` uses per-column). Used by GIN opclasses to build the
+/// column_value/query_value bytes their extractValue/extractQuery expect.
+///
+/// Caller owns the returned slice.
+pub fn serializeValueBytes(allocator: Allocator, v: Value) ![]u8 {
+    const size = serializedValueSize(v);
+    const buf = try allocator.alloc(u8, size);
+    errdefer allocator.free(buf);
+    _ = serializeValue(buf, 0, v);
+    return buf;
+}
+
 /// Deserialize a row's values from B+Tree storage bytes.
 const DeserializeResult = struct {
     value: Value,

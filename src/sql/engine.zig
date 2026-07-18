@@ -36,6 +36,7 @@ const optimizer_mod = @import("optimizer.zig");
 const executor_mod = @import("executor.zig");
 const btree_mod = @import("../storage/btree.zig");
 const hash_index_mod = @import("../storage/hash_index.zig");
+const gin_index_mod = @import("../storage/gin_index.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const page_mod = @import("../storage/page.zig");
 
@@ -290,6 +291,30 @@ fn isVersionedRowData(data: []const u8) bool {
 }
 
 // ── Index Key Encoding ───────────────────────────────────────────────
+
+/// Resolve which native GIN operator class (if any) applies to a column type.
+/// Returns .none for types without a native opclass — callers must keep the
+/// existing B+Tree-fallback behavior in that case (do not error; GIN on a
+/// scalar column is a pre-existing, intentionally-supported no-op decoration).
+fn resolveGinOpClass(column_type: catalog_mod.ColumnType) catalog_mod.GinOpClass {
+    return switch (column_type) {
+        .array => .array_ops,
+        .json, .jsonb => .jsonb_ops,
+        .tsvector => .tsvector_ops,
+        else => .none,
+    };
+}
+
+/// Map a catalog GinOpClass to its storage-layer OpClass implementation.
+/// Must only be called with a non-.none opclass.
+fn ginOpClassImpl(op: catalog_mod.GinOpClass) gin_index_mod.OpClass {
+    return switch (op) {
+        .array_ops => gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        .jsonb_ops => gin_index_mod.JsonbOpsOpClass.getOpClass(),
+        .tsvector_ops => gin_index_mod.TsvectorOpsOpClass.getOpClass(),
+        .none => unreachable,
+    };
+}
 
 /// Encode a Value as an index key for B+Tree storage.
 /// Integer values use 8-byte big-endian encoding with sign flip for correct
@@ -4631,7 +4656,7 @@ pub const Database = struct {
                             }
 
                             // Remove old index entries, update the row, re-insert index entries.
-                            self.deleteIndexEntries(&table_info, existing_vals);
+                            self.deleteIndexEntries(&table_info, existing_vals, conflicting_key);
                             tree.delete(conflicting_key) catch return EngineError.StorageError;
 
                             const new_row_data = serializeRow(self.allocator, updated_vals) catch
@@ -4962,9 +4987,8 @@ pub const Database = struct {
                     try idx_hash.insert(idx_key, idx_val);
                     // Hash index root page ID doesn't change (no rebalancing like B+Tree)
                 },
-                .gist, .gin => {
-                    // GiST/GIN pages are initialized as B+Tree leaf pages at CREATE INDEX time,
-                    // so we can use B+Tree semantics for DML until native GiST/GIN storage is integrated.
+                .gist => {
+                    // GiST pages are initialized as B+Tree leaf pages at CREATE INDEX time.
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
                     if (idx.is_unique) {
                         const existing = idx_tree.get(self.allocator, idx_key) catch null;
@@ -4978,12 +5002,40 @@ pub const Database = struct {
                         self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
                     }
                 },
+                .gin => {
+                    // Native GIN posting lists key on an 8-byte ItemPointer, so restrict
+                    // native routing to rowid tables (row_key.len == 8); any other row_key
+                    // width falls back to B+Tree semantics like a scalar-column GIN index.
+                    if (idx.gin_opclass != .none and row_key.len == 8) {
+                        var gin = gin_index_mod.GIN.init(self.allocator, self.pool, idx.root_page_id, ginOpClassImpl(idx.gin_opclass)) catch return error.StorageError;
+                        const col_bytes = executor_mod.serializeValueBytes(self.allocator, vals[idx.column_index]) catch return error.OutOfMemory;
+                        defer self.allocator.free(col_bytes);
+                        const row_key_u64 = std.mem.readInt(u64, row_key[0..8], .big);
+                        const tid = gin_index_mod.ItemPointer.fromU64(row_key_u64);
+                        gin.insert(col_bytes, tid) catch return error.StorageError;
+                    } else {
+                        // Fallback: GIN on a column type without a native opclass behaves
+                        // as a plain B+Tree index (pre-existing behavior, e.g. GIN on INTEGER).
+                        var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                        if (idx.is_unique) {
+                            const existing = idx_tree.get(self.allocator, idx_key) catch null;
+                            if (existing) |val| {
+                                self.allocator.free(val);
+                                return error.UniqueConstraintViolation;
+                            }
+                        }
+                        try idx_tree.insert(idx_key, idx_val);
+                        if (idx_tree.root_page_id != idx.root_page_id) {
+                            self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                        }
+                    }
+                },
             }
         }
     }
 
     /// Remove index entries for all indexed columns of a row being deleted.
-    fn deleteIndexEntries(self: *Database, table_info: *const catalog_mod.TableInfo, vals: []const Value) void {
+    fn deleteIndexEntries(self: *Database, table_info: *const catalog_mod.TableInfo, vals: []const Value, row_key: []const u8) void {
         for (table_info.indexes) |idx| {
             if (idx.column_index >= vals.len) continue;
             const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
@@ -4999,9 +5051,23 @@ pub const Database = struct {
                     var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
                     idx_hash.delete(idx_key) catch {};
                 },
-                .gist, .gin => {
+                .gist => {
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
                     idx_tree.delete(idx_key) catch {};
+                },
+                .gin => {
+                    // See insertIndexEntries: native GIN only applies to 8-byte rowid keys.
+                    if (idx.gin_opclass != .none and row_key.len == 8) {
+                        var gin = gin_index_mod.GIN.init(self.allocator, self.pool, idx.root_page_id, ginOpClassImpl(idx.gin_opclass)) catch return;
+                        const col_bytes = executor_mod.serializeValueBytes(self.allocator, vals[idx.column_index]) catch return;
+                        defer self.allocator.free(col_bytes);
+                        const row_key_u64 = std.mem.readInt(u64, row_key[0..8], .big);
+                        const tid = gin_index_mod.ItemPointer.fromU64(row_key_u64);
+                        gin.delete(col_bytes, tid) catch {};
+                    } else {
+                        var idx_tree = BTree.init(self.pool, idx.root_page_id);
+                        idx_tree.delete(idx_key) catch {};
+                    }
                 },
             }
         }
@@ -5739,7 +5805,7 @@ pub const Database = struct {
         const rows_updated = updates.items.len;
         for (updates.items) |item| {
             // Remove old index entries
-            self.deleteIndexEntries(&table_info, item.old_values);
+            self.deleteIndexEntries(&table_info, item.old_values, item.key);
 
             tree.delete(item.key) catch {};
             tree.insert(item.key, item.value) catch {};
@@ -6198,7 +6264,7 @@ pub const Database = struct {
         const rows_deleted = deletes.items.len;
         for (deletes.items) |d| {
             // Remove index entries before deleting the row
-            self.deleteIndexEntries(&table_info, d.values);
+            self.deleteIndexEntries(&table_info, d.values, d.key);
             tree.delete(d.key) catch {};
         }
 
@@ -7546,7 +7612,7 @@ pub const Database = struct {
                         else
                             entry.value;
                         if (deserializeRow(self.allocator, raw)) |vals| {
-                            self.deleteIndexEntries(&table_info, vals);
+                            self.deleteIndexEntries(&table_info, vals, entry.key);
                             for (vals) |v| v.free(self.allocator);
                             self.allocator.free(vals);
                         } else |_| {}
@@ -8053,6 +8119,12 @@ pub const Database = struct {
                     }
                 }
 
+                // Resolve GIN operator class for native storage (if applicable)
+                var gin_opclass = catalog_mod.GinOpClass.none;
+                if (idx_type == .gin) {
+                    gin_opclass = resolveGinOpClass(table_info.columns[col_idx].column_type);
+                }
+
                 // Allocate a new index page (B+Tree or Hash based on index type)
                 const idx_root_id = self.catalog.pool.pager.allocPage() catch {
                     return EngineError.StorageError;
@@ -8069,8 +8141,11 @@ pub const Database = struct {
                         // Just write an empty FSM page as placeholder (HashIndex will initialize on first use)
                         @memset(raw, 0);
                         raw[0] = 0x05; // FSM page type marker
+                    } else if (idx_type == .gin and gin_opclass != .none) {
+                        // Native GIN storage: initialize as GIN entry tree leaf
+                        gin_index_mod.initEntryTreeLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
                     } else {
-                        // B+Tree index
+                        // B+Tree index (default fallback for GIN on scalar columns)
                         btree_mod.initLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
                     }
 
@@ -8113,6 +8188,7 @@ pub const Database = struct {
                     .index_type = idx_type,
                     .is_unique = ci.unique,
                     .state = initial_state,
+                    .gin_opclass = gin_opclass,
                 };
 
                 // Serialize the updated table and store in catalog
@@ -36297,6 +36373,387 @@ test "gist index created with USING GIN keyword recognizes gin in catalog" {
     try testing.expectEqualStrings("data", idx.?.column_name);
     // The index_type should be recognized as gin
     try testing.expect(idx.?.index_type == .gin);
+}
+
+test "GIN index on array column — catalog wiring sets array_ops opclass" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_array_opclass.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with array column
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER, labels INTEGER[])");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index on the array column
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Verify the catalog records gin_opclass as array_ops
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("labels");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("labels", idx.?.column_name);
+    try testing.expect(idx.?.index_type == .gin);
+    try testing.expect(idx.?.gin_opclass == .array_ops);
+}
+
+test "GIN index on jsonb column — catalog wiring sets jsonb_ops opclass" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_jsonb_opclass.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with jsonb column
+    var r1 = try db.execSQL("CREATE TABLE configs (id INTEGER, data JSONB)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index on the jsonb column
+    var r2 = try db.execSQL("CREATE INDEX idx_configs_data ON configs (data) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Verify the catalog records gin_opclass as jsonb_ops
+    var table_info = try db.catalog.getTable("configs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("data");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("data", idx.?.column_name);
+    try testing.expect(idx.?.index_type == .gin);
+    try testing.expect(idx.?.gin_opclass == .jsonb_ops);
+}
+
+test "GIN index on text column as tsvector placeholder — tests jsonb_ops wiring pattern" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_text_opclass.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // For now, use TEXT column (TSVECTOR type has parser issues in CREATE TABLE)
+    // This test demonstrates the catalog wiring pattern for tsvector_ops.
+    // TODO: Fix parser to support TSVECTOR as column type, then enable full tsvector tests
+    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index on the text column (would map to tsvector_ops if body were TSVECTOR)
+    var r2 = try db.execSQL("CREATE INDEX idx_docs_body ON docs (body) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // For TEXT column, gin_opclass should remain .none (no native wiring)
+    // This test is a placeholder until TSVECTOR column type parsing is fixed
+    var table_info = try db.catalog.getTable("docs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("body");
+    try testing.expect(idx != null);
+    try testing.expectEqualStrings("body", idx.?.column_name);
+    try testing.expect(idx.?.index_type == .gin);
+    try testing.expect(idx.?.gin_opclass == .none);
+}
+
+test "GIN index on scalar column — backward compatibility (gin_opclass remains .none)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_scalar_compat.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with scalar column
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, value INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create a GIN index on the scalar column (should fall back to B+Tree behavior)
+    var r2 = try db.execSQL("CREATE INDEX idx_items_value ON items (value) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Verify the catalog records gin_opclass as .none (fallback)
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("value");
+    try testing.expect(idx != null);
+    try testing.expect(idx.?.index_type == .gin);
+    try testing.expect(idx.?.gin_opclass == .none);
+}
+
+test "GIN native storage — array_ops INSERT populates native GIN posting list" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_array_native_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with array column
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER, labels INTEGER[])");
+    defer r1.close(testing.allocator);
+
+    // Create GIN index on array column
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Insert a row with an array value
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[42, 99])");
+    defer r3.close(testing.allocator);
+
+    // Verify row exists via SELECT
+    var r4 = try db.execSQL("SELECT * FROM tags WHERE id = 1");
+    defer r4.close(testing.allocator);
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+
+    // Directly open the native GIN index and search for one of the array elements.
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("labels").?;
+
+    // Construct wire-format query: single-element array containing 42
+    // Wire format: tag 0x0C + u32 count (LE) + element (tag 0x01 + i64 LE)
+    var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C; // array tag
+    std.mem.writeInt(u32, query_buf[1..5], 1, .little); // count = 1
+    query_buf[5] = 0x01; // integer tag
+    std.mem.writeInt(i64, query_buf[6..14], 42, .little); // value = 42
+
+    // Search the native GIN index directly.
+    const GIN = gin_index_mod.GIN;
+    const ArrayOpsOpClass = gin_index_mod.ArrayOpsOpClass;
+
+    var gin = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+
+    const results = try gin.search(&query_buf, 0);
+    defer testing.allocator.free(results);
+
+    try testing.expectEqual(@as(usize, 1), results.len);
+}
+
+test "GIN native storage — array_ops multi-key fan-out (1 row → 3 entries)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_array_fanout.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with array column
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER, labels INTEGER[])");
+    defer r1.close(testing.allocator);
+
+    // Create GIN index
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Insert a row with a 3-element array
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 20, 30])");
+    defer r3.close(testing.allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("labels").?;
+
+    const GIN = gin_index_mod.GIN;
+    const ArrayOpsOpClass = gin_index_mod.ArrayOpsOpClass;
+
+    var gin = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+
+    // Search for each element separately; each should find row 1
+    // Element 10
+    var query1: [1 + 4 + 1 + 8]u8 = undefined;
+    query1[0] = 0x0C;
+    std.mem.writeInt(u32, query1[1..5], 1, .little);
+    query1[5] = 0x01;
+    std.mem.writeInt(i64, query1[6..14], 10, .little);
+
+    const results1 = try gin.search(&query1, 0);
+    defer testing.allocator.free(results1);
+    try testing.expectEqual(@as(usize, 1), results1.len);
+
+    // Element 20
+    var query2: [1 + 4 + 1 + 8]u8 = undefined;
+    query2[0] = 0x0C;
+    std.mem.writeInt(u32, query2[1..5], 1, .little);
+    query2[5] = 0x01;
+    std.mem.writeInt(i64, query2[6..14], 20, .little);
+
+    const results2 = try gin.search(&query2, 0);
+    defer testing.allocator.free(results2);
+    try testing.expectEqual(@as(usize, 1), results2.len);
+
+    // Element 30
+    var query3: [1 + 4 + 1 + 8]u8 = undefined;
+    query3[0] = 0x0C;
+    std.mem.writeInt(u32, query3[1..5], 1, .little);
+    query3[5] = 0x01;
+    std.mem.writeInt(i64, query3[6..14], 30, .little);
+
+    const results3 = try gin.search(&query3, 0);
+    defer testing.allocator.free(results3);
+    try testing.expectEqual(@as(usize, 1), results3.len);
+}
+
+test "GIN native storage — jsonb_ops INSERT populates native GIN posting list" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_jsonb_native_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with jsonb column
+    var r1 = try db.execSQL("CREATE TABLE configs (id INTEGER, data JSONB)");
+    defer r1.close(testing.allocator);
+
+    // Create GIN index on jsonb column
+    var r2 = try db.execSQL("CREATE INDEX idx_configs_data ON configs (data) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Insert a row with a jsonb value
+    var r3 = try db.execSQL("INSERT INTO configs (id, data) VALUES (1, CAST('{\"key\": \"value\"}' AS JSONB))");
+    defer r3.close(testing.allocator);
+
+    // Verify row exists
+    var r4 = try db.execSQL("SELECT * FROM configs WHERE id = 1");
+    defer r4.close(testing.allocator);
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+
+    // Directly search the native GIN index for a key from the jsonb.
+    var table_info = try db.catalog.getTable("configs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("data").?;
+
+    const GIN = gin_index_mod.GIN;
+    const JsonbOpsOpClass = gin_index_mod.JsonbOpsOpClass;
+
+    var gin = try GIN.init(testing.allocator, db.pool, idx.root_page_id, JsonbOpsOpClass.getOpClass());
+
+    // Construct query for the full JSON document (wire format: tag 0x03 + u32 len + bytes)
+    // Query with the same document that was inserted to test @> containment
+    const query_text = "{\"key\": \"value\"}";
+    var query_buf: [1 + 4 + 16]u8 = undefined;
+    query_buf[0] = 0x03; // text/jsonb tag
+    std.mem.writeInt(u32, query_buf[1..5], query_text.len, .little);
+    @memcpy(query_buf[5..][0..query_text.len], query_text);
+
+    const results = try gin.search(&query_buf, 0);
+    defer testing.allocator.free(results);
+
+    try testing.expectEqual(@as(usize, 1), results.len);
+}
+
+test "GIN native storage — tsvector_ops INSERT (text placeholder, awaiting TSVECTOR column type)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_tsvector_native_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // TODO: Once TSVECTOR column type is fully supported in parser,
+    // replace TEXT with TSVECTOR and this test will verify tsvector_ops GIN wiring.
+    // For now, this is a placeholder demonstrating the test structure.
+    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create GIN index on text column (would be tsvector_ops if body were TSVECTOR)
+    var r2 = try db.execSQL("CREATE INDEX idx_docs_body ON docs (body) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Insert a row with text value
+    var r3 = try db.execSQL("INSERT INTO docs (id, body) VALUES (1, 'hello world')");
+    defer r3.close(testing.allocator);
+
+    // Verify row exists
+    var r4 = try db.execSQL("SELECT * FROM docs WHERE id = 1");
+    defer r4.close(testing.allocator);
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+
+    // This test is disabled pending TSVECTOR column type support
+    // Expected behavior: GIN index on TSVECTOR column would use tsvector_ops opclass
+    // and support native GIN search on lexemes via TsvectorOpsOpClass
+}
+
+test "GIN native storage — DELETE removes from array_ops posting list" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_array_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER, labels INTEGER[])");
+    defer r1.close(testing.allocator);
+
+    // Create GIN index
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(testing.allocator);
+
+    // Insert two rows with overlapping array elements
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 20])");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (2, ARRAY[20, 30])");
+    defer r4.close(testing.allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("labels").?;
+
+    const GIN = gin_index_mod.GIN;
+    const ArrayOpsOpClass = gin_index_mod.ArrayOpsOpClass;
+
+    // Before delete: search for key=10 should find row 1
+    var gin1 = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+
+    var query1: [1 + 4 + 1 + 8]u8 = undefined;
+    query1[0] = 0x0C;
+    std.mem.writeInt(u32, query1[1..5], 1, .little);
+    query1[5] = 0x01;
+    std.mem.writeInt(i64, query1[6..14], 10, .little);
+
+    const results1 = try gin1.search(&query1, 0);
+    defer testing.allocator.free(results1);
+    try testing.expectEqual(@as(usize, 1), results1.len);
+
+    // Delete row 1
+    var r5 = try db.execSQL("DELETE FROM tags WHERE id = 1");
+    defer r5.close(testing.allocator);
+
+    // After delete: search for key=10 should find nothing
+    var gin2 = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+
+    const results2 = try gin2.search(&query1, 0);
+    defer testing.allocator.free(results2);
+    try testing.expectEqual(@as(usize, 0), results2.len);
+
+    // Search for key=20 should still find row 2
+    var gin3 = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+
+    var query2: [1 + 4 + 1 + 8]u8 = undefined;
+    query2[0] = 0x0C;
+    std.mem.writeInt(u32, query2[1..5], 1, .little);
+    query2[5] = 0x01;
+    std.mem.writeInt(i64, query2[6..14], 20, .little);
+
+    const results3 = try gin3.search(&query2, 0);
+    defer testing.allocator.free(results3);
+    try testing.expectEqual(@as(usize, 1), results3.len);
 }
 
 test "multiple rows with gist index — all found" {

@@ -728,6 +728,31 @@ pub const TsvectorOpsOpClass = struct {
 
 // ── GIN Tree Structure ─────────────────────────────────────────────────
 
+/// Initialize a GIN entry tree leaf page with the given data buffer.
+/// Used by the engine to native-initialize a GIN index root page directly
+/// via raw pager buffers (not through BufferPool), at CREATE INDEX time.
+///
+/// Initializes a new leaf page with:
+///   - PageHeader (page_type=leaf, page_id, cell_count=0, free_offset=page_size, checksum=0)
+///   - Entry count = 0
+pub fn initEntryTreeLeafPage(data: []u8, page_size: u32, page_id: u32) void {
+    // Zero-fill the entire page
+    @memset(data[0..page_size], 0);
+
+    // Build and serialize the page header
+    const header = PageHeader{
+        .page_type = .leaf, // Entry tree leaf
+        .page_id = page_id,
+        .cell_count = 0,
+        .free_offset = page_size,
+        .checksum_value = 0,
+    };
+    header.serialize(data[0..PAGE_HEADER_SIZE]);
+
+    // Initialize entry count to 0
+    writeEntryCount(data, 0);
+}
+
 pub const GIN = struct {
     allocator: std.mem.Allocator,
     pool: *BufferPool,
@@ -757,18 +782,8 @@ pub const GIN = struct {
         // Page not in pool - use fetchNewPage to create it directly in the pool
         const frame = try self.pool.fetchNewPage(self.root_page_id);
 
-        // Initialize page header
-        const header = PageHeader{
-            .page_type = .leaf, // Entry tree leaf
-            .page_id = self.root_page_id,
-            .cell_count = 0,
-            .free_offset = @intCast(self.pool.pager.page_size),
-            .checksum_value = 0,
-        };
-        header.serialize(frame.data[0..PAGE_HEADER_SIZE]);
-
-        // Initialize entry count
-        writeEntryCount(frame.data, 0);
+        // Initialize using the public helper
+        initEntryTreeLeafPage(frame.data, self.pool.pager.page_size, self.root_page_id);
 
         // Page is already marked dirty by fetchNewPage
         return frame;
