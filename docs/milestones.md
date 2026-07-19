@@ -142,8 +142,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.94.0
-- **Latest available**: v2.94.0
+- **Current in silica**: v2.94.1
+- **Latest available**: v2.94.1
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -233,6 +233,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.92.1 | bug fix (FlowChart render order) | DONE | Edges (arrows/labels) were rendering before nodes, so node borders overwrote them; fixed render order (nodes then edges). Also strengthened 15 weak disjunction assertions in bubble_chart/flowchart/gantt/gantt_chart/matrix_view tests. Silica's `renderFlowChart` (src/tui.zig, query pipeline overlay) uses sailor.FlowChart — existing FlowChart overlay tests (src/tui.zig ~6302+) pass unchanged post-upgrade — Session 471 |
 | v2.93.0 | CalendarHeatmap widget | DONE | GitHub-style contribution/activity heatmap (date-indexed values → week-column × weekday-row grid, 5-level intensity shading, month/weekday labels, focused-cell highlighting); also adds `Calendar.setRange()`. No TUI overlay use case identified yet — Session 473 |
 | v2.94.0 | ErrorBarChart, DonutChart widgets | DONE | ErrorBarChart: per-category point estimate + asymmetric whiskers (err_low/err_high) for uncertainty/CI visualization. DonutChart: hollow-center PieChart variant with adjustable hole_ratio + center_label. No breaking changes. No TUI overlay use case identified yet — Session 476 |
+| v2.94.1 | bug fix (panic/unreachable removal) | DONE | LineBuilder (span/raw/text) no longer `@panic`s on allocator OOM — returns error union instead. CountdownTimer format function clamps on buffer overflow instead of panicking. `Validator.minLength()`/`maxLength()` fixed — previously crashed via `unreachable` for any length outside hardcoded 5/10/20/10/100 values; now `comptime` parameters support arbitrary lengths with no global mutable buffer. No breaking changes (existing call sites use literal ints, source-compatible with new comptime params). No source changes needed in silica — Session 481 |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
