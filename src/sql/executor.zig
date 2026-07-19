@@ -24,6 +24,7 @@ const parser_mod = @import("parser.zig");
 const btree_mod = @import("../storage/btree.zig");
 const hash_index_mod = @import("../storage/hash_index.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
+const gin_index_mod = @import("../storage/gin_index.zig");
 const page_mod = @import("../storage/page.zig");
 
 const mvcc_mod = @import("../tx/mvcc.zig");
@@ -48,6 +49,8 @@ const Snapshot = mvcc_mod.Snapshot;
 const LockManager = lock_mod.LockManager;
 const LockMode = lock_mod.LockMode;
 const LockTarget = lock_mod.LockTarget;
+
+const ENABLE_TESTS = true;
 
 // ── Date/Time Constants & Utilities ───────────────────────────────────────
 
@@ -8386,6 +8389,167 @@ pub const IndexScanOp = struct {
             .vtable = &.{
                 .next = @ptrCast(&IndexScanOp.next),
                 .close = @ptrCast(&IndexScanOp.close),
+            },
+        };
+    }
+};
+
+/// GIN index scan: searches posting lists via native GIN storage and returns
+/// multiple matching rows (unlike IndexScanOp which returns one row).
+/// The search is lazy: GIN.search is invoked on first next() call, and results
+/// are cached for iteration across subsequent calls.
+pub const GinIndexScanOp = struct {
+    allocator: Allocator,
+    pool: *BufferPool,
+    data_root_page_id: u32,
+    gin_root_page_id: u32,
+    opclass: gin_index_mod.OpClass,
+    query_value: []const u8,
+    strategy: u8,
+    col_names: []const []const u8,
+    col_defaults: ?[]const Value = null,
+    mvcc_ctx: ?MvccContext = null,
+
+    /// Cached candidates from GIN.search (lazily initialized).
+    candidates: ?[]gin_index_mod.ItemPointer = null,
+    /// Current position in candidates list.
+    cursor: usize = 0,
+    /// Whether search has been performed.
+    search_done: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        pool: *BufferPool,
+        data_root_page_id: u32,
+        gin_root_page_id: u32,
+        opclass: gin_index_mod.OpClass,
+        query_value: []const u8,
+        strategy: u8,
+        col_names: []const []const u8,
+    ) GinIndexScanOp {
+        return .{
+            .allocator = allocator,
+            .pool = pool,
+            .data_root_page_id = data_root_page_id,
+            .gin_root_page_id = gin_root_page_id,
+            .opclass = opclass,
+            .query_value = query_value,
+            .strategy = strategy,
+            .col_names = col_names,
+        };
+    }
+
+    pub fn next(self: *GinIndexScanOp) ExecError!?Row {
+        // Lazy initialization: perform search on first call
+        if (!self.search_done) {
+            self.search_done = true;
+            var gin = gin_index_mod.GIN.init(self.allocator, self.pool, self.gin_root_page_id, self.opclass) catch return ExecError.StorageError;
+            self.candidates = gin.search(self.query_value, self.strategy) catch return ExecError.StorageError;
+        }
+
+        // Iterate through candidates until we find a visible row
+        while (self.cursor < (self.candidates orelse &.{}).len) {
+            const candidate = (self.candidates orelse &.{})[self.cursor];
+            self.cursor += 1;
+
+            // Unpack the row_key from the ItemPointer (treated as opaque 8-byte handle).
+            // Convert the ItemPointer's page_id/offset back to row_key via big-endian u64.
+            var row_key_bytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &row_key_bytes, candidate.toU64(), .big);
+
+            // Fetch the row from the data B+Tree
+            var data_tree = BTree.init(self.pool, self.data_root_page_id);
+            const row_data = data_tree.get(self.allocator, &row_key_bytes) catch return ExecError.StorageError;
+            if (row_data == null) {
+                // Orphaned posting-list entry: skip and continue to next candidate
+                continue;
+            }
+            defer self.allocator.free(row_data.?);
+
+            // MVCC visibility check (reuse exact same logic as IndexScanOp)
+            if (self.mvcc_ctx) |ctx| {
+                if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
+                    const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                        // Row not visible: skip and continue to next candidate
+                        continue;
+                    }
+                    // Visible: deserialize column data (skip MVCC header)
+                    const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                    errdefer {
+                        for (values) |v| v.free(self.allocator);
+                        self.allocator.free(values);
+                    }
+                    // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
+                    const padded_values = if (values.len < self.col_names.len) blk: {
+                        const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                        for (values, 0..) |v, i| extended[i] = v;
+                        for (values.len..self.col_names.len) |i| {
+                            extended[i] = if (self.col_defaults) |defs|
+                                try defs[i].dupe(self.allocator)
+                            else
+                                .null_value;
+                        }
+                        self.allocator.free(values);
+                        break :blk extended;
+                    } else values;
+                    const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+                    for (self.col_names, 0..) |c, i| cols[i] = c;
+                    return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
+                }
+            }
+
+            // No MVCC context or legacy row — still detect MVCC format and skip overhead
+            const row_bytes = if (mvcc_mod.isVersionedRow(row_data.?))
+                row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
+            else
+                row_data.?;
+            const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+            errdefer {
+                for (values) |v| v.free(self.allocator);
+                self.allocator.free(values);
+            }
+
+            // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
+            const padded_values = if (values.len < self.col_names.len) blk: {
+                const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                for (values, 0..) |v, i| extended[i] = v;
+                for (values.len..self.col_names.len) |i| {
+                    extended[i] = if (self.col_defaults) |defs|
+                        try defs[i].dupe(self.allocator)
+                    else
+                        .null_value;
+                }
+                self.allocator.free(values);
+                break :blk extended;
+            } else values;
+
+            const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+            for (self.col_names, 0..) |c, i| cols[i] = c;
+
+            return Row{
+                .columns = cols,
+                .values = padded_values,
+                .allocator = self.allocator,
+            };
+        }
+
+        return null; // No more candidates or no visible rows found
+    }
+
+    pub fn close(self: *GinIndexScanOp) void {
+        if (self.candidates) |cands| {
+            self.allocator.free(cands);
+            self.candidates = null;
+        }
+    }
+
+    pub fn iterator(self: *GinIndexScanOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&GinIndexScanOp.next),
+                .close = @ptrCast(&GinIndexScanOp.close),
             },
         };
     }

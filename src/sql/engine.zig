@@ -36756,6 +36756,397 @@ test "GIN native storage — DELETE removes from array_ops posting list" {
     try testing.expectEqual(@as(usize, 1), results3.len);
 }
 
+// ── GinIndexScanOp Tests (Step 6 of GIN Native Storage Wiring) ──────────────
+// Tests for the GinIndexScanOp executor operator: Scans GIN indexes via native
+// posting list search, returning multiple matching rows instead of single index lookup.
+// Tests verify: basic single/multiple matches, no-match cases, MVCC visibility filtering,
+// orphaned entry skipping, and strategy-aware (AND/OR) search delegation.
+
+test "GinIndexScanOp basic single match — returns matching row" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_gin_indexscan_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create a database with array column and GIN index
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with array column
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER PRIMARY KEY, labels INTEGER[])");
+    defer r1.close(allocator);
+
+    // Create GIN index on array column
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(allocator);
+
+    // Insert a row with array [10, 20, 30]
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 20, 30])");
+    defer r3.close(allocator);
+
+    // Verify the row exists in the table
+    var r4 = try db.execSQL("SELECT * FROM tags WHERE id = 1");
+    defer r4.close(allocator);
+    var count: usize = 0;
+    if (r4.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| : (count += 1) {
+            var row = row_ptr.*;
+            defer row.deinit();
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+
+    // Now test GinIndexScanOp directly
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(allocator);
+    const idx = table_info.findIndex("labels").?;
+    const data_root = table_info.data_root_page_id;
+
+    // Build wire-format query for searching element 10: tag 0x0C array + count 1 + tag 0x01 int + value 10
+    var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C; // array tag
+    std.mem.writeInt(u32, query_buf[1..5], 1, .little); // count = 1
+    query_buf[5] = 0x01; // integer tag
+    std.mem.writeInt(i64, query_buf[6..14], 10, .little); // value = 10
+
+    const col_names = [_][]const u8{"id", "labels"};
+
+    // Create GinIndexScanOp and iterate
+    var gin_scan = executor_mod.GinIndexScanOp.init(
+        allocator,
+        db.pool,
+        data_root,
+        idx.root_page_id,
+        gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        &query_buf,
+        0, // strategy: 0 = AND/contains
+        &col_names,
+    );
+    defer gin_scan.close();
+
+    var result_count: usize = 0;
+    while (try gin_scan.next()) |row| : (result_count += 1) {
+        var r = row;
+        defer r.deinit();
+        // Verify the row has the expected id
+        try testing.expectEqual(@as(usize, 2), r.columns.len);
+        try testing.expectEqual(@as(i64, 1), r.values[0].integer);
+    }
+
+    // Should return exactly 1 row (id=1)
+    try testing.expectEqual(@as(usize, 1), result_count);
+}
+
+test "GinIndexScanOp multiple matches — returns all matching rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_gin_indexscan_multiple.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER PRIMARY KEY, labels INTEGER[])");
+    defer r1.close(allocator);
+
+    // Create GIN index
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(allocator);
+
+    // Insert 3 rows, all containing element 42
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 42])");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (2, ARRAY[42, 99])");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (3, ARRAY[42])");
+    defer r5.close(allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(allocator);
+    const idx = table_info.findIndex("labels").?;
+    const data_root = table_info.data_root_page_id;
+
+    // Query for element 42
+    var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C;
+    std.mem.writeInt(u32, query_buf[1..5], 1, .little);
+    query_buf[5] = 0x01;
+    std.mem.writeInt(i64, query_buf[6..14], 42, .little);
+
+    const col_names = [_][]const u8{"id", "labels"};
+
+    var gin_scan = executor_mod.GinIndexScanOp.init(
+        allocator,
+        db.pool,
+        data_root,
+        idx.root_page_id,
+        gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        &query_buf,
+        0, // strategy: AND
+        &col_names,
+    );
+    defer gin_scan.close();
+
+    var result_count: usize = 0;
+    var found_ids = [_]i64{0, 0, 0};
+    while (try gin_scan.next()) |row| : (result_count += 1) {
+        var r = row;
+        defer r.deinit();
+        try testing.expectEqual(@as(usize, 2), r.columns.len);
+        if (result_count < 3) {
+            found_ids[result_count] = r.values[0].integer;
+        }
+    }
+
+    // Should return exactly 3 rows
+    try testing.expectEqual(@as(usize, 3), result_count);
+}
+
+test "GinIndexScanOp no match — returns null immediately" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_gin_indexscan_nomatch.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER PRIMARY KEY, labels INTEGER[])");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(allocator);
+
+    // Insert row with [10, 20]
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 20])");
+    defer r3.close(allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(allocator);
+    const idx = table_info.findIndex("labels").?;
+    const data_root = table_info.data_root_page_id;
+
+    // Query for element 999 (doesn't exist)
+    var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C;
+    std.mem.writeInt(u32, query_buf[1..5], 1, .little);
+    query_buf[5] = 0x01;
+    std.mem.writeInt(i64, query_buf[6..14], 999, .little);
+
+    const col_names = [_][]const u8{"id", "labels"};
+
+    var gin_scan = executor_mod.GinIndexScanOp.init(
+        allocator,
+        db.pool,
+        data_root,
+        idx.root_page_id,
+        gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        &query_buf,
+        0,
+        &col_names,
+    );
+    defer gin_scan.close();
+
+    // First next() should return null (no matches)
+    const first_row = try gin_scan.next();
+    try testing.expectEqual(@as(?executor_mod.Row, null), first_row);
+}
+
+test "GinIndexScanOp MVCC visibility filtering — skips invisible rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_gin_indexscan_mvcc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER PRIMARY KEY, labels INTEGER[])");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(allocator);
+
+    // Insert row (will be inserted by transaction, then made invisible via MVCC context)
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[42])");
+    defer r3.close(allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(allocator);
+    const idx = table_info.findIndex("labels").?;
+    const data_root = table_info.data_root_page_id;
+
+    var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C;
+    std.mem.writeInt(u32, query_buf[1..5], 1, .little);
+    query_buf[5] = 0x01;
+    std.mem.writeInt(i64, query_buf[6..14], 42, .little);
+
+    const col_names = [_][]const u8{"id", "labels"};
+
+    // Create an MVCC context with a snapshot that makes the inserted row invisible
+    // (simulating a concurrent transaction started before the insert)
+    const mvcc_ctx = executor_mod.MvccContext{
+        .snapshot = .{ .xmin = 0, .xmax = 1, .active_xids = &.{}, .allocator = null },
+        .current_xid = 100,
+        .current_cid = 0,
+        .enabled = true,
+        .tm = null,
+    };
+
+    var gin_scan = executor_mod.GinIndexScanOp.init(
+        allocator,
+        db.pool,
+        data_root,
+        idx.root_page_id,
+        gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        &query_buf,
+        0,
+        &col_names,
+    );
+    gin_scan.mvcc_ctx = mvcc_ctx;
+    defer gin_scan.close();
+
+    // Even though the row exists in the posting list, it should be filtered by MVCC visibility
+    var result_count: usize = 0;
+    while (try gin_scan.next()) |row| : (result_count += 1) {
+        var r = row;
+        defer r.deinit();
+    }
+
+    // Should return 0 rows (row is invisible to the snapshot)
+    try testing.expectEqual(@as(usize, 0), result_count);
+}
+
+test "GinIndexScanOp orphaned posting entry — skips missing row without error" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_gin_indexscan_orphan.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER PRIMARY KEY, labels INTEGER[])");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(allocator);
+
+    // Insert two rows
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[42])");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (2, ARRAY[42])");
+    defer r4.close(allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(allocator);
+    const idx = table_info.findIndex("labels").?;
+    const data_root = table_info.data_root_page_id;
+
+    // Delete row 1 but leave its posting list entry (orphaned)
+    var r5 = try db.execSQL("DELETE FROM tags WHERE id = 1");
+    defer r5.close(allocator);
+
+    var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C;
+    std.mem.writeInt(u32, query_buf[1..5], 1, .little);
+    query_buf[5] = 0x01;
+    std.mem.writeInt(i64, query_buf[6..14], 42, .little);
+
+    const col_names = [_][]const u8{"id", "labels"};
+
+    var gin_scan = executor_mod.GinIndexScanOp.init(
+        allocator,
+        db.pool,
+        data_root,
+        idx.root_page_id,
+        gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        &query_buf,
+        0,
+        &col_names,
+    );
+    defer gin_scan.close();
+
+    var result_count: usize = 0;
+    while (try gin_scan.next()) |row| : (result_count += 1) {
+        var r = row;
+        defer r.deinit();
+        // Should only return row 2 (row 1 was deleted/orphaned)
+        try testing.expectEqual(@as(i64, 2), r.values[0].integer);
+    }
+
+    // Should return exactly 1 row (the orphaned entry for row 1 should be skipped)
+    try testing.expectEqual(@as(usize, 1), result_count);
+}
+
+test "GinIndexScanOp strategy 1 (overlaps/OR) — returns union of matches" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const path = "test_gin_indexscan_strategy1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER PRIMARY KEY, labels INTEGER[])");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(allocator);
+
+    // Insert rows with different elements
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10])");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (2, ARRAY[20])");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (3, ARRAY[10, 20])");
+    defer r5.close(allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(allocator);
+    const idx = table_info.findIndex("labels").?;
+    const data_root = table_info.data_root_page_id;
+
+    // Query for 10 OR 20 (strategy 1 = overlaps)
+    // Build: ARRAY[10, 20]
+    var query_buf: [1 + 4 + 1 + 8 + 1 + 8]u8 = undefined;
+    query_buf[0] = 0x0C;
+    std.mem.writeInt(u32, query_buf[1..5], 2, .little); // count = 2
+    query_buf[5] = 0x01;
+    std.mem.writeInt(i64, query_buf[6..14], 10, .little);
+    query_buf[14] = 0x01;
+    std.mem.writeInt(i64, query_buf[15..23], 20, .little);
+
+    const col_names = [_][]const u8{"id", "labels"};
+
+    var gin_scan = executor_mod.GinIndexScanOp.init(
+        allocator,
+        db.pool,
+        data_root,
+        idx.root_page_id,
+        gin_index_mod.ArrayOpsOpClass.getOpClass(),
+        &query_buf,
+        1, // strategy: 1 = OR/overlaps
+        &col_names,
+    );
+    defer gin_scan.close();
+
+    var result_count: usize = 0;
+    var found_ids = std.ArrayListUnmanaged(i64){};
+    defer found_ids.deinit(allocator);
+
+    while (try gin_scan.next()) |row| : (result_count += 1) {
+        var r = row;
+        defer r.deinit();
+        try found_ids.append(allocator, r.values[0].integer);
+    }
+
+    // Strategy 1 (overlaps) should return all rows containing either 10 or 20: rows 1, 2, 3
+    try testing.expectEqual(@as(usize, 3), result_count);
+}
+
 test "multiple rows with gist index — all found" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const path = "test_gist_multiple_rows.db";
