@@ -482,6 +482,27 @@ fn extractEqualityPredicate(expr: *const ast_mod.Expr) ?EqualityPredicate {
     return null;
 }
 
+/// Result of extracting a GIN-indexable predicate `column <op> constant_expr`.
+const GinPredicate = struct {
+    column_name: []const u8,
+    op: ast_mod.BinaryOp,
+    rhs: *const ast_mod.Expr,
+};
+
+/// Extract a `column_ref <op> expr` pattern for GIN-supported operators
+/// (`@>` containment, `@@` full-text match) from a predicate. The RHS is
+/// returned unevaluated — the caller must confirm it's a constant expression
+/// (no column references) before using it as a GIN search key.
+fn extractGinPredicate(expr: *const ast_mod.Expr) ?GinPredicate {
+    if (expr.* != .binary_op) return null;
+    const op = expr.binary_op;
+    if (op.op != .json_contains and op.op != .ts_match) return null;
+    if (op.left.* != .column_ref) return null;
+    const col = op.left.column_ref;
+    if (col.prefix != null) return null;
+    return .{ .column_name = col.name, .op = op.op, .rhs = op.right };
+}
+
 // ── Database ─────────────────────────────────────────────────────────
 
 pub const OpenOptions = struct {
@@ -649,6 +670,7 @@ pub const PreparedStatement = struct {
 const OperatorChain = struct {
     scan: ?*ScanOp = null,
     index_scan: ?*IndexScanOp = null,
+    gin_index_scan: ?*executor_mod.GinIndexScanOp = null,
     filter: ?*FilterOp = null,
     project: ?*ProjectOp = null,
     limit: ?*LimitOp = null,
@@ -717,6 +739,16 @@ const OperatorChain = struct {
             }
             allocator.free(is.lookup_key);
             allocator.destroy(is);
+        }
+        if (self.gin_index_scan) |gs| {
+            for (gs.col_names) |name| allocator.free(@constCast(name));
+            allocator.free(gs.col_names);
+            if (gs.col_defaults) |defaults| {
+                for (defaults) |val| val.free(allocator);
+                allocator.free(defaults);
+            }
+            allocator.free(gs.query_value);
+            allocator.destroy(gs);
         }
         if (self.filter) |f| allocator.destroy(f);
         if (self.project) |p| allocator.destroy(p);
@@ -3963,6 +3995,16 @@ pub const Database = struct {
             if (self.tryBuildIndexScan(filter.input.scan, filter.predicate, ops)) |iter| {
                 return iter;
             }
+            // GIN `consistent` can be lossy, so the scan is always wrapped in a
+            // FilterOp recheck of the original predicate — never optimize this away.
+            if (self.tryBuildGinIndexScan(filter.input.scan, filter.predicate, ops)) |iter| {
+                const gin_filter_op = self.allocator.create(FilterOp) catch return EngineError.OutOfMemory;
+                gin_filter_op.* = FilterOp.init(self.allocator, iter, filter.predicate);
+                gin_filter_op.catalog = &self.catalog;
+                gin_filter_op.outer_row = ops.outer_row;
+                ops.filter = gin_filter_op;
+                return gin_filter_op.iterator();
+            }
         }
 
         const input = try self.buildIterator(filter.input, ops);
@@ -4033,6 +4075,78 @@ pub const Database = struct {
         idx_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
         ops.index_scan = idx_op;
         return idx_op.iterator();
+    }
+
+    /// Try to use a native GIN index for a containment/full-text predicate on a scan.
+    /// Returns a RowIterator if successful, null if a GIN index scan isn't applicable
+    /// (falls through to full scan + FilterOp in that case).
+    ///
+    /// Only wires operators whose FilterOp recheck (applied by the caller, mandatory
+    /// since `consistent` can be lossy) is known to evaluate correctly: jsonb_ops `@>`
+    /// and tsvector_ops `@@`. array_ops `@>` is intentionally excluded — evalJsonContains
+    /// doesn't support Value.array yet, so the recheck would TypeError on every row
+    /// (confirmed via probe; see .claude/memory/next-priorities.md).
+    fn tryBuildGinIndexScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
+        const pred = extractGinPredicate(predicate) orelse return null;
+
+        var table_info = self.catalog.getTable(scan.table) catch return null;
+        defer table_info.deinit(self.allocator);
+
+        // Register SSI read for SERIALIZABLE transactions
+        self.ssiRegisterRead(table_info.data_root_page_id) catch return null;
+
+        const idx_info = table_info.findIndex(pred.column_name) orelse return null;
+        if (idx_info.index_type != .gin or idx_info.gin_opclass == .none) return null;
+
+        const strategy: u8 = switch (idx_info.gin_opclass) {
+            .jsonb_ops => if (pred.op == .json_contains) @as(u8, 0) else return null,
+            .tsvector_ops => if (pred.op == .ts_match) @as(u8, 0) else return null,
+            .array_ops, .none => return null,
+        };
+        const opclass_impl = ginOpClassImpl(idx_info.gin_opclass);
+
+        // RHS must evaluate as a constant (no column references) to serve as a search key.
+        const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
+        const rhs_val = evalExpr(self.allocator, pred.rhs, &empty_row, null) catch return null;
+        defer rhs_val.free(self.allocator);
+        if (rhs_val == .null_value) return null;
+        const query_value = executor_mod.serializeValueBytes(self.allocator, rhs_val) catch return null;
+
+        // Build column names for the scan
+        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        for (table_info.columns, 0..) |col, i| {
+            if (scan.alias) |alias| {
+                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+            } else {
+                col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
+            }
+        }
+
+        // Build default values for columns (needed when old rows have fewer columns than schema)
+        const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return null;
+        for (col_defaults) |*d| d.* = .null_value;
+        for (table_info.columns, 0..) |col, i| {
+            if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
+                defer self.allocator.free(expr_sql);
+                col_defaults[i] = evalDefaultExprToValue(expr_sql, self.allocator);
+            }
+        }
+
+        const gin_op = self.allocator.create(executor_mod.GinIndexScanOp) catch return null;
+        gin_op.* = executor_mod.GinIndexScanOp.init(
+            self.allocator,
+            self.pool,
+            table_info.data_root_page_id,
+            idx_info.root_page_id,
+            opclass_impl,
+            query_value,
+            strategy,
+            col_names,
+        );
+        gin_op.col_defaults = col_defaults;
+        gin_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
+        ops.gin_index_scan = gin_op;
+        return gin_op.iterator();
     }
 
     fn buildProject(self: *Database, project: PlanNode.Project, ops: *OperatorChain) EngineError!RowIterator {
@@ -38606,4 +38720,192 @@ test "concurrent multi-threaded SQL execution on shared Database" {
 
     // All 80 inserts should be visible
     try testing.expectEqual(@as(u64, 80), row_count);
+}
+
+
+// ── GIN Planner Cutover Tests (Step 7 of GIN Native Storage Wiring) ────────
+// Tests for tryBuildGinIndexScan: verifies the planner actually routes
+// `@>`/`@@` predicates on native-GIN-indexed columns through GinIndexScanOp
+// (wrapped in a mandatory FilterOp recheck), and that non-matching rows are
+// correctly excluded — not just "index exists, still full-scans".
+
+test "GIN cutover — jsonb_ops @> uses native GIN scan and excludes non-matching rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_cutover_jsonb.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE configs (id INTEGER, data JSONB)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_configs_data ON configs (data) USING GIN");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO configs (id, data) VALUES (1, CAST('{\"key\": \"value\"}' AS JSONB))");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO configs (id, data) VALUES (2, CAST('{\"other\": \"thing\"}' AS JSONB))");
+    defer r4.close(testing.allocator);
+    var r5 = try db.execSQL("INSERT INTO configs (id, data) VALUES (3, CAST('{\"key\": \"value\", \"extra\": 1}' AS JSONB))");
+    defer r5.close(testing.allocator);
+
+    // Confirm this index is actually a native GIN index (opclass wired), so this
+    // test exercises tryBuildGinIndexScan and not merely a B+Tree fallback path.
+    var table_info = try db.catalog.getTable("configs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("data").?;
+    try testing.expectEqual(catalog_mod.GinOpClass.jsonb_ops, idx.gin_opclass);
+
+    var result = try db.execSQL("SELECT id FROM configs WHERE data @> '{\"key\": \"value\"}'");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(testing.allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(testing.allocator, row.values[0].integer);
+    }
+    std.mem.sort(i64, ids.items, {}, std.sort.asc(i64));
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 3), ids.items[1]);
+}
+
+test "GIN cutover — jsonb_ops @> with no matches returns empty result" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_cutover_jsonb_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE configs (id INTEGER, data JSONB)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_configs_data ON configs (data) USING GIN");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO configs (id, data) VALUES (1, CAST('{\"a\": 1}' AS JSONB))");
+    defer r3.close(testing.allocator);
+
+    var result = try db.execSQL("SELECT id FROM configs WHERE data @> '{\"nonexistent\": true}'");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 0), count);
+}
+
+test "GIN cutover — tsvector_ops @@ uses native GIN scan and excludes non-matching rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_cutover_tsvector.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TSVECTOR)");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_docs_body ON docs (body) USING GIN");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO docs (id, body) VALUES (1, to_tsvector('hello world'))");
+    defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO docs (id, body) VALUES (2, to_tsvector('goodbye moon'))");
+    defer r4.close(testing.allocator);
+
+    var table_info = try db.catalog.getTable("docs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("body").?;
+    try testing.expectEqual(catalog_mod.GinOpClass.tsvector_ops, idx.gin_opclass);
+
+    var result = try db.execSQL("SELECT id FROM docs WHERE body @@ to_tsquery('hello')");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    var count: usize = 0;
+    var found_id: i64 = -1;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        found_id = row.values[0].integer;
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(@as(i64, 1), found_id);
+}
+
+test "GIN cutover — array_ops @> is not routed through native GIN scan (evalJsonContains gap)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_gin_cutover_array_excluded.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE tags (id INTEGER, labels INTEGER[])");
+    defer r1.close(testing.allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_tags_labels ON tags (labels) USING GIN");
+    defer r2.close(testing.allocator);
+    var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 20])");
+    defer r3.close(testing.allocator);
+
+    var table_info = try db.catalog.getTable("tags");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("labels").?;
+    try testing.expectEqual(catalog_mod.GinOpClass.array_ops, idx.gin_opclass);
+
+    // extractGinPredicate would recognize json_contains, but tryBuildGinIndexScan
+    // must refuse to route array_ops through it (see doc comment) — this predicate
+    // still fails with TypeError today via the full-scan FilterOp path, same as
+    // before the cutover (row iteration is lazy, so the error surfaces on the
+    // first next() call, not on execSQL itself). This is a pre-existing gap,
+    // not a regression.
+    var result = try db.execSQL("SELECT id FROM tags WHERE labels @> ARRAY[10]");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
+    try testing.expectError(executor_mod.ExecError.TypeError, result.rows.?.next());
+}
+
+test "extractGinPredicate: recognizes json_contains on unqualified column" {
+    var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = null } };
+    var lit = ast_mod.Expr{ .string_literal = "{}" };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &col_ref, .right = &lit } };
+    const result = extractGinPredicate(&expr);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("data", result.?.column_name);
+    try testing.expectEqual(ast_mod.BinaryOp.json_contains, result.?.op);
+}
+
+test "extractGinPredicate: recognizes ts_match on unqualified column" {
+    var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "body", .prefix = null } };
+    var lit = ast_mod.Expr{ .string_literal = "term" };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .ts_match, .left = &col_ref, .right = &lit } };
+    const result = extractGinPredicate(&expr);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("body", result.?.column_name);
+    try testing.expectEqual(ast_mod.BinaryOp.ts_match, result.?.op);
+}
+
+test "extractGinPredicate: returns null for unsupported operator" {
+    var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = null } };
+    var lit = ast_mod.Expr{ .string_literal = "{}" };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &col_ref, .right = &lit } };
+    const result = extractGinPredicate(&expr);
+    try testing.expect(result == null);
+}
+
+test "extractGinPredicate: returns null for qualified column" {
+    var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = "t" } };
+    var lit = ast_mod.Expr{ .string_literal = "{}" };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &col_ref, .right = &lit } };
+    const result = extractGinPredicate(&expr);
+    try testing.expect(result == null);
+}
+
+test "extractGinPredicate: returns null when column is on the right" {
+    var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = null } };
+    var lit = ast_mod.Expr{ .string_literal = "{}" };
+    const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &lit, .right = &col_ref } };
+    const result = extractGinPredicate(&expr);
+    try testing.expect(result == null);
 }

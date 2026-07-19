@@ -1444,7 +1444,7 @@ pub const Parser = struct {
             t == .kw_date or t == .kw_time or t == .kw_timestamp or t == .kw_interval or
             t == .kw_numeric or t == .kw_decimal or t == .kw_uuid or
             t == .kw_serial or t == .kw_bigserial or t == .kw_array or
-            t == .kw_json or t == .kw_jsonb;
+            t == .kw_json or t == .kw_jsonb or t == .kw_tsvector or t == .kw_tsquery;
     }
 
     fn parseDataType(self: *Parser) ?ast.DataType {
