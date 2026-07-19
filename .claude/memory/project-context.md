@@ -9,7 +9,18 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 400 - STABILIZATION MODE)
+### Last Session (Session 480 - STABILIZATION MODE)
+- **Date**: 2026-07-19
+- **Mode**: STABILIZATION MODE (Session 480)
+- **Focus**: Test-quality audit found `docs/milestones.md` wrongly marked "Bitmap index scans" (Milestone 22) complete
+- **Finding**: `TidBitmap`/`BitmapIndexScanOp`/`BitmapAndOp`/`BitmapOrOp`/`BitmapHeapScanOp` in `src/sql/executor.zig` were dead code (never called from planner/optimizer/engine) and architecturally broken (TIDs were a one-way hash of the row key, so rows could never actually be recovered — most `BitmapHeapScan` tests were permanently skipped as a result)
+- **Action**: Removed the 5 types + all 36 tests exercising them; corrected the milestones.md checkbox with an explanation
+- **Commits**: 6406f01 (removal + doc fix)
+- **Tests**: `zig build test --summary all` → 4444/4466 passed, 22 skipped, 0 failed (down from 4472/4502/30, exactly the 36 removed tests)
+- **CI**: ✅ GREEN before and after (new run queued on push, not yet confirmed at session end)
+- **Note for next FEATURE session**: GIN native storage wiring steps 1-5/7 done (sessions 469-479); step 6/7 (`GinIndexScanOp`) is next, untouched this session since this was a stabilization cycle.
+
+### Previous Session (Session 400 - STABILIZATION MODE)
 - **Date**: 2026-06-16
 - **Mode**: STABILIZATION MODE (Session 400)
 - **Focus**: sailor v2.48.0 migration, COPY implementation commit, test quality audit
