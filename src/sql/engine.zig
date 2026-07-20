@@ -4081,11 +4081,11 @@ pub const Database = struct {
     /// Returns a RowIterator if successful, null if a GIN index scan isn't applicable
     /// (falls through to full scan + FilterOp in that case).
     ///
-    /// Only wires operators whose FilterOp recheck (applied by the caller, mandatory
-    /// since `consistent` can be lossy) is known to evaluate correctly: jsonb_ops `@>`
-    /// and tsvector_ops `@@`. array_ops `@>` is intentionally excluded — evalJsonContains
-    /// doesn't support Value.array yet, so the recheck would TypeError on every row
-    /// (confirmed via probe; see .claude/memory/next-priorities.md).
+    /// Wires operators whose FilterOp recheck (applied by the caller, mandatory
+    /// since `consistent` can be lossy) is known to evaluate correctly: jsonb_ops `@>`,
+    /// array_ops `@>`, and tsvector_ops `@@`. evalJsonContains supports Value.array
+    /// directly (set-containment, not JSON-text round-tripping), so array_ops recheck
+    /// is safe.
     fn tryBuildGinIndexScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
         const pred = extractGinPredicate(predicate) orelse return null;
 
@@ -4100,8 +4100,9 @@ pub const Database = struct {
 
         const strategy: u8 = switch (idx_info.gin_opclass) {
             .jsonb_ops => if (pred.op == .json_contains) @as(u8, 0) else return null,
+            .array_ops => if (pred.op == .json_contains) @as(u8, 0) else return null,
             .tsvector_ops => if (pred.op == .ts_match) @as(u8, 0) else return null,
-            .array_ops, .none => return null,
+            .none => return null,
         };
         const opclass_impl = ginOpClassImpl(idx_info.gin_opclass);
 
@@ -38835,9 +38836,9 @@ test "GIN cutover — tsvector_ops @@ uses native GIN scan and excludes non-matc
     try testing.expectEqual(@as(i64, 1), found_id);
 }
 
-test "GIN cutover — array_ops @> is not routed through native GIN scan (evalJsonContains gap)" {
+test "GIN cutover — array_ops @> uses native GIN scan and excludes non-matching rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_cutover_array_excluded.db";
+    const path = "test_gin_cutover_array.db";
     defer std.fs.cwd().deleteFile(path) catch {};
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -38848,22 +38849,31 @@ test "GIN cutover — array_ops @> is not routed through native GIN scan (evalJs
     defer r2.close(testing.allocator);
     var r3 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (1, ARRAY[10, 20])");
     defer r3.close(testing.allocator);
+    var r4 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (2, ARRAY[30, 40])");
+    defer r4.close(testing.allocator);
+    var r5 = try db.execSQL("INSERT INTO tags (id, labels) VALUES (3, ARRAY[10, 50])");
+    defer r5.close(testing.allocator);
 
     var table_info = try db.catalog.getTable("tags");
     defer table_info.deinit(testing.allocator);
     const idx = table_info.findIndex("labels").?;
     try testing.expectEqual(catalog_mod.GinOpClass.array_ops, idx.gin_opclass);
 
-    // extractGinPredicate would recognize json_contains, but tryBuildGinIndexScan
-    // must refuse to route array_ops through it (see doc comment) — this predicate
-    // still fails with TypeError today via the full-scan FilterOp path, same as
-    // before the cutover (row iteration is lazy, so the error surfaces on the
-    // first next() call, not on execSQL itself). This is a pre-existing gap,
-    // not a regression.
     var result = try db.execSQL("SELECT id FROM tags WHERE labels @> ARRAY[10]");
     defer result.close(testing.allocator);
     try testing.expect(result.rows != null);
-    try testing.expectError(executor_mod.ExecError.TypeError, result.rows.?.next());
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(testing.allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(testing.allocator, row.values[0].integer);
+    }
+    std.mem.sort(i64, ids.items, {}, std.sort.asc(i64));
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 3), ids.items[1]);
 }
 
 test "extractGinPredicate: recognizes json_contains on unqualified column" {

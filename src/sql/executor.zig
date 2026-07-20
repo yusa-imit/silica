@@ -2285,6 +2285,13 @@ fn evalJsonContains(left: Value, right: Value) EvalError!Value {
     // NULL propagation
     if (left == .null_value or right == .null_value) return Value.null_value;
 
+    // SQL ARRAY containment (array_ops @>): operate on Value directly rather
+    // than round-tripping through JSON text, since arrays aren't JSON-serialized.
+    if (left == .array or right == .array) {
+        if (left != .array or right != .array) return EvalError.TypeError;
+        return Value{ .boolean = valueArrayContains(left.array, right.array) };
+    }
+
     // Get JSON text for both values
     const left_text = switch (left) {
         .text => |t| t,
@@ -2312,6 +2319,30 @@ fn evalJsonContains(left: Value, right: Value) EvalError!Value {
     // Check containment
     const contains = jsonContains(left_parsed.value, right_parsed.value);
     return Value{ .boolean = contains };
+}
+
+/// Helper: check if left array contains every element of right array (set
+/// semantics, per SQL ARRAY `@>`/array_ops — duplicates and order don't matter).
+fn valueArrayContains(left: []const Value, right: []const Value) bool {
+    for (right) |right_item| {
+        var found = false;
+        for (left) |left_item| {
+            if (valueContainsElement(left_item, right_item)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+/// Helper: element-wise containment check, recursing into nested arrays.
+fn valueContainsElement(left: Value, right: Value) bool {
+    if (left == .array and right == .array) {
+        return valueArrayContains(left.array, right.array);
+    }
+    return left.eql(right);
 }
 
 /// Helper: recursively check if left JSON contains right JSON
@@ -16458,6 +16489,58 @@ test "JSON contains array" {
 
     try std.testing.expect(result == .boolean);
     try std.testing.expect(result.boolean == true);
+}
+
+test "evalJsonContains supports Value.array — SQL ARRAY containment (array_ops @>)" {
+    var left_items = [_]Value{ .{ .integer = 10 }, .{ .integer = 20 }, .{ .integer = 30 } };
+    var right_items = [_]Value{ .{ .integer = 20 }, .{ .integer = 10 } };
+    const left_val = Value{ .array = &left_items };
+    const right_val = Value{ .array = &right_items };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "evalJsonContains Value.array — missing element returns false" {
+    var left_items = [_]Value{ .{ .integer = 10 }, .{ .integer = 20 } };
+    var right_items = [_]Value{ .{ .integer = 10 }, .{ .integer = 99 } };
+    const left_val = Value{ .array = &left_items };
+    const right_val = Value{ .array = &right_items };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "evalJsonContains Value.array — empty right array is always contained" {
+    var left_items = [_]Value{.{ .integer = 1 }};
+    const left_val = Value{ .array = &left_items };
+    const right_val = Value{ .array = &[_]Value{} };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "evalJsonContains Value.array — mismatched types (array vs scalar) is a TypeError" {
+    var left_items = [_]Value{.{ .integer = 1 }};
+    const left_val = Value{ .array = &left_items };
+    const right_val = Value{ .integer = 1 };
+
+    try std.testing.expectError(EvalError.TypeError, evalJsonContains(left_val, right_val));
+}
+
+test "evalJsonContains Value.array — NULL propagates to NULL" {
+    var left_items = [_]Value{.{ .integer = 1 }};
+    const left_val = Value{ .array = &left_items };
+    const right_val = Value.null_value;
+
+    const result = try evalJsonContains(left_val, right_val);
+    try std.testing.expect(result == .null_value);
 }
 
 test "JSON key exists ? operator" {
