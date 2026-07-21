@@ -16543,6 +16543,57 @@ test "evalJsonContains Value.array — NULL propagates to NULL" {
     try std.testing.expect(result == .null_value);
 }
 
+test "evalJsonContains Value.array — nested array containment succeeds" {
+    // left: [[1,2],[3,4]], right: [[1,2]] => true
+    // The nested array [1,2] from right matches left's first element
+    var inner_left_1 = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
+    var inner_left_2 = [_]Value{ .{ .integer = 3 }, .{ .integer = 4 } };
+    var left_items = [_]Value{ .{ .array = &inner_left_1 }, .{ .array = &inner_left_2 } };
+    const left_val = Value{ .array = &left_items };
+
+    var inner_right_1 = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
+    var right_items = [_]Value{ .{ .array = &inner_right_1 } };
+    const right_val = Value{ .array = &right_items };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
+test "evalJsonContains Value.array — nested array containment fails when not matching" {
+    // left: [[1,2],[3,4]], right: [[9,9]] => false
+    // No nested array in left contains the element set [9,9]
+    var inner_left_1 = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
+    var inner_left_2 = [_]Value{ .{ .integer = 3 }, .{ .integer = 4 } };
+    var left_items = [_]Value{ .{ .array = &inner_left_1 }, .{ .array = &inner_left_2 } };
+    const left_val = Value{ .array = &left_items };
+
+    var inner_right_1 = [_]Value{ .{ .integer = 9 }, .{ .integer = 9 } };
+    var right_items = [_]Value{ .{ .array = &inner_right_1 } };
+    const right_val = Value{ .array = &right_items };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == false);
+}
+
+test "evalJsonContains Value.array — nested arrays with null elements" {
+    // left: [1, null_value], right: [null_value] => true
+    // The null value in right matches the null element in left
+    var left_items = [_]Value{ .{ .integer = 1 }, Value.null_value };
+    const left_val = Value{ .array = &left_items };
+
+    var right_items = [_]Value{ Value.null_value };
+    const right_val = Value{ .array = &right_items };
+
+    const result = try evalJsonContains(left_val, right_val);
+
+    try std.testing.expect(result == .boolean);
+    try std.testing.expect(result.boolean == true);
+}
+
 test "JSON key exists ? operator" {
 
     const json_text = "{\"name\":\"John\",\"age\":30}";
