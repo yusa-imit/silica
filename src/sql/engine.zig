@@ -4774,8 +4774,11 @@ pub const Database = struct {
                             self.deleteIndexEntries(&table_info, existing_vals, conflicting_key);
                             tree.delete(conflicting_key) catch return EngineError.StorageError;
 
-                            const new_row_data = serializeRow(self.allocator, updated_vals) catch
-                                return EngineError.OutOfMemory;
+                            const new_row_data = if (self.current_txn) |txn| blk: {
+                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const header = TupleHeader.forInsert(txn.xid, cid);
+                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, header, updated_vals) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, updated_vals) catch return EngineError.OutOfMemory;
                             defer self.allocator.free(new_row_data);
 
                             tree.insert(conflicting_key, new_row_data) catch return EngineError.StorageError;
@@ -27460,6 +27463,109 @@ test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
         count2 += 1;
     }
     try testing.expectEqual(@as(usize, 0), count2);
+}
+
+test "INSERT ON CONFLICT DO UPDATE — MVCC: row has TupleHeader in transaction" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_update_mvcc_header.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, value TEXT)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on id
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_items_id ON items (id)");
+    defer r2.close(testing.allocator);
+
+    // Insert initial row (will be at key 0)
+    var r3 = try db.execSQL("INSERT INTO items (id, value) VALUES (1, 'initial')");
+    defer r3.close(testing.allocator);
+
+    // Start a transaction
+    var begin_r = try db.execSQL("BEGIN");
+    defer begin_r.close(testing.allocator);
+    try testing.expect(db.current_txn != null);
+
+    // Run INSERT ... ON CONFLICT DO UPDATE (should update existing row with MVCC header)
+    var r4 = try db.execSQL("INSERT INTO items (id, value) VALUES (1, 'updated') ON CONFLICT DO UPDATE SET value = 'updated'");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Get table info to access data tree
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(testing.allocator);
+    const data_root = table_info.data_root_page_id;
+
+    // Read raw row data from the B+Tree using the conflicting key (0, since it's the first row)
+    // Keys are 8-byte big-endian u64, so key 0 is: [0, 0, 0, 0, 0, 0, 0, 0]
+    var key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key_buf, 0, .big);
+    var tree = BTree.init(db.pool, data_root);
+    const raw_row_data = (try tree.get(testing.allocator, &key_buf)) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(raw_row_data);
+
+    // Verify the row has an MVCC header by checking if it starts with ROW_VERSION_MVCC (0xAA)
+    try testing.expect(mvcc_mod.isVersionedRow(raw_row_data));
+
+    var commit_r = try db.execSQL("COMMIT");
+    defer commit_r.close(testing.allocator);
+}
+
+test "INSERT ON CONFLICT DO UPDATE — MVCC: header has correct xmin in transaction" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_upsert_do_update_mvcc_xmin.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE kv (key TEXT, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Create unique index on key
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_kv_key ON kv (key)");
+    defer r2.close(testing.allocator);
+
+    // Insert initial row
+    var r3 = try db.execSQL("INSERT INTO kv (key, val) VALUES ('x', 10)");
+    defer r3.close(testing.allocator);
+
+    // Start a transaction (this gets an xid assigned to db.current_txn)
+    var begin_r = try db.execSQL("BEGIN");
+    defer begin_r.close(testing.allocator);
+    try testing.expect(db.current_txn != null);
+    const xid = db.current_txn.?.xid;
+
+    // Run INSERT ... ON CONFLICT DO UPDATE
+    var r4 = try db.execSQL("INSERT INTO kv (key, val) VALUES ('x', 20) ON CONFLICT DO UPDATE SET val = 20");
+    defer r4.close(testing.allocator);
+    try testing.expectEqual(@as(u64, 1), r4.rows_affected);
+
+    // Get table info and access the B+Tree
+    var table_info = try db.catalog.getTable("kv");
+    defer table_info.deinit(testing.allocator);
+
+    // Read raw row data (key 0)
+    var key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key_buf, 0, .big);
+    var tree = BTree.init(db.pool, table_info.data_root_page_id);
+    const raw_row_data = (try tree.get(testing.allocator, &key_buf)) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(raw_row_data);
+
+    // Deserialize the versioned row and check xmin matches transaction xid
+    const deserialized = try mvcc_mod.deserializeVersionedRow(testing.allocator, raw_row_data);
+    defer {
+        for (deserialized.values) |v| v.free(testing.allocator);
+        testing.allocator.free(deserialized.values);
+    }
+
+    try testing.expectEqual(xid, deserialized.header.xmin);
+
+    var commit_r = try db.execSQL("COMMIT");
+    defer commit_r.close(testing.allocator);
 }
 
 // ============================================================================
