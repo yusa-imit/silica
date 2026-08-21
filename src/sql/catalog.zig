@@ -191,6 +191,11 @@ pub const IndexInfo = struct {
     state: IndexState = .valid,
     /// Native GIN storage strategy (`.none` for non-GIN or legacy B+Tree-fallback GIN indexes)
     gin_opclass: GinOpClass = .none,
+    /// Whether this index's B+Tree leaf entries carry a covering payload (row_key + TupleHeader +
+    /// included_columns values, via src/sql/index_entry.zig) instead of a bare row_key. Defaults to
+    /// false for indexes serialized before this field existed — that, not `included_columns.len > 0`,
+    /// is what gates index-only scan selection, since a legacy INCLUDE index still has row_key-only leaves.
+    covering_storage: bool = false,
 };
 
 /// Complete table metadata.
@@ -284,6 +289,7 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
             size += 2 + included_col.len; // name_len + name
         }
         size += 1; // gin_opclass: u8
+        size += 1; // covering_storage: u8
     }
 
     const buf = try allocator.alloc(u8, size);
@@ -378,6 +384,8 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
             pos += included_col.len;
         }
         buf[pos] = @intFromEnum(idx.gin_opclass);
+        pos += 1;
+        buf[pos] = if (idx.covering_storage) @as(u8, 1) else @as(u8, 0);
         pos += 1;
     }
 
@@ -571,6 +579,14 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                     pos += 1;
                 } else {
                     idx.gin_opclass = .none; // Backward compatibility: old DBs have no native GIN support
+                }
+
+                // covering_storage (optional — backward compatible, defaults to false)
+                if (pos + 1 <= data.len) {
+                    idx.covering_storage = data[pos] != 0;
+                    pos += 1;
+                } else {
+                    idx.covering_storage = false; // Backward compatibility: old DBs have row_key-only leaves
                 }
 
                 idxs_initialized += 1;
@@ -8520,4 +8536,163 @@ test "backward compatibility: deserialize old format without gin_opclass default
     try std.testing.expectEqual(IndexState.valid, idx.state);
     // CRITICAL: gin_opclass should default to .none for backward compatibility
     try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+}
+
+test "serialize and deserialize IndexInfo with covering_storage = true" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "data", .column_type = .jsonb, .flags = .{} },
+    };
+
+    const included_cols = [_][]const u8{ "data" };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_id_covering",
+            .column_name = "id",
+            .column_index = 0,
+            .root_page_id = 100,
+            .included_columns = &included_cols,
+            .index_type = .btree,
+            .is_unique = false,
+            .state = .valid,
+            .gin_opclass = .none,
+            .covering_storage = true,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 42);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "users", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_id_covering", idx.index_name);
+    try std.testing.expectEqualStrings("id", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 0), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 100), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+    try std.testing.expectEqual(true, idx.covering_storage);
+}
+
+test "serialize and deserialize IndexInfo with covering_storage = false" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "name", .column_type = .text, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_name",
+            .column_name = "name",
+            .column_index = 1,
+            .root_page_id = 150,
+            .included_columns = &.{},
+            .index_type = .btree,
+            .is_unique = false,
+            .state = .valid,
+            .gin_opclass = .none,
+            .covering_storage = false,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 43);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "products", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_name", idx.index_name);
+    try std.testing.expectEqualStrings("name", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 150), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+    try std.testing.expectEqual(false, idx.covering_storage);
+}
+
+test "backward compatibility: deserialize old format without covering_storage defaults to false" {
+    const allocator = std.testing.allocator;
+
+    // Manually construct old format data (without covering_storage byte at the end)
+    // Format: [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
+    // Old index format (with gin_opclass): [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
+    //                                        [col_index:u16][root_page_id:u32][is_unique:u8][index_type:u8][state:u8][included_count:u16][...][gin_opclass:u8]
+    // Missing: covering_storage (1 byte) at the very end
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    // data_root_page_id
+    try buf.writer(allocator).writeInt(u32, 80, .little);
+
+    // column_count = 2
+    try buf.writer(allocator).writeInt(u16, 2, .little);
+
+    // Column 1: "id", integer, primary_key + not_null
+    try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
+    try buf.appendSlice(allocator, "id");
+    try buf.append(allocator, @intFromEnum(ColumnType.integer));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+
+    // Column 2: "name", text
+    try buf.writer(allocator).writeInt(u16, 4, .little); // name_len
+    try buf.appendSlice(allocator, "name");
+    try buf.append(allocator, @intFromEnum(ColumnType.text));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{})));
+
+    // table_constraint_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+
+    // index_count = 1
+    try buf.writer(allocator).writeInt(u16, 1, .little);
+
+    // Index: "idx_name_btree"
+    try buf.writer(allocator).writeInt(u16, 14, .little); // index_name_len
+    try buf.appendSlice(allocator, "idx_name_btree");
+    try buf.writer(allocator).writeInt(u16, 4, .little); // column_name_len
+    try buf.appendSlice(allocator, "name");
+    try buf.writer(allocator).writeInt(u16, 1, .little); // column_index
+    try buf.writer(allocator).writeInt(u32, 200, .little); // root_page_id
+    // is_unique
+    try buf.append(allocator, @as(u8, 0));
+    // index_type = btree (0)
+    try buf.append(allocator, @intFromEnum(IndexType.btree));
+    // state = valid (1)
+    try buf.append(allocator, @intFromEnum(IndexState.valid));
+    // included_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+    // gin_opclass = none (0)
+    try buf.append(allocator, @intFromEnum(GinOpClass.none));
+    // NO covering_storage byte — this is old format
+
+    const data = try buf.toOwnedSlice(allocator);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "legacy_index_table", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_name_btree", idx.index_name);
+    try std.testing.expectEqualStrings("name", idx.column_name);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+    // CRITICAL: covering_storage should default to false for backward compatibility
+    try std.testing.expectEqual(false, idx.covering_storage);
 }
