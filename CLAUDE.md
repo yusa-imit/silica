@@ -549,8 +549,8 @@ gh issue list --state open --label bug --limit 5
 
 ## Sailor Migration
 
-- **Current in silica**: v2.94.1
-- **Latest available**: v2.94.1
+- **Current in silica**: v2.94.2
+- **Latest available**: v2.94.2
 - **Repo**: https://github.com/yusa-imit/sailor
 - **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for full version status table.
 
@@ -575,8 +575,8 @@ gh issue list --state open --label bug --limit 5
 
 ## zuda Migration
 
-- **Current in silica**: v2.0.1
-- **Latest available**: v2.0.1
+- **Current in silica**: v2.2.0
+- **Latest available**: v2.2.0
 - **Repository**: https://github.com/yusa-imit/zuda
 - **Tracking**: See `docs/milestones.md` — Dependency Migration Tracking section for targets and status.
 - **Migration Status**: 1/3 completed — Deadlock Detection ✅ DONE, Buffer Pool & B+Tree NOT MIGRATING per architect review
