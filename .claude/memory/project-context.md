@@ -9,6 +9,20 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
+### Last Session (Session 487 - FEATURE MODE)
+- **Date**: 2026-08-22
+- **Mode**: FEATURE MODE (counter 487, 487 % 5 != 0)
+- **Focus**: Committed leftover uncommitted work from a prior session (index-only-scan groundwork), then requested architect review for the next phase since all remaining high-value items (index-only scan, replication, bitmap scans, Describe message) require architecture review before implementation per next-priorities.md
+- **CI**: ✅ GREEN before session start (last run 2026-07-21 success); no open issues
+- **Work Done**:
+  - Found `src/main.zig` (1-line import addition) and new untracked `src/sql/index_entry.zig` (444 lines, 11 tests) uncommitted from a previous session — a storage-agnostic encode/decode wire format for covering-index (INCLUDE) B+Tree leaf entries: `[row_key_len:u16][row_key][TupleHeader:12B][serialized values]`. Not yet wired into B+Tree/catalog/planner/engine — pure groundwork.
+  - Verified via `zig build test` (multiple runs, with and without the new file) that it introduces no regressions and no leaks itself
+  - Committed as 9d7a358: `feat(sql): add index entry encoder/decoder for covering index entries`, pushed to main
+  - Discovered and documented (not fixed — logged to `.claude/memory/debugging.md`) an intermittent, test-order-dependent GPA leak in `optimizer.zig:optimizeProject`/`ast.zig` arena path, surfacing via an unrelated regex test name depending on random test order. Reproduced 1/3 runs; confirmed unrelated to this session's diff (reproduces with `index_entry.zig` present AND absent). Flagged for a future STABILIZATION session to chase with a pinned seed.
+  - Dispatched `architect` agent (background) to produce a phased implementation plan for index-only scan end-to-end (catalog/CREATE INDEX INCLUDE, DML wiring for covering entries, MVCC visibility via the embedded TupleHeader, planner/optimizer IndexOnlyScanOp selection, executor operator, backward-compat for pre-existing non-covering indexes) — modeled on the GIN native storage 7-step phased plan. Result not yet available at time of this memory write; check `.claude/memory/architecture.md` next session for the plan output.
+- **Tests**: 4478/4500 passed, 22 skipped, 0 failed (clean run with index_entry.zig present)
+- **Next priority**: Read the architect's index-only-scan plan (should land in architecture.md or as an agent report) and implement step 1 of the phased plan following TDD. If the architect review isn't complete by next session start, check on it before starting new work.
+
 ### Last Session (Session 480 - STABILIZATION MODE)
 - **Date**: 2026-07-19
 - **Mode**: STABILIZATION MODE (Session 480)

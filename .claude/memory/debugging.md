@@ -4,6 +4,16 @@
 
 ## Known Issues
 
+### Flaky test-order-dependent memory leak in optimizer/ast arena (Session 487) — **UNRESOLVED, needs repro**
+
+**Summary**: `zig build test --summary all` intermittently fails with a GPA leak reported inside `optimizer.zig:optimizeProject` → `ast.zig:1149 create` (arena-backed PlanNode allocation), surfacing as the failure of an unrelated test (`util.regex.test.regex: char class with multiple escapes [\d\w]+`) because Zig's default randomized test order changes which test happens to run last/adjacent when the leak is detected.
+
+- **Observed**: 1 run in 3 back-to-back `zig build test` invocations (same tree, no seed pinned) failed with `[gpa] (err): memory address ... leaked` inside the SQL optimizer's `Project` node path (triggered via `engine.zig:8726 execSQLUnlocked` → `optimizer.optimize` → `optimizeProject` → `PlanNode` arena `create`). The other 2 runs (including with `-Dtarget` unchanged, one before and one after adding `src/sql/index_entry.zig`) passed cleanly with 0 leaks.
+- **Ruled out**: NOT caused by `src/sql/index_entry.zig` (commit 9d7a358) — reproduced the failure with that file stashed out of the tree (clean `main`), and also reproduced clean runs with it present. The leak is order/seed-dependent, unrelated to this module.
+- **Hypothesis**: some SQL execution path that runs a query with a `Project` node followed shortly by test-suite teardown may leave a `PlanNode` arena allocation live in a code path that returns early (e.g., an error return between `optimizeProject`'s `createNode` and normal cleanup) — but not confirmed; only seen once.
+- **Next steps (STABILIZATION session)**: run `zig build test --summary all -Dtest-filter=optimizer` and/or pin failing seeds (`--seed=0x99f2cabb` reproduced the report once — try re-running with that exact seed first) to try to get a reliable repro; audit `optimizer.zig` for `try`/early-return paths between arena `create()` calls that could skip a matching free when an error propagates through `optimizeNode`.
+- **Status**: Not blocking — 2/3 runs clean, CI last confirmed green. Logged so a future stabilization cycle can chase it instead of re-discovering it.
+
 ### GIN Index Key Corruption During Insert (Session 311) — **FIXED**
 
 **Summary**: GIN index insertions corrupted existing keys due to incorrect operation order when shifting data.
