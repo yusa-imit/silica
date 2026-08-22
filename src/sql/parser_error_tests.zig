@@ -20,6 +20,16 @@ fn expectParseFail(sql: []const u8) !void {
     }
 }
 
+/// Helper function to test that parsing succeeds.
+fn expectParseSuccess(sql: []const u8) !void {
+    var arena = ast.AstArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var p = try parser_mod.Parser.init(std.testing.allocator, sql, &arena);
+    defer p.deinit();
+    _ = try p.parseStmt();
+}
+
 // ── SELECT Error Tests ────────────────────────────────────────────────────
 
 test "parse SELECT without FROM should fail" {
@@ -206,6 +216,7 @@ test "parse GROUP BY with trailing comma should fail" {
 test "parse HAVING without GROUP BY should succeed" {
     // Parser allows this; analyzer should warn or reject
     // Not a parse error
+    try expectParseSuccess("SELECT col1, count(*) FROM users HAVING count(*) > 1");
 }
 
 // ── LIMIT / OFFSET Error Tests ────────────────────────────────────────────
@@ -349,8 +360,10 @@ test "parse statement with unexpected EOF in string literal should fail" {
 }
 
 test "parse statement with double quotes for string instead of single should succeed" {
-    // PostgreSQL allows double quotes for identifiers, not strings
-    // This may or may not be a parse error depending on implementation
+    // PostgreSQL allows double quotes for identifiers, not strings.
+    // Silica's tokenizer scans '"' as a quoted identifier, so this parses
+    // as a column reference (not a string literal) rather than failing.
+    try expectParseSuccess("SELECT \"col1\" FROM users");
 }
 
 test "parse statement with reserved keyword as identifier without quotes should fail" {
