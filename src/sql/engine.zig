@@ -34,6 +34,7 @@ const catalog_mod = @import("catalog.zig");
 const planner_mod = @import("planner.zig");
 const optimizer_mod = @import("optimizer.zig");
 const executor_mod = @import("executor.zig");
+const index_entry_mod = @import("index_entry.zig");
 const btree_mod = @import("../storage/btree.zig");
 const hash_index_mod = @import("../storage/hash_index.zig");
 const gin_index_mod = @import("../storage/gin_index.zig");
@@ -4597,11 +4598,15 @@ pub const Database = struct {
                 try self.checkRlsWithCheck(arena, actual_table, rls_col_names, vals, .insert);
             }
 
-            // Serialize the row (with MVCC header if in a transaction)
-            const row_data = if (self.current_txn) |txn| blk: {
+            // Compute MVCC header and row data
+            const row_header = if (self.current_txn) |txn| blk: {
                 const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
-                const header = TupleHeader.forInsert(txn.xid, cid);
-                break :blk mvcc_mod.serializeVersionedRow(self.allocator, header, vals) catch return EngineError.OutOfMemory;
+                break :blk TupleHeader.forInsert(txn.xid, cid);
+            } else TupleHeader.forInsert(0, 0); // Fallback: dummy header for no-txn case
+
+            // Serialize the row (with MVCC header if in a transaction)
+            const row_data = if (self.current_txn) |_| blk: {
+                break :blk mvcc_mod.serializeVersionedRow(self.allocator, row_header, vals) catch return EngineError.OutOfMemory;
             } else serializeRow(self.allocator, vals) catch return EngineError.OutOfMemory;
             defer self.allocator.free(row_data);
 
@@ -4633,7 +4638,7 @@ pub const Database = struct {
 
             // Maintain secondary indexes — handle conflicts if needed
             var insert_succeeded = true;
-            self.insertIndexEntries(actual_table, &table_info, vals, &key_buf) catch |err| {
+            self.insertIndexEntries(actual_table, &table_info, vals, &key_buf, row_header) catch |err| {
                 if (err != error.UniqueConstraintViolation) {
                     return EngineError.StorageError;
                 }
@@ -4774,16 +4779,20 @@ pub const Database = struct {
                             self.deleteIndexEntries(&table_info, existing_vals, conflicting_key);
                             tree.delete(conflicting_key) catch return EngineError.StorageError;
 
-                            const new_row_data = if (self.current_txn) |txn| blk: {
+                            // Compute MVCC header for the updated row
+                            const new_header = if (self.current_txn) |txn| blk: {
                                 const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
-                                const header = TupleHeader.forInsert(txn.xid, cid);
-                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, header, updated_vals) catch return EngineError.OutOfMemory;
+                                break :blk TupleHeader.forInsert(txn.xid, cid);
+                            } else TupleHeader.forInsert(0, 0); // Fallback: dummy header for no-txn case
+
+                            const new_row_data = if (self.current_txn) |_| blk: {
+                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, new_header, updated_vals) catch return EngineError.OutOfMemory;
                             } else serializeRow(self.allocator, updated_vals) catch return EngineError.OutOfMemory;
                             defer self.allocator.free(new_row_data);
 
                             tree.insert(conflicting_key, new_row_data) catch return EngineError.StorageError;
 
-                            self.insertIndexEntries(actual_table, &table_info, updated_vals, conflicting_key) catch |ie| {
+                            self.insertIndexEntries(actual_table, &table_info, updated_vals, conflicting_key, new_header) catch |ie| {
                                 return if (ie == error.UniqueConstraintViolation)
                                     EngineError.UniqueConstraintViolation
                                 else
@@ -5063,17 +5072,42 @@ pub const Database = struct {
     // ── Index Maintenance ─────────────────────────────────────────────
 
     /// Insert index entries for all indexed columns of a newly inserted row.
-    fn insertIndexEntries(self: *Database, table_name: []const u8, table_info: *const catalog_mod.TableInfo, vals: []const Value, row_key: []const u8) !void {
+    fn insertIndexEntries(self: *Database, table_name: []const u8, table_info: *const catalog_mod.TableInfo, vals: []const Value, row_key: []const u8, header: TupleHeader) !void {
         for (table_info.indexes) |idx| {
             if (idx.column_index >= vals.len) continue;
             const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
             defer self.allocator.free(idx_key);
-            const idx_val = try self.allocator.dupe(u8, row_key);
-            defer self.allocator.free(idx_val);
 
             // Dispatch based on index type
             switch (idx.index_type) {
                 .btree => {
+                    // Determine the value to insert: covering entry or plain row_key
+                    const idx_val = if (idx.covering_storage) blk: {
+                        // Resolve included_columns to their values
+                        var included_vals_list = std.ArrayListUnmanaged(Value){};
+                        defer included_vals_list.deinit(self.allocator);
+
+                        for (idx.included_columns) |included_name| {
+                            // Linear search for the column in table_info.columns
+                            for (table_info.columns, 0..) |col, col_idx| {
+                                if (std.mem.eql(u8, col.name, included_name)) {
+                                    if (col_idx < vals.len) {
+                                        try included_vals_list.append(self.allocator, vals[col_idx]);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Encode covering entry
+                        const covering_entry = try index_entry_mod.encodeIndexEntry(self.allocator, row_key, header, included_vals_list.items);
+                        break :blk covering_entry;
+                    } else blk: {
+                        // Plain row_key dupe (backward compat)
+                        break :blk try self.allocator.dupe(u8, row_key);
+                    };
+                    defer self.allocator.free(idx_val);
+
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
 
                     // Check UNIQUE constraint before inserting
@@ -5092,6 +5126,10 @@ pub const Database = struct {
                     }
                 },
                 .hash => {
+                    // Hash index always stores plain row_key
+                    const idx_val = try self.allocator.dupe(u8, row_key);
+                    defer self.allocator.free(idx_val);
+
                     var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
 
                     // Check UNIQUE constraint before inserting
@@ -5107,6 +5145,10 @@ pub const Database = struct {
                 },
                 .gist => {
                     // GiST pages are initialized as B+Tree leaf pages at CREATE INDEX time.
+                    // GiST always stores plain row_key (no covering storage support)
+                    const idx_val = try self.allocator.dupe(u8, row_key);
+                    defer self.allocator.free(idx_val);
+
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
                     if (idx.is_unique) {
                         const existing = idx_tree.get(self.allocator, idx_key) catch null;
@@ -5134,6 +5176,10 @@ pub const Database = struct {
                     } else {
                         // Fallback: GIN on a column type without a native opclass behaves
                         // as a plain B+Tree index (pre-existing behavior, e.g. GIN on INTEGER).
+                        // GIN fallback always stores plain row_key (no covering storage support)
+                        const idx_val = try self.allocator.dupe(u8, row_key);
+                        defer self.allocator.free(idx_val);
+
                         var idx_tree = BTree.init(self.pool, idx.root_page_id);
                         if (idx.is_unique) {
                             const existing = idx_tree.get(self.allocator, idx_key) catch null;
@@ -5603,7 +5649,7 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
-        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value, original_xmin: u32 };
+        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value, original_xmin: u32, header: TupleHeader };
 
         // Collect key-value pairs to update (can't modify B+Tree while iterating)
         var updates = std.ArrayListUnmanaged(UpdateEntry){};
@@ -5871,8 +5917,8 @@ pub const Database = struct {
                 }
             }
 
-            // Re-serialize (with MVCC header if in a transaction)
-            const new_data = if (self.current_txn) |txn| blk: {
+            // Compute MVCC header for the updated row
+            const update_header = if (self.current_txn) |txn| blk: {
                 const cid = self.tm.getCurrentCid(txn.xid) catch {
                     for (old_values) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
@@ -5880,8 +5926,12 @@ pub const Database = struct {
                     self.allocator.free(row.values);
                     return EngineError.TransactionError;
                 };
-                const header = TupleHeader.forInsert(txn.xid, cid);
-                break :blk mvcc_mod.serializeVersionedRow(self.allocator, header, row.values) catch {
+                break :blk TupleHeader.forInsert(txn.xid, cid);
+            } else TupleHeader.forInsert(0, 0); // Fallback: dummy header for no-txn case
+
+            // Re-serialize (with MVCC header if in a transaction)
+            const new_data = if (self.current_txn) |_| blk: {
+                break :blk mvcc_mod.serializeVersionedRow(self.allocator, update_header, row.values) catch {
                     for (old_values) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
                     for (row.values) |v| v.free(self.allocator);
@@ -5905,7 +5955,7 @@ pub const Database = struct {
                 return EngineError.OutOfMemory;
             };
 
-            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values, .original_xmin = original_xmin }) catch {
+            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values, .original_xmin = original_xmin, .header = update_header }) catch {
                 self.allocator.free(key_copy);
                 self.allocator.free(new_data);
                 for (old_values) |ov| ov.free(self.allocator);
@@ -5938,7 +5988,7 @@ pub const Database = struct {
                 for (new_values) |v| v.free(self.allocator);
                 self.allocator.free(new_values);
             }
-            self.insertIndexEntries(actual_table, &table_info, new_values, item.key) catch {};
+            self.insertIndexEntries(actual_table, &table_info, new_values, item.key, item.header) catch {};
         }
 
         // Update root page if needed
@@ -39024,4 +39074,178 @@ test "extractGinPredicate: returns null when column is on the right" {
     const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &lit, .right = &col_ref } };
     const result = extractGinPredicate(&expr);
     try testing.expect(result == null);
+}
+
+// Step 3/7: DML Wiring Tests — covering index entry encoding (TDD Red phase)
+// These tests verify that insertIndexEntries correctly threads the header parameter
+// and encodes covering index entries when idx.covering_storage == true.
+// They will fail because insertIndexEntries is not yet modified.
+
+test "step 3: btree index with covering_storage=true writes covering entry, not plain row_key" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step3_covering_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and a real INCLUDE-column btree index (allocates + initializes a
+    // real B+Tree root page via the normal CREATE INDEX path). Step 4 (CREATE INDEX
+    // setting covering_storage=true automatically) isn't implemented yet, so
+    // covering_storage stays false in the catalog here — we override it on a local
+    // copy below and call insertIndexEntries directly, per the architect's step 3
+    // testing guidance ("direct unit calls with a manually-constructed
+    // covering_storage=true IndexInfo"), without depending on step 4.
+    var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_id ON t1 (id) INCLUDE (name);");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("t1");
+    defer table_info.deinit(allocator);
+    const orig_idx = table_info.findIndex("id") orelse return error.MissingIndex;
+    try testing.expect(!orig_idx.covering_storage); // step 4 not implemented — sanity check
+
+    // Build a local index list with covering_storage forced true for "id", leaving
+    // everything else (including the real, already-initialized root_page_id) intact.
+    var indexes_copy = try allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len);
+    defer allocator.free(indexes_copy);
+    for (table_info.indexes, 0..) |idx, i| {
+        indexes_copy[i] = idx;
+        if (std.mem.eql(u8, idx.column_name, "id")) indexes_copy[i].covering_storage = true;
+    }
+    var covering_table_info = table_info;
+    covering_table_info.indexes = indexes_copy;
+    const idx_info = covering_table_info.findIndex("id") orelse return error.MissingIndex;
+    try testing.expect(idx_info.covering_storage);
+
+    // Call insertIndexEntries directly with a manually-constructed row and header —
+    // bypassing SQL INSERT so this test exercises insertIndexEntries in isolation.
+    var row_key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf, 1, .big);
+    const vals = [_]Value{ .{ .integer = 42 }, .{ .text = "Alice" } };
+    const header = TupleHeader.forInsert(7, 3);
+
+    try db.insertIndexEntries("t1", &covering_table_info, &vals, &row_key_buf, header);
+
+    // Fetch the raw index entry directly from the index's own B+Tree.
+    const idx_key = try valueToIndexKey(allocator, Value{ .integer = 42 });
+    defer allocator.free(idx_key);
+
+    var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
+    const raw_value = try idx_tree.get(allocator, idx_key);
+    defer if (raw_value) |v| allocator.free(v);
+
+    try testing.expect(raw_value != null);
+    // Covering entry must be larger than a bare 8-byte row_key.
+    try testing.expect(raw_value.?.len > 8);
+
+    const decoded = try index_entry_mod.decodeIndexEntry(allocator, raw_value.?);
+    defer {
+        allocator.free(decoded.row_key);
+        for (decoded.values) |v| v.free(allocator);
+        allocator.free(decoded.values);
+    }
+
+    try testing.expectEqualSlices(u8, &row_key_buf, decoded.row_key);
+
+    // Verify MVCC header round-trips exactly as passed in.
+    try testing.expectEqual(@as(u32, 7), decoded.header.xmin);
+    try testing.expectEqual(@as(u16, 3), decoded.header.cid);
+    try testing.expectEqual(@as(u32, mvcc_mod.INVALID_XID), decoded.header.xmax);
+
+    // INCLUDE (name) -> exactly one included value, matching the row's "name".
+    try testing.expectEqual(@as(usize, 1), decoded.values.len);
+    try testing.expectEqualStrings("Alice", decoded.values[0].text);
+}
+
+test "step 3: btree index with covering_storage=false writes plain row_key (backward compat)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step3_noncovering_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and secondary index
+    var r1 = try db.execSQL("CREATE TABLE t2 (id INTEGER, name TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_id ON t2 (id);");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("t2");
+    defer table_info.deinit(allocator);
+    const idx_info = table_info.findIndex("id") orelse return;
+
+    // Verify covering_storage is false
+    try testing.expect(!idx_info.covering_storage);
+
+    // Insert a row
+    var r3 = try db.execSQL("INSERT INTO t2 (id, name) VALUES (99, 'Bob');");
+    defer r3.close(allocator);
+
+    // Fetch the raw index entry
+    const idx_key = try valueToIndexKey(allocator, Value{ .integer = 99 });
+    defer allocator.free(idx_key);
+
+    var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
+    const raw_value = try idx_tree.get(allocator, idx_key);
+    defer if (raw_value) |v| allocator.free(v);
+
+    try testing.expect(raw_value != null);
+
+    // For non-covering index, must be exactly 8 bytes (plain row_key)
+    // This behavior must NOT change when step 3 is implemented
+    try testing.expectEqual(@as(usize, 8), raw_value.?.len);
+
+    // Should NOT be decodable as covering entry
+    const decode_result = index_entry_mod.decodeIndexEntry(allocator, raw_value.?);
+    try testing.expectError(error.InvalidIndexEntry, decode_result);
+}
+
+test "step 3: hash index ignores covering_storage flag (no-op for non-btree)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step3_hash_1.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and hash index
+    var r1 = try db.execSQL("CREATE TABLE t3 (id INTEGER, name TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_id ON t3 (id) USING HASH;");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("t3");
+    defer table_info.deinit(allocator);
+    const idx_info = table_info.findIndex("id") orelse return;
+
+    // Verify index type is hash
+    try testing.expectEqual(catalog_mod.IndexType.hash, idx_info.index_type);
+
+    // Insert a row
+    var r3 = try db.execSQL("INSERT INTO t3 (id, name) VALUES (777, 'Charlie');");
+    defer r3.close(allocator);
+
+    // Fetch the raw index entry
+    const idx_key = try valueToIndexKey(allocator, Value{ .integer = 777 });
+    defer allocator.free(idx_key);
+
+    var hash_idx = HashIndex.init(db.pool, idx_info.root_page_id);
+    const raw_value = try hash_idx.get(allocator, idx_key);
+    defer if (raw_value) |v| allocator.free(v);
+
+    try testing.expect(raw_value != null);
+
+    // Hash index ALWAYS stores plain row_key, regardless of covering_storage
+    // (covering_storage only applies to .btree per architect specification)
+    try testing.expectEqual(@as(usize, 8), raw_value.?.len);
+
+    // Should NOT be decodable as covering entry
+    const decode_result = index_entry_mod.decodeIndexEntry(allocator, raw_value.?);
+    try testing.expectError(error.InvalidIndexEntry, decode_result);
 }
