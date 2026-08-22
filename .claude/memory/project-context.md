@@ -9,6 +9,17 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
+### Last Session (Session 490 - STABILIZATION MODE)
+- **Date**: 2026-08-22
+- **Mode**: STABILIZATION MODE (counter 490, 490 % 5 == 0)
+- **CI**: ✅ GREEN before session start; no open issues; pushed 1 commit, CI run in progress at session end (verify green next session)
+- **Work Done**:
+  - Ran the CLAUDE.md-mandated stabilization test-quality audit: searched for tests with no assertions, tautological/always-true conditions, or expected values copied from the implementation.
+  - Built a brace-matching scan for `test "..." { ... }` bodies lacking `expect`/`error.`/`SkipZigTest`/`panic` tokens — surfaced ~80 candidates, but manual review showed most are legitimate (`try someFn()`-only tests that fail via propagated error, e.g. catalog `IF EXISTS` no-op tests; or `testing.allocator`-based leak-detection smoke tests like `FileWatcher init and deinit`).
+  - Found 2 **genuinely empty** tests in `src/sql/parser_error_tests.zig` — `"parse HAVING without GROUP BY should succeed"` and `"parse statement with double quotes for string instead of single should succeed"` — both bodies were comments only and passed unconditionally regardless of parser behavior. Added `expectParseSuccess()` helper (mirrors existing `expectParseFail()`) and wired both to actually parse the claimed-valid SQL. Confirmed via tokenizer.zig:528 that `"` scans as a quoted identifier (not a string literal) in Silica, informing the second test's assertion. Commit f071655.
+- **Tests**: 4498/4520 passed, 22 skipped, 0 failed (session end — same count as 489; fix filled in existing empty tests rather than adding new ones)
+- **Next priority**: Resume FEATURE-mode work at index-only-scan **step 4/7** — see session 489 entry below and `architecture.md` for full plan.
+
 ### Last Session (Session 489 - FEATURE MODE)
 - **Date**: 2026-08-22
 - **Mode**: FEATURE MODE (counter 489, 489 % 5 != 0)
