@@ -20,6 +20,13 @@ const PlanNode = planner_mod.PlanNode;
 const LogicalPlan = planner_mod.LogicalPlan;
 const CostEstimator = cost_mod.CostEstimator;
 
+// ── Required Columns Tracking ─────────────────────────────────────────────────────────
+
+pub const RequiredColumns = struct {
+    all: bool = false,
+    columns: std.ArrayListUnmanaged([]const u8) = .{},
+};
+
 // ── Optimizer ─────────────────────────────────────────────────────────
 
 pub const Optimizer = struct {
@@ -27,6 +34,8 @@ pub const Optimizer = struct {
     cost_estimator: CostEstimator,
     /// Optional catalog for index-aware scan optimization.
     catalog: ?*catalog_mod.Catalog = null,
+    /// Cached required columns for this query (computed per optimize() call)
+    required_columns: ?std.StringHashMapUnmanaged(RequiredColumns) = null,
 
     pub fn init(arena: *ast.AstArena) Optimizer {
         return .{
@@ -45,6 +54,9 @@ pub const Optimizer = struct {
 
     /// Optimize a logical plan by applying all rules.
     pub fn optimize(self: *Optimizer, plan: LogicalPlan) !LogicalPlan {
+        // Compute required columns for index-aware scan optimization
+        self.required_columns = try self.collectRequiredColumns(self.arena.allocator(), plan.root);
+
         const optimized = try self.optimizeNode(plan.root);
         return .{
             .root = optimized,
@@ -53,6 +65,353 @@ pub const Optimizer = struct {
             .returning = plan.returning,
             .locking_clauses = plan.locking_clauses,
         };
+    }
+
+    /// Collect required columns referenced by the plan tree, grouped by scan table/alias.
+    /// Used to narrow index-only scan feasibility checks. Returns a map from scan name
+    /// (alias or table) to RequiredColumns structure. Caller is responsible for
+    /// deinitializing column lists; the map itself lives in the arena.
+    pub fn collectRequiredColumns(
+        self: *Optimizer,
+        allocator: std.mem.Allocator,
+        root: *const PlanNode,
+    ) std.mem.Allocator.Error!std.StringHashMapUnmanaged(RequiredColumns) {
+        var scan_names = std.StringHashMapUnmanaged(void){};
+        defer scan_names.deinit(allocator);
+
+        // Pass 1: collect scan names from tree
+        try self.collectScanNames(root, &scan_names, allocator);
+
+        // Initialize result map with RequiredColumns for each scan
+        var result = std.StringHashMapUnmanaged(RequiredColumns){};
+        var scan_iter = scan_names.keyIterator();
+        while (scan_iter.next()) |name_ptr| {
+            try result.put(allocator, name_ptr.*, RequiredColumns{});
+        }
+
+        // Pass 2: collect column references from expressions in the tree
+        try self.collectColumnRefsFromNode(root, allocator, &scan_names, &result);
+
+        return result;
+    }
+
+    fn collectScanNames(
+        self: *Optimizer,
+        node: *const PlanNode,
+        scan_names: *std.StringHashMapUnmanaged(void),
+        allocator: std.mem.Allocator,
+    ) std.mem.Allocator.Error!void {
+        switch (node.*) {
+            .scan => |s| {
+                const key = s.alias orelse s.table;
+                try scan_names.put(allocator, key, {});
+            },
+            .filter => |f| try self.collectScanNames(f.input, scan_names, allocator),
+            .project => |p| try self.collectScanNames(p.input, scan_names, allocator),
+            .sort => |s| try self.collectScanNames(s.input, scan_names, allocator),
+            .aggregate => |a| try self.collectScanNames(a.input, scan_names, allocator),
+            .limit => |l| try self.collectScanNames(l.input, scan_names, allocator),
+            .distinct => |d| try self.collectScanNames(d.input, scan_names, allocator),
+            .window => |w| try self.collectScanNames(w.input, scan_names, allocator),
+            .join => |j| {
+                try self.collectScanNames(j.left, scan_names, allocator);
+                try self.collectScanNames(j.right, scan_names, allocator);
+            },
+            .set_op => |s| {
+                try self.collectScanNames(s.left, scan_names, allocator);
+                try self.collectScanNames(s.right, scan_names, allocator);
+            },
+            .table_function_scan, .values_table_scan, .values, .empty => {},
+        }
+    }
+
+    fn collectColumnRefsFromNode(
+        self: *Optimizer,
+        node: *const PlanNode,
+        allocator: std.mem.Allocator,
+        scan_names: *const std.StringHashMapUnmanaged(void),
+        result: *std.StringHashMapUnmanaged(RequiredColumns),
+    ) std.mem.Allocator.Error!void {
+        switch (node.*) {
+            .filter => |f| {
+                try self.collectColumnRefsFromNode(f.input, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(f.predicate, allocator, scan_names, result);
+            },
+            .project => |p| {
+                try self.collectColumnRefsFromNode(p.input, allocator, scan_names, result);
+                for (p.columns) |col| {
+                    try self.collectColumnRefsFromExpr(col.expr, allocator, scan_names, result);
+                }
+            },
+            .join => |j| {
+                try self.collectColumnRefsFromNode(j.left, allocator, scan_names, result);
+                try self.collectColumnRefsFromNode(j.right, allocator, scan_names, result);
+                if (j.on_condition) |cond| {
+                    try self.collectColumnRefsFromExpr(cond, allocator, scan_names, result);
+                }
+            },
+            .sort => |s| {
+                try self.collectColumnRefsFromNode(s.input, allocator, scan_names, result);
+                for (s.order_by) |item| {
+                    try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                }
+            },
+            .aggregate => |a| {
+                try self.collectColumnRefsFromNode(a.input, allocator, scan_names, result);
+                for (a.group_by) |expr| {
+                    try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                }
+                for (a.aggregates) |agg| {
+                    if (agg.arg) |arg| try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                    if (agg.arg2) |arg| try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                    if (agg.filter_expr) |filt| try self.collectColumnRefsFromExpr(filt, allocator, scan_names, result);
+                    for (agg.order_exprs) |expr| {
+                        try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                    }
+                    for (agg.args) |expr| {
+                        try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                    }
+                }
+                if (a.grouping_sets) |sets| {
+                    for (sets) |set| {
+                        for (set) |expr| {
+                            try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                        }
+                    }
+                }
+            },
+            .window => |w| {
+                try self.collectColumnRefsFromNode(w.input, allocator, scan_names, result);
+                for (w.funcs) |func| {
+                    try self.collectColumnRefsFromExpr(func, allocator, scan_names, result);
+                }
+            },
+            .limit => |l| {
+                try self.collectColumnRefsFromNode(l.input, allocator, scan_names, result);
+                if (l.limit_expr) |expr| try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                if (l.offset_expr) |expr| try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                for (l.order_by) |item| {
+                    try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                }
+            },
+            .distinct => |d| {
+                try self.collectColumnRefsFromNode(d.input, allocator, scan_names, result);
+                for (d.on_exprs) |expr| {
+                    try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                }
+            },
+            .set_op => |s| {
+                try self.collectColumnRefsFromNode(s.left, allocator, scan_names, result);
+                try self.collectColumnRefsFromNode(s.right, allocator, scan_names, result);
+            },
+            .scan, .table_function_scan, .values_table_scan, .values, .empty => {},
+        }
+    }
+
+    fn collectColumnRefsFromExpr(
+        self: *Optimizer,
+        expr: *const ast.Expr,
+        allocator: std.mem.Allocator,
+        scan_names: *const std.StringHashMapUnmanaged(void),
+        result: *std.StringHashMapUnmanaged(RequiredColumns),
+    ) std.mem.Allocator.Error!void {
+        switch (expr.*) {
+            // Literals and bind parameters — no column refs
+            .integer_literal, .float_literal, .string_literal, .blob_literal,
+            .boolean_literal, .null_literal, .bind_parameter => {},
+
+            // Column reference — the core case
+            .column_ref => |cr| {
+                if (std.mem.eql(u8, cr.name, "*")) {
+                    // Wildcard: SELECT * or t.*
+                    if (cr.prefix) |prefix| {
+                        // Qualified wildcard: only widen that specific table
+                        if (result.getPtr(prefix)) |req| {
+                            req.all = true;
+                        }
+                    } else {
+                        // Unqualified wildcard: conservative, widen everything
+                        var iter = result.valueIterator();
+                        while (iter.next()) |req| {
+                            req.all = true;
+                        }
+                    }
+                } else {
+                    // Regular column reference
+                    if (cr.prefix) |prefix| {
+                        // Qualified: attribute to that specific table
+                        if (result.getPtr(prefix)) |req| {
+                            if (!req.all) {
+                                try self.addColumnIfNotPresent(&req.columns, cr.name, allocator);
+                            }
+                        }
+                    } else {
+                        // Unqualified: check table scope
+                        if (scan_names.count() == 1) {
+                            // Single table — safe to attribute
+                            var iter = result.valueIterator();
+                            if (iter.next()) |req| {
+                                if (!req.all) {
+                                    try self.addColumnIfNotPresent(&req.columns, cr.name, allocator);
+                                }
+                            }
+                        } else if (scan_names.count() > 1) {
+                            // Multiple tables — ambiguous, conservative bailout
+                            var iter = result.valueIterator();
+                            while (iter.next()) |req| {
+                                req.all = true;
+                            }
+                        }
+                    }
+                }
+            },
+
+            // Single-operand expressions
+            .unary_op => |op| try self.collectColumnRefsFromExpr(op.operand, allocator, scan_names, result),
+            .is_null => |isn| try self.collectColumnRefsFromExpr(isn.expr, allocator, scan_names, result),
+            .is_json => |isj| try self.collectColumnRefsFromExpr(isj.expr, allocator, scan_names, result),
+            .cast => |c| try self.collectColumnRefsFromExpr(c.expr, allocator, scan_names, result),
+            .paren => |inner| try self.collectColumnRefsFromExpr(inner, allocator, scan_names, result),
+
+            // Binary operations
+            .binary_op => |op| {
+                try self.collectColumnRefsFromExpr(op.left, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(op.right, allocator, scan_names, result);
+            },
+            .is_distinct_from => |idf| {
+                try self.collectColumnRefsFromExpr(idf.left, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(idf.right, allocator, scan_names, result);
+            },
+            .like => |lk| {
+                try self.collectColumnRefsFromExpr(lk.expr, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(lk.pattern, allocator, scan_names, result);
+            },
+
+            // BETWEEN
+            .between => |b| {
+                try self.collectColumnRefsFromExpr(b.expr, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(b.low, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(b.high, allocator, scan_names, result);
+            },
+
+            // IN list
+            .in_list => |il| {
+                try self.collectColumnRefsFromExpr(il.expr, allocator, scan_names, result);
+                for (il.list) |item| {
+                    try self.collectColumnRefsFromExpr(item, allocator, scan_names, result);
+                }
+            },
+
+            // Function call
+            .function_call => |fc| {
+                for (fc.args) |arg| {
+                    try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                }
+                if (fc.filter_clause) |filt| {
+                    try self.collectColumnRefsFromExpr(filt, allocator, scan_names, result);
+                }
+                for (fc.order_by) |item| {
+                    try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                }
+            },
+
+            // CASE expression
+            .case_expr => |ce| {
+                if (ce.operand) |op| try self.collectColumnRefsFromExpr(op, allocator, scan_names, result);
+                for (ce.when_clauses) |wc| {
+                    try self.collectColumnRefsFromExpr(wc.condition, allocator, scan_names, result);
+                    try self.collectColumnRefsFromExpr(wc.result, allocator, scan_names, result);
+                }
+                if (ce.else_expr) |ee| try self.collectColumnRefsFromExpr(ee, allocator, scan_names, result);
+            },
+
+            // Subquery and EXISTS — unhandled, conservative bailout
+            .subquery, .exists => {
+                var iter = result.valueIterator();
+                while (iter.next()) |req| {
+                    req.all = true;
+                }
+            },
+
+            // Window function
+            .window_function => |wf| {
+                for (wf.args) |arg| {
+                    try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                }
+                for (wf.partition_by) |part_expr| {
+                    try self.collectColumnRefsFromExpr(part_expr, allocator, scan_names, result);
+                }
+                for (wf.order_by) |item| {
+                    try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                }
+                if (wf.frame) |frame| {
+                    switch (frame.start) {
+                        .expr_preceding => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
+                        .expr_following => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
+                        else => {},
+                    }
+                    switch (frame.end) {
+                        .expr_preceding => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
+                        .expr_following => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
+                        else => {},
+                    }
+                }
+            },
+
+            // Ordered-set aggregate
+            .ordered_set_agg => |osa| {
+                for (osa.args) |arg| {
+                    try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                }
+                for (osa.order_by) |item| {
+                    try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                }
+            },
+
+            // Array/row constructors
+            .array_constructor => |items| {
+                for (items) |item| {
+                    try self.collectColumnRefsFromExpr(item, allocator, scan_names, result);
+                }
+            },
+            .row_constructor => |items| {
+                for (items) |item| {
+                    try self.collectColumnRefsFromExpr(item, allocator, scan_names, result);
+                }
+            },
+
+            // Array subscript
+            .array_subscript => |asub| {
+                try self.collectColumnRefsFromExpr(asub.array, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(asub.index, allocator, scan_names, result);
+            },
+
+            // ANY / ALL
+            .any => |a| {
+                try self.collectColumnRefsFromExpr(a.expr, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(a.array, allocator, scan_names, result);
+            },
+            .all => |a| {
+                try self.collectColumnRefsFromExpr(a.expr, allocator, scan_names, result);
+                try self.collectColumnRefsFromExpr(a.array, allocator, scan_names, result);
+            },
+        }
+    }
+
+    fn addColumnIfNotPresent(
+        _: *Optimizer,
+        columns: *std.ArrayListUnmanaged([]const u8),
+        name: []const u8,
+        allocator: std.mem.Allocator,
+    ) std.mem.Allocator.Error!void {
+        // Check if column already exists (case-insensitive)
+        for (columns.items) |existing| {
+            if (std.ascii.eqlIgnoreCase(existing, name)) {
+                return; // Already present
+            }
+        }
+        // Add it
+        try columns.append(allocator, name);
     }
 
     fn optimizeNode(self: *Optimizer, node: *const PlanNode) error{OutOfMemory}!*const PlanNode {
@@ -181,7 +540,9 @@ pub const Optimizer = struct {
 
         for (table_info.indexes) |idx| {
             if (idx.state != .valid) continue;
-            if (indexCoversColumns(scan.columns, idx.column_name, idx.included_columns)) {
+            // Use effectiveScanColumns to filter to only the columns actually needed
+            const eff_cols = self.effectiveScanColumns(scan);
+            if (indexCoversColumns(eff_cols, idx.column_name, idx.included_columns)) {
                 return self.createNode(.{ .scan = .{
                     .table = scan.table,
                     .alias = scan.alias,
@@ -192,6 +553,24 @@ pub const Optimizer = struct {
             }
         }
         return self.createNode(.{ .scan = scan });
+    }
+
+    fn effectiveScanColumns(self: *Optimizer, scan: PlanNode.Scan) []const planner_mod.ColumnRef {
+        const map = self.required_columns orelse return scan.columns;
+        const key = scan.alias orelse scan.table;
+        const req = map.get(key) orelse return scan.columns;
+        if (req.all) return scan.columns;
+
+        var filtered = std.ArrayListUnmanaged(planner_mod.ColumnRef){};
+        for (scan.columns) |col| {
+            for (req.columns.items) |name| {
+                if (std.ascii.eqlIgnoreCase(col.column, name)) {
+                    filtered.append(self.arena.allocator(), col) catch return scan.columns;
+                    break;
+                }
+            }
+        }
+        return filtered.toOwnedSlice(self.arena.allocator()) catch return scan.columns;
     }
 
     // ── Join Optimization ────────────────────────────────────────────
@@ -2187,3 +2566,518 @@ test "index-only: key column plus INCLUDE plus extra column" {
     const result = indexCoversColumns(&scan_cols, "a", &included);
     try testing.expect(!result);
 }
+
+test "index-only scan optimization: collectRequiredColumns filters scan columns" {
+    // Integration test: Verify that collectRequiredColumns enables more queries
+    // to qualify for index-only scans by narrowing the set of required columns.
+    //
+    // Scenario: Table with 3 columns (id, name, unused), covering index on (name)
+    // INCLUDE (id). Query selects only (id, name) from index.
+    //
+    // Before: Scan would request all 3 columns, which aren't in the index → no
+    // index-only scan even though only 2 are needed.
+    // After: collectRequiredColumns identifies only (id, name) needed, passes this
+    // to indexCoversColumns → returns true → index_only=true possible.
+
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Build plan: Project([id, name]) -> Scan(table, columns=[id, name, unused])
+    // (Scan normally includes all 3 columns from table schema)
+    const all_cols = [_]planner_mod.ColumnRef{
+        .{ .table = "t", .column = "id" },
+        .{ .table = "t", .column = "name" },
+        .{ .table = "t", .column = "unused" },
+    };
+    const scan = try arena.create(PlanNode, .{ .scan = .{
+        .table = "t",
+        .columns = &all_cols,
+    } });
+
+    // Project: SELECT id, name (not unused)
+    const col_id = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id" } });
+    const col_name = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "name" } });
+    const proj_cols = [_]planner_mod.PlanNode.ProjectColumn{
+        .{ .expr = col_id },
+        .{ .expr = col_name },
+    };
+    const project = try arena.create(PlanNode, .{ .project = .{
+        .input = scan,
+        .columns = &proj_cols,
+    } });
+
+    // Manually verify that collectRequiredColumns narrows the set
+    var opt = Optimizer.init(&arena);
+    var req_map = try opt.collectRequiredColumns(testing.allocator, project);
+    defer {
+        var iter = req_map.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        req_map.deinit(testing.allocator);
+    }
+
+    const req = req_map.get("t") orelse return error.MissingTableT;
+    try testing.expect(!req.all);
+    // Should have collected exactly 2 columns: id and name
+    try testing.expectEqual(@as(usize, 2), req.columns.items.len);
+
+    // Verify the columns are present
+    var has_id = false;
+    var has_name = false;
+    for (req.columns.items) |col| {
+        if (std.mem.eql(u8, col, "id")) has_id = true;
+        if (std.mem.eql(u8, col, "name")) has_name = true;
+    }
+    try testing.expect(has_id);
+    try testing.expect(has_name);
+
+    // Verify unused is NOT in the required columns (this is the key improvement)
+    var has_unused = false;
+    for (req.columns.items) |col| {
+        if (std.mem.eql(u8, col, "unused")) has_unused = true;
+    }
+    try testing.expect(!has_unused);
+}
+
+// ── collectRequiredColumns tests ─────────────────────────────────────────
+
+test "collectRequiredColumns: single-table simple case" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Project(col_ref("col1")) -> Filter(col_ref("col2") = 1) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    const col2_ref = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "col2" } });
+    const lit_1 = try arena.create(ast.Expr, .{ .integer_literal = 1 });
+    const filter_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .op = .equal,
+        .left = col2_ref,
+        .right = lit_1,
+    } });
+    const filter = try arena.create(PlanNode, .{ .filter = .{
+        .input = scan,
+        .predicate = filter_pred,
+    } });
+
+    const col1_ref = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "col1" } });
+    const proj_col = [_]planner_mod.PlanNode.ProjectColumn{
+        .{ .expr = col1_ref },
+    };
+    const project = try arena.create(PlanNode, .{ .project = .{
+        .input = filter,
+        .columns = &proj_col,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result_map = try opt.collectRequiredColumns(testing.allocator, project);
+    defer {
+        var iter = result_map.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result_map.deinit(testing.allocator);
+    }
+
+    const req = result_map.get("t") orelse return error.MissingTableInResult;
+    try testing.expect(!req.all);
+    try testing.expectEqual(@as(usize, 2), req.columns.items.len);
+    // Check that both "col1" and "col2" are present (order-independent)
+    var has_col1 = false;
+    var has_col2 = false;
+    for (req.columns.items) |col| {
+        if (std.mem.eql(u8, col, "col1")) has_col1 = true;
+        if (std.mem.eql(u8, col, "col2")) has_col2 = true;
+    }
+    try testing.expect(has_col1);
+    try testing.expect(has_col2);
+}
+
+test "collectRequiredColumns: SELECT * wildcard bailout" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Project(column_ref("*")) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    const star_ref = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "*" } });
+    const proj_col = [_]planner_mod.PlanNode.ProjectColumn{
+        .{ .expr = star_ref },
+    };
+    const project = try arena.create(PlanNode, .{ .project = .{
+        .input = scan,
+        .columns = &proj_col,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, project);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req = result.get("t") orelse return error.MissingTableInResult;
+    try testing.expect(req.all); // Should set all=true for SELECT *
+}
+
+test "collectRequiredColumns: qualified wildcard scopes to one table" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Project(t.*) -> Join(left=Scan("t"), right=Scan("o")) with on_condition
+    const left = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+    const right = try arena.create(PlanNode, .{ .scan = .{ .table = "o" } });
+
+    const on_cond = try arena.create(ast.Expr, .{ .binary_op = .{
+        .op = .equal,
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "t" } }),
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "t_id", .prefix = "o" } }),
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left,
+        .right = right,
+        .on_condition = on_cond,
+    } });
+
+    const qual_star = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "*", .prefix = "t" } });
+    const proj_col = [_]planner_mod.PlanNode.ProjectColumn{
+        .{ .expr = qual_star },
+    };
+    const project = try arena.create(PlanNode, .{ .project = .{
+        .input = join,
+        .columns = &proj_col,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, project);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_t = result.get("t") orelse return error.MissingTableT;
+    try testing.expect(req_t.all); // t.* should set all=true for table "t"
+
+    // Table "o" should still be in the result (from join condition)
+    // The join condition references o.t_id, so o should have that column
+}
+
+test "collectRequiredColumns: multi-table join qualified refs correctly attributed" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Project(a.p, b.q) -> Join(left=Scan("a"), right=Scan("b")) with on_condition: a.x = b.y
+    const left = try arena.create(PlanNode, .{ .scan = .{ .table = "a" } });
+    const right = try arena.create(PlanNode, .{ .scan = .{ .table = "b" } });
+
+    const on_cond = try arena.create(ast.Expr, .{ .binary_op = .{
+        .op = .equal,
+        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "x", .prefix = "a" } }),
+        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "y", .prefix = "b" } }),
+    } });
+
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left,
+        .right = right,
+        .on_condition = on_cond,
+    } });
+
+    const col_a_p = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "p", .prefix = "a" } });
+    const col_b_q = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "q", .prefix = "b" } });
+    const proj_cols = [_]planner_mod.PlanNode.ProjectColumn{
+        .{ .expr = col_a_p },
+        .{ .expr = col_b_q },
+    };
+    const project = try arena.create(PlanNode, .{ .project = .{
+        .input = join,
+        .columns = &proj_cols,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, project);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_a = result.get("a") orelse return error.MissingTableA;
+    const req_b = result.get("b") orelse return error.MissingTableB;
+
+    try testing.expect(!req_a.all);
+    try testing.expect(!req_b.all);
+
+    // Table "a" should have at least "x" and "p"
+    try testing.expectEqual(@as(usize, 2), req_a.columns.items.len);
+    // Table "b" should have at least "y" and "q"
+    try testing.expectEqual(@as(usize, 2), req_b.columns.items.len);
+
+    // Verify "x" is in a's columns
+    var has_x = false;
+    for (req_a.columns.items) |col| {
+        if (std.mem.eql(u8, col, "x")) has_x = true;
+    }
+    try testing.expect(has_x);
+
+    // Verify "y" is in b's columns
+    var has_y = false;
+    for (req_b.columns.items) |col| {
+        if (std.mem.eql(u8, col, "y")) has_y = true;
+    }
+    try testing.expect(has_y);
+}
+
+test "collectRequiredColumns: multi-table unqualified ref is ambiguous bailout" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Filter(unqualified_ref("z") = 1) -> Join(Scan("a"), Scan("b"))
+    const left = try arena.create(PlanNode, .{ .scan = .{ .table = "a" } });
+    const right = try arena.create(PlanNode, .{ .scan = .{ .table = "b" } });
+    const join = try arena.create(PlanNode, .{ .join = .{
+        .left = left,
+        .right = right,
+    } });
+
+    // Unqualified column ref
+    const unqual_z = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "z" } });
+    const lit_1 = try arena.create(ast.Expr, .{ .integer_literal = 1 });
+    const filter_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .op = .equal,
+        .left = unqual_z,
+        .right = lit_1,
+    } });
+    const filter = try arena.create(PlanNode, .{ .filter = .{
+        .input = join,
+        .predicate = filter_pred,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, filter);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_a = result.get("a") orelse return error.MissingTableA;
+    const req_b = result.get("b") orelse return error.MissingTableB;
+
+    // Both should be set to all=true because the unqualified ref is ambiguous
+    try testing.expect(req_a.all);
+    try testing.expect(req_b.all);
+}
+
+test "collectRequiredColumns: single-table unqualified ref is safe" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Filter(unqualified_ref("col2") = 1) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    const unqual_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "col2" } });
+    const lit_1 = try arena.create(ast.Expr, .{ .integer_literal = 1 });
+    const filter_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .op = .equal,
+        .left = unqual_col,
+        .right = lit_1,
+    } });
+    const filter = try arena.create(PlanNode, .{ .filter = .{
+        .input = scan,
+        .predicate = filter_pred,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, filter);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_t = result.get("t") orelse return error.MissingTableT;
+    try testing.expect(!req_t.all); // Single table, unqualified ref is safe
+    try testing.expectEqual(@as(usize, 1), req_t.columns.items.len);
+    try testing.expect(std.mem.eql(u8, req_t.columns.items[0], "col2"));
+}
+
+test "collectRequiredColumns: subquery/EXISTS expression triggers conservative bailout" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Filter(EXISTS(subquery)) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    // Minimal fake SelectStmt for EXISTS
+    const fake_select = try arena.create(ast.SelectStmt, .{});
+    const exists_expr = try arena.create(ast.Expr, .{ .exists = .{ .subquery = fake_select } });
+
+    const filter = try arena.create(PlanNode, .{ .filter = .{
+        .input = scan,
+        .predicate = exists_expr,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, filter);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_t = result.get("t") orelse return error.MissingTableT;
+    try testing.expect(req_t.all); // EXISTS is unhandled → conservative bailout
+}
+
+test "collectRequiredColumns: aggregate and window function columns collected" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Aggregate(group_by=[col_a], aggregate with arg=col_b) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    const col_a = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "a" } });
+    const col_b = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "b" } });
+
+    const agg_expr = [_]planner_mod.PlanNode.AggregateExpr{
+        .{ .func = .count, .arg = col_b },
+    };
+
+    const aggregate = try arena.create(PlanNode, .{ .aggregate = .{
+        .input = scan,
+        .group_by = &[_]*const ast.Expr{col_a},
+        .aggregates = &agg_expr,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, aggregate);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_t = result.get("t") orelse return error.MissingTableT;
+    try testing.expect(!req_t.all);
+    // Should collect both "a" (from group_by) and "b" (from aggregate arg)
+    try testing.expectEqual(@as(usize, 2), req_t.columns.items.len);
+}
+
+test "collectRequiredColumns: sort order by columns collected" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Sort(order_by=[col_x ASC]) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    const col_x = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "x" } });
+    const order_item = [_]ast.OrderByItem{
+        .{ .expr = col_x, .direction = .asc },
+    };
+
+    const sort = try arena.create(PlanNode, .{ .sort = .{
+        .input = scan,
+        .order_by = &order_item,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, sort);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_t = result.get("t") orelse return error.MissingTableT;
+    try testing.expect(!req_t.all);
+    try testing.expectEqual(@as(usize, 1), req_t.columns.items.len);
+    try testing.expect(std.mem.eql(u8, req_t.columns.items[0], "x"));
+}
+
+test "collectRequiredColumns: dedup same column referenced twice" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Project(col_z, col_z again) -> Filter(col_z = 1) -> Scan("t")
+    const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "t" } });
+
+    const col_z1 = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "z" } });
+    const lit_1 = try arena.create(ast.Expr, .{ .integer_literal = 1 });
+    const filter_pred = try arena.create(ast.Expr, .{ .binary_op = .{
+        .op = .equal,
+        .left = col_z1,
+        .right = lit_1,
+    } });
+    const filter = try arena.create(PlanNode, .{ .filter = .{
+        .input = scan,
+        .predicate = filter_pred,
+    } });
+
+    const col_z2 = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "z" } });
+    const col_z3 = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "z" } });
+    const proj_cols = [_]planner_mod.PlanNode.ProjectColumn{
+        .{ .expr = col_z2 },
+        .{ .expr = col_z3 },
+    };
+    const project = try arena.create(PlanNode, .{ .project = .{
+        .input = filter,
+        .columns = &proj_cols,
+    } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, project);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    const req_t = result.get("t") orelse return error.MissingTableT;
+    try testing.expect(!req_t.all);
+    // Should have "z" only once, not three times
+    try testing.expectEqual(@as(usize, 1), req_t.columns.items.len);
+    try testing.expect(std.mem.eql(u8, req_t.columns.items[0], "z"));
+}
+
+test "collectRequiredColumns: no scans in tree returns empty map" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+
+    // Plan: Empty node (no scans)
+    const empty = try arena.create(PlanNode, .{ .empty = .{ .description = "test" } });
+
+    var opt = Optimizer.init(&arena);
+    var result = try opt.collectRequiredColumns(testing.allocator, empty);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.columns.deinit(testing.allocator);
+        }
+        result.deinit(testing.allocator);
+    }
+
+    try testing.expectEqual(@as(usize, 0), result.count());
+}
+
