@@ -8357,6 +8357,7 @@ pub const Database = struct {
                     .is_unique = ci.unique,
                     .state = initial_state,
                     .gin_opclass = gin_opclass,
+                    .covering_storage = ci.included_columns.len > 0 and idx_type == .btree,
                 };
 
                 // Serialize the updated table and store in catalog
@@ -39092,11 +39093,10 @@ test "step 3: btree index with covering_storage=true writes covering entry, not 
 
     // Create table and a real INCLUDE-column btree index (allocates + initializes a
     // real B+Tree root page via the normal CREATE INDEX path). Step 4 (CREATE INDEX
-    // setting covering_storage=true automatically) isn't implemented yet, so
-    // covering_storage stays false in the catalog here — we override it on a local
-    // copy below and call insertIndexEntries directly, per the architect's step 3
-    // testing guidance ("direct unit calls with a manually-constructed
-    // covering_storage=true IndexInfo"), without depending on step 4.
+    // setting covering_storage=true automatically) is now implemented, so
+    // covering_storage is automatically true in the catalog here for any INCLUDE index.
+    // We still build a local copy below for mechanical convenience (matching existing
+    // step-3 test pattern), but covering_storage is already set correctly by real SQL.
     var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER, name TEXT);");
     defer r1.close(allocator);
     var r2 = try db.execSQL("CREATE INDEX idx_id ON t1 (id) INCLUDE (name);");
@@ -39105,7 +39105,7 @@ test "step 3: btree index with covering_storage=true writes covering entry, not 
     var table_info = try db.catalog.getTable("t1");
     defer table_info.deinit(allocator);
     const orig_idx = table_info.findIndex("id") orelse return error.MissingIndex;
-    try testing.expect(!orig_idx.covering_storage); // step 4 not implemented — sanity check
+    try testing.expect(orig_idx.covering_storage); // step 4 now implemented — automatically set for INCLUDE indexes
 
     // Build a local index list with covering_storage forced true for "id", leaving
     // everything else (including the real, already-initialized root_page_id) intact.
@@ -39243,6 +39243,118 @@ test "step 3: hash index ignores covering_storage flag (no-op for non-btree)" {
 
     // Hash index ALWAYS stores plain row_key, regardless of covering_storage
     // (covering_storage only applies to .btree per architect specification)
+    try testing.expectEqual(@as(usize, 8), raw_value.?.len);
+
+    // Should NOT be decodable as covering entry
+    const decode_result = index_entry_mod.decodeIndexEntry(allocator, raw_value.?);
+    try testing.expectError(error.InvalidIndexEntry, decode_result);
+}
+
+// Step 4/7: CREATE INDEX Handler Tests — setting covering_storage via INCLUDE clause (TDD Red phase)
+// These tests verify that when CREATE INDEX ... INCLUDE is used, the catalog stores
+// covering_storage=true for B+Tree indexes, and subsequent DML operations write real
+// covering entries (not just plain row_keys). This integrates step 4 (catalog) with
+// the step 3 (DML wiring) already tested above.
+
+test "step 4: CREATE INDEX ... INCLUDE sets covering_storage=true and writes real covering entries" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step4_covering_create.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with multiple columns
+    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, salary INTEGER);");
+    defer r1.close(allocator);
+
+    // Create a B+Tree index with INCLUDE clause
+    // Step 4 should set covering_storage=true automatically here
+    var r2 = try db.execSQL("CREATE INDEX idx_emp_name ON employees (name) INCLUDE (salary);");
+    defer r2.close(allocator);
+
+    // Insert a row through SQL (uses insertIndexEntries with header threaded from step 3)
+    var r3 = try db.execSQL("INSERT INTO employees (id, name, salary) VALUES (1, 'Alice', 75000);");
+    defer r3.close(allocator);
+
+    // Verify the index has covering_storage=true in the catalog
+    var table_info = try db.catalog.getTable("employees");
+    defer table_info.deinit(allocator);
+    const idx_info = table_info.findIndex("name") orelse return error.IndexNotFound;
+
+    // THIS ASSERTION WILL FAIL until step 4 is implemented
+    try testing.expect(idx_info.covering_storage);
+
+    // Verify the index actually writes covering entries (> 8 bytes)
+    const idx_key = try valueToIndexKey(allocator, Value{ .text = "Alice" });
+    defer allocator.free(idx_key);
+
+    var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
+    const raw_value = try idx_tree.get(allocator, idx_key);
+    defer if (raw_value) |v| allocator.free(v);
+
+    try testing.expect(raw_value != null);
+    // Covering entry must be larger than 8-byte plain row_key
+    try testing.expect(raw_value.?.len > 8);
+
+    // Verify the covering entry can be decoded and contains the included salary value
+    const decoded = try index_entry_mod.decodeIndexEntry(allocator, raw_value.?);
+    defer {
+        allocator.free(decoded.row_key);
+        for (decoded.values) |v| v.free(allocator);
+        allocator.free(decoded.values);
+    }
+
+    // Should have exactly one included value (salary)
+    try testing.expectEqual(@as(usize, 1), decoded.values.len);
+    try testing.expectEqual(@as(i64, 75000), decoded.values[0].integer);
+
+    // Verify MVCC header is present (non-zero xmin)
+    try testing.expect(decoded.header.xmin != mvcc_mod.INVALID_XID);
+    try testing.expect(decoded.header.xmax == mvcc_mod.INVALID_XID);
+}
+
+test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backward compat)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step4_noncovering_create.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);");
+    defer r1.close(allocator);
+
+    // Create a B+Tree index WITHOUT INCLUDE clause
+    // Step 4 should keep covering_storage=false (default)
+    var r2 = try db.execSQL("CREATE INDEX idx_prod_name ON products (name);");
+    defer r2.close(allocator);
+
+    // Verify the index has covering_storage=false in the catalog
+    var table_info = try db.catalog.getTable("products");
+    defer table_info.deinit(allocator);
+    const idx_info = table_info.findIndex("name") orelse return error.IndexNotFound;
+
+    // THIS ASSERTION SHOULD PASS even before step 4 is fully implemented
+    // (because step 4's condition ci.included_columns.len > 0 is false here)
+    try testing.expect(!idx_info.covering_storage);
+
+    // Insert a row and verify it writes plain row_key (8 bytes), not covering entry
+    var r3 = try db.execSQL("INSERT INTO products (id, name, price) VALUES (1, 'Widget', 9999);");
+    defer r3.close(allocator);
+
+    const idx_key = try valueToIndexKey(allocator, Value{ .text = "Widget" });
+    defer allocator.free(idx_key);
+
+    var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
+    const raw_value = try idx_tree.get(allocator, idx_key);
+    defer if (raw_value) |v| allocator.free(v);
+
+    try testing.expect(raw_value != null);
+    // Non-covering index must store exactly 8 bytes (plain row_key)
     try testing.expectEqual(@as(usize, 8), raw_value.?.len);
 
     // Should NOT be decodable as covering entry
