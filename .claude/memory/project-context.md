@@ -9,7 +9,18 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
-### Last Session (Session 487 - FEATURE MODE)
+### Last Session (Session 489 - FEATURE MODE)
+- **Date**: 2026-08-22
+- **Mode**: FEATURE MODE (counter 489, 489 % 5 != 0)
+- **CI**: ✅ GREEN before session start (last run 2026-08-21 success); no open issues
+- **Work Done**:
+  - Found `src/sql/optimizer.zig` uncommitted from a prior session at session start — a complete, tested implementation of step 2/7 of the index-only-scan plan (`collectRequiredColumns`: walks the logical plan tree to narrow which columns are actually needed per scan table, feeding `effectiveScanColumns` into `indexCoversColumns` instead of the full table schema). Verified green, committed as c987889.
+  - Implemented **step 3/7**: threaded `mvcc.TupleHeader` into `Database.insertIndexEntries` (engine.zig) at all 3 call sites (INSERT, ON CONFLICT DO UPDATE, batch UPDATE), and — inside the `.btree` branch only, when `idx.covering_storage` — encode a real covering leaf entry via `index_entry.encodeIndexEntry` instead of a bare row_key. TDD via test-writer + zig-developer. Commit bd0f0ef.
+  - zig-developer's green-phase pass also implemented step 4/7 (CREATE INDEX auto-setting `covering_storage`) unrequested and without TDD — reverted before commit; see `.claude/memory/patterns.md` / auto-memory for the general lesson (verify subagent diffs against the exact ask).
+- **Tests**: 4498/4520 passed, 22 skipped, 0 failed (session end)
+- **Next priority**: Step 4/7 — `engine.zig` CREATE INDEX: set `covering_storage = included_columns.len > 0 and index_type == .btree` when building `IndexInfo` from `CreateIndexStmt`. First step where real SQL writes real covering entries end-to-end (still invisible to query results until step 6). Needs its own TDD cycle. See architecture.md for full 7-step plan detail.
+
+### Previous Session (Session 487 - FEATURE MODE)
 - **Date**: 2026-08-22
 - **Mode**: FEATURE MODE (counter 487, 487 % 5 != 0)
 - **Focus**: Committed leftover uncommitted work from a prior session (index-only-scan groundwork), then requested architect review for the next phase since all remaining high-value items (index-only scan, replication, bitmap scans, Describe message) require architecture review before implementation per next-priorities.md
