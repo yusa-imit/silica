@@ -26,6 +26,7 @@ const hash_index_mod = @import("../storage/hash_index.zig");
 const buffer_pool_mod = @import("../storage/buffer_pool.zig");
 const gin_index_mod = @import("../storage/gin_index.zig");
 const page_mod = @import("../storage/page.zig");
+const index_entry_mod = @import("index_entry.zig");
 
 const mvcc_mod = @import("../tx/mvcc.zig");
 const lock_mod = @import("../tx/lock.zig");
@@ -8294,6 +8295,15 @@ pub const IndexScanOp = struct {
     exhausted: bool = false,
     /// MVCC context for visibility filtering (null = all rows visible).
     mvcc_ctx: ?MvccContext = null,
+    /// When true, the index leaf value is a covering (INCLUDE) entry encoded via
+    /// `index_entry.encodeIndexEntry` — skip the heap fetch entirely and decode the
+    /// row directly from the index leaf. Only ever true for `.btree` (see catalog.zig
+    /// `IndexInfo.covering_storage` gating).
+    covering: bool = false,
+    /// Column names in the exact order they were encoded into the covering entry
+    /// (index key column first, then INCLUDE columns). Used to remap decoded values
+    /// onto `col_names` (the requested output columns, a subset/reordering of this).
+    covering_columns: []const []const u8 = &.{},
 
     pub fn init(
         allocator: Allocator,
@@ -8313,6 +8323,49 @@ pub const IndexScanOp = struct {
             .lookup_key = lookup_key,
             .col_names = col_names,
         };
+    }
+
+    /// Build a Row for `self.col_names` from a covering entry. `covering_columns[0]` is the
+    /// index key column — its value is NOT stored in the entry (only INCLUDE columns are, per
+    /// `engine.zig`'s `insertIndexEntries`), so it's supplied separately as `key_value` (the raw
+    /// index lookup key, treated as text — good enough for this operator-level step; a future
+    /// planner cutover that needs a properly-typed key value for a non-text key column should
+    /// supply it directly rather than relying on this raw-bytes fallback). `covering_columns[1..]`
+    /// maps 1:1, in order, onto `decoded_values`. Values not present in `covering_columns` fall
+    /// back to `col_defaults`/null, matching the missing-column padding convention used elsewhere
+    /// in this file.
+    fn buildCoveringRow(self: *IndexScanOp, key_value: Value, decoded_values: []const Value) ExecError!Row {
+        const out_values = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+        var out_i: usize = 0;
+        errdefer {
+            for (out_values[0..out_i]) |v| v.free(self.allocator);
+            self.allocator.free(out_values);
+        }
+        for (self.col_names) |want_col| {
+            var matched: ?Value = null;
+            if (self.covering_columns.len > 0 and std.mem.eql(u8, want_col, self.covering_columns[0])) {
+                matched = key_value;
+            } else if (self.covering_columns.len > 0) {
+                for (self.covering_columns[1..], 0..) |cov_col, j| {
+                    if (std.mem.eql(u8, want_col, cov_col)) {
+                        matched = decoded_values[j];
+                        break;
+                    }
+                }
+            }
+            out_values[out_i] = if (matched) |mv|
+                try mv.dupe(self.allocator)
+            else if (self.col_defaults) |defs|
+                try defs[out_i].dupe(self.allocator)
+            else
+                .null_value;
+            out_i += 1;
+        }
+
+        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        for (self.col_names, 0..) |c, i| cols[i] = c;
+
+        return Row{ .columns = cols, .values = out_values, .allocator = self.allocator };
     }
 
     pub fn next(self: *IndexScanOp) ExecError!?Row {
@@ -8338,6 +8391,25 @@ pub const IndexScanOp = struct {
         };
         if (row_key == null) return null; // No matching index entry
         defer self.allocator.free(row_key.?);
+
+        if (self.covering) {
+            // The index leaf value is a covering entry, not a plain row_key — decode
+            // it directly and skip the heap (data B+Tree) fetch entirely.
+            const decoded = index_entry_mod.decodeIndexEntry(self.allocator, row_key.?) catch return ExecError.InvalidRowData;
+            defer self.allocator.free(decoded.row_key);
+            defer {
+                for (decoded.values) |v| v.free(self.allocator);
+                self.allocator.free(decoded.values);
+            }
+
+            if (self.mvcc_ctx) |ctx| {
+                if (ctx.enabled and !mvcc_mod.isTupleVisibleWithTm(decoded.header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    return null; // Tuple not visible
+                }
+            }
+
+            return try self.buildCoveringRow(Value{ .text = self.lookup_key }, decoded.values);
+        }
 
         // Fetch the actual row from the data B+Tree
         var data_tree = BTree.init(self.pool, self.data_root_page_id);
@@ -8420,6 +8492,133 @@ pub const IndexScanOp = struct {
             .vtable = &.{
                 .next = @ptrCast(&IndexScanOp.next),
                 .close = @ptrCast(&IndexScanOp.close),
+            },
+        };
+    }
+};
+
+/// Index-only scan: cursors over a covering (INCLUDE) secondary index B+Tree
+/// directly, decoding each leaf via `index_entry.decodeIndexEntry` instead of
+/// fetching from the data B+Tree. Modeled on `ScanOp` but iterating the index
+/// tree — used for full/ordered scans where the WHERE clause (if any) doesn't
+/// narrow to a single equality lookup (that case is `IndexScanOp.covering`).
+pub const IndexOnlyScanOp = struct {
+    allocator: Allocator,
+    tree: BTree,
+    cursor: ?Cursor = null,
+    /// Column names in the exact order they were encoded into the covering
+    /// entries (index key column first, then INCLUDE columns).
+    covering_columns: []const []const u8,
+    /// Requested output columns, a subset/reordering of `covering_columns`.
+    col_names: []const []const u8,
+    col_defaults: ?[]const Value = null,
+    opened: bool = false,
+    /// MVCC context for visibility filtering (null = all rows visible).
+    mvcc_ctx: ?MvccContext = null,
+
+    pub fn init(
+        allocator: Allocator,
+        pool: *BufferPool,
+        index_root_page_id: u32,
+        covering_columns: []const []const u8,
+        col_names: []const []const u8,
+    ) IndexOnlyScanOp {
+        return .{
+            .allocator = allocator,
+            .tree = BTree.init(pool, index_root_page_id),
+            .covering_columns = covering_columns,
+            .col_names = col_names,
+        };
+    }
+
+    /// Must be called after the IndexOnlyScanOp is at its final heap location.
+    pub fn initCursor(self: *IndexOnlyScanOp) void {
+        self.cursor = Cursor.init(self.allocator, &self.tree);
+    }
+
+    pub fn open(self: *IndexOnlyScanOp) ExecError!void {
+        if (self.cursor == null) self.initCursor();
+        self.cursor.?.seekFirst() catch return ExecError.StorageError;
+        self.opened = true;
+    }
+
+    /// Build a Row for `self.col_names` from a covering entry. `covering_columns[0]` is the
+    /// index key column, supplied separately as `key_value` (the raw B+Tree leaf key, treated
+    /// as text) since its value isn't stored inside the entry — see `IndexScanOp.buildCoveringRow`
+    /// for the full rationale. `covering_columns[1..]` maps 1:1, in order, onto `decoded_values`.
+    fn buildCoveringRow(self: *IndexOnlyScanOp, key_value: Value, decoded_values: []const Value) ExecError!Row {
+        const out_values = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+        var out_i: usize = 0;
+        errdefer {
+            for (out_values[0..out_i]) |v| v.free(self.allocator);
+            self.allocator.free(out_values);
+        }
+        for (self.col_names) |want_col| {
+            var matched: ?Value = null;
+            if (self.covering_columns.len > 0 and std.mem.eql(u8, want_col, self.covering_columns[0])) {
+                matched = key_value;
+            } else if (self.covering_columns.len > 0) {
+                for (self.covering_columns[1..], 0..) |cov_col, j| {
+                    if (std.mem.eql(u8, want_col, cov_col)) {
+                        matched = decoded_values[j];
+                        break;
+                    }
+                }
+            }
+            out_values[out_i] = if (matched) |mv|
+                try mv.dupe(self.allocator)
+            else if (self.col_defaults) |defs|
+                try defs[out_i].dupe(self.allocator)
+            else
+                .null_value;
+            out_i += 1;
+        }
+
+        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        for (self.col_names, 0..) |c, i| cols[i] = c;
+
+        return Row{ .columns = cols, .values = out_values, .allocator = self.allocator };
+    }
+
+    pub fn next(self: *IndexOnlyScanOp) ExecError!?Row {
+        if (!self.opened) try self.open();
+
+        while (true) {
+            const entry = self.cursor.?.next() catch return ExecError.StorageError;
+            if (entry == null) return null;
+            defer self.allocator.free(entry.?.key);
+
+            const decoded = index_entry_mod.decodeIndexEntry(self.allocator, entry.?.value) catch {
+                self.allocator.free(entry.?.value);
+                return ExecError.InvalidRowData;
+            };
+            self.allocator.free(entry.?.value);
+            defer self.allocator.free(decoded.row_key);
+            defer {
+                for (decoded.values) |v| v.free(self.allocator);
+                self.allocator.free(decoded.values);
+            }
+
+            if (self.mvcc_ctx) |ctx| {
+                if (ctx.enabled and !mvcc_mod.isTupleVisibleWithTm(decoded.header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    continue; // Tuple not visible — skip it
+                }
+            }
+
+            return try self.buildCoveringRow(Value{ .text = entry.?.key }, decoded.values);
+        }
+    }
+
+    pub fn close(self: *IndexOnlyScanOp) void {
+        if (self.cursor) |*c| c.deinit();
+    }
+
+    pub fn iterator(self: *IndexOnlyScanOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&IndexOnlyScanOp.next),
+                .close = @ptrCast(&IndexOnlyScanOp.close),
             },
         };
     }
@@ -30949,4 +31148,555 @@ test "JSON_EXISTS returns false when path does not exist" {
     defer result.free(allocator);
     try std.testing.expect(result == .boolean);
     try std.testing.expectEqual(false, result.boolean);
+}
+
+// ── Index-Only Scan Step 5/7 Tests (TDD Red Phase) ──────────────────────────────
+//
+// Tests for IndexScanOp.covering fast path and new IndexOnlyScanOp struct.
+// These tests construct covering index B+Tree entries and verify that operators
+// can decode and return rows without heap fetches. All tests will fail to compile
+// until zig-developer adds the .covering and .covering_columns fields to IndexScanOp
+// and creates the new IndexOnlyScanOp struct.
+
+test "step 5: IndexScanOp.covering fast path decodes covering entry and returns correct columns" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary database file
+    const path = "test_step5_index_scan_covering.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Create a test pager and buffer pool
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate and initialize the root page
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Build a covering index entry:
+    // index_key = 42 (the indexed column)
+    // row_key = big-endian u64 of 1
+    // header = TupleHeader with xmin=100, xmax=INVALID, cid=0
+    // included_values = ["Alice"] (one INCLUDE column: name)
+    var row_key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf, 1, .big);
+
+    const header = TupleHeader{
+        .xmin = 100,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{},
+    };
+
+    const included_vals = [_]Value{.{ .text = "Alice" }};
+
+    // Encode the covering entry
+    const covering_entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &included_vals);
+    defer allocator.free(covering_entry);
+
+    // Insert into the index B+Tree using a simple index key (e.g., "42" as text for simplicity)
+    const index_key = "42";
+    var idx_tree = BTree.init(&pool, index_root);
+    try idx_tree.insert(index_key, covering_entry);
+
+    // Create IndexScanOp with .covering = true and .covering_columns set
+    // covering_columns order: ["id", "name"] (index key first, then INCLUDE columns)
+    // col_names = ["name"] (just the INCLUDE column we want to retrieve)
+    const covering_col_names = [_][]const u8{ "id", "name" };
+    const col_names = [_][]const u8{"name"};
+
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        0,  // data_root_page_id (unused in covering fast path)
+        index_root,
+        .btree,
+        index_key,
+        &col_names,
+    );
+
+    // Set covering fields (these will not compile until implementation)
+    index_scan.covering = true;
+    index_scan.covering_columns = &covering_col_names;
+
+    // Call next() and verify it returns the correct row without heap fetch
+    var row = try index_scan.next();
+    defer if (row) |*r| r.deinit();
+
+    try std.testing.expect(row != null);
+    try std.testing.expectEqual(@as(usize, 1), row.?.columns.len);
+    try std.testing.expectEqualStrings("name", row.?.columns[0]);
+    try std.testing.expectEqual(@as(usize, 1), row.?.values.len);
+    try std.testing.expectEqualStrings("Alice", row.?.values[0].text);
+}
+
+test "step 5: IndexScanOp.covering with column reordering/subset returns correct order" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5_index_scan_reorder.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Build a covering entry with multiple INCLUDE columns
+    // indexed column: id=5
+    // included columns: name="Bob", age=30
+    var row_key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf, 10, .big);
+
+    const header = TupleHeader{
+        .xmin = 50,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{},
+    };
+
+    const included_vals = [_]Value{
+        .{ .text = "Bob" },
+        .{ .integer = 30 },
+    };
+
+    const covering_entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &included_vals);
+    defer allocator.free(covering_entry);
+
+    const index_key = "5";
+    var idx_tree = BTree.init(&pool, index_root);
+    try idx_tree.insert(index_key, covering_entry);
+
+    // covering_columns = ["id", "name", "age"]
+    // col_names = ["age", "name"] (different order, subset)
+    const covering_col_names = [_][]const u8{ "id", "name", "age" };
+    const col_names = [_][]const u8{ "age", "name" };
+
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        0,
+        index_root,
+        .btree,
+        index_key,
+        &col_names,
+    );
+
+    index_scan.covering = true;
+    index_scan.covering_columns = &covering_col_names;
+
+    var row = try index_scan.next();
+    defer if (row) |*r| r.deinit();
+
+    try std.testing.expect(row != null);
+    try std.testing.expectEqual(@as(usize, 2), row.?.columns.len);
+    try std.testing.expectEqualStrings("age", row.?.columns[0]);
+    try std.testing.expectEqualStrings("name", row.?.columns[1]);
+    try std.testing.expectEqual(@as(usize, 2), row.?.values.len);
+    // values should be in col_names order: age first (30), then name ("Bob")
+    try std.testing.expectEqual(@as(i64, 30), row.?.values[0].integer);
+    try std.testing.expectEqualStrings("Bob", row.?.values[1].text);
+}
+
+test "step 5: IndexScanOp.covering MVCC filters invisible tuples" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5_index_scan_mvcc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Build a covering entry with xmax set (deleted tuple)
+    var row_key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf, 99, .big);
+
+    const deleted_header = TupleHeader{
+        .xmin = 10,
+        .xmax = 20,  // Tuple is deleted
+        .cid = 0,
+        .flags = .{},
+    };
+
+    const included_vals = [_]Value{.{ .text = "Deleted" }};
+    const covering_entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, deleted_header, &included_vals);
+    defer allocator.free(covering_entry);
+
+    const index_key = "999";
+    var idx_tree = BTree.init(&pool, index_root);
+    try idx_tree.insert(index_key, covering_entry);
+
+    const covering_col_names = [_][]const u8{ "id", "name" };
+    const col_names = [_][]const u8{"name"};
+
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        0,
+        index_root,
+        .btree,
+        index_key,
+        &col_names,
+    );
+
+    index_scan.covering = true;
+    index_scan.covering_columns = &covering_col_names;
+
+    // Set MVCC context: current_xid=30, snapshot sees xids < 31 as committed (none active)
+    const mvcc_ctx = MvccContext{
+        .enabled = true,
+        .snapshot = .{ .xmin = 0, .xmax = 31, .active_xids = &.{}, .allocator = null },
+        .current_xid = 30,
+        .current_cid = 0,
+        .tm = null,
+    };
+    index_scan.mvcc_ctx = mvcc_ctx;
+
+    // Should return null (tuple not visible)
+    const row = try index_scan.next();
+    try std.testing.expect(row == null);
+}
+
+test "step 5: IndexScanOp.covering with missing index entry returns null" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5_index_scan_missing.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    const covering_col_names = [_][]const u8{ "id", "name" };
+    const col_names = [_][]const u8{"name"};
+
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        0,
+        index_root,
+        .btree,
+        "nonexistent_key",
+        &col_names,
+    );
+
+    index_scan.covering = true;
+    index_scan.covering_columns = &covering_col_names;
+
+    const row = try index_scan.next();
+    try std.testing.expect(row == null);
+}
+
+test "step 5: IndexOnlyScanOp iterates covering index B+Tree returning all rows" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5_index_only_scan_iterate.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Insert multiple covering entries in order
+    var idx_tree = BTree.init(&pool, index_root);
+
+    // Entry 1: key="Alice", row_key=1, included=(100)
+    {
+        var row_key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &row_key_buf, 1, .big);
+        const header = TupleHeader{
+            .xmin = 5,
+            .xmax = mvcc_mod.INVALID_XID,
+            .cid = 0,
+            .flags = .{},
+        };
+        const vals = [_]Value{.{ .integer = 100 }};
+        const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+        defer allocator.free(entry);
+        try idx_tree.insert("Alice", entry);
+    }
+
+    // Entry 2: key="Bob", row_key=2, included=(200)
+    {
+        var row_key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &row_key_buf, 2, .big);
+        const header = TupleHeader{
+            .xmin = 6,
+            .xmax = mvcc_mod.INVALID_XID,
+            .cid = 0,
+            .flags = .{},
+        };
+        const vals = [_]Value{.{ .integer = 200 }};
+        const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+        defer allocator.free(entry);
+        try idx_tree.insert("Bob", entry);
+    }
+
+    // Entry 3: key="Charlie", row_key=3, included=(300)
+    {
+        var row_key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &row_key_buf, 3, .big);
+        const header = TupleHeader{
+            .xmin = 7,
+            .xmax = mvcc_mod.INVALID_XID,
+            .cid = 0,
+            .flags = .{},
+        };
+        const vals = [_]Value{.{ .integer = 300 }};
+        const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+        defer allocator.free(entry);
+        try idx_tree.insert("Charlie", entry);
+    }
+
+    // Create IndexOnlyScanOp
+    // covering_columns = ["name", "salary"] (key col first, then INCLUDE cols)
+    // col_names = ["name", "salary"] (want both)
+    const covering_col_names = [_][]const u8{ "name", "salary" };
+    const col_names = [_][]const u8{ "name", "salary" };
+
+    var index_only_scan = IndexOnlyScanOp.init(
+        allocator,
+        &pool,
+        index_root,
+        &covering_col_names,
+        &col_names,
+    );
+
+    // Iterate and collect all rows
+    var rows = std.ArrayListUnmanaged(Row){};
+    defer {
+        for (rows.items) |*r| r.deinit();
+        rows.deinit(allocator);
+    }
+
+    try index_only_scan.open();
+    while (try index_only_scan.next()) |row| {
+        try rows.append(allocator, row);
+    }
+    index_only_scan.close();
+
+    // Should have 3 rows
+    try std.testing.expectEqual(@as(usize, 3), rows.items.len);
+
+    // Verify row 1
+    try std.testing.expectEqual(@as(usize, 2), rows.items[0].columns.len);
+    try std.testing.expectEqualStrings("name", rows.items[0].columns[0]);
+    try std.testing.expectEqualStrings("salary", rows.items[0].columns[1]);
+    try std.testing.expectEqualStrings("Alice", rows.items[0].values[0].text);
+    try std.testing.expectEqual(@as(i64, 100), rows.items[0].values[1].integer);
+
+    // Verify row 2
+    try std.testing.expectEqualStrings("Bob", rows.items[1].values[0].text);
+    try std.testing.expectEqual(@as(i64, 200), rows.items[1].values[1].integer);
+
+    // Verify row 3
+    try std.testing.expectEqualStrings("Charlie", rows.items[2].values[0].text);
+    try std.testing.expectEqual(@as(i64, 300), rows.items[2].values[1].integer);
+}
+
+test "step 5: IndexOnlyScanOp MVCC filters invisible rows" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5_index_only_mvcc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    var idx_tree = BTree.init(&pool, index_root);
+
+    // Entry 1: visible (xmin=5, xmax=INVALID)
+    {
+        var row_key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &row_key_buf, 1, .big);
+        const header = TupleHeader{
+            .xmin = 5,
+            .xmax = mvcc_mod.INVALID_XID,
+            .cid = 0,
+            .flags = .{},
+        };
+        const vals = [_]Value{.{ .text = "Visible" }};
+        const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+        defer allocator.free(entry);
+        try idx_tree.insert("key1", entry);
+    }
+
+    // Entry 2: invisible (xmin=50, current snapshot is 30)
+    {
+        var row_key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &row_key_buf, 2, .big);
+        const header = TupleHeader{
+            .xmin = 50,  // Future transaction
+            .xmax = mvcc_mod.INVALID_XID,
+            .cid = 0,
+            .flags = .{},
+        };
+        const vals = [_]Value{.{ .text = "Invisible" }};
+        const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+        defer allocator.free(entry);
+        try idx_tree.insert("key2", entry);
+    }
+
+    // Entry 3: deleted (xmin=6, xmax=20, current snapshot is 30)
+    {
+        var row_key_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &row_key_buf, 3, .big);
+        const header = TupleHeader{
+            .xmin = 6,
+            .xmax = 20,  // Deleted before current snapshot
+            .cid = 0,
+            .flags = .{},
+        };
+        const vals = [_]Value{.{ .text = "Deleted" }};
+        const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+        defer allocator.free(entry);
+        try idx_tree.insert("key3", entry);
+    }
+
+    const covering_col_names = [_][]const u8{ "name", "value" };
+    const col_names = [_][]const u8{ "name", "value" };
+
+    var index_only_scan = IndexOnlyScanOp.init(
+        allocator,
+        &pool,
+        index_root,
+        &covering_col_names,
+        &col_names,
+    );
+
+    // Set MVCC context: snapshot sees xids < 31 as committed (none active)
+    const mvcc_ctx = MvccContext{
+        .enabled = true,
+        .snapshot = .{ .xmin = 0, .xmax = 31, .active_xids = &.{}, .allocator = null },
+        .current_xid = 30,
+        .current_cid = 0,
+        .tm = null,
+    };
+    index_only_scan.mvcc_ctx = mvcc_ctx;
+
+    // Iterate and collect visible rows only
+    var rows = std.ArrayListUnmanaged(Row){};
+    defer {
+        for (rows.items) |*r| r.deinit();
+        rows.deinit(allocator);
+    }
+
+    try index_only_scan.open();
+    while (try index_only_scan.next()) |row| {
+        try rows.append(allocator, row);
+    }
+    index_only_scan.close();
+
+    // Should have only 1 visible row (the first one).
+    // values[0] = "name" (covering_columns[0], the index key column, from the raw B+Tree key)
+    // values[1] = "value" (covering_columns[1], the decoded INCLUDE column)
+    try std.testing.expectEqual(@as(usize, 1), rows.items.len);
+    try std.testing.expectEqualStrings("key1", rows.items[0].values[0].text);
+    try std.testing.expectEqualStrings("Visible", rows.items[0].values[1].text);
+}
+
+test "step 5: IndexOnlyScanOp returns empty result on empty index" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5_index_only_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Empty index - no entries inserted
+    const covering_col_names = [_][]const u8{ "name", "value" };
+    const col_names = [_][]const u8{ "name", "value" };
+
+    var index_only_scan = IndexOnlyScanOp.init(
+        allocator,
+        &pool,
+        index_root,
+        &covering_col_names,
+        &col_names,
+    );
+
+    var rows = std.ArrayListUnmanaged(Row){};
+    defer {
+        for (rows.items) |*r| r.deinit();
+        rows.deinit(allocator);
+    }
+
+    try index_only_scan.open();
+    while (try index_only_scan.next()) |row| {
+        try rows.append(allocator, row);
+    }
+    index_only_scan.close();
+
+    // Should return no rows
+    try std.testing.expectEqual(@as(usize, 0), rows.items.len);
 }
