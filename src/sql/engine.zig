@@ -14203,7 +14203,41 @@ test "SAVEPOINT: replace same-name savepoint" {
         r.close(testing.allocator);
     }
 
+    // Within the still-open transaction, ROLLBACK TO SAVEPOINT's CID-based
+    // hiding correctly makes row 3 invisible to this transaction's own reads.
+    {
+        var sel = try db.execSQL("SELECT val FROM sp_rep ORDER BY val ASC");
+        defer sel.close(testing.allocator);
+        var vals = std.ArrayListUnmanaged(i64){};
+        defer vals.deinit(testing.allocator);
+        while (try sel.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try vals.append(testing.allocator, row.values[0].integer);
+        }
+        try testing.expectEqualSlices(i64, &.{ 1, 2 }, vals.items);
+    }
+
     try db.commitTransaction();
+
+    // KNOWN BUG (yusa-imit/silica#125): row 3 reappears after COMMIT.
+    // ROLLBACK TO SAVEPOINT only hides later writes via a per-transaction CID
+    // comparison in isTupleVisibleWithTm (own-xid rule), which stops applying
+    // the moment the enclosing transaction commits and the xid is globally
+    // marked committed — nothing physically undoes the row. A real fix needs
+    // sub-transaction IDs or a physical undo log (see the issue for design
+    // options); until then this asserts the actual, buggy, post-commit state
+    // rather than silently passing on an assertion that doesn't hold.
+    var sel = try db.execSQL("SELECT val FROM sp_rep ORDER BY val ASC");
+    defer sel.close(testing.allocator);
+    var vals = std.ArrayListUnmanaged(i64){};
+    defer vals.deinit(testing.allocator);
+    while (try sel.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        try vals.append(testing.allocator, row.values[0].integer);
+    }
+    try testing.expectEqualSlices(i64, &.{ 1, 2, 3 }, vals.items);
 }
 
 test "SAVEPOINT: transaction commit cleans up savepoints" {
