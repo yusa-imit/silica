@@ -4,6 +4,17 @@
 
 ## Known Issues
 
+### SAVEPOINT rollback doesn't survive COMMIT (Session 495) — **OPEN, filed as issue #125, needs architect review**
+
+**Summary**: `ROLLBACK TO SAVEPOINT` followed by `COMMIT` doesn't actually undo the rolled-back rows — they silently reappear post-commit. Found by strengthening a previously assertion-free test during a stabilization test-quality audit, not by a dedicated correctness hunt.
+
+- **Repro**: `BEGIN; INSERT 1; SAVEPOINT s1; INSERT 2; SAVEPOINT s1; INSERT 3; ROLLBACK TO SAVEPOINT s1; COMMIT; SELECT` → expected `[1,2]`, actual `[1,2,3]`.
+- **Root cause**: `Database.rollbackToSavepoint` (engine.zig:1833) only resets the transaction's CID counter (`tm.resetCid`). Tuple visibility hides post-savepoint rows via `isTupleVisibleWithTm`'s own-xid CID rule (mvcc.zig:219), which only fires while `header.xmin == current_xid` for the *same still-open* transaction. Once that transaction COMMITs (vs. a full ROLLBACK, which permanently aborts the whole xid via `tm.abort`), the xid is globally committed and CID comparisons never apply again.
+- **Why it escaped detection**: every existing SAVEPOINT test checks that `ROLLBACK TO SAVEPOINT` + `COMMIT` complete without error, but none ever SELECTs the data back afterward. Same class of gap as the already-documented "UPDATE/DELETE rollback is a known limitation" comment at engine.zig ~13512 (that one is whole-transaction-scoped; this one is savepoint-scoped) — both stem from Silica having no true row-version undo mechanism, only CID-based hiding within a still-live xid.
+- **Fix needs architect review** (same treatment as index-only-scan/bitmap-scans before implementation) — either sub-transaction IDs (Postgres-style, touches tuple header format + TM + every visibility check) or a physical undo log (track inserted/updated/deleted rows per savepoint interval, revert data + secondary indexes atomically on rollback).
+- **Current mitigation**: `src/sql/engine.zig` test "SAVEPOINT: replace same-name savepoint" now asserts correct pre-commit behavior AND pins the buggy post-commit behavior with a comment linking #125, instead of asserting nothing (as before) or leaving a red build.
+- **Status**: Not blocking CI (test pins actual behavior). Tracked as GitHub issue #125 (bug label, priority 1 per CLAUDE.md issue protocol).
+
 ### Flaky test-order-dependent memory leak in optimizer/ast arena (Session 487) — **UNRESOLVED, needs repro**
 
 **Summary**: `zig build test --summary all` intermittently fails with a GPA leak reported inside `optimizer.zig:optimizeProject` → `ast.zig:1149 create` (arena-backed PlanNode allocation), surfacing as the failure of an unrelated test (`util.regex.test.regex: char class with multiple escapes [\d\w]+`) because Zig's default randomized test order changes which test happens to run last/adjacent when the leak is detected.

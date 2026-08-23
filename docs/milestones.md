@@ -117,6 +117,7 @@
 
 | # | Title | Closed |
 |---|-------|--------|
+| #15 | feat: implement SSI (Serializable Snapshot Isolation) for SERIALIZABLE isolation level | — (SSI done; storage layer upgrade tracked separately) |
 | #24 | PreparedStatement arena lifecycle needs architectural refactor | 2026-03-29 |
 | #3 | Flaky test: AutoVacuumDaemon — inserts only never trigger vacuum | 2026-03-15 |
 | #2 | CI: net.Stream.Writer incompatibility on Linux | 2026-03-11 |
@@ -126,7 +127,7 @@
 
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
-| #15 | feat: implement SSI (Serializable Snapshot Isolation) for SERIALIZABLE isolation level | enhancement | Open — future enhancement (post-v1.0) |
+| #125 | SAVEPOINT rollback silently reverts after COMMIT — rows reappear | bug | Open — needs architect review (sub-transaction IDs vs. physical undo log), see `.claude/memory/debugging.md` |
 
 ---
 

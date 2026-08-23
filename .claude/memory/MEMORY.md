@@ -6,13 +6,13 @@
 > protocol, but treat the auto-memory system as the primary source of truth for recent
 > session detail — this file lags behind by design to avoid duplicate maintenance.
 
-## Current State (Session 453, 2026-07-12)
-- **Version**: v1.0.1 (production ready, all 12 phases complete)
-- **Mode**: Maintenance — incremental improvements, test coverage, quality
-- **Dependencies**: sailor v2.83.0 ✅ (latest), zuda v2.0.4 ✅ (latest)
+## Current State (Session 495, 2026-08-24)
+- **Version**: v1.0.1 (production ready, all 12 phases complete); index-only-scan phased plan completed 7/7 (session 494)
+- **Mode**: Stabilization — test-quality audit found + filed a real correctness bug
+- **Dependencies**: sailor v2.94.4 ✅ (latest), zuda v2.2.0 ✅ (latest)
 - **CI**: ✅ GREEN
-- **Tests**: 4354/4384 passed, 30 skipped, `zig build` clean
-- **Open issues**: 0
+- **Tests**: 4512/4534 passed, 22 skipped, `zig build` clean
+- **Open issues**: 1 — #125 SAVEPOINT rollback-after-commit bug (needs architect review, see project-context.md / debugging.md)
 
 ## Pattern: Maintenance Cycle
 Since v1.0.0 release, sessions follow a predictable pattern:

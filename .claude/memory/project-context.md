@@ -9,6 +9,16 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
+### Last Session (Session 495 - STABILIZATION MODE)
+- **Date**: 2026-08-24
+- **Mode**: STABILIZATION MODE (counter 495, 495 % 5 == 0)
+- **CI**: ✅ GREEN before session start; no open issues; sailor v2.94.4 and zuda v2.2.0 both already latest (no migration needed)
+- **Work Done**:
+  - Delegated a test-quality audit (test-writer subagent) across src/storage, src/sql, src/tx, src/util, src/server, src/types, src/catalog. Verified each finding directly rather than trusting the subagent's report. Confirmed 4 assertion-free/weak tests in `engine.zig`/`executor.zig` that would pass regardless of whether the described behavior actually worked, and strengthened them: "Database open and close" now verifies persistence across close/reopen; "Lock: Database.close releases locks" now asserts a lock was actually held pre-close; "CREATE TABLE IF NOT EXISTS" now explicitly checks a plain re-CREATE errors; UUID `parseUuidString uppercase` now checks decoded bytes. Commit 5a51dcf.
+  - While adding a natural post-commit assertion to a 5th test ("SAVEPOINT: replace same-name savepoint"), **found a real, previously undetected bug**: `ROLLBACK TO SAVEPOINT` + `COMMIT` doesn't undo the rolled-back INSERT — rows reappear post-commit. Filed as GitHub issue #125 with full root-cause analysis (see `debugging.md`). Fixed the test to assert correct pre-commit behavior and pin the documented-buggy post-commit behavior (commit 080b59d) rather than leaving a false-passing or red test.
+- **Tests**: 4512/4534 passed, 22 skipped, 0 failed (session end — same count as 494, fixes strengthened existing tests rather than adding new ones)
+- **Next priority**: Issue #125 needs `architect` review before fixing (sub-transaction IDs vs. physical undo log across data+index B+Trees) — treat like index-only-scan/bitmap-scans, not a quick win. FEATURE-mode sessions can otherwise proceed with normal Phase 5 work per PRD.
+
 ### Last Session (Session 494 - FEATURE MODE)
 - **Date**: 2026-08-23
 - **Mode**: FEATURE MODE (counter 494, 494 % 5 != 0)
