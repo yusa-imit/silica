@@ -15739,6 +15739,13 @@ test "UUID parseUuidString without dashes" {
 test "UUID parseUuidString uppercase" {
     const result = parseUuidString("550E8400-E29B-41D4-A716-446655440000");
     try std.testing.expect(result != null);
+    const bytes = result.?;
+    try std.testing.expectEqual(@as(u8, 0x55), bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0x0e), bytes[1]);
+    try std.testing.expectEqual(@as(u8, 0x84), bytes[2]);
+    try std.testing.expectEqual(@as(u8, 0x00), bytes[3]);
+    try std.testing.expectEqual(@as(u8, 0x44), bytes[13]);
+    try std.testing.expectEqual(@as(u8, 0x00), bytes[15]);
 }
 
 test "UUID parseUuidString invalid" {

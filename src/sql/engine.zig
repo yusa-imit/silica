@@ -9928,11 +9928,17 @@ test "Database open and close" {
     defer std.fs.cwd().deleteFile(path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{});
+    {
+        var r = try db.execSQL("CREATE TABLE persisted (id INTEGER)");
+        r.close(testing.allocator);
+    }
     db.close();
 
-    // Re-open should work
+    // Re-open should see the table created before close — proves the first
+    // close() actually flushed to disk rather than just returning cleanly.
     var db2 = try Database.open(testing.allocator, path, .{});
-    db2.close();
+    defer db2.close();
+    try testing.expect(try db2.catalog.tableExists("persisted"));
 }
 
 test "CREATE TABLE via execSQL" {
@@ -9963,7 +9969,12 @@ test "CREATE TABLE IF NOT EXISTS" {
     var r1 = try db.execSQL("CREATE TABLE t1 (id INTEGER)");
     defer r1.close(testing.allocator);
 
-    // Should not error
+    // Without IF NOT EXISTS, re-creating the same table must still error —
+    // otherwise this test couldn't distinguish IF NOT EXISTS actually
+    // suppressing the error from CREATE TABLE conflict errors being broken.
+    try testing.expectError(error.TableAlreadyExists, db.execSQL("CREATE TABLE t1 (id INTEGER)"));
+
+    // With IF NOT EXISTS, the same statement must succeed instead.
     var r2 = try db.execSQL("CREATE TABLE IF NOT EXISTS t1 (id INTEGER)");
     defer r2.close(testing.allocator);
 }
@@ -13369,6 +13380,11 @@ test "Lock: Database.close releases locks from active transaction" {
         r.close(testing.allocator);
     }
 
+    // Confirm the INSERT actually acquired a row lock before we test that
+    // close() releases it — otherwise this test would pass even if the
+    // INSERT path stopped taking locks entirely.
+    try testing.expect(db.lock_manager.activeRowLockCount() > 0);
+
     // close should abort the txn and release locks
     db.close();
     std.fs.cwd().deleteFile(path) catch {};
@@ -14241,8 +14257,16 @@ test "SAVEPOINT: transaction rollback cleans up savepoints" {
         var r = try db.exec("SAVEPOINT s2");
         r.close(testing.allocator);
     }
+    // Confirm both savepoints were actually recorded before testing that
+    // rollback cleans them up — otherwise this would pass even if SAVEPOINT
+    // silently no-op'd.
+    try testing.expectEqual(@as(usize, 2), db.current_txn.?.savepoints.items.len);
+
     // Rollback should clean up all savepoints without leaking
     try db.rollbackTransaction();
+
+    // Transaction (and its savepoints) must be fully torn down after rollback.
+    try testing.expect(db.current_txn == null);
 }
 
 test "MVCC isolation: aborted INSERT invisible after rollback via new transaction" {
