@@ -559,10 +559,19 @@ pub const EngineError = error{
     ConstraintViolation,
 };
 
+/// Record of a change for physical undo (issue #125 fix).
+pub const UndoRecord = struct {
+    table_name: []const u8,
+    row_key: []const u8,
+    before_data: ?[]const u8,
+    after_data: ?[]const u8,
+};
+
 /// A named savepoint within a transaction.
 pub const Savepoint = struct {
     name: []const u8,
     cid: u16,
+    undo_len: usize,
 };
 
 /// Active transaction context for the current session.
@@ -574,7 +583,9 @@ pub const TransactionContext = struct {
     snapshot: ?Snapshot = null,
     /// Stack of named savepoints (most recent last).
     savepoints: std.ArrayListUnmanaged(Savepoint) = .{},
-    /// Allocator for savepoint stack.
+    /// Physical undo log for issue #125 fix (SAVEPOINT rollback).
+    undo_log: std.ArrayListUnmanaged(UndoRecord) = .{},
+    /// Allocator for savepoint stack and undo log.
     allocator: ?Allocator = null,
 
     pub fn deinit(self: *TransactionContext) void {
@@ -582,6 +593,13 @@ pub const TransactionContext = struct {
         if (self.allocator) |alloc| {
             for (self.savepoints.items) |sp| alloc.free(sp.name);
             self.savepoints.deinit(alloc);
+            for (self.undo_log.items) |rec| {
+                alloc.free(rec.table_name);
+                alloc.free(rec.row_key);
+                if (rec.before_data) |bd| alloc.free(bd);
+                if (rec.after_data) |ad| alloc.free(ad);
+            }
+            self.undo_log.deinit(alloc);
         }
     }
 };
@@ -1805,12 +1823,12 @@ pub const Database = struct {
         for (txn.savepoints.items, 0..) |*sp, idx| {
             if (std.mem.eql(u8, sp.name, name)) {
                 alloc.free(sp.name);
-                txn.savepoints.items[idx] = .{ .name = owned_name, .cid = cid };
+                txn.savepoints.items[idx] = .{ .name = owned_name, .cid = cid, .undo_len = txn.undo_log.items.len };
                 return;
             }
         }
 
-        txn.savepoints.append(alloc, .{ .name = owned_name, .cid = cid }) catch return EngineError.OutOfMemory;
+        txn.savepoints.append(alloc, .{ .name = owned_name, .cid = cid, .undo_len = txn.undo_log.items.len }) catch return EngineError.OutOfMemory;
     }
 
     /// Release a savepoint (discard it, merging into parent transaction).
@@ -1856,6 +1874,85 @@ pub const Database = struct {
         // commands issued after the savepoint invisible within this transaction's
         // visibility rules (cid-based filtering in isTupleVisible).
         self.tm.resetCid(txn.xid, saved_cid) catch return EngineError.TransactionError;
+    }
+
+    /// Record an undo entry for physical rollback (issue #125 fix).
+    /// No-op if no active transaction. Dupes all buffers for ownership.
+    pub fn recordUndo(self: *Database, table_name: []const u8, row_key: []const u8, before_data: ?[]const u8, after_data: ?[]const u8) !void {
+        var txn = &(self.current_txn orelse return);
+        const alloc = txn.allocator orelse return;
+
+        const undo_record = UndoRecord{
+            .table_name = try alloc.dupe(u8, table_name),
+            .row_key = try alloc.dupe(u8, row_key),
+            .before_data = if (before_data) |bd| try alloc.dupe(u8, bd) else null,
+            .after_data = if (after_data) |ad| try alloc.dupe(u8, ad) else null,
+        };
+        try txn.undo_log.append(alloc, undo_record);
+    }
+
+    /// Replay undo log from the end down to a watermark, physically reverting changes.
+    /// Used for ROLLBACK TO SAVEPOINT (watermark from Savepoint.undo_len).
+    pub fn replayUndoTo(self: *Database, txn: *TransactionContext, watermark: usize) !void {
+        const alloc = txn.allocator orelse return;
+
+        while (txn.undo_log.items.len > watermark) {
+            const record = txn.undo_log.pop() orelse break;
+            defer {
+                alloc.free(record.table_name);
+                alloc.free(record.row_key);
+                if (record.before_data) |bd| alloc.free(bd);
+                if (record.after_data) |ad| alloc.free(ad);
+            }
+
+            // Deserialize before/after data to recover headers and values
+            const before_result = blk_before: {
+                if (record.before_data) |bd| {
+                    break :blk_before mvcc_mod.deserializeVersionedRow(alloc, bd) catch null;
+                }
+                break :blk_before null;
+            };
+            defer if (before_result) |br| {
+                for (br.values) |v| v.free(alloc);
+                alloc.free(br.values);
+            };
+
+            const after_result = blk_after: {
+                if (record.after_data) |ad| {
+                    break :blk_after mvcc_mod.deserializeVersionedRow(alloc, ad) catch null;
+                }
+                break :blk_after null;
+            };
+            defer if (after_result) |ar| {
+                for (ar.values) |v| v.free(alloc);
+                alloc.free(ar.values);
+            };
+
+            // Get table info for index maintenance
+            var table_info = self.catalog.getTable(record.table_name) catch continue;
+            defer table_info.deinit(alloc);
+
+            // Get data B+Tree for this table
+            var tree = BTree.init(self.pool, table_info.data_root_page_id);
+
+            // If after_data exists (this was an insert/update), remove current index entries first
+            if (after_result) |ar| {
+                self.deleteIndexEntries(&table_info, ar.values, record.row_key);
+            }
+
+            // Apply the before state
+            if (before_result) |br| {
+                // Delete any existing entry (needed for update case)
+                tree.delete(record.row_key) catch {};
+                // Insert/restore the before state
+                try tree.insert(record.row_key, record.before_data.?);
+                // Re-insert index entries for the before state
+                try self.insertIndexEntries(record.table_name, &table_info, br.values, record.row_key, br.header);
+            } else {
+                // before_data is null => this was a delete, physically remove from tree
+                tree.delete(record.row_key) catch {};
+            }
+        }
     }
 
     /// Get MVCC context for the current statement.
@@ -14596,6 +14693,332 @@ test "SAVEPOINT: outside transaction returns error" {
         r.close(testing.allocator);
         try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
     }
+}
+
+// ── Undo Log (issue #125 fix, Step 1: core data structures + replay engine) ──
+// These tests exercise `Database.recordUndo` / `Database.replayUndoTo` and the
+// `TransactionContext.undo_log` / `Savepoint.undo_len` fields directly, in
+// isolation from SQL-level DML (no INSERT/UPDATE/DELETE wiring exists yet —
+// that lands in later steps of the phased plan). See
+// .claude/memory/architecture.md "SAVEPOINT Rollback Fix — Physical Undo Log
+// Design" step 1 for the full spec these tests pin.
+
+test "undo log: recordUndo is a no-op with no active transaction" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_noop.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try testing.expect(db.current_txn == null);
+
+    // No active transaction — must return successfully and do nothing
+    // observable (in particular, must not create a transaction as a side
+    // effect and must not leak the caller's buffers into anywhere).
+    try db.recordUndo("nonexistent_table", "somekey", "before", "after");
+
+    try testing.expect(db.current_txn == null);
+}
+
+test "undo log: recordUndo duplicates buffers rather than aliasing them" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_dupe.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+
+    const table_lit = "sp_undo_dup";
+    const key_lit = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 9 };
+    const before_lit = "BEFORE-PAYLOAD";
+    const after_lit = "AFTER-PAYLOAD";
+
+    const in_table = try testing.allocator.dupe(u8, table_lit);
+    const in_key = try testing.allocator.dupe(u8, &key_lit);
+    const in_before = try testing.allocator.dupe(u8, before_lit);
+    const in_after = try testing.allocator.dupe(u8, after_lit);
+
+    try db.recordUndo(in_table, in_key, in_before, in_after);
+
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+    const rec = db.current_txn.?.undo_log.items[0];
+
+    // Stored copies must not alias the caller-owned input buffers.
+    try testing.expect(rec.table_name.ptr != in_table.ptr);
+    try testing.expect(rec.row_key.ptr != in_key.ptr);
+    try testing.expect(rec.before_data.?.ptr != in_before.ptr);
+    try testing.expect(rec.after_data.?.ptr != in_after.ptr);
+
+    // Free the caller's inputs immediately. If recordUndo had aliased them
+    // instead of duplicating, this would either crash under the
+    // leak-checking testing allocator (double free on txn.deinit()) or
+    // corrupt the stored record, and the assertions below would fail.
+    testing.allocator.free(in_table);
+    testing.allocator.free(in_key);
+    testing.allocator.free(in_before);
+    testing.allocator.free(in_after);
+
+    try testing.expectEqualStrings(table_lit, db.current_txn.?.undo_log.items[0].table_name);
+    try testing.expectEqualSlices(u8, &key_lit, db.current_txn.?.undo_log.items[0].row_key);
+    try testing.expectEqualStrings(before_lit, db.current_txn.?.undo_log.items[0].before_data.?);
+    try testing.expectEqualStrings(after_lit, db.current_txn.?.undo_log.items[0].after_data.?);
+
+    // rollbackTransaction -> TransactionContext.deinit() must free the
+    // duplicated undo_log buffers without leaking (checked by testing.allocator).
+    try db.rollbackTransaction();
+}
+
+test "undo log: Savepoint.undo_len captures the watermark, not the current length" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_watermark_capture.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    try db.beginTransaction(.read_committed);
+
+    // No undo records yet — savepoint must capture undo_len == 0.
+    try db.createSavepoint("s1");
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.savepoints.items.len);
+    try testing.expectEqual(@as(usize, 0), db.current_txn.?.savepoints.items[0].undo_len);
+
+    // Record two undo entries *after* the savepoint was created.
+    try db.recordUndo("t", "k1", null, "row1");
+    try db.recordUndo("t", "k2", null, "row2");
+
+    try testing.expectEqual(@as(usize, 2), db.current_txn.?.undo_log.items.len);
+    // The savepoint's watermark must still reflect the length at creation
+    // time (0), not the current length (2).
+    try testing.expectEqual(@as(usize, 0), db.current_txn.?.savepoints.items[0].undo_len);
+
+    try db.rollbackTransaction();
+}
+
+test "undo log: replayUndoTo reverts an insert (before=null)" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_replay_insert.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE undo_ins (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    var table_info = try db.catalog.getTable("undo_ins");
+    defer table_info.deinit(testing.allocator);
+    var tree = BTree.init(db.pool, table_info.data_root_page_id);
+
+    var key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key_buf, 1, .big);
+
+    const vals = [_]Value{.{ .integer = 777 }};
+    const header = TupleHeader.forInsert(db.current_txn.?.xid, 0);
+    const row_data = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &vals);
+    defer testing.allocator.free(row_data);
+
+    // Physically perform the "insert" the record will describe.
+    try tree.insert(&key_buf, row_data);
+
+    // Sanity: row is actually there before replay.
+    {
+        const before_check = try tree.get(testing.allocator, &key_buf);
+        defer if (before_check) |b| testing.allocator.free(b);
+        try testing.expect(before_check != null);
+    }
+
+    try db.recordUndo("undo_ins", &key_buf, null, row_data);
+
+    const txn = &db.current_txn.?;
+    try db.replayUndoTo(txn, 0);
+
+    try testing.expectEqual(@as(usize, 0), txn.undo_log.items.len);
+
+    const after = try tree.get(testing.allocator, &key_buf);
+    defer if (after) |a| testing.allocator.free(a);
+    try testing.expect(after == null);
+
+    try db.rollbackTransaction();
+}
+
+test "undo log: replayUndoTo reverts a delete (after=null)" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_replay_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE undo_del (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    var table_info = try db.catalog.getTable("undo_del");
+    defer table_info.deinit(testing.allocator);
+    var tree = BTree.init(db.pool, table_info.data_root_page_id);
+
+    var key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key_buf, 5, .big);
+
+    const vals = [_]Value{.{ .integer = 314 }};
+    const header = TupleHeader.forInsert(db.current_txn.?.xid, 0);
+    const row_data = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &vals);
+    defer testing.allocator.free(row_data);
+
+    // The row currently does NOT exist (it was "deleted" already) — this is
+    // the physical state a real DELETE would have left behind.
+    {
+        const absent = try tree.get(testing.allocator, &key_buf);
+        defer if (absent) |a| testing.allocator.free(a);
+        try testing.expect(absent == null);
+    }
+
+    try db.recordUndo("undo_del", &key_buf, row_data, null);
+
+    const txn = &db.current_txn.?;
+    try db.replayUndoTo(txn, 0);
+
+    try testing.expectEqual(@as(usize, 0), txn.undo_log.items.len);
+
+    const restored = try tree.get(testing.allocator, &key_buf);
+    defer if (restored) |r| testing.allocator.free(r);
+    try testing.expect(restored != null);
+    try testing.expectEqualSlices(u8, row_data, restored.?);
+
+    try db.rollbackTransaction();
+}
+
+test "undo log: replayUndoTo reverts an update (before and after both set)" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_replay_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE undo_upd (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    var table_info = try db.catalog.getTable("undo_upd");
+    defer table_info.deinit(testing.allocator);
+    var tree = BTree.init(db.pool, table_info.data_root_page_id);
+
+    var key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key_buf, 2, .big);
+
+    const old_vals = [_]Value{.{ .integer = 100 }};
+    const new_vals = [_]Value{.{ .integer = 200 }};
+    const header = TupleHeader.forInsert(db.current_txn.?.xid, 0);
+    const old_row = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &old_vals);
+    defer testing.allocator.free(old_row);
+    const new_row = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &new_vals);
+    defer testing.allocator.free(new_row);
+
+    // Physically apply the "new" state — as an UPDATE already would have.
+    try tree.insert(&key_buf, new_row);
+
+    try db.recordUndo("undo_upd", &key_buf, old_row, new_row);
+
+    const txn = &db.current_txn.?;
+    try db.replayUndoTo(txn, 0);
+
+    try testing.expectEqual(@as(usize, 0), txn.undo_log.items.len);
+
+    const restored = try tree.get(testing.allocator, &key_buf);
+    defer if (restored) |r| testing.allocator.free(r);
+    try testing.expect(restored != null);
+    try testing.expectEqualSlices(u8, old_row, restored.?);
+    // Must not still hold the pre-undo "new" state.
+    try testing.expect(!std.mem.eql(u8, new_row, restored.?));
+
+    try db.rollbackTransaction();
+}
+
+test "undo log: replayUndoTo respects the watermark and only unwinds newer records" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_undo_log_watermark_replay.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE undo_wm (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    var table_info = try db.catalog.getTable("undo_wm");
+    defer table_info.deinit(testing.allocator);
+    var tree = BTree.init(db.pool, table_info.data_root_page_id);
+
+    const header = TupleHeader.forInsert(db.current_txn.?.xid, 0);
+
+    var key1: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key1, 1, .big);
+    var key2: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key2, 2, .big);
+    var key3: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key3, 3, .big);
+
+    const row1 = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &[_]Value{.{ .integer = 1 }});
+    defer testing.allocator.free(row1);
+    const row2 = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &[_]Value{.{ .integer = 2 }});
+    defer testing.allocator.free(row2);
+    const row3 = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &[_]Value{.{ .integer = 3 }});
+    defer testing.allocator.free(row3);
+
+    // Physically apply three "inserts" and record undo for each, in order.
+    try tree.insert(&key1, row1);
+    try db.recordUndo("undo_wm", &key1, null, row1);
+
+    try tree.insert(&key2, row2);
+    try db.recordUndo("undo_wm", &key2, null, row2);
+
+    try tree.insert(&key3, row3);
+    try db.recordUndo("undo_wm", &key3, null, row3);
+
+    const txn = &db.current_txn.?;
+    try testing.expectEqual(@as(usize, 3), txn.undo_log.items.len);
+
+    // Replay only down to watermark 1 — should undo record 3 then record 2
+    // (reverse chronological order), leaving record 1's effect untouched.
+    try db.replayUndoTo(txn, 1);
+
+    try testing.expectEqual(@as(usize, 1), txn.undo_log.items.len);
+
+    // key1's insert must remain intact (not part of the unwound range).
+    const r1 = try tree.get(testing.allocator, &key1);
+    defer if (r1) |v| testing.allocator.free(v);
+    try testing.expect(r1 != null);
+    try testing.expectEqualSlices(u8, row1, r1.?);
+
+    // key2 and key3 must have been reverted (their inserts undone).
+    const r2 = try tree.get(testing.allocator, &key2);
+    defer if (r2) |v| testing.allocator.free(v);
+    try testing.expect(r2 == null);
+
+    const r3 = try tree.get(testing.allocator, &key3);
+    defer if (r3) |v| testing.allocator.free(v);
+    try testing.expect(r3 == null);
+
+    try db.rollbackTransaction();
 }
 
 test "MVCC isolation: multiple sequential transactions accumulate data" {
