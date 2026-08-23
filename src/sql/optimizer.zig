@@ -542,11 +542,15 @@ pub const Optimizer = struct {
             if (idx.state != .valid) continue;
             // Use effectiveScanColumns to filter to only the columns actually needed
             const eff_cols = self.effectiveScanColumns(scan);
-            if (indexCoversColumns(eff_cols, idx.column_name, idx.included_columns)) {
+            const covers = indexCoversColumns(eff_cols, idx.column_name, idx.included_columns);
+            if (idx.covering_storage and covers and eff_cols.len > 0) {
                 return self.createNode(.{ .scan = .{
                     .table = scan.table,
                     .alias = scan.alias,
-                    .columns = scan.columns,
+                    // Narrow to the actually-required columns so the physical layer's
+                    // own coverage re-check (buildTableScan) sees the same pruned set
+                    // this decision was based on, instead of the full table schema.
+                    .columns = eff_cols,
                     .index_only = true,
                     .tablesample = scan.tablesample,
                 } });

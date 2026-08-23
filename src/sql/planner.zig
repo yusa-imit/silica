@@ -1451,7 +1451,12 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
 
     switch (node.*) {
         .scan => |s| {
-            try writer.print("Scan: {s}", .{s.table});
+            // Step 6: Distinguish index-only scan from regular scan for testing/visibility
+            if (s.index_only) {
+                try writer.print("Index Only Scan: {s}", .{s.table});
+            } else {
+                try writer.print("Scan: {s}", .{s.table});
+            }
             if (s.alias) |a| try writer.print(" AS {s}", .{a});
             try writer.writeAll("\n");
         },

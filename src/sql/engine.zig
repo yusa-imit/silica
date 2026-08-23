@@ -103,6 +103,7 @@ const DistinctOp = executor_mod.DistinctOp;
 const SetOpOp = executor_mod.SetOpOp;
 const WindowOp = executor_mod.WindowOp;
 const IndexScanOp = executor_mod.IndexScanOp;
+const IndexOnlyScanOp = executor_mod.IndexOnlyScanOp;
 const SetOp = executor_mod.SetOp;
 const ShowOp = executor_mod.ShowOp;
 const ResetOp = executor_mod.ResetOp;
@@ -504,6 +505,23 @@ fn extractGinPredicate(expr: *const ast_mod.Expr) ?GinPredicate {
     return .{ .column_name = col.name, .op = op.op, .rhs = op.right };
 }
 
+/// Check if all columns in scan_cols are covered by an index defined by key_column and included_cols.
+/// Case-insensitive column name matching.
+fn columnsAreCoveredByIndex(scan_cols: []const planner_mod.ColumnRef, key_column: []const u8, included_cols: []const []const u8) bool {
+    for (scan_cols) |col| {
+        if (std.ascii.eqlIgnoreCase(col.column, key_column)) continue;
+        var found = false;
+        for (included_cols) |incl| {
+            if (std.ascii.eqlIgnoreCase(col.column, incl)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
 // ── Database ─────────────────────────────────────────────────────────
 
 pub const OpenOptions = struct {
@@ -671,6 +689,7 @@ pub const PreparedStatement = struct {
 const OperatorChain = struct {
     scan: ?*ScanOp = null,
     index_scan: ?*IndexScanOp = null,
+    index_only_scan: ?*IndexOnlyScanOp = null,
     gin_index_scan: ?*executor_mod.GinIndexScanOp = null,
     filter: ?*FilterOp = null,
     project: ?*ProjectOp = null,
@@ -738,8 +757,23 @@ const OperatorChain = struct {
                 for (defaults) |val| val.free(allocator);
                 allocator.free(defaults);
             }
+            if (is.covering_columns.len > 0) {
+                for (is.covering_columns) |name| allocator.free(@constCast(name));
+                allocator.free(is.covering_columns);
+            }
             allocator.free(is.lookup_key);
             allocator.destroy(is);
+        }
+        if (self.index_only_scan) |ios| {
+            for (ios.col_names) |name| allocator.free(@constCast(name));
+            allocator.free(ios.col_names);
+            if (ios.col_defaults) |defaults| {
+                for (defaults) |val| val.free(allocator);
+                allocator.free(defaults);
+            }
+            for (ios.covering_columns) |name| allocator.free(@constCast(name));
+            allocator.free(ios.covering_columns);
+            allocator.destroy(ios);
         }
         if (self.gin_index_scan) |gs| {
             for (gs.col_names) |name| allocator.free(@constCast(name));
@@ -3920,16 +3954,6 @@ pub const Database = struct {
         // Register SSI read for SERIALIZABLE transactions
         try self.ssiRegisterRead(table_info.data_root_page_id);
 
-        // Build column names for the scan
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
-        for (table_info.columns, 0..) |col, i| {
-            if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return EngineError.OutOfMemory;
-            } else {
-                col_names[i] = self.allocator.dupe(u8, col.name) catch return EngineError.OutOfMemory;
-            }
-        }
-
         // Build default values for columns (needed when old rows have fewer columns than schema)
         const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return EngineError.OutOfMemory;
         for (col_defaults) |*d| d.* = .null_value;
@@ -3937,6 +3961,77 @@ pub const Database = struct {
             if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
                 defer self.allocator.free(expr_sql);
                 col_defaults[i] = evalDefaultExprToValue(expr_sql, self.allocator);
+            }
+        }
+
+        // Check if this is an index-only scan
+        if (scan.index_only) {
+            // Find the covering index that matches the columns we need
+            var covering_idx: ?*const catalog_mod.IndexInfo = null;
+            for (table_info.indexes) |*idx| {
+                if (idx.state != .valid or !idx.covering_storage) continue;
+                if (columnsAreCoveredByIndex(scan.columns, idx.column_name, idx.included_columns)) {
+                    covering_idx = idx;
+                    break;
+                }
+            }
+            if (covering_idx == null) {
+                // Fallback to regular scan if we can't find a suitable covering index
+                // (shouldn't happen if the plan is correct, but be safe)
+                return EngineError.IndexNotFound;
+            }
+            const idx = covering_idx.?;
+
+            // Build covering_columns: index key first, then INCLUDE columns
+            // Use same alias formatting as requested_col_names for correct matching in buildCoveringRow
+            const cov_cols = self.allocator.alloc([]const u8, 1 + idx.included_columns.len) catch return EngineError.OutOfMemory;
+            if (scan.alias) |alias| {
+                cov_cols[0] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, idx.column_name }) catch return EngineError.OutOfMemory;
+            } else {
+                cov_cols[0] = self.allocator.dupe(u8, idx.column_name) catch return EngineError.OutOfMemory;
+            }
+            for (idx.included_columns, 0..) |incl_col, i| {
+                if (scan.alias) |alias| {
+                    cov_cols[1 + i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, incl_col }) catch return EngineError.OutOfMemory;
+                } else {
+                    cov_cols[1 + i] = self.allocator.dupe(u8, incl_col) catch return EngineError.OutOfMemory;
+                }
+            }
+
+            // Build col_names with requested columns only (subset of covering_columns)
+            const requested_col_names = self.allocator.alloc([]const u8, scan.columns.len) catch return EngineError.OutOfMemory;
+            for (scan.columns, 0..) |col_ref, i| {
+                if (scan.alias) |alias| {
+                    requested_col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col_ref.column }) catch return EngineError.OutOfMemory;
+                } else {
+                    requested_col_names[i] = self.allocator.dupe(u8, col_ref.column) catch return EngineError.OutOfMemory;
+                }
+            }
+
+            const index_scan_op = self.allocator.create(IndexOnlyScanOp) catch return EngineError.OutOfMemory;
+            index_scan_op.* = IndexOnlyScanOp.init(
+                self.allocator,
+                self.pool,
+                idx.root_page_id,
+                cov_cols,
+                requested_col_names,
+            );
+            index_scan_op.col_defaults = col_defaults;
+            // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
+            index_scan_op.mvcc_ctx = try self.getMvccContextWithOps(ops);
+            index_scan_op.initCursor(); // Must be called after heap placement
+
+            ops.index_only_scan = index_scan_op;
+            return index_scan_op.iterator();
+        }
+
+        // Build column names for the scan
+        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+        for (table_info.columns, 0..) |col, i| {
+            if (scan.alias) |alias| {
+                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return EngineError.OutOfMemory;
+            } else {
+                col_names[i] = self.allocator.dupe(u8, col.name) catch return EngineError.OutOfMemory;
             }
         }
 
@@ -4074,6 +4169,39 @@ pub const Database = struct {
         idx_op.col_defaults = col_defaults;
         // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
         idx_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
+
+        // Whenever the index uses covering storage, its leaf values are ALWAYS
+        // index-entry-encoded (never a plain row_key) — IndexScanOp.next() must
+        // decode them regardless of whether this particular query can skip the
+        // heap fetch. See `insertIndexEntries` for the storage-format invariant.
+        idx_op.covering = idx_info.covering_storage;
+
+        // Additionally, if every requested column is covered by the index, we can
+        // skip the heap fetch entirely and build the row straight from the entry.
+        if (idx_info.covering_storage and columnsAreCoveredByIndex(scan.columns, idx_info.column_name, idx_info.included_columns)) {
+            // Build covering_columns: index key column first, then INCLUDE columns
+            // Use same alias formatting as col_names for correct matching in buildCoveringRow
+            const cov_cols = self.allocator.alloc([]const u8, 1 + idx_info.included_columns.len) catch return null;
+            if (scan.alias) |alias| {
+                cov_cols[0] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, idx_info.column_name }) catch return null;
+            } else {
+                cov_cols[0] = self.allocator.dupe(u8, idx_info.column_name) catch return null;
+            }
+            for (idx_info.included_columns, 0..) |incl_col, i| {
+                if (scan.alias) |alias| {
+                    cov_cols[1 + i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, incl_col }) catch return null;
+                } else {
+                    cov_cols[1 + i] = self.allocator.dupe(u8, incl_col) catch return null;
+                }
+            }
+            idx_op.covering_columns = cov_cols;
+            // Store typed key value from the WHERE clause instead of reinterpreting raw bytes
+            idx_op.covering_key_value = switch (eq.value_type) {
+                .integer => |v| executor_mod.Value{ .integer = v },
+                .text => |v| executor_mod.Value{ .text = v },
+            };
+        }
+
         ops.index_scan = idx_op;
         return idx_op.iterator();
     }
@@ -8678,7 +8806,7 @@ pub const Database = struct {
                 var plnr = Planner.init(arena.?, provider);
                 const plan = plnr.plan(ex.stmt.*) catch return EngineError.PlanError;
 
-                var opt = Optimizer.init(arena.?);
+                var opt = Optimizer.initWithCatalog(arena.?, &self.catalog);
                 const optimized = opt.optimize(plan) catch return EngineError.PlanError;
 
                 // Format the plan as text using arena allocator
@@ -8776,7 +8904,7 @@ pub const Database = struct {
         var plnr = Planner.init(arena.?, provider);
         const plan = plnr.plan(stmt) catch return EngineError.PlanError;
 
-        var opt = Optimizer.init(arena.?);
+        var opt = Optimizer.initWithCatalog(arena.?, &self.catalog);
         const optimized = opt.optimize(plan) catch return EngineError.PlanError;
 
         // Transfer arena ownership to executePlan — prevent errdefer double-free
@@ -39360,4 +39488,279 @@ test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backwar
     // Should NOT be decodable as covering entry
     const decode_result = index_entry_mod.decodeIndexEntry(allocator, raw_value.?);
     try testing.expectError(error.InvalidIndexEntry, decode_result);
+}
+
+// Step 6/7: Index-Only Scan Cutover Tests — optimizer selects index-only scan when possible (TDD Red phase)
+// These tests verify that when a covering index exists and all required columns are covered,
+// the query optimizer selects "Index Only Scan" instead of a regular table scan.
+// This is end-to-end: verifying both the plan EXPLAIN output AND the SELECT result correctness.
+//
+// Since both index-only scan and heap scan produce identical results, we use EXPLAIN to
+// distinguish between them. Tests 1-2 should FAIL until optimizer.zig's optimizeScan checks
+// idx_info.covering_storage and sets plan.scan.index_only=true.
+
+test "step 6: Full scan with covering index uses Index Only Scan path" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step6_indexonly_fullscan.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT);");
+    defer r1.close(allocator);
+
+    // Create covering index with INCLUDE clause
+    var r2 = try db.execSQL("CREATE INDEX idx_users_name ON users (name) INCLUDE (email);");
+    defer r2.close(allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com');");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO users (id, name, email) VALUES (2, 'Bob', 'bob@example.com');");
+    defer r4.close(allocator);
+
+    // Verify plan uses Index Only Scan for SELECT of covered columns
+    // STEP 6 MUST implement: optimizer.zig's optimizeScan should check covering_storage and set index_only=true
+    var explain_result = try db.execSQL("EXPLAIN SELECT name, email FROM users ORDER BY name");
+    defer explain_result.close(allocator);
+
+    // THIS ASSERTION WILL FAIL until step 6 is implemented (plan will say "Scan:" instead of "Index Only Scan:")
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") != null);
+
+    // Verify SELECT results are correct (regression guard for incorrect implementations)
+    var select_result = try db.execSQL("SELECT name, email FROM users ORDER BY name");
+    defer select_result.close(allocator);
+
+    var row_count: usize = 0;
+    var first_name: []const u8 = "";
+    var first_email: []const u8 = "";
+    var second_name: []const u8 = "";
+    var second_email: []const u8 = "";
+    defer allocator.free(first_name);
+    defer allocator.free(first_email);
+    defer allocator.free(second_name);
+    defer allocator.free(second_email);
+
+    while (try select_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (row_count == 0) {
+            first_name = try allocator.dupe(u8, row.getColumn("name").?.text);
+            first_email = try allocator.dupe(u8, row.getColumn("email").?.text);
+        } else if (row_count == 1) {
+            second_name = try allocator.dupe(u8, row.getColumn("name").?.text);
+            second_email = try allocator.dupe(u8, row.getColumn("email").?.text);
+        }
+        row_count += 1;
+    }
+
+    // Should have 2 rows in name order: Alice, Bob
+    try testing.expectEqual(@as(usize, 2), row_count);
+    try testing.expectEqualSlices(u8, "Alice", first_name);
+    try testing.expectEqualSlices(u8, "alice@example.com", first_email);
+    try testing.expectEqualSlices(u8, "Bob", second_name);
+    try testing.expectEqualSlices(u8, "bob@example.com", second_email);
+}
+
+test "step 6: WHERE equality on indexed column uses Index Only Scan path" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step6_indexonly_whereeq.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, user_id INTEGER, total INTEGER, status TEXT);");
+    defer r1.close(allocator);
+
+    // Create covering index on user_id with status and total as included columns
+    var r2 = try db.execSQL("CREATE INDEX idx_orders_user ON orders (user_id) INCLUDE (total, status);");
+    defer r2.close(allocator);
+
+    // Insert test data (use different user_ids to avoid index duplication)
+    var r3 = try db.execSQL("INSERT INTO orders (order_id, user_id, total, status) VALUES (1, 100, 500, 'pending');");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO orders (order_id, user_id, total, status) VALUES (2, 101, 750, 'completed');");
+    defer r4.close(allocator);
+
+    // Verify plan uses Index Only Scan for SELECT of covered columns with WHERE equality
+    // STEP 6 MUST implement: engine.zig's tryBuildIndexScan should check covering_storage and build IndexScanOp.covering
+    var explain_result = try db.execSQL("EXPLAIN SELECT user_id, total, status FROM orders WHERE user_id = 101");
+    defer explain_result.close(allocator);
+
+    // THIS ASSERTION WILL FAIL until step 6 is implemented (plan will say "Scan:" instead of "Index Only Scan:")
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") != null);
+
+    // Verify SELECT results are correct
+    var select_result = try db.execSQL("SELECT user_id, total, status FROM orders WHERE user_id = 101");
+    defer select_result.close(allocator);
+
+    var row_count: usize = 0;
+    var found_user_id: i64 = 0;
+    var found_total: i64 = 0;
+    var found_status: []const u8 = "";
+    defer allocator.free(found_status);
+
+    while (try select_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        found_user_id = row.getColumn("user_id").?.integer;
+        found_total = row.getColumn("total").?.integer;
+        found_status = try allocator.dupe(u8, row.getColumn("status").?.text);
+        row_count += 1;
+    }
+
+    // Should have 1 row for user_id=101
+    try testing.expectEqual(@as(usize, 1), row_count);
+    try testing.expectEqual(@as(i64, 101), found_user_id);
+    try testing.expectEqual(@as(i64, 750), found_total);
+    try testing.expectEqualSlices(u8, "completed", found_status);
+}
+
+test "step 6: SELECT * must fallback to heap scan (not in covering index)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step6_indexonly_fallback_selectstar.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with extra column
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER, category TEXT);");
+    defer r1.close(allocator);
+
+    // Create covering index that only includes price (not category)
+    var r2 = try db.execSQL("CREATE INDEX idx_products_name ON products (name) INCLUDE (price);");
+    defer r2.close(allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO products (id, name, price, category) VALUES (1, 'Widget', 9, 'tools');");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO products (id, name, price, category) VALUES (2, 'Gadget', 15, 'electronics');");
+    defer r4.close(allocator);
+
+    // SELECT * includes column not in covering index (category), so should use heap scan (regular "Scan")
+    var explain_result = try db.execSQL("EXPLAIN SELECT * FROM products");
+    defer explain_result.close(allocator);
+
+    // Should NOT use Index Only Scan (because category is not covered)
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") == null);
+    // Should use regular Scan
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Scan: products") != null);
+
+    // Verify SELECT results are correct (regression guard)
+    var select_result = try db.execSQL("SELECT id, name, category FROM products");
+    defer select_result.close(allocator);
+
+    var row_count: usize = 0;
+    while (try select_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        _ = row.getColumn("id").?.integer;
+        _ = row.getColumn("name").?.text;
+        _ = row.getColumn("category").?.text;
+        row_count += 1;
+    }
+
+    // Should have 2 rows
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "step 6: Partial coverage fallback to heap scan" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step6_indexonly_fallback_partial.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE sales (id INTEGER PRIMARY KEY, product TEXT, amount INTEGER, discount INTEGER);");
+    defer r1.close(allocator);
+
+    // Create covering index that only includes amount (not discount)
+    var r2 = try db.execSQL("CREATE INDEX idx_sales_product ON sales (product) INCLUDE (amount);");
+    defer r2.close(allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO sales (id, product, amount, discount) VALUES (1, 'Apple', 100, 10);");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO sales (id, product, amount, discount) VALUES (2, 'Banana', 50, 5);");
+    defer r4.close(allocator);
+
+    // SELECT includes both covered (amount) and uncovered (discount) columns, must use heap scan
+    var explain_result = try db.execSQL("EXPLAIN SELECT product, amount, discount FROM sales");
+    defer explain_result.close(allocator);
+
+    // Should NOT use Index Only Scan because discount is not covered
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") == null);
+    // Should use regular Scan
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Scan: sales") != null);
+
+    // Verify SELECT results are correct (regression guard)
+    var select_result = try db.execSQL("SELECT product, amount, discount FROM sales");
+    defer select_result.close(allocator);
+
+    var row_count: usize = 0;
+    while (try select_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        _ = row.getColumn("product").?.text;
+        _ = row.getColumn("amount").?.integer;
+        _ = row.getColumn("discount").?.integer;
+        row_count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 2), row_count);
+}
+
+test "step 6: Non-covering index regression test (must not use Index Only Scan)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_step6_indexonly_noncovering.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT, phone TEXT, address TEXT);");
+    defer r1.close(allocator);
+
+    // Create index WITHOUT INCLUDE clause (non-covering, covering_storage=false)
+    var r2 = try db.execSQL("CREATE INDEX idx_customers_email ON customers (email);");
+    defer r2.close(allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO customers (id, email, phone, address) VALUES (1, 'user1@example.com', '555-1234', '123 Main St');");
+    defer r3.close(allocator);
+
+    // Even though we SELECT email only, since the index is non-covering (no INCLUDE clause),
+    // it should NOT be marked as Index Only Scan (covering_storage=false)
+    var explain_result = try db.execSQL("EXPLAIN SELECT email FROM customers WHERE email = 'user1@example.com'");
+    defer explain_result.close(allocator);
+
+    // Should NOT use Index Only Scan (non-covering index)
+    try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") == null);
+
+    // Verify SELECT results are correct (regression guard)
+    var select_result = try db.execSQL("SELECT email FROM customers WHERE email = 'user1@example.com'");
+    defer select_result.close(allocator);
+
+    var row_count: usize = 0;
+    while (try select_result.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        _ = row.getColumn("email").?.text;
+        row_count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 1), row_count);
 }
