@@ -9,6 +9,14 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
+### Last Session (Session 494 - FEATURE MODE)
+- **Date**: 2026-08-23
+- **Mode**: FEATURE MODE (counter 494, 494 % 5 != 0)
+- **CI**: GREEN before session start; found index-only-scan step 6/7 already ~90% implemented but uncommitted from a prior session (had debug `std.debug.print` calls left in and had never been run against `zig build test`)
+- **Work Done**: Finished and fixed the uncommitted step 6/7 WIP (see `architecture.md` step 6 for full bug list — narrowed `optimizeScan`'s returned `.columns` to the pruned required-columns set, switched EXPLAIN + the main DML path to `Optimizer.initWithCatalog`, fixed a real silent-wrong-results bug in `IndexScanOp.next()` where covering-storage leaf bytes were misread as a plain row_key whenever the query's SELECT list wasn't fully covered, fixed 2 leaks). Deleted 4 dead commented-out `executor.zig` test stubs (wrong/nonexistent API) superseded by 6 real passing `engine.zig` tests. Commit caae9d8. Then handled priority-2 migration issue #124 (sailor v2.94.3→v2.94.4, patch, no breaking changes, no silica source changes needed) — commit 548630a, issue auto-closed via commit trailer.
+- **Tests**: 4512/4534 passed, 22 skipped, 0 failed (session end)
+- **Next priority**: Index-only-scan 7-step plan is now complete (see architecture.md step 7 — treated as satisfied by existing coverage rather than adding a synthetic-scenario test). Resume regular FEATURE-mode dependency-graph work per CLAUDE.md, or check `next-priorities.md` for the next non-trivial TODO (GiST/GIN, replication WAL sender/receiver stubs, MATCH_RECOGNIZE).
+
 ### Last Session (Session 490 - STABILIZATION MODE)
 - **Date**: 2026-08-22
 - **Mode**: STABILIZATION MODE (counter 490, 490 % 5 == 0)
