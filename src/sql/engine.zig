@@ -5029,6 +5029,13 @@ pub const Database = struct {
                                     EngineError.StorageError;
                             };
 
+                            // Record physical undo for this ON CONFLICT DO UPDATE
+                            // (issue #125 fix, step 5/8). existing_data/new_row_data
+                            // are still in scope here (their defers fire at the end
+                            // of this switch arm) and recordUndo dupes both buffers
+                            // internally, so it's safe to pass them directly.
+                            self.recordUndo(actual_table, conflicting_key, existing_data, new_row_data) catch return EngineError.OutOfMemory;
+
                             next_key -= 1;
                             insert_succeeded = true;
                             via_on_conflict_update = true;
@@ -5041,9 +5048,9 @@ pub const Database = struct {
 
             // For successful inserts (no conflict or conflict handled), add to collection and increment count
             if (insert_succeeded) {
-                // Record physical undo for plain inserts only (issue #125 fix,
-                // step 2/8). ON CONFLICT DO UPDATE gets its own undo entry in a
-                // later step; ON CONFLICT DO NOTHING never reaches this block
+                // Record physical undo for plain inserts (issue #125 fix, step
+                // 2/8). ON CONFLICT DO UPDATE already recorded its own undo entry
+                // above (step 5/8); ON CONFLICT DO NOTHING never reaches this block
                 // (it `continue`s after retracting the row), so no entry is left
                 // behind for it either.
                 if (!via_on_conflict_update) {
@@ -15422,6 +15429,165 @@ test "step 4: multi-row UPDATE records one undo entry per updated row" {
         try testing.expect(rec.after_data != null);
         try testing.expect(rec.after_data.?.len > 0);
         // Verify that before and after are different (the value changed)
+        try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
+    }
+
+    try db.rollbackTransaction();
+}
+
+// ── Undo Log Step 5: ON CONFLICT DO UPDATE DML wiring tests (issue #125 fix) ──
+// These tests exercise the SQL-level wiring that step 5 will add to ON CONFLICT DO UPDATE
+// (call recordUndo for each upserted row with both before_data and after_data set to
+// the serialized row bytes before and after the update via ON CONFLICT).
+// They currently FAIL because the wiring doesn't exist yet.
+// After step 5 implementation, these tests should PASS.
+
+test "step 5: ON CONFLICT DO UPDATE records an undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step5_on_conflict_update_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step5_conflict (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Create a unique index on id to trigger ON CONFLICT
+    {
+        var r = try db.exec("CREATE UNIQUE INDEX step5_conflict_idx ON step5_conflict (id)");
+        r.close(testing.allocator);
+    }
+
+    // Insert a row in a committed transaction (so its undo entry doesn't pollute this test)
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step5_conflict (id, val) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and do ON CONFLICT DO UPDATE on the same row
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step5_conflict (id, val) VALUES (1, 200) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        r.close(testing.allocator);
+    }
+
+    // Assert that an undo entry was recorded for the ON CONFLICT DO UPDATE
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+    const rec = db.current_txn.?.undo_log.items[0];
+
+    // Verify the undo entry structure for ON CONFLICT DO UPDATE
+    try testing.expectEqualStrings("step5_conflict", rec.table_name);
+    try testing.expect(rec.before_data != null); // before = pre-conflict existing row (val=100)
+    try testing.expect(rec.before_data.?.len > 0);
+    try testing.expect(rec.after_data != null); // after = updated row (val=200)
+    try testing.expect(rec.after_data.?.len > 0);
+
+    // Verify that before and after are different (val changed from 100 to 200)
+    try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
+
+    try db.rollbackTransaction();
+}
+
+test "step 5: ON CONFLICT DO UPDATE with no prior undo entries from the plain insert path" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step5_on_conflict_update_no_plain_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step5_conflict_plain (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Create a unique index on id
+    {
+        var r = try db.exec("CREATE UNIQUE INDEX step5_conflict_plain_idx ON step5_conflict_plain (id)");
+        r.close(testing.allocator);
+    }
+
+    // Insert a row in a committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step5_conflict_plain (id, val) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and do ON CONFLICT DO UPDATE
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step5_conflict_plain (id, val) VALUES (1, 200) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        r.close(testing.allocator);
+    }
+
+    // Assert that ONLY the ON CONFLICT DO UPDATE undo entry was recorded (not 2).
+    // The plain INSERT path gets retracted before the ON CONFLICT path runs,
+    // so there should be exactly 1 undo entry (the DO UPDATE), not 2.
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    try db.rollbackTransaction();
+}
+
+test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step5_on_conflict_update_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step5_conflict_multi (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Create a unique index on id
+    {
+        var r = try db.exec("CREATE UNIQUE INDEX step5_conflict_multi_idx ON step5_conflict_multi (id)");
+        r.close(testing.allocator);
+    }
+
+    // Insert 2 rows in a committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step5_conflict_multi (id, val) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO step5_conflict_multi (id, val) VALUES (2, 200)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and do two separate ON CONFLICT DO UPDATE statements
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step5_conflict_multi (id, val) VALUES (1, 150) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO step5_conflict_multi (id, val) VALUES (2, 250) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        r.close(testing.allocator);
+    }
+
+    // Assert that 2 undo entries were recorded (one per ON CONFLICT DO UPDATE)
+    try testing.expectEqual(@as(usize, 2), db.current_txn.?.undo_log.items.len);
+
+    // Verify each undo entry has before_data and after_data set
+    for (db.current_txn.?.undo_log.items) |rec| {
+        try testing.expectEqualStrings("step5_conflict_multi", rec.table_name);
+        try testing.expect(rec.before_data != null);
+        try testing.expect(rec.before_data.?.len > 0);
+        try testing.expect(rec.after_data != null);
+        try testing.expect(rec.after_data.?.len > 0);
+        // Verify that before and after are different (val changed)
         try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
     }
 
