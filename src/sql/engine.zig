@@ -4863,6 +4863,11 @@ pub const Database = struct {
 
             // Maintain secondary indexes — handle conflicts if needed
             var insert_succeeded = true;
+            // Tracks whether this row ended up persisted via the ON CONFLICT DO
+            // UPDATE path (at conflicting_key) rather than the plain insert path
+            // (at key_buf) — undo-log wiring for issue #125 only covers the plain
+            // path here; ON CONFLICT gets its own undo entry in a later step.
+            var via_on_conflict_update = false;
             self.insertIndexEntries(actual_table, &table_info, vals, &key_buf, row_header) catch |err| {
                 if (err != error.UniqueConstraintViolation) {
                     return EngineError.StorageError;
@@ -5026,6 +5031,7 @@ pub const Database = struct {
 
                             next_key -= 1;
                             insert_succeeded = true;
+                            via_on_conflict_update = true;
                         },
                     }
                 } else {
@@ -5035,6 +5041,15 @@ pub const Database = struct {
 
             // For successful inserts (no conflict or conflict handled), add to collection and increment count
             if (insert_succeeded) {
+                // Record physical undo for plain inserts only (issue #125 fix,
+                // step 2/8). ON CONFLICT DO UPDATE gets its own undo entry in a
+                // later step; ON CONFLICT DO NOTHING never reaches this block
+                // (it `continue`s after retracting the row), so no entry is left
+                // behind for it either.
+                if (!via_on_conflict_update) {
+                    self.recordUndo(actual_table, &key_buf, null, row_data) catch return EngineError.OutOfMemory;
+                }
+
                 // Always collect row for RETURNING and trigger evaluation
                 const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
                 for (vals, 0..) |v, i| {
@@ -15017,6 +15032,91 @@ test "undo log: replayUndoTo respects the watermark and only unwinds newer recor
     const r3 = try tree.get(testing.allocator, &key3);
     defer if (r3) |v| testing.allocator.free(v);
     try testing.expect(r3 == null);
+
+    try db.rollbackTransaction();
+}
+
+// ── Undo Log Step 2: DML wiring tests (issue #125 fix) ──
+// These tests exercise the SQL-level wiring that step 2 will add to INSERT
+// (call recordUndo for successful plain inserts, NOT for inserts retracted by
+// ON CONFLICT). They currently FAIL because the wiring doesn't exist yet.
+// After step 2 implementation, these tests should PASS.
+
+test "step 2: INSERT records an undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step2_insert_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step2_ins (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    // INSERT a row — after step 2 wiring, this should call recordUndo
+    {
+        var r = try db.exec("INSERT INTO step2_ins (val) VALUES (42)");
+        r.close(testing.allocator);
+    }
+
+    // Assert that an undo entry was recorded
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+    const rec = db.current_txn.?.undo_log.items[0];
+
+    // Verify the undo entry structure
+    try testing.expectEqualStrings("step2_ins", rec.table_name);
+    try testing.expect(rec.before_data == null); // INSERT: before_data is null
+    try testing.expect(rec.after_data != null); // INSERT: after_data is not null
+    try testing.expect(rec.after_data.?.len > 0); // after_data contains serialized row
+
+    try db.rollbackTransaction();
+}
+
+test "step 2: ON CONFLICT DO NOTHING does not add undo entry for retracted insert" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step2_conflict_no_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step2_conflict (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+    {
+        // Column-level UNIQUE constraints are parsed into ColumnInfo.flags.unique
+        // but createTableFromAst only auto-creates a secondary index for PRIMARY
+        // KEY columns, not UNIQUE — so an explicit unique index is required here
+        // to actually get UniqueConstraintViolation/ON CONFLICT behavior at DML time.
+        var r = try db.exec("CREATE UNIQUE INDEX idx_step2_conflict_id ON step2_conflict (id)");
+        r.close(testing.allocator);
+    }
+
+    try db.beginTransaction(.read_committed);
+
+    // First INSERT: should record an undo entry
+    {
+        var r = try db.exec("INSERT INTO step2_conflict (id, val) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+
+    // Check that the first insert recorded an undo entry
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    // Second INSERT with ON CONFLICT DO NOTHING: should NOT add a new undo entry
+    // (the insert is retracted, so no undo record should be left behind)
+    {
+        var r = try db.exec("INSERT INTO step2_conflict (id, val) VALUES (1, 200) ON CONFLICT DO NOTHING");
+        r.close(testing.allocator);
+    }
+
+    // Assert that undo_log length is unchanged (no stray undo entry from retracted insert)
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
 
     try db.rollbackTransaction();
 }
