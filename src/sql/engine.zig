@@ -6560,15 +6560,17 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
-        const DeleteEntry = struct { key: []u8, values: []Value };
+        const DeleteEntry = struct { key: []u8, values: []Value, raw_value: []u8 };
 
-        // Collect keys to delete (with row values for index maintenance)
+        // Collect keys to delete (with row values for index maintenance, and the
+        // raw pre-delete row bytes for undo-log recording, issue #125 step 3/8).
         var deletes = std.ArrayListUnmanaged(DeleteEntry){};
         defer {
             for (deletes.items) |d| {
                 self.allocator.free(d.key);
                 for (d.values) |v| v.free(self.allocator);
                 self.allocator.free(d.values);
+                self.allocator.free(d.raw_value);
             }
             deletes.deinit(self.allocator);
         }
@@ -6617,7 +6619,9 @@ pub const Database = struct {
                     continue;
                 };
             }
-            self.allocator.free(entry.value);
+            // Note: entry.value (raw pre-delete row bytes) is kept alive here —
+            // it's needed for the undo-log before_data (issue #125 step 3/8) and
+            // is freed either below on early-exit or via DeleteEntry.raw_value.
 
             if (predicate) |pred| {
                 var row = Row{
@@ -6630,6 +6634,7 @@ pub const Database = struct {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
                     self.allocator.free(entry.key);
+                    self.allocator.free(entry.value);
                     continue;
                 };
                 defer val.free(self.allocator);
@@ -6638,6 +6643,7 @@ pub const Database = struct {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
                     self.allocator.free(entry.key);
+                    self.allocator.free(entry.value);
                     continue;
                 }
             }
@@ -6656,21 +6662,28 @@ pub const Database = struct {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
                     self.allocator.free(entry.key);
+                    self.allocator.free(entry.value);
                     return EngineError.LockConflict;
                 };
             }
 
-            // Mark for deletion (keep values for index maintenance)
-            deletes.append(self.allocator, .{ .key = entry.key, .values = values }) catch {
+            // Mark for deletion (keep values for index maintenance, raw_value for undo)
+            deletes.append(self.allocator, .{ .key = entry.key, .values = values, .raw_value = entry.value }) catch {
                 for (values) |v| v.free(self.allocator);
                 self.allocator.free(values);
                 self.allocator.free(entry.key);
+                self.allocator.free(entry.value);
                 continue;
             };
         }
 
         const rows_deleted = deletes.items.len;
         for (deletes.items) |d| {
+            // Record physical undo before removing the row (issue #125 fix,
+            // step 3/8): before_data is the raw pre-delete row bytes,
+            // after_data is null since the row no longer exists.
+            self.recordUndo(actual_table, d.key, d.raw_value, null) catch return EngineError.OutOfMemory;
+
             // Remove index entries before deleting the row
             self.deleteIndexEntries(&table_info, d.values, d.key);
             tree.delete(d.key) catch {};
@@ -15117,6 +15130,137 @@ test "step 2: ON CONFLICT DO NOTHING does not add undo entry for retracted inser
 
     // Assert that undo_log length is unchanged (no stray undo entry from retracted insert)
     try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    try db.rollbackTransaction();
+}
+
+// ── Undo Log Step 3: DELETE DML wiring tests (issue #125 fix) ──
+// These tests exercise the SQL-level wiring that step 3 will add to DELETE
+// (call recordUndo for each deleted row with before_data set to the serialized row bytes).
+// They currently FAIL because the wiring doesn't exist yet.
+// After step 3 implementation, these tests should PASS.
+
+test "step 3: DELETE records an undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step3_delete_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step3_del (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert a row in a committed transaction (so its undo entry doesn't pollute this test)
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step3_del (val) VALUES (42)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and DELETE the row
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM step3_del WHERE val = 42");
+        r.close(testing.allocator);
+    }
+
+    // Assert that an undo entry was recorded for the DELETE
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+    const rec = db.current_txn.?.undo_log.items[0];
+
+    // Verify the undo entry structure for a DELETE
+    try testing.expectEqualStrings("step3_del", rec.table_name);
+    try testing.expect(rec.before_data != null); // DELETE: before_data is the original row
+    try testing.expect(rec.before_data.?.len > 0); // before_data contains serialized row
+    try testing.expect(rec.after_data == null); // DELETE: after_data is null (row no longer exists)
+
+    try db.rollbackTransaction();
+}
+
+test "step 3: DELETE with no matching rows adds no undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step3_delete_no_match.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step3_del_nomatch (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert a row in a committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step3_del_nomatch (id, val) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and DELETE with a WHERE clause that matches nothing
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM step3_del_nomatch WHERE id = 999");
+        r.close(testing.allocator);
+    }
+
+    // Assert that NO undo entry was recorded (no rows were actually deleted)
+    try testing.expectEqual(@as(usize, 0), db.current_txn.?.undo_log.items.len);
+
+    try db.rollbackTransaction();
+}
+
+test "step 3: multi-row DELETE records one undo entry per deleted row" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step3_delete_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step3_del_multi (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert 3 rows in a committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step3_del_multi (val) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO step3_del_multi (val) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO step3_del_multi (val) VALUES (3)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and DELETE all 3 rows
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM step3_del_multi");
+        r.close(testing.allocator);
+    }
+
+    // Assert that 3 undo entries were recorded (one per deleted row)
+    try testing.expectEqual(@as(usize, 3), db.current_txn.?.undo_log.items.len);
+
+    // Verify each undo entry has before_data set and after_data null
+    for (db.current_txn.?.undo_log.items) |rec| {
+        try testing.expectEqualStrings("step3_del_multi", rec.table_name);
+        try testing.expect(rec.before_data != null);
+        try testing.expect(rec.before_data.?.len > 0);
+        try testing.expect(rec.after_data == null);
+    }
 
     try db.rollbackTransaction();
 }
