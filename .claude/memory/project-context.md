@@ -9,6 +9,17 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
+### Last Session (Session 497 - FEATURE MODE)
+- **Date**: 2026-08-24
+- **Mode**: FEATURE MODE (counter 497, 497 % 5 != 0)
+- **CI**: GREEN before session start; 1 open issue (#125, bug label, already in progress from session 496) — continued it per "finish prior incomplete work first" rule rather than starting new Phase 5 work.
+- **Work Done**:
+  - Continued issue #125's physical-undo-log fix: **step 2/8** — wired plain INSERT (`executeInsert`, engine.zig) to call `Database.recordUndo()` (added in step 1, session 496) for successful plain inserts. Added a `via_on_conflict_update` bool so rows persisted via `ON CONFLICT DO UPDATE` (different key, different semantics) don't get a wrong "plain insert" undo entry — that gets its own wiring in a later step. `ON CONFLICT DO NOTHING` already retracts the row via `continue` before reaching the undo call site, so needed no special handling. test-writer subagent wrote 2 new failing tests first (TDD), then wiring was implemented directly. Commit 8a437b1.
+  - One of the new tests (ON CONFLICT DO NOTHING regression guard) initially failed for an unrelated reason: it assumed inline `id INTEGER UNIQUE` would enforce uniqueness, but discovered **column-level UNIQUE constraints are parsed but never enforced** — `Catalog.createTableFromAst` only auto-creates a secondary index for `PRIMARY KEY`, not `UNIQUE`. Fixed the test to use an explicit `CREATE UNIQUE INDEX` (which does work), and filed the underlying gap as **issue #126** (bug label) since it's a real silent constraint violation, unrelated to #125.
+  - Corrected a **wrong instruction in prior-session memory**: session 496's note said to flip the pinned "KNOWN BUG" SAVEPOINT test assertion from buggy `{1,2,3}` to correct `{1,2}` as part of step 2. This was incorrect — `rollbackToSavepoint` doesn't call `replayUndoTo` yet (that's step 7), so the bug is not fixed end-to-end and flipping the assertion now would make the test fail. Did NOT flip it; updated memory to prevent this mistake from being repeated.
+- **Tests**: 4521/4543 passed, 22 skipped, 0 failed (9 new tests since session 495: 7 from step 1, 2 from step 2)
+- **Next priority**: Issue #125 step 3/8 — wire DELETE to `recordUndo(table, key, before_data, null)`. Issue #126 (UNIQUE enforcement gap) is now also open and bug-labeled, so next session's priority-1 issue check will see 2 open bugs — #125 already has an active multi-step plan in progress, use judgement on which to tackle first (both are legitimate priority-1 bug fixes).
+
 ### Last Session (Session 495 - STABILIZATION MODE)
 - **Date**: 2026-08-24
 - **Mode**: STABILIZATION MODE (counter 495, 495 % 5 == 0)
