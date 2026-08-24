@@ -5889,7 +5889,7 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
-        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value, original_xmin: u32, header: TupleHeader };
+        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value, original_xmin: u32, header: TupleHeader, raw_before: []u8 };
 
         // Collect key-value pairs to update (can't modify B+Tree while iterating)
         var updates = std.ArrayListUnmanaged(UpdateEntry){};
@@ -5899,6 +5899,7 @@ pub const Database = struct {
                 self.allocator.free(item.value);
                 for (item.old_values) |v| v.free(self.allocator);
                 self.allocator.free(item.old_values);
+                self.allocator.free(item.raw_before);
             }
             updates.deinit(self.allocator);
         }
@@ -6085,14 +6086,25 @@ pub const Database = struct {
             self.allocator.free(row.values);
             row.values = fresh_values;
 
+            // Duplicate the pre-update raw row bytes for the undo log (issue #125
+            // step 4/8). fresh_value_bytes itself is freed by the defer above;
+            // this copy outlives the loop iteration via UpdateEntry.raw_before.
+            const raw_before = self.allocator.dupe(u8, fresh_value_bytes) catch {
+                for (row.values) |v| v.free(self.allocator);
+                self.allocator.free(row.values);
+                return EngineError.OutOfMemory;
+            };
+
             // Save old values for index maintenance
             const old_values = self.allocator.alloc(Value, row.values.len) catch {
+                self.allocator.free(raw_before);
                 for (row.values) |v| v.free(self.allocator);
                 self.allocator.free(row.values);
                 return EngineError.OutOfMemory;
             };
             for (row.values, 0..) |v, vi| {
                 old_values[vi] = v.dupe(self.allocator) catch {
+                    self.allocator.free(raw_before);
                     for (old_values[0..vi]) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
                     for (row.values) |rv| rv.free(self.allocator);
@@ -6137,6 +6149,7 @@ pub const Database = struct {
                 } else false;
                 if (has_any_check) {
                     self.evalCheckConstraints(&table_info, col_names, row.values) catch |err| {
+                        self.allocator.free(raw_before);
                         for (old_values) |ov| ov.free(self.allocator);
                         self.allocator.free(old_values);
                         for (row.values) |v| v.free(self.allocator);
@@ -6149,6 +6162,7 @@ pub const Database = struct {
             // WITH CHECK OPTION: validate updated row still satisfies view's WHERE
             if (view_check_where) |where_expr| {
                 if (!self.checkViewCondition(where_expr, col_names, row.values)) {
+                    self.allocator.free(raw_before);
                     for (old_values) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
                     for (row.values) |v| v.free(self.allocator);
@@ -6160,6 +6174,7 @@ pub const Database = struct {
             // Compute MVCC header for the updated row
             const update_header = if (self.current_txn) |txn| blk: {
                 const cid = self.tm.getCurrentCid(txn.xid) catch {
+                    self.allocator.free(raw_before);
                     for (old_values) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
                     for (row.values) |v| v.free(self.allocator);
@@ -6172,6 +6187,7 @@ pub const Database = struct {
             // Re-serialize (with MVCC header if in a transaction)
             const new_data = if (self.current_txn) |_| blk: {
                 break :blk mvcc_mod.serializeVersionedRow(self.allocator, update_header, row.values) catch {
+                    self.allocator.free(raw_before);
                     for (old_values) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
                     for (row.values) |v| v.free(self.allocator);
@@ -6179,6 +6195,7 @@ pub const Database = struct {
                     return EngineError.OutOfMemory;
                 };
             } else serializeRow(self.allocator, row.values) catch {
+                self.allocator.free(raw_before);
                 for (old_values) |ov| ov.free(self.allocator);
                 self.allocator.free(old_values);
                 for (row.values) |v| v.free(self.allocator);
@@ -6187,6 +6204,7 @@ pub const Database = struct {
             };
 
             const key_copy = self.allocator.dupe(u8, entry.key) catch {
+                self.allocator.free(raw_before);
                 self.allocator.free(new_data);
                 for (old_values) |ov| ov.free(self.allocator);
                 self.allocator.free(old_values);
@@ -6195,7 +6213,8 @@ pub const Database = struct {
                 return EngineError.OutOfMemory;
             };
 
-            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values, .original_xmin = original_xmin, .header = update_header }) catch {
+            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values, .original_xmin = original_xmin, .header = update_header, .raw_before = raw_before }) catch {
+                self.allocator.free(raw_before);
                 self.allocator.free(key_copy);
                 self.allocator.free(new_data);
                 for (old_values) |ov| ov.free(self.allocator);
@@ -6212,6 +6231,11 @@ pub const Database = struct {
         // Apply updates (delete + re-insert) and maintain indexes
         const rows_updated = updates.items.len;
         for (updates.items) |item| {
+            // Record physical undo before applying the change (issue #125 fix,
+            // step 4/8): before_data is the raw pre-update row bytes, after_data
+            // is the raw post-update row bytes that get written into the tree.
+            self.recordUndo(actual_table, item.key, item.raw_before, item.value) catch return EngineError.OutOfMemory;
+
             // Remove old index entries
             self.deleteIndexEntries(&table_info, item.old_values, item.key);
 
@@ -15260,6 +15284,145 @@ test "step 3: multi-row DELETE records one undo entry per deleted row" {
         try testing.expect(rec.before_data != null);
         try testing.expect(rec.before_data.?.len > 0);
         try testing.expect(rec.after_data == null);
+    }
+
+    try db.rollbackTransaction();
+}
+
+// ── Undo Log Step 4: UPDATE DML wiring tests (issue #125 fix) ──
+// These tests exercise the SQL-level wiring that step 4 will add to UPDATE
+// (call recordUndo for each updated row with both before_data and after_data set to
+// the serialized row bytes before and after the update).
+// They currently FAIL because the wiring doesn't exist yet.
+// After step 4 implementation, these tests should PASS.
+
+test "step 4: UPDATE records an undo entry with before and after data" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step4_update_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step4_upd (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert a row in a committed transaction (so its undo entry doesn't pollute this test)
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step4_upd (val) VALUES (42)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and UPDATE the row
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE step4_upd SET val = 100 WHERE val = 42");
+        r.close(testing.allocator);
+    }
+
+    // Assert that an undo entry was recorded for the UPDATE
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+    const rec = db.current_txn.?.undo_log.items[0];
+
+    // Verify the undo entry structure for an UPDATE
+    try testing.expectEqualStrings("step4_upd", rec.table_name);
+    try testing.expect(rec.before_data != null); // UPDATE: before_data is the original row
+    try testing.expect(rec.before_data.?.len > 0); // before_data contains serialized row
+    try testing.expect(rec.after_data != null); // UPDATE: after_data is the new row (unlike DELETE which is null)
+    try testing.expect(rec.after_data.?.len > 0); // after_data contains serialized row
+
+    // Verify that before and after are different (the value changed from 42 to 100)
+    try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
+
+    try db.rollbackTransaction();
+}
+
+test "step 4: UPDATE with no matching rows adds no undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step4_update_no_match.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step4_upd_nomatch (id INTEGER, val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert a row in a committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step4_upd_nomatch (id, val) VALUES (1, 100)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and UPDATE with a WHERE clause that matches nothing
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE step4_upd_nomatch SET val = 200 WHERE id = 999");
+        r.close(testing.allocator);
+    }
+
+    // Assert that NO undo entry was recorded (no rows were actually updated)
+    try testing.expectEqual(@as(usize, 0), db.current_txn.?.undo_log.items.len);
+
+    try db.rollbackTransaction();
+}
+
+test "step 4: multi-row UPDATE records one undo entry per updated row" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step4_update_multi.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    {
+        var r = try db.exec("CREATE TABLE step4_upd_multi (val INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    // Insert 3 rows in a committed transaction
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("INSERT INTO step4_upd_multi (val) VALUES (1)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO step4_upd_multi (val) VALUES (2)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO step4_upd_multi (val) VALUES (3)");
+        r.close(testing.allocator);
+    }
+    try db.commitTransaction();
+
+    // Begin a NEW transaction and UPDATE all 3 rows
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE step4_upd_multi SET val = val + 100");
+        r.close(testing.allocator);
+    }
+
+    // Assert that 3 undo entries were recorded (one per updated row)
+    try testing.expectEqual(@as(usize, 3), db.current_txn.?.undo_log.items.len);
+
+    // Verify each undo entry has before_data and after_data set
+    for (db.current_txn.?.undo_log.items) |rec| {
+        try testing.expectEqualStrings("step4_upd_multi", rec.table_name);
+        try testing.expect(rec.before_data != null);
+        try testing.expect(rec.before_data.?.len > 0);
+        try testing.expect(rec.after_data != null);
+        try testing.expect(rec.after_data.?.len > 0);
+        // Verify that before and after are different (the value changed)
+        try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
     }
 
     try db.rollbackTransaction();
