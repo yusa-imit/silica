@@ -9,6 +9,15 @@
 
 ## Current Status: v1.0.1 — Production Ready (ALL phases complete)
 
+### Last Session (Session 498 - FEATURE MODE)
+- **Date**: 2026-08-24
+- **Mode**: FEATURE MODE (counter 498, 498 % 5 != 0)
+- **CI**: GREEN before session start; 2 open issues (#125 in progress, #126 not started) — continued #125 per "finish prior incomplete work first" rule.
+- **Work Done**:
+  - Continued issue #125's physical-undo-log fix: **step 3/8** — wired DELETE (`executeDelete`, engine.zig) to call `Database.recordUndo(table, key, before_data, null)` right before each physical `tree.delete()`. Required retaining the raw pre-delete row bytes (`entry.value`, previously freed immediately after deserialization) through the whole row-collection cursor loop — added a `raw_value: []u8` field to the local `DeleteEntry` struct, and updated every early-exit path (predicate-false, lock-acquire-failure, `deletes.append` OOM) to free the now-longer-lived buffer explicitly. test-writer subagent wrote 3 new failing tests first (TDD: single-row undo entry, no-match adds nothing, multi-row adds one entry per row), then wiring was implemented directly. Commit c26d340.
+- **Tests**: 4524/4546 passed, 22 skipped, 0 failed (+3 tests since session 497)
+- **Next priority**: Issue #125 step 4/8 — wire UPDATE to `recordUndo(table, key, before_data, after_data)` (needs BOTH sides this time, unlike INSERT/DELETE). Issue #126 (UNIQUE enforcement gap) is still open and bug-labeled — use judgement on which to tackle first (both are legitimate priority-1 bug fixes).
+
 ### Last Session (Session 497 - FEATURE MODE)
 - **Date**: 2026-08-24
 - **Mode**: FEATURE MODE (counter 497, 497 % 5 != 0)
