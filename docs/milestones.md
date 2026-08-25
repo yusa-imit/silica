@@ -144,8 +144,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.94.3
-- **Latest available**: v2.94.3
+- **Current in silica**: v2.95.0
+- **Latest available**: v2.95.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -239,6 +239,7 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.94.2 | bug fix (stability fixes) | DONE | `Validator.combine()` global mutable ring buffer removed (stale-remap/use-after-free risk). `queryTerminalCapability()` fd=42 mock routing now guarded by mock-installed check. Unclamped `@intFromFloat` casts in chart widgets and `ParticleSystem` rendering now panic-guarded for extreme values. No breaking changes. No source changes needed in silica — Session 488 |
 | v2.94.3 | bug fix (overflow guards) | DONE | `ToastManager.render()`, `Block.inner()`, `Block.render()`, `ContextMenu.fittingArea()` now use saturating arithmetic instead of raw u16 addition (overflow guard). Autocomplete widget migrated to Zig 0.15 unmanaged ArrayList API. No breaking changes. No source changes needed in silica (silica's SQL autocomplete uses custom rendering, not sailor's Autocomplete widget, per sailor#13) — 4500/4522 tests pass post-upgrade — Session 492 |
 | v2.94.4 | bug fix (NaN guard in chart widgets) | DONE | Gauge, SplitPane, ProgressRing, ReactiveGauge, RangeSlider, BulletChart, ParetoChart render paths guarded against NaN causing `@intFromFloat` panics — falls back to safe default (0.0/min/max). No breaking changes. No source changes needed in silica — 4512/4534 tests pass post-upgrade — Session 494 (issue #124) |
+| v2.95.0 | AreaChart widget, arg.zig suggestions | DONE | AreaChart: filled area chart (up to 8 series, 64 points/series), stacked/unstacked modes, auto-scale with baseline, NaN/Infinity-safe. arg.zig: Levenshtein-based "Did you mean?" suggestions for unknown flags. No breaking changes. No TUI overlay use case identified yet for AreaChart — 4540/4563 tests pass post-upgrade — Session 504 (issue #127) |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
