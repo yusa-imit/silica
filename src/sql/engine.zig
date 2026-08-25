@@ -1862,6 +1862,7 @@ pub const Database = struct {
         }
         const idx = found_idx orelse return EngineError.SavepointNotFound;
         const saved_cid = txn.savepoints.items[idx].cid;
+        const saved_undo_len = txn.savepoints.items[idx].undo_len;
 
         // Remove all savepoints created after this one (nested savepoints above are discarded)
         while (txn.savepoints.items.len > idx + 1) {
@@ -1874,6 +1875,11 @@ pub const Database = struct {
         // commands issued after the savepoint invisible within this transaction's
         // visibility rules (cid-based filtering in isTupleVisible).
         self.tm.resetCid(txn.xid, saved_cid) catch return EngineError.TransactionError;
+
+        // Replay undo records to physically revert mutations after the savepoint.
+        // This ensures that rolled-back rows are actually removed from storage,
+        // not just hidden by visibility rules.
+        self.replayUndoTo(txn, saved_undo_len) catch return EngineError.TransactionError;
     }
 
     /// Record an undo entry for physical rollback (issue #125 fix).
@@ -14415,14 +14421,6 @@ test "SAVEPOINT: replace same-name savepoint" {
 
     try db.commitTransaction();
 
-    // KNOWN BUG (yusa-imit/silica#125): row 3 reappears after COMMIT.
-    // ROLLBACK TO SAVEPOINT only hides later writes via a per-transaction CID
-    // comparison in isTupleVisibleWithTm (own-xid rule), which stops applying
-    // the moment the enclosing transaction commits and the xid is globally
-    // marked committed — nothing physically undoes the row. A real fix needs
-    // sub-transaction IDs or a physical undo log (see the issue for design
-    // options); until then this asserts the actual, buggy, post-commit state
-    // rather than silently passing on an assertion that doesn't hold.
     var sel = try db.execSQL("SELECT val FROM sp_rep ORDER BY val ASC");
     defer sel.close(testing.allocator);
     var vals = std.ArrayListUnmanaged(i64){};
@@ -14432,7 +14430,7 @@ test "SAVEPOINT: replace same-name savepoint" {
         defer row.deinit();
         try vals.append(testing.allocator, row.values[0].integer);
     }
-    try testing.expectEqualSlices(i64, &.{ 1, 2, 3 }, vals.items);
+    try testing.expectEqualSlices(i64, &.{ 1, 2 }, vals.items);
 }
 
 test "SAVEPOINT: transaction commit cleans up savepoints" {
