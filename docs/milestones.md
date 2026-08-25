@@ -117,6 +117,8 @@
 
 | # | Title | Closed |
 |---|-------|--------|
+| #126 | Column-level UNIQUE constraint is parsed but never enforced | 2026-08-25 |
+| #125 | SAVEPOINT rollback silently reverts after COMMIT — rows reappear | 2026-08-25 |
 | #15 | feat: implement SSI (Serializable Snapshot Isolation) for SERIALIZABLE isolation level | — (SSI done; storage layer upgrade tracked separately) |
 | #24 | PreparedStatement arena lifecycle needs architectural refactor | 2026-03-29 |
 | #3 | Flaky test: AutoVacuumDaemon — inserts only never trigger vacuum | 2026-03-15 |
@@ -125,10 +127,7 @@
 
 ### Open Issues
 
-| # | Title | Labels | Status |
-|---|-------|--------|--------|
-| #125 | SAVEPOINT rollback silently reverts after COMMIT — rows reappear | bug | Open — physical undo log fix 7/8 steps done (commit 4b9d0dd); step 8 (whole-tx ROLLBACK, needs repro-first verification) remains, see `.claude/memory/debugging.md` |
-| #126 | Column-level UNIQUE constraint is parsed but never enforced | bug | Open — not yet fixed, see `.claude/memory/debugging.md` |
+None open as of session 504.
 
 ---
 
