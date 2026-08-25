@@ -7206,6 +7206,18 @@ pub const Database = struct {
 
                     switch (clause.action) {
                         .delete => {
+                            // Read current row before deleting (for undo log)
+                            var del_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
+                            defer del_cursor.deinit();
+                            del_cursor.seek(key) catch return EngineError.StorageError;
+                            const del_entry = (del_cursor.current() catch return EngineError.StorageError) orelse
+                                return EngineError.ExecutionError;
+                            defer self.allocator.free(del_entry.key);
+                            defer self.allocator.free(del_entry.value);
+
+                            // Record undo before deleting (issue #125 step 6/8)
+                            self.recordUndo(merge.target, del_entry.key, del_entry.value, null) catch return EngineError.OutOfMemory;
+
                             target_tree.delete(key) catch return EngineError.StorageError;
                             rows_affected += 1;
                         },
@@ -7269,6 +7281,11 @@ pub const Database = struct {
                             defer self.allocator.free(new_data);
                             target_tree.delete(key) catch return EngineError.StorageError;
                             target_tree.insert(key, new_data) catch return EngineError.StorageError;
+
+                            // Record undo after mutations succeed (issue #125 step 6/8)
+                            // cur_entry.value and new_data are still in scope (defers fire at end of block)
+                            self.recordUndo(merge.target, key, cur_entry.value, new_data) catch return EngineError.OutOfMemory;
+
                             rows_affected += 1;
                         },
                         .insert => {}, // INSERT is not valid for WHEN MATCHED
@@ -7340,6 +7357,11 @@ pub const Database = struct {
                             defer self.allocator.free(ins_key);
 
                             target_tree.insert(ins_key, row_data) catch return EngineError.StorageError;
+
+                            // Record undo after insert succeeds (issue #125 step 6/8)
+                            // row_data is still in scope (defer fires at end of block)
+                            self.recordUndo(merge.target, ins_key, null, row_data) catch return EngineError.OutOfMemory;
+
                             rows_affected += 1;
                         },
                         else => {}, // UPDATE/DELETE not valid for WHEN NOT MATCHED
@@ -7413,6 +7435,18 @@ pub const Database = struct {
 
                     switch (clause.action) {
                         .delete => {
+                            // Read current row before deleting (for undo log)
+                            var del_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
+                            defer del_cursor.deinit();
+                            del_cursor.seek(key) catch return EngineError.StorageError;
+                            const del_entry = (del_cursor.current() catch return EngineError.StorageError) orelse
+                                return EngineError.ExecutionError;
+                            defer self.allocator.free(del_entry.key);
+                            defer self.allocator.free(del_entry.value);
+
+                            // Record undo before deleting (issue #125 step 6/8)
+                            self.recordUndo(merge.target, del_entry.key, del_entry.value, null) catch return EngineError.OutOfMemory;
+
                             target_tree.delete(key) catch return EngineError.StorageError;
                             rows_affected += 1;
                         },
@@ -7488,6 +7522,11 @@ pub const Database = struct {
                             defer self.allocator.free(new_data);
                             target_tree.delete(key) catch return EngineError.StorageError;
                             target_tree.insert(key, new_data) catch return EngineError.StorageError;
+
+                            // Record undo after mutations succeed (issue #125 step 6/8)
+                            // upd_entry.value and new_data are still in scope (defers fire at end of block)
+                            self.recordUndo(merge.target, key, upd_entry.value, new_data) catch return EngineError.OutOfMemory;
+
                             rows_affected += 1;
                         },
                         .insert => {}, // not valid
@@ -15590,6 +15629,344 @@ test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
         // Verify that before and after are different (val changed)
         try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
     }
+
+    try db.rollbackTransaction();
+}
+
+test "step 6: MERGE WHEN NOT MATCHED THEN INSERT records undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step6_merge_insert_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table (initially empty)
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_tgt (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    // Create source table with one row
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_src (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_src (id, val) VALUES (1, 'source_row')");
+        r.close(testing.allocator);
+    }
+
+    // Begin transaction and execute MERGE with WHEN NOT MATCHED THEN INSERT
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec(
+            \\MERGE INTO step6_merge_tgt
+            \\USING step6_merge_src ON step6_merge_tgt.id = step6_merge_src.id
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (step6_merge_src.id, step6_merge_src.val)
+        );
+        r.close(testing.allocator);
+    }
+
+    // Assert: exactly 1 undo entry for the INSERT
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    const rec = db.current_txn.?.undo_log.items[0];
+    try testing.expectEqualStrings("step6_merge_tgt", rec.table_name);
+    // INSERT: before_data should be null
+    try testing.expect(rec.before_data == null);
+    // INSERT: after_data should be non-null
+    try testing.expect(rec.after_data != null);
+    try testing.expect(rec.after_data.?.len > 0);
+
+    try db.rollbackTransaction();
+}
+
+test "step 6: MERGE WHEN MATCHED THEN UPDATE records undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step6_merge_update_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with initial data
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_update_tgt (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_update_tgt (id, val) VALUES (1, 'old_value')");
+        r.close(testing.allocator);
+    }
+
+    // Create source table with matching key
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_update_src (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_update_src (id, val) VALUES (1, 'new_value')");
+        r.close(testing.allocator);
+    }
+
+    // Begin transaction and execute MERGE with WHEN MATCHED THEN UPDATE
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec(
+            \\MERGE INTO step6_merge_update_tgt
+            \\USING step6_merge_update_src ON step6_merge_update_tgt.id = step6_merge_update_src.id
+            \\WHEN MATCHED THEN UPDATE SET val = step6_merge_update_src.val
+        );
+        r.close(testing.allocator);
+    }
+
+    // Assert: exactly 1 undo entry for the UPDATE
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    const rec = db.current_txn.?.undo_log.items[0];
+    try testing.expectEqualStrings("step6_merge_update_tgt", rec.table_name);
+    // UPDATE: both before_data and after_data should be non-null
+    try testing.expect(rec.before_data != null);
+    try testing.expect(rec.before_data.?.len > 0);
+    try testing.expect(rec.after_data != null);
+    try testing.expect(rec.after_data.?.len > 0);
+    // UPDATE: before and after should be different
+    try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
+
+    try db.rollbackTransaction();
+}
+
+test "step 6: MERGE WHEN MATCHED THEN DELETE records undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step6_merge_delete_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with initial data
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_delete_tgt (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_delete_tgt (id, val) VALUES (1, 'to_delete')");
+        r.close(testing.allocator);
+    }
+
+    // Create source table with matching key
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_delete_src (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_delete_src (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // Begin transaction and execute MERGE with WHEN MATCHED THEN DELETE
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec(
+            \\MERGE INTO step6_merge_delete_tgt
+            \\USING step6_merge_delete_src ON step6_merge_delete_tgt.id = step6_merge_delete_src.id
+            \\WHEN MATCHED THEN DELETE
+        );
+        r.close(testing.allocator);
+    }
+
+    // Assert: exactly 1 undo entry for the DELETE
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    const rec = db.current_txn.?.undo_log.items[0];
+    try testing.expectEqualStrings("step6_merge_delete_tgt", rec.table_name);
+    // DELETE: before_data should be non-null
+    try testing.expect(rec.before_data != null);
+    try testing.expect(rec.before_data.?.len > 0);
+    // DELETE: after_data should be null
+    try testing.expect(rec.after_data == null);
+
+    try db.rollbackTransaction();
+}
+
+test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN UPDATE records undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step6_merge_not_matched_src_update_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with 2 rows
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_nms_upd_tgt (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_nms_upd_tgt (id, val) VALUES (1, 'matched'), (2, 'unmatched')");
+        r.close(testing.allocator);
+    }
+
+    // Create source table with only one matching row (id=1)
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_nms_upd_src (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_nms_upd_src (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // Begin transaction and execute MERGE with WHEN NOT MATCHED BY SOURCE THEN UPDATE
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec(
+            \\MERGE INTO step6_merge_nms_upd_tgt
+            \\USING step6_merge_nms_upd_src ON step6_merge_nms_upd_tgt.id = step6_merge_nms_upd_src.id
+            \\WHEN NOT MATCHED BY SOURCE THEN UPDATE SET val = 'updated_no_match'
+        );
+        r.close(testing.allocator);
+    }
+
+    // Assert: exactly 1 undo entry (for row 2, the unmatched row)
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    const rec = db.current_txn.?.undo_log.items[0];
+    try testing.expectEqualStrings("step6_merge_nms_upd_tgt", rec.table_name);
+    // UPDATE: both before_data and after_data should be non-null
+    try testing.expect(rec.before_data != null);
+    try testing.expect(rec.before_data.?.len > 0);
+    try testing.expect(rec.after_data != null);
+    try testing.expect(rec.after_data.?.len > 0);
+    // UPDATE: before and after should be different
+    try testing.expect(!std.mem.eql(u8, rec.before_data.?, rec.after_data.?));
+
+    try db.rollbackTransaction();
+}
+
+test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN DELETE records undo entry" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step6_merge_not_matched_src_delete_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with 2 rows
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_nms_del_tgt (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_nms_del_tgt (id, val) VALUES (1, 'matched'), (2, 'unmatched')");
+        r.close(testing.allocator);
+    }
+
+    // Create source table with only one matching row (id=1)
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_nms_del_src (id INTEGER)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_nms_del_src (id) VALUES (1)");
+        r.close(testing.allocator);
+    }
+
+    // Begin transaction and execute MERGE with WHEN NOT MATCHED BY SOURCE THEN DELETE
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec(
+            \\MERGE INTO step6_merge_nms_del_tgt
+            \\USING step6_merge_nms_del_src ON step6_merge_nms_del_tgt.id = step6_merge_nms_del_src.id
+            \\WHEN NOT MATCHED BY SOURCE THEN DELETE
+        );
+        r.close(testing.allocator);
+    }
+
+    // Assert: exactly 1 undo entry (for row 2, the deleted unmatched row)
+    try testing.expectEqual(@as(usize, 1), db.current_txn.?.undo_log.items.len);
+
+    const rec = db.current_txn.?.undo_log.items[0];
+    try testing.expectEqualStrings("step6_merge_nms_del_tgt", rec.table_name);
+    // DELETE: before_data should be non-null
+    try testing.expect(rec.before_data != null);
+    try testing.expect(rec.before_data.?.len > 0);
+    // DELETE: after_data should be null
+    try testing.expect(rec.after_data == null);
+
+    try db.rollbackTransaction();
+}
+
+test "step 6: MERGE with multiple mutations records one undo entry per mutation" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_step6_merge_multi_mutations_undo.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create target table with 1 row
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_multi_tgt (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_multi_tgt (id, val) VALUES (1, 'existing')");
+        r.close(testing.allocator);
+    }
+
+    // Create source table with 2 rows (one matching id=1, one new id=2)
+    {
+        var r = try db.exec("CREATE TABLE step6_merge_multi_src (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+
+    {
+        var r = try db.exec("INSERT INTO step6_merge_multi_src (id, val) VALUES (1, 'updated'), (2, 'new')");
+        r.close(testing.allocator);
+    }
+
+    // Begin transaction and execute MERGE with both WHEN MATCHED UPDATE and WHEN NOT MATCHED INSERT
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec(
+            \\MERGE INTO step6_merge_multi_tgt
+            \\USING step6_merge_multi_src ON step6_merge_multi_tgt.id = step6_merge_multi_src.id
+            \\WHEN MATCHED THEN UPDATE SET val = step6_merge_multi_src.val
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (step6_merge_multi_src.id, step6_merge_multi_src.val)
+        );
+        r.close(testing.allocator);
+    }
+
+    // Assert: exactly 2 undo entries (1 UPDATE + 1 INSERT)
+    try testing.expectEqual(@as(usize, 2), db.current_txn.?.undo_log.items.len);
+
+    // Check first entry (UPDATE for id=1)
+    const rec_update = db.current_txn.?.undo_log.items[0];
+    try testing.expectEqualStrings("step6_merge_multi_tgt", rec_update.table_name);
+    try testing.expect(rec_update.before_data != null);
+    try testing.expect(rec_update.before_data.?.len > 0);
+    try testing.expect(rec_update.after_data != null);
+    try testing.expect(rec_update.after_data.?.len > 0);
+    try testing.expect(!std.mem.eql(u8, rec_update.before_data.?, rec_update.after_data.?));
+
+    // Check second entry (INSERT for id=2)
+    const rec_insert = db.current_txn.?.undo_log.items[1];
+    try testing.expectEqualStrings("step6_merge_multi_tgt", rec_insert.table_name);
+    try testing.expect(rec_insert.before_data == null);
+    try testing.expect(rec_insert.after_data != null);
+    try testing.expect(rec_insert.after_data.?.len > 0);
 
     try db.rollbackTransaction();
 }
