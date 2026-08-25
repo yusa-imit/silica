@@ -760,9 +760,13 @@ pub const Catalog = struct {
             try pager.writePage(data_root_id, raw);
         }
 
-        // Create secondary index B+Trees for PRIMARY KEY columns
+        // Create secondary index B+Trees for PRIMARY KEY and UNIQUE columns
         var idx_list = std.ArrayListUnmanaged(IndexInfo){};
         defer idx_list.deinit(self.allocator);
+
+        // Track which column indices have already been indexed to avoid duplicates
+        var indexed_columns = std.AutoHashMap(u16, void).init(self.allocator);
+        defer indexed_columns.deinit();
 
         for (columns, 0..) |col, ci| {
             if (col.flags.primary_key) {
@@ -778,6 +782,60 @@ pub const Catalog = struct {
                     .column_index = @intCast(ci),
                     .root_page_id = idx_root_id,
                 });
+                try indexed_columns.put(@intCast(ci), {});
+            }
+        }
+
+        // Create secondary index B+Trees for column-level UNIQUE columns
+        for (columns, 0..) |col, ci| {
+            if (col.flags.unique and !indexed_columns.contains(@intCast(ci))) {
+                const idx_root_id = try pager.allocPage();
+                {
+                    const raw = try pager.allocPageBuf();
+                    defer pager.freePageBuf(raw);
+                    btree_mod.initLeafPage(raw, pager.page_size, idx_root_id);
+                    try pager.writePage(idx_root_id, raw);
+                }
+                try idx_list.append(self.allocator, .{
+                    .column_name = col.name,
+                    .column_index = @intCast(ci),
+                    .root_page_id = idx_root_id,
+                    .is_unique = true,
+                });
+                try indexed_columns.put(@intCast(ci), {});
+            }
+        }
+
+        // Create secondary index B+Trees for single-column table-level UNIQUE constraints
+        for (tc_list.items) |tc| {
+            if (tc == .unique and tc.unique.len == 1) {
+                const col_name = tc.unique[0];
+                // Find column index for this constraint
+                var col_index: ?u16 = null;
+                for (columns, 0..) |col, ci| {
+                    if (std.mem.eql(u8, col.name, col_name)) {
+                        col_index = @intCast(ci);
+                        break;
+                    }
+                }
+                if (col_index) |ci| {
+                    if (!indexed_columns.contains(ci)) {
+                        const idx_root_id = try pager.allocPage();
+                        {
+                            const raw = try pager.allocPageBuf();
+                            defer pager.freePageBuf(raw);
+                            btree_mod.initLeafPage(raw, pager.page_size, idx_root_id);
+                            try pager.writePage(idx_root_id, raw);
+                        }
+                        try idx_list.append(self.allocator, .{
+                            .column_name = col_name,
+                            .column_index = ci,
+                            .root_page_id = idx_root_id,
+                            .is_unique = true,
+                        });
+                        try indexed_columns.put(ci, {});
+                    }
+                }
             }
         }
 

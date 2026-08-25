@@ -27093,6 +27093,78 @@ test "REINDEX INDEX on invalid index state" {
     try testing.expectEqualStrings("REINDEX", r3.message);
 }
 
+// ── Column-level UNIQUE Constraint Tests ────────────────────────────────
+// GitHub issue #126: Column-level UNIQUE constraints should auto-create an index
+
+test "Column-level UNIQUE constraint is enforced on duplicate INSERT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_col_unique_enforce.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with column-level UNIQUE constraint
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER UNIQUE, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // First insert should succeed
+    var r2 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 100)");
+    defer r2.close(testing.allocator);
+
+    // Duplicate insert should fail with UniqueConstraintViolation
+    const result = db.execSQL("INSERT INTO t (id, val) VALUES (1, 200)");
+    try testing.expectError(error.UniqueConstraintViolation, result);
+}
+
+test "Table-level single-column UNIQUE constraint is enforced on duplicate INSERT" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_tbl_unique_enforce.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with table-level UNIQUE constraint (single column)
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER, UNIQUE (id))");
+    defer r1.close(testing.allocator);
+
+    // First insert should succeed
+    var r2 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 100)");
+    defer r2.close(testing.allocator);
+
+    // Duplicate insert should fail with UniqueConstraintViolation
+    const result = db.execSQL("INSERT INTO t (id, val) VALUES (1, 200)");
+    try testing.expectError(error.UniqueConstraintViolation, result);
+}
+
+test "Column-level UNIQUE constraint allows distinct non-duplicate values" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_col_unique_distinct.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with column-level UNIQUE constraint
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER UNIQUE, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Insert multiple distinct values — all should succeed
+    var r2 = try db.execSQL("INSERT INTO t (id, val) VALUES (1, 100)");
+    defer r2.close(testing.allocator);
+
+    var r3 = try db.execSQL("INSERT INTO t (id, val) VALUES (2, 200)");
+    defer r3.close(testing.allocator);
+
+    var r4 = try db.execSQL("INSERT INTO t (id, val) VALUES (3, 300)");
+    defer r4.close(testing.allocator);
+
+    // Verify all rows were inserted by selecting count
+    var r5 = try db.execSQL("SELECT COUNT(*) FROM t");
+    defer r5.close(testing.allocator);
+    var row = (try r5.rows.?.next()).?;
+    defer row.deinit();
+    try testing.expectEqual(@as(i64, 3), row.values[0].toInteger().?);
+}
+
 // ── PreparedStatement Tests ─────────────────────────────────────────────
 
 test "prepared stmt: basic prepare and execute SELECT" {
