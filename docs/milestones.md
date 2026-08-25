@@ -127,7 +127,8 @@
 
 | # | Title | Labels | Status |
 |---|-------|--------|--------|
-| #125 | SAVEPOINT rollback silently reverts after COMMIT — rows reappear | bug | Open — needs architect review (sub-transaction IDs vs. physical undo log), see `.claude/memory/debugging.md` |
+| #125 | SAVEPOINT rollback silently reverts after COMMIT — rows reappear | bug | Open — physical undo log fix 7/8 steps done (commit 4b9d0dd); step 8 (whole-tx ROLLBACK, needs repro-first verification) remains, see `.claude/memory/debugging.md` |
+| #126 | Column-level UNIQUE constraint is parsed but never enforced | bug | Open — not yet fixed, see `.claude/memory/debugging.md` |
 
 ---
 
