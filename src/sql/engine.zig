@@ -1789,7 +1789,9 @@ pub const Database = struct {
 
     /// Rollback the current transaction.
     pub fn rollbackTransaction(self: *Database) EngineError!void {
-        const txn = self.current_txn orelse return EngineError.NoActiveTransaction;
+        const txn = &(self.current_txn orelse return EngineError.NoActiveTransaction);
+        // Replay undo log to physically revert all mutations (issue #125 step 8/8)
+        self.replayUndoTo(txn, 0) catch return EngineError.TransactionError;
         // Release all locks held by this transaction
         self.lock_manager.releaseAllLocks(txn.xid);
         // For RR/SERIALIZABLE: tm.abort() frees the snapshot in TransactionManager,
@@ -13791,6 +13793,162 @@ test "MVCC: DELETE within transaction removes row" {
             defer row.deinit();
             try testing.expectEqual(@as(i64, 1), row.values[0].integer);
         }
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC: ROLLBACK undoes UPDATE to original value" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_rollback_update.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert initial value
+    {
+        var r = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO t (id, val) VALUES (1, 'original')");
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 1), r.rows_affected);
+    }
+
+    // Verify the initial value was committed
+    {
+        var r = try db.exec("SELECT val FROM t WHERE id = 1");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqualStrings("original", row.values[0].text);
+        }
+    }
+
+    // Begin transaction and UPDATE
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("UPDATE t SET val = 'modified' WHERE id = 1");
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 1), r.rows_affected);
+    }
+
+    // Verify UPDATE is visible within transaction (sanity check)
+    {
+        var r = try db.exec("SELECT val FROM t WHERE id = 1");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqualStrings("modified", row.values[0].text);
+        }
+    }
+
+    // ROLLBACK the whole transaction
+    try db.rollbackTransaction();
+
+    // After ROLLBACK, value should revert to 'original', NOT stay as 'modified'
+    // This verifies the physical undo log was replayed.
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT val FROM t WHERE id = 1");
+        defer r.close(testing.allocator);
+        var found = false;
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            // BUG: Currently fails — the row either shows 'modified' (no undo)
+            // or is absent (no undo).
+            // Expected: 'original' (undo replayed)
+            try testing.expectEqualStrings("original", row.values[0].text);
+            found = true;
+        }
+        try testing.expect(found); // row must exist
+    }
+    try db.commitTransaction();
+}
+
+test "MVCC: ROLLBACK undoes DELETE — row returns" {
+
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_rollback_delete.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table and insert initial values
+    {
+        var r = try db.exec("CREATE TABLE items (id INTEGER, name TEXT)");
+        r.close(testing.allocator);
+    }
+    {
+        var r = try db.exec("INSERT INTO items (id, name) VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')");
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 3), r.rows_affected);
+    }
+
+    // Verify all 3 rows exist
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM items");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+        }
+    }
+
+    // Begin transaction and DELETE row 2
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("DELETE FROM items WHERE id = 2");
+        r.close(testing.allocator);
+        try testing.expectEqual(@as(u64, 1), r.rows_affected);
+    }
+
+    // Verify DELETE is visible within transaction (sanity check)
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM items");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqual(@as(i64, 2), row.values[0].integer);
+        }
+    }
+
+    // ROLLBACK the whole transaction
+    try db.rollbackTransaction();
+
+    // After ROLLBACK, the deleted row (id=2) should be restored
+    // This verifies the physical undo log was replayed.
+    try db.beginTransaction(.read_committed);
+    {
+        var r = try db.exec("SELECT COUNT(*) FROM items");
+        defer r.close(testing.allocator);
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            // BUG: Currently fails — COUNT shows 2 (delete not undone), not 3.
+            // Expected: 3 (row 2 restored via undo)
+            try testing.expectEqual(@as(i64, 3), row.values[0].integer);
+        }
+    }
+
+    // Also verify row 2 specifically exists with correct name
+    {
+        var r = try db.exec("SELECT name FROM items WHERE id = 2");
+        defer r.close(testing.allocator);
+        var found = false;
+        if (try r.rows.?.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+            try testing.expectEqualStrings("banana", row.values[0].text);
+            found = true;
+        }
+        try testing.expect(found); // row 2 must exist
     }
     try db.commitTransaction();
 }
