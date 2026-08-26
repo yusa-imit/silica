@@ -39,7 +39,7 @@
 - [x] DP join ordering (21A partial — simplified two-table join reordering; multi-way joins deferred)
 - [x] Hash/merge join selection (21B complete — HashJoinOp with proper join key extraction from ON condition, supports multi-column equi-joins, cost-based selection re-enabled; 5 optimizer tests updated)
 - [x] Subquery decorrelation (deferred to future milestone)
-- [x] Index-only scans (infrastructure added, full implementation deferred)
+- [x] Index-only scans (fully implemented — covering-index leaf storage, MVCC-safe `IndexOnlyScanOp`, session 487-494)
 - [x] EXPLAIN ANALYZE (21C complete — EXPLAIN and EXPLAIN ANALYZE syntax, plan text formatting via formatPlan(), arena-based memory management; runtime statistics collection deferred to future; 4 integration tests)
 
 ### Milestone 22: Hash, GiST, GIN Indexes (Phase 11) ✅ COMPLETE
