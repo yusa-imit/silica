@@ -8280,9 +8280,68 @@ pub const ScanOp = struct {
 
 // ── Index Scan Operator ─────────────────────────────────────────────────
 
+/// Build a composite B+Tree key for a non-unique secondary index that allows
+/// duplicate indexed-column values: `4-byte BE length of idx_key ++ idx_key ++ row_key`.
+/// The length prefix (rather than bare `idx_key ++ row_key` concatenation) is required
+/// to disambiguate variable-length TEXT-encoded idx_keys — without it, value "ab" with
+/// one row_key can byte-collide with value "a" with a different row_key that happens to
+/// start with 'b'. Caller owns the returned slice.
+pub fn buildCompositeIndexKey(allocator: Allocator, idx_key: []const u8, row_key: []const u8) ![]u8 {
+    const buf = try allocator.alloc(u8, 4 + idx_key.len + row_key.len);
+    std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
+    @memcpy(buf[4 .. 4 + idx_key.len], idx_key);
+    @memcpy(buf[4 + idx_key.len ..], row_key);
+    return buf;
+}
+
+/// Build the seekable prefix (no row_key) for a composite index key — every composite
+/// key for the same idx_key starts with exactly these bytes. Caller owns the returned slice.
+pub fn compositeIndexKeyPrefix(allocator: Allocator, idx_key: []const u8) ![]u8 {
+    const buf = try allocator.alloc(u8, 4 + idx_key.len);
+    std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
+    @memcpy(buf[4..], idx_key);
+    return buf;
+}
+
+/// Collect every row_key stored under a composite-key non-unique `.btree` index for a
+/// given equality value (idx_key). Range-scans the index B+Tree from `compositeIndexKeyPrefix`
+/// and stops at the first entry whose key no longer starts with that prefix. Returns an
+/// empty (but non-null) slice when there are no matches. Caller owns the returned slice and
+/// each element.
+pub fn collectRowKeysForEquality(allocator: Allocator, pool: *BufferPool, index_root_page_id: u32, idx_key: []const u8) ![][]u8 {
+    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    var result = std.ArrayListUnmanaged([]u8){};
+    errdefer {
+        for (result.items) |rk| allocator.free(rk);
+        result.deinit(allocator);
+    }
+
+    var tree = BTree.init(pool, index_root_page_id);
+    var cursor = btree_mod.Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seek(prefix);
+
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        if (entry.key.len < prefix.len or !std.mem.eql(u8, entry.key[0..prefix.len], prefix)) {
+            break;
+        }
+
+        const row_key = try allocator.dupe(u8, entry.key[prefix.len..]);
+        try result.append(allocator, row_key);
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 /// Index-based point lookup: uses a secondary index B+Tree to find
 /// matching row keys, then fetches full rows from the data B+Tree.
-/// Returns at most one row for an equality lookup.
+/// Returns at most one row for an equality lookup (or multiple rows, in
+/// indexed-key order, when `composite_key` is set — see `next()`).
 pub const IndexScanOp = struct {
     allocator: Allocator,
     pool: *BufferPool,

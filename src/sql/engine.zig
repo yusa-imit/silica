@@ -424,64 +424,6 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
     };
 }
 
-/// Build a composite B+Tree key for a non-unique secondary index that allows
-/// duplicate indexed-column values: `4-byte BE length of idx_key ++ idx_key ++ row_key`.
-/// The length prefix (rather than bare `idx_key ++ row_key` concatenation) is required
-/// to disambiguate variable-length TEXT-encoded idx_keys — without it, value "ab" with
-/// one row_key can byte-collide with value "a" with a different row_key that happens to
-/// start with 'b'. Caller owns the returned slice.
-fn buildCompositeIndexKey(allocator: Allocator, idx_key: []const u8, row_key: []const u8) ![]u8 {
-    const buf = try allocator.alloc(u8, 4 + idx_key.len + row_key.len);
-    std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
-    @memcpy(buf[4 .. 4 + idx_key.len], idx_key);
-    @memcpy(buf[4 + idx_key.len ..], row_key);
-    return buf;
-}
-
-/// Build the seekable prefix (no row_key) for a composite index key — every composite
-/// key for the same idx_key starts with exactly these bytes. Caller owns the returned slice.
-fn compositeIndexKeyPrefix(allocator: Allocator, idx_key: []const u8) ![]u8 {
-    const buf = try allocator.alloc(u8, 4 + idx_key.len);
-    std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
-    @memcpy(buf[4..], idx_key);
-    return buf;
-}
-
-/// Collect every row_key stored under a composite-key non-unique `.btree` index for a
-/// given equality value (idx_key). Range-scans the index B+Tree from `compositeIndexKeyPrefix`
-/// and stops at the first entry whose key no longer starts with that prefix. Returns an
-/// empty (but non-null) slice when there are no matches. Caller owns the returned slice and
-/// each element.
-pub fn collectRowKeysForEquality(allocator: Allocator, pool: *BufferPool, index_root_page_id: u32, idx_key: []const u8) ![][]u8 {
-    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
-    defer allocator.free(prefix);
-
-    var result = std.ArrayListUnmanaged([]u8){};
-    errdefer {
-        for (result.items) |rk| allocator.free(rk);
-        result.deinit(allocator);
-    }
-
-    var tree = BTree.init(pool, index_root_page_id);
-    var cursor = btree_mod.Cursor.init(allocator, &tree);
-    defer cursor.deinit();
-    try cursor.seek(prefix);
-
-    while (try cursor.next()) |entry| {
-        defer allocator.free(entry.key);
-        defer allocator.free(entry.value);
-
-        if (entry.key.len < prefix.len or !std.mem.eql(u8, entry.key[0..prefix.len], prefix)) {
-            break;
-        }
-
-        const row_key = try allocator.dupe(u8, entry.key[prefix.len..]);
-        try result.append(allocator, row_key);
-    }
-
-    return result.toOwnedSlice(allocator);
-}
-
 /// Encode a literal integer as an index key (same encoding as valueToIndexKey).
 fn integerToIndexKey(allocator: Allocator, i: i64) ![]u8 {
     const buf = try allocator.alloc(u8, 8);
@@ -5399,7 +5341,7 @@ pub const Database = struct {
                     // multiple rows can share the same indexed-column value without colliding
                     // in the B+Tree's key space. See buildCompositeIndexKey.
                     const btree_key = if (idx.composite_key)
-                        try buildCompositeIndexKey(self.allocator, idx_key, row_key)
+                        try executor_mod.buildCompositeIndexKey(self.allocator, idx_key, row_key)
                     else
                         idx_key;
                     defer if (idx.composite_key) self.allocator.free(btree_key);
@@ -5533,7 +5475,7 @@ pub const Database = struct {
                 .btree => {
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
                     if (idx.composite_key) {
-                        const btree_key = buildCompositeIndexKey(self.allocator, idx_key, row_key) catch continue;
+                        const btree_key = executor_mod.buildCompositeIndexKey(self.allocator, idx_key, row_key) catch continue;
                         defer self.allocator.free(btree_key);
                         idx_tree.delete(btree_key) catch {};
                     } else {
@@ -41513,7 +41455,7 @@ test "phase 0b: buildCompositeIndexKey encodes as 4-byte BE length + idx_key + r
     const idx_key = "apple";
     const row_key = [_]u8{ 0x00, 0x00, 0x00, 0x01 }; // 8-byte row ID as example
 
-    const composite = try buildCompositeIndexKey(allocator, idx_key, &row_key);
+    const composite = try executor_mod.buildCompositeIndexKey(allocator, idx_key, &row_key);
     defer allocator.free(composite);
 
     // Expected: 4-byte BE length of idx_key (5) + "apple" + row_key bytes
@@ -41537,7 +41479,7 @@ test "phase 0b: compositeIndexKeyPrefix encodes as 4-byte BE length + idx_key (n
 
     const idx_key = "banana";
 
-    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    const prefix = try executor_mod.compositeIndexKeyPrefix(allocator, idx_key);
     defer allocator.free(prefix);
 
     // Expected: 4-byte BE length of idx_key (6) + "banana"
@@ -41559,10 +41501,10 @@ test "phase 0b: buildCompositeIndexKey starts with compositeIndexKeyPrefix" {
     const idx_key = "cherry";
     const row_key = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
 
-    const composite = try buildCompositeIndexKey(allocator, idx_key, &row_key);
+    const composite = try executor_mod.buildCompositeIndexKey(allocator, idx_key, &row_key);
     defer allocator.free(composite);
 
-    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    const prefix = try executor_mod.compositeIndexKeyPrefix(allocator, idx_key);
     defer allocator.free(prefix);
 
     // composite.key must start with exactly prefix bytes
@@ -41584,10 +41526,10 @@ test "phase 0b: composite keys with variable-length TEXT avoid byte-collisions" 
     const row_key_1 = [_]u8{ 0x00, 0x00, 0x00, 0x01 };
     const row_key_2 = [_]u8{ 0x62, 0x00, 0x00, 0x02 }; // 0x62 = 'b', mimics "ab" prefix
 
-    const composite_1 = try buildCompositeIndexKey(allocator, idx_key_1, &row_key_1);
+    const composite_1 = try executor_mod.buildCompositeIndexKey(allocator, idx_key_1, &row_key_1);
     defer allocator.free(composite_1);
 
-    const composite_2 = try buildCompositeIndexKey(allocator, idx_key_2, &row_key_2);
+    const composite_2 = try executor_mod.buildCompositeIndexKey(allocator, idx_key_2, &row_key_2);
     defer allocator.free(composite_2);
 
     // With length-prefix encoding, these must differ (no collision)
@@ -41657,7 +41599,7 @@ test "phase 0b: insertIndexEntries with composite_key=true allows duplicate inde
     const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
     defer allocator.free(idx_key);
 
-    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    const prefix = try executor_mod.compositeIndexKeyPrefix(allocator, idx_key);
     defer allocator.free(prefix);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
@@ -41730,7 +41672,7 @@ test "phase 0b: deleteIndexEntries with composite_key=true removes only the spec
     const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
     defer allocator.free(idx_key);
 
-    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    const prefix = try executor_mod.compositeIndexKeyPrefix(allocator, idx_key);
     defer allocator.free(prefix);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
@@ -41811,7 +41753,7 @@ test "phase 0b: collectRowKeysForEquality returns all row_keys for a given idx_k
     const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
     defer allocator.free(idx_key);
 
-    const row_keys = try collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
+    const row_keys = try executor_mod.collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
     defer {
         for (row_keys) |rk| allocator.free(rk);
         allocator.free(row_keys);
@@ -41878,7 +41820,7 @@ test "phase 0b: collectRowKeysForEquality returns empty slice when no matches" {
     const idx_key = try valueToIndexKey(allocator, Value{ .text = "vegetable" });
     defer allocator.free(idx_key);
 
-    const row_keys = try collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
+    const row_keys = try executor_mod.collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
     defer allocator.free(row_keys);
 
     // Should return empty slice (not an error)
