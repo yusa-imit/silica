@@ -196,6 +196,11 @@ pub const IndexInfo = struct {
     /// false for indexes serialized before this field existed — that, not `included_columns.len > 0`,
     /// is what gates index-only scan selection, since a legacy INCLUDE index still has row_key-only leaves.
     covering_storage: bool = false,
+    /// Whether this index's B+Tree keys are composite (encoded_value ++ row_key) for non-unique indexes
+    /// to allow duplicate values, or bare encoded_value keys (current format). Composite keys enable
+    /// duplicate values within the same index. Defaults to false for indexes serialized before this
+    /// field existed — meaning leaf entries use bare encoded_value keys.
+    composite_key: bool = false,
 };
 
 /// Complete table metadata.
@@ -290,6 +295,7 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         }
         size += 1; // gin_opclass: u8
         size += 1; // covering_storage: u8
+        size += 1; // composite_key: u8
     }
 
     const buf = try allocator.alloc(u8, size);
@@ -386,6 +392,8 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         buf[pos] = @intFromEnum(idx.gin_opclass);
         pos += 1;
         buf[pos] = if (idx.covering_storage) @as(u8, 1) else @as(u8, 0);
+        pos += 1;
+        buf[pos] = if (idx.composite_key) @as(u8, 1) else @as(u8, 0);
         pos += 1;
     }
 
@@ -587,6 +595,14 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                     pos += 1;
                 } else {
                     idx.covering_storage = false; // Backward compatibility: old DBs have row_key-only leaves
+                }
+
+                // composite_key (optional — backward compatible, defaults to false)
+                if (pos + 1 <= data.len) {
+                    idx.composite_key = data[pos] != 0;
+                    pos += 1;
+                } else {
+                    idx.composite_key = false; // Backward compatibility: old DBs don't use composite keys
                 }
 
                 idxs_initialized += 1;
@@ -8753,4 +8769,167 @@ test "backward compatibility: deserialize old format without covering_storage de
     try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
     // CRITICAL: covering_storage should default to false for backward compatibility
     try std.testing.expectEqual(false, idx.covering_storage);
+}
+
+test "serialize and deserialize IndexInfo with composite_key = true" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "email", .column_type = .text, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_email_composite",
+            .column_name = "email",
+            .column_index = 1,
+            .root_page_id = 250,
+            .included_columns = &.{},
+            .index_type = .btree,
+            .is_unique = false,
+            .state = .valid,
+            .gin_opclass = .none,
+            .covering_storage = false,
+            .composite_key = true,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 44);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "users_with_composite", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_email_composite", idx.index_name);
+    try std.testing.expectEqualStrings("email", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 250), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+    try std.testing.expectEqual(false, idx.covering_storage);
+    try std.testing.expectEqual(true, idx.composite_key);
+}
+
+test "serialize and deserialize IndexInfo with composite_key = false" {
+    const allocator = std.testing.allocator;
+
+    const columns = [_]ColumnInfo{
+        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{ .name = "status", .column_type = .text, .flags = .{} },
+    };
+
+    const indexes = [_]IndexInfo{
+        .{
+            .index_name = "idx_status",
+            .column_name = "status",
+            .column_index = 1,
+            .root_page_id = 260,
+            .included_columns = &.{},
+            .index_type = .btree,
+            .is_unique = false,
+            .state = .valid,
+            .gin_opclass = .none,
+            .covering_storage = false,
+            .composite_key = false,
+        },
+    };
+
+    const data = try serializeTableFull(allocator, &columns, &.{}, &indexes, 45);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "orders_simple", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_status", idx.index_name);
+    try std.testing.expectEqualStrings("status", idx.column_name);
+    try std.testing.expectEqual(@as(u16, 1), idx.column_index);
+    try std.testing.expectEqual(@as(u32, 260), idx.root_page_id);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+    try std.testing.expectEqual(false, idx.covering_storage);
+    try std.testing.expectEqual(false, idx.composite_key);
+}
+
+test "backward compatibility: deserialize old format without composite_key defaults to false" {
+    const allocator = std.testing.allocator;
+
+    // Manually construct old format data (without composite_key byte at the end)
+    // Format includes gin_opclass and covering_storage, but NOT composite_key
+    // This simulates a catalog serialized after gin_opclass and covering_storage were added,
+    // but before composite_key existed.
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    // data_root_page_id
+    try buf.writer(allocator).writeInt(u32, 90, .little);
+
+    // column_count = 2
+    try buf.writer(allocator).writeInt(u16, 2, .little);
+
+    // Column 1: "id", integer, primary_key + not_null
+    try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
+    try buf.appendSlice(allocator, "id");
+    try buf.append(allocator, @intFromEnum(ColumnType.integer));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+
+    // Column 2: "value", text
+    try buf.writer(allocator).writeInt(u16, 5, .little); // name_len
+    try buf.appendSlice(allocator, "value");
+    try buf.append(allocator, @intFromEnum(ColumnType.text));
+    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{})));
+
+    // table_constraint_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+
+    // index_count = 1
+    try buf.writer(allocator).writeInt(u16, 1, .little);
+
+    // Index: "idx_value_legacy"
+    try buf.writer(allocator).writeInt(u16, 16, .little); // index_name_len
+    try buf.appendSlice(allocator, "idx_value_legacy");
+    try buf.writer(allocator).writeInt(u16, 5, .little); // column_name_len
+    try buf.appendSlice(allocator, "value");
+    try buf.writer(allocator).writeInt(u16, 1, .little); // column_index
+    try buf.writer(allocator).writeInt(u32, 210, .little); // root_page_id
+    // is_unique
+    try buf.append(allocator, @as(u8, 0));
+    // index_type = btree (0)
+    try buf.append(allocator, @intFromEnum(IndexType.btree));
+    // state = valid (1)
+    try buf.append(allocator, @intFromEnum(IndexState.valid));
+    // included_count = 0
+    try buf.writer(allocator).writeInt(u16, 0, .little);
+    // gin_opclass = none (0)
+    try buf.append(allocator, @intFromEnum(GinOpClass.none));
+    // covering_storage = false (0)
+    try buf.append(allocator, @as(u8, 0));
+    // NO composite_key byte — this is old format (pre-composite_key)
+
+    const data = try buf.toOwnedSlice(allocator);
+    defer allocator.free(data);
+
+    const table = try deserializeTable(allocator, "legacy_composite_index_table", data);
+    defer table.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), table.indexes.len);
+    const idx = table.indexes[0];
+    try std.testing.expectEqualStrings("idx_value_legacy", idx.index_name);
+    try std.testing.expectEqualStrings("value", idx.column_name);
+    try std.testing.expectEqual(IndexType.btree, idx.index_type);
+    try std.testing.expectEqual(false, idx.is_unique);
+    try std.testing.expectEqual(IndexState.valid, idx.state);
+    try std.testing.expectEqual(GinOpClass.none, idx.gin_opclass);
+    try std.testing.expectEqual(false, idx.covering_storage);
+    // CRITICAL: composite_key should default to false for backward compatibility
+    try std.testing.expectEqual(false, idx.composite_key);
 }
