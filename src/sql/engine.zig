@@ -424,6 +424,64 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
     };
 }
 
+/// Build a composite B+Tree key for a non-unique secondary index that allows
+/// duplicate indexed-column values: `4-byte BE length of idx_key ++ idx_key ++ row_key`.
+/// The length prefix (rather than bare `idx_key ++ row_key` concatenation) is required
+/// to disambiguate variable-length TEXT-encoded idx_keys — without it, value "ab" with
+/// one row_key can byte-collide with value "a" with a different row_key that happens to
+/// start with 'b'. Caller owns the returned slice.
+fn buildCompositeIndexKey(allocator: Allocator, idx_key: []const u8, row_key: []const u8) ![]u8 {
+    const buf = try allocator.alloc(u8, 4 + idx_key.len + row_key.len);
+    std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
+    @memcpy(buf[4 .. 4 + idx_key.len], idx_key);
+    @memcpy(buf[4 + idx_key.len ..], row_key);
+    return buf;
+}
+
+/// Build the seekable prefix (no row_key) for a composite index key — every composite
+/// key for the same idx_key starts with exactly these bytes. Caller owns the returned slice.
+fn compositeIndexKeyPrefix(allocator: Allocator, idx_key: []const u8) ![]u8 {
+    const buf = try allocator.alloc(u8, 4 + idx_key.len);
+    std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
+    @memcpy(buf[4..], idx_key);
+    return buf;
+}
+
+/// Collect every row_key stored under a composite-key non-unique `.btree` index for a
+/// given equality value (idx_key). Range-scans the index B+Tree from `compositeIndexKeyPrefix`
+/// and stops at the first entry whose key no longer starts with that prefix. Returns an
+/// empty (but non-null) slice when there are no matches. Caller owns the returned slice and
+/// each element.
+pub fn collectRowKeysForEquality(allocator: Allocator, pool: *BufferPool, index_root_page_id: u32, idx_key: []const u8) ![][]u8 {
+    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    var result = std.ArrayListUnmanaged([]u8){};
+    errdefer {
+        for (result.items) |rk| allocator.free(rk);
+        result.deinit(allocator);
+    }
+
+    var tree = BTree.init(pool, index_root_page_id);
+    var cursor = btree_mod.Cursor.init(allocator, &tree);
+    defer cursor.deinit();
+    try cursor.seek(prefix);
+
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        if (entry.key.len < prefix.len or !std.mem.eql(u8, entry.key[0..prefix.len], prefix)) {
+            break;
+        }
+
+        const row_key = try allocator.dupe(u8, entry.key[prefix.len..]);
+        try result.append(allocator, row_key);
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 /// Encode a literal integer as an index key (same encoding as valueToIndexKey).
 fn integerToIndexKey(allocator: Allocator, i: i64) ![]u8 {
     const buf = try allocator.alloc(u8, 8);
@@ -5336,6 +5394,16 @@ pub const Database = struct {
             // Dispatch based on index type
             switch (idx.index_type) {
                 .btree => {
+                    // Non-unique indexes opted into composite-key storage embed the row_key
+                    // into the B+Tree key itself (idx_key ++ row_key, length-prefixed) so that
+                    // multiple rows can share the same indexed-column value without colliding
+                    // in the B+Tree's key space. See buildCompositeIndexKey.
+                    const btree_key = if (idx.composite_key)
+                        try buildCompositeIndexKey(self.allocator, idx_key, row_key)
+                    else
+                        idx_key;
+                    defer if (idx.composite_key) self.allocator.free(btree_key);
+
                     // Determine the value to insert: covering entry or plain row_key
                     const idx_val = if (idx.covering_storage) blk: {
                         // Resolve included_columns to their values
@@ -5374,7 +5442,7 @@ pub const Database = struct {
                         }
                     }
 
-                    try idx_tree.insert(idx_key, idx_val);
+                    try idx_tree.insert(btree_key, idx_val);
 
                     if (idx_tree.root_page_id != idx.root_page_id) {
                         self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
@@ -5464,7 +5532,13 @@ pub const Database = struct {
             switch (idx.index_type) {
                 .btree => {
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
-                    idx_tree.delete(idx_key) catch {};
+                    if (idx.composite_key) {
+                        const btree_key = buildCompositeIndexKey(self.allocator, idx_key, row_key) catch continue;
+                        defer self.allocator.free(btree_key);
+                        idx_tree.delete(btree_key) catch {};
+                    } else {
+                        idx_tree.delete(idx_key) catch {};
+                    }
                 },
                 .hash => {
                     var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
@@ -41424,4 +41498,430 @@ test "step 6: Non-covering index regression test (must not use Index Only Scan)"
     }
 
     try testing.expectEqual(@as(usize, 1), row_count);
+}
+
+// ── Phase 0b: Composite-Key Non-Unique Index Tests ──────────────────────────
+// Tests for buildCompositeIndexKey, compositeIndexKeyPrefix, and
+// collectRowKeysForEquality helpers plus integration into insertIndexEntries/deleteIndexEntries.
+// These tests verify that non-unique secondary indexes with composite_key=true can store
+// multiple rows with the same indexed-column value by appending the row_key as a tiebreaker.
+
+test "phase 0b: buildCompositeIndexKey encodes as 4-byte BE length + idx_key + row_key" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const idx_key = "apple";
+    const row_key = [_]u8{ 0x00, 0x00, 0x00, 0x01 }; // 8-byte row ID as example
+
+    const composite = try buildCompositeIndexKey(allocator, idx_key, &row_key);
+    defer allocator.free(composite);
+
+    // Expected: 4-byte BE length of idx_key (5) + "apple" + row_key bytes
+    try testing.expectEqual(@as(usize, 4 + 5 + 4), composite.len);
+
+    // Verify first 4 bytes encode length of idx_key (5) as big-endian
+    const len_bytes = composite[0..4];
+    const decoded_len = std.mem.readInt(u32, len_bytes, .big);
+    try testing.expectEqual(@as(u32, 5), decoded_len);
+
+    // Verify idx_key bytes
+    try testing.expectEqualSlices(u8, idx_key, composite[4..9]);
+
+    // Verify row_key bytes at the end
+    try testing.expectEqualSlices(u8, &row_key, composite[9..13]);
+}
+
+test "phase 0b: compositeIndexKeyPrefix encodes as 4-byte BE length + idx_key (no row_key)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const idx_key = "banana";
+
+    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    // Expected: 4-byte BE length of idx_key (6) + "banana"
+    try testing.expectEqual(@as(usize, 4 + 6), prefix.len);
+
+    // Verify first 4 bytes encode length (6) as big-endian
+    const len_bytes = prefix[0..4];
+    const decoded_len = std.mem.readInt(u32, len_bytes, .big);
+    try testing.expectEqual(@as(u32, 6), decoded_len);
+
+    // Verify idx_key bytes
+    try testing.expectEqualSlices(u8, idx_key, prefix[4..10]);
+}
+
+test "phase 0b: buildCompositeIndexKey starts with compositeIndexKeyPrefix" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const idx_key = "cherry";
+    const row_key = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
+
+    const composite = try buildCompositeIndexKey(allocator, idx_key, &row_key);
+    defer allocator.free(composite);
+
+    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    // composite.key must start with exactly prefix bytes
+    try testing.expect(composite.len >= prefix.len);
+    try testing.expectEqualSlices(u8, prefix, composite[0..prefix.len]);
+}
+
+test "phase 0b: composite keys with variable-length TEXT avoid byte-collisions" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    // Test case: "ab" + row_key1 would collide with "a" + row_key2 if using
+    // bare concatenation (if row_key2 starts with 'b').
+    const idx_key_1 = "ab";
+    const idx_key_2 = "a";
+
+    // Create row keys that would collide with bare concatenation:
+    // "ab" + [0x62, ...] collides with "a" + [0x62, ...] if we just concatenate
+    const row_key_1 = [_]u8{ 0x00, 0x00, 0x00, 0x01 };
+    const row_key_2 = [_]u8{ 0x62, 0x00, 0x00, 0x02 }; // 0x62 = 'b', mimics "ab" prefix
+
+    const composite_1 = try buildCompositeIndexKey(allocator, idx_key_1, &row_key_1);
+    defer allocator.free(composite_1);
+
+    const composite_2 = try buildCompositeIndexKey(allocator, idx_key_2, &row_key_2);
+    defer allocator.free(composite_2);
+
+    // With length-prefix encoding, these must differ (no collision)
+    // Even if the bytes happened to be the same length, the prefixes differ:
+    // composite_1: [0x00,0x00,0x00,0x02, 'a','b', row_key_1]
+    // composite_2: [0x00,0x00,0x00,0x01, 'a', row_key_2]
+    // These are structurally distinct, and row_key_2 starts with 0x62 ('b'),
+    // but the length-prefix makes them unambiguous.
+
+    // Simplest check: the composite keys must not be byte-identical
+    try testing.expect(!std.mem.eql(u8, composite_1, composite_2));
+}
+
+test "phase 0b: insertIndexEntries with composite_key=true allows duplicate indexed values" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0b_composite_insert_dup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with a non-unique secondary index
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, category TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_category ON items (category);");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(allocator);
+
+    // Find the index and manually set composite_key=true (simulating phase 0a groundwork)
+    var indexes_copy = try allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len);
+    defer allocator.free(indexes_copy);
+    for (table_info.indexes, 0..) |idx, i| {
+        indexes_copy[i] = idx;
+        if (std.mem.eql(u8, idx.column_name, "category")) {
+            indexes_copy[i].composite_key = true;
+        }
+    }
+    var composite_table_info = table_info;
+    composite_table_info.indexes = indexes_copy;
+
+    // Insert first row with category="fruit"
+    var row_key_1_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_1_buf, 1, .big);
+    const vals_1 = [_]Value{ .{ .integer = 1 }, .{ .text = "fruit" } };
+    const header_1 = TupleHeader.forInsert(10, 0);
+
+    try db.insertIndexEntries("items", &composite_table_info, &vals_1, &row_key_1_buf, header_1);
+
+    // Insert second row with SAME category="fruit" (duplicate indexed value)
+    // With composite_key=true, this should NOT fail
+    var row_key_2_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_2_buf, 2, .big);
+    const vals_2 = [_]Value{ .{ .integer = 2 }, .{ .text = "fruit" } };
+    const header_2 = TupleHeader.forInsert(11, 0);
+
+    try db.insertIndexEntries("items", &composite_table_info, &vals_2, &row_key_2_buf, header_2);
+    // If we reach here without error, the second insert succeeded (good!)
+
+    // Verify both entries exist in the index by checking the B+Tree directly
+    const idx_info = composite_table_info.findIndex("category") orelse return error.MissingIndex;
+    try testing.expect(idx_info.composite_key);
+
+    // Use compositeIndexKeyPrefix to search for all entries with "fruit"
+    const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
+    defer allocator.free(idx_key);
+
+    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
+    var cursor = btree_mod.Cursor.init(allocator, &idx_tree);
+    defer cursor.deinit();
+    try cursor.seek(prefix);
+
+    var found_count: usize = 0;
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+
+        // Verify entry key starts with the prefix
+        try testing.expect(std.mem.startsWith(u8, entry.key, prefix));
+        found_count += 1;
+    }
+
+    // We should find exactly 2 entries (one for each row with "fruit")
+    try testing.expectEqual(@as(usize, 2), found_count);
+}
+
+test "phase 0b: deleteIndexEntries with composite_key=true removes only the specific row" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0b_composite_delete_one.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with non-unique index
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, category TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_category ON items (category);");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(allocator);
+
+    // Set composite_key=true
+    var indexes_copy = try allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len);
+    defer allocator.free(indexes_copy);
+    for (table_info.indexes, 0..) |idx, i| {
+        indexes_copy[i] = idx;
+        if (std.mem.eql(u8, idx.column_name, "category")) {
+            indexes_copy[i].composite_key = true;
+        }
+    }
+    var composite_table_info = table_info;
+    composite_table_info.indexes = indexes_copy;
+
+    // Insert two rows with same category
+    var row_key_1_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_1_buf, 100, .big);
+    const vals_1 = [_]Value{ .{ .integer = 1 }, .{ .text = "fruit" } };
+    const header_1 = TupleHeader.forInsert(10, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals_1, &row_key_1_buf, header_1);
+
+    var row_key_2_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_2_buf, 200, .big);
+    const vals_2 = [_]Value{ .{ .integer = 2 }, .{ .text = "fruit" } };
+    const header_2 = TupleHeader.forInsert(11, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals_2, &row_key_2_buf, header_2);
+
+    // Delete the first row by calling deleteIndexEntries with its row_key and values
+    db.deleteIndexEntries(&composite_table_info, &vals_1, &row_key_1_buf);
+
+    // Verify exactly one entry remains for "fruit"
+    const idx_info = composite_table_info.findIndex("category") orelse return error.MissingIndex;
+    const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
+    defer allocator.free(idx_key);
+
+    const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
+    var cursor = btree_mod.Cursor.init(allocator, &idx_tree);
+    defer cursor.deinit();
+    try cursor.seek(prefix);
+
+    var found_count: usize = 0;
+    while (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        defer allocator.free(entry.value);
+        try testing.expect(std.mem.startsWith(u8, entry.key, prefix));
+        found_count += 1;
+    }
+
+    // After deleting one of two identical entries, exactly one should remain
+    try testing.expectEqual(@as(usize, 1), found_count);
+}
+
+test "phase 0b: collectRowKeysForEquality returns all row_keys for a given idx_key" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0b_collect_rowkeys.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with non-unique index
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, category TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_category ON items (category);");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(allocator);
+
+    // Set composite_key=true
+    var indexes_copy = try allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len);
+    defer allocator.free(indexes_copy);
+    for (table_info.indexes, 0..) |idx, i| {
+        indexes_copy[i] = idx;
+        if (std.mem.eql(u8, idx.column_name, "category")) {
+            indexes_copy[i].composite_key = true;
+        }
+    }
+    var composite_table_info = table_info;
+    composite_table_info.indexes = indexes_copy;
+
+    // Insert 3 rows with category="fruit"
+    var row_key_buf_1: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf_1, 1, .big);
+    const vals_1 = [_]Value{ .{ .integer = 1 }, .{ .text = "fruit" } };
+    const header_1 = TupleHeader.forInsert(10, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals_1, &row_key_buf_1, header_1);
+
+    var row_key_buf_2: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf_2, 2, .big);
+    const vals_2 = [_]Value{ .{ .integer = 2 }, .{ .text = "fruit" } };
+    const header_2 = TupleHeader.forInsert(11, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals_2, &row_key_buf_2, header_2);
+
+    var row_key_buf_3: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf_3, 3, .big);
+    const vals_3 = [_]Value{ .{ .integer = 3 }, .{ .text = "fruit" } };
+    const header_3 = TupleHeader.forInsert(12, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals_3, &row_key_buf_3, header_3);
+
+    // Insert 1 row with category="vegetable" (different value)
+    var row_key_buf_4: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf_4, 4, .big);
+    const vals_4 = [_]Value{ .{ .integer = 4 }, .{ .text = "vegetable" } };
+    const header_4 = TupleHeader.forInsert(13, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals_4, &row_key_buf_4, header_4);
+
+    // Now call collectRowKeysForEquality for category="fruit"
+    const idx_info = composite_table_info.findIndex("category") orelse return error.MissingIndex;
+    const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
+    defer allocator.free(idx_key);
+
+    const row_keys = try collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
+    defer {
+        for (row_keys) |rk| allocator.free(rk);
+        allocator.free(row_keys);
+    }
+
+    // Should return exactly 3 row_keys (the vegetable row should not be included)
+    try testing.expectEqual(@as(usize, 3), row_keys.len);
+
+    // Verify the row_keys match our expected values (order may vary)
+    var found_count_1 = false;
+    var found_count_2 = false;
+    var found_count_3 = false;
+
+    for (row_keys) |rk| {
+        if (std.mem.eql(u8, rk, &row_key_buf_1)) found_count_1 = true;
+        if (std.mem.eql(u8, rk, &row_key_buf_2)) found_count_2 = true;
+        if (std.mem.eql(u8, rk, &row_key_buf_3)) found_count_3 = true;
+    }
+
+    try testing.expect(found_count_1);
+    try testing.expect(found_count_2);
+    try testing.expect(found_count_3);
+}
+
+test "phase 0b: collectRowKeysForEquality returns empty slice when no matches" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0b_collect_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with non-unique index
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, category TEXT);");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx_category ON items (category);");
+    defer r2.close(allocator);
+
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(allocator);
+
+    // Set composite_key=true
+    var indexes_copy = try allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len);
+    defer allocator.free(indexes_copy);
+    for (table_info.indexes, 0..) |idx, i| {
+        indexes_copy[i] = idx;
+        if (std.mem.eql(u8, idx.column_name, "category")) {
+            indexes_copy[i].composite_key = true;
+        }
+    }
+    var composite_table_info = table_info;
+    composite_table_info.indexes = indexes_copy;
+
+    // Insert one row with category="fruit"
+    var row_key_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_buf, 1, .big);
+    const vals = [_]Value{ .{ .integer = 1 }, .{ .text = "fruit" } };
+    const header = TupleHeader.forInsert(10, 0);
+    try db.insertIndexEntries("items", &composite_table_info, &vals, &row_key_buf, header);
+
+    // Call collectRowKeysForEquality for category="vegetable" (which doesn't exist)
+    const idx_info = composite_table_info.findIndex("category") orelse return error.MissingIndex;
+    const idx_key = try valueToIndexKey(allocator, Value{ .text = "vegetable" });
+    defer allocator.free(idx_key);
+
+    const row_keys = try collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
+    defer allocator.free(row_keys);
+
+    // Should return empty slice (not an error)
+    try testing.expectEqual(@as(usize, 0), row_keys.len);
+}
+
+test "phase 0b: composite_key=false (legacy) still rejects duplicate indexed values for unique indexes" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0b_composite_legacy_unique.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with a UNIQUE secondary index (old behavior, composite_key=false by default)
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER, email TEXT UNIQUE);");
+    defer r1.close(allocator);
+
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(allocator);
+
+    const idx_info = table_info.findIndex("email") orelse return error.MissingIndex;
+    try testing.expect(!idx_info.composite_key); // Verify it's the legacy default (false)
+    try testing.expect(idx_info.is_unique); // Verify it's marked unique
+
+    // Insert first row with email="alice@example.com"
+    var row_key_1_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_1_buf, 1, .big);
+    const vals_1 = [_]Value{ .{ .integer = 1 }, .{ .text = "alice@example.com" } };
+    const header_1 = TupleHeader.forInsert(10, 0);
+
+    try db.insertIndexEntries("items", &table_info, &vals_1, &row_key_1_buf, header_1);
+
+    // Try to insert second row with SAME email (duplicate)
+    // This should fail (UniqueConstraintViolation) since composite_key=false and is_unique=true
+    var row_key_2_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &row_key_2_buf, 2, .big);
+    const vals_2 = [_]Value{ .{ .integer = 2 }, .{ .text = "alice@example.com" } };
+    const header_2 = TupleHeader.forInsert(11, 0);
+
+    const result = db.insertIndexEntries("items", &table_info, &vals_2, &row_key_2_buf, header_2);
+
+    // Should return UniqueConstraintViolation error
+    try testing.expectError(error.UniqueConstraintViolation, result);
 }
