@@ -2707,3 +2707,342 @@ test "visibility: in-progress delete is invisible to other txns" {
 
     try tm.commit(xid1);
 }
+
+test "isTupleVisible — snapshot boundary xmin equals xid" {
+    // Snapshot boundary: tuple xmin == snapshot.xmin (first active XID)
+    const active_xids = [_]u32{10};
+    const snap = Snapshot{
+        .xmin = 10,
+        .xmax = 20,
+        .active_xids = &active_xids,
+        .allocator = null,
+    };
+
+    // Tuple created by xid 10 (at boundary of active range)
+    const h = TupleHeader{
+        .xmin = 10, // active in snapshot
+        .xmax = INVALID_XID,
+        .cid = 0,
+        .flags = .{},
+    };
+    // Should be invisible (xid 10 is active)
+    try std.testing.expect(!isTupleVisible(h, snap, 15, 0));
+}
+
+test "isTupleVisible — snapshot boundary xmax-1 equals last active" {
+    // Snapshot boundary: tuple xmin == snapshot.xmax - 1 (future, but just barely)
+    const active_xids = [_]u32{};
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 20,
+        .active_xids = &active_xids,
+        .allocator = null,
+    };
+
+    // Tuple with xmin = 19 (just before xmax)
+    const h = TupleHeader{
+        .xmin = 19,
+        .xmax = INVALID_XID,
+        .cid = 0,
+        .flags = .{},
+    };
+    // xmin (19) < xmax (20), xmin not in active_xids → visible
+    try std.testing.expect(isTupleVisible(h, snap, 15, 0));
+}
+
+test "isTupleVisible — xmin == xmax implies current txn modified self (contradictory)" {
+    // Edge case: xmin == xmax (same transaction created and deleted it)
+    // This shouldn't happen in practice but test visibility logic
+    const snap = Snapshot.EMPTY;
+
+    const h = TupleHeader{
+        .xmin = 5,
+        .xmax = 5, // Same transaction
+        .cid = 1,
+        .flags = .{},
+    };
+
+    // From current_xid=5, cid=0: insert at cid=1 > current_cid=0 → NOT visible yet
+    // xmin check: cid(1) >= current_cid(0) → NOT visible → tuple invisible
+    try std.testing.expect(!isTupleVisible(h, snap, 5, 0));
+
+    // From current_xid=5, cid=2: both insert and delete happened before this command
+    // xmin visible (cid 1 < 2), xmax visible (cid 1 < 2) → deleted → invisible
+    try std.testing.expect(!isTupleVisible(h, snap, 5, 2));
+
+    // From current_xid=5, cid=1: insert at cid=1 == current_cid=1 (boundary)
+    // xmin check: cid(1) >= current_cid(1) is true → NOT visible
+    try std.testing.expect(!isTupleVisible(h, snap, 5, 1));
+}
+
+test "isTupleVisible — data corruption: xmin_committed AND xmin_aborted both set" {
+    // Detect data corruption: both committed and aborted flags set
+    // Implementation prioritizes aborted → invisible
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    const h = TupleHeader{
+        .xmin = 6,
+        .xmax = INVALID_XID,
+        .cid = 0,
+        .flags = .{ .xmin_committed = true, .xmin_aborted = true },
+    };
+
+    // Should treat as aborted (checked first in code)
+    try std.testing.expect(!isTupleVisible(h, snap, 8, 0));
+}
+
+test "TransactionManager — concurrent reads and writes isolation" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // T1: READ COMMITTED
+    const xid1 = try tm.begin(.read_committed);
+    var snap1_before = try tm.getSnapshot(xid1);
+    defer snap1_before.deinit();
+
+    // T2: modifies and commits
+    const xid2 = try tm.begin(.read_committed);
+    const header_t2 = TupleHeader.forInsert(xid2, 0);
+    try tm.commit(xid2);
+
+    // T1 takes fresh snapshot after T2 commits
+    var snap1_after = try tm.getSnapshot(xid1);
+    defer snap1_after.deinit();
+
+    // T1 should see T2's changes (new snapshot)
+    try std.testing.expect(isTupleVisible(header_t2, snap1_after, xid1, 0));
+    // But T1's earlier snapshot should not see T2 (T2 was active)
+    try std.testing.expect(!isTupleVisible(header_t2, snap1_before, xid1, 0));
+
+    try tm.commit(xid1);
+}
+
+test "TransactionManager — VACUUM horizon advances correctly" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    const xid1 = try tm.begin(.read_committed);
+    const xid2 = try tm.begin(.read_committed);
+    const xid3 = try tm.begin(.read_committed);
+
+    // Horizon is at xid1 (oldest active)
+    try std.testing.expectEqual(xid1, tm.getVacuumHorizon());
+
+    // Commit xid1
+    try tm.commit(xid1);
+
+    // Horizon advances to xid2 (next oldest active)
+    try std.testing.expectEqual(xid2, tm.getVacuumHorizon());
+
+    // Commit xid2
+    try tm.commit(xid2);
+
+    // Horizon advances to xid3
+    try std.testing.expectEqual(xid3, tm.getVacuumHorizon());
+
+    // Commit xid3 — no active transactions
+    try tm.commit(xid3);
+    const final_horizon = tm.getVacuumHorizon();
+    // Horizon should be at or beyond all committed XIDs
+    try std.testing.expect(final_horizon > xid3);
+}
+
+test "SsiTracker — single transaction no rw-edges" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    const xid = try tm.begin(.serializable);
+
+    // Single transaction reads and writes — no other txns to conflict
+    try tracker.registerRead(xid, 100, &tm);
+    try tracker.registerWrite(xid, 100, &tm);
+
+    // No rw-edges to self
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid));
+
+    try tm.commit(xid);
+}
+
+test "SsiTracker — sequential transactions no conflict" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    // T1 starts, reads, commits BEFORE T2 starts
+    const xid1 = try tm.begin(.serializable);
+    try tracker.registerRead(xid1, 100, &tm);
+    try tm.commit(xid1);
+    tracker.finishTransaction(xid1);
+
+    // T2 starts AFTER T1 commits — T1 not in T2's snapshot
+    const xid2 = try tm.begin(.serializable);
+    try tracker.registerWrite(xid2, 100, &tm);
+
+    // No rw-antidependency because T1 committed before T2's snapshot
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid2));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid2));
+
+    try tm.commit(xid2);
+}
+
+test "SsiTracker — multiple readers on same table no rw-edges" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+    var tracker = SsiTracker.init(allocator);
+    defer tracker.deinit();
+
+    // T1 and T2 both read the same table (no conflict between readers)
+    const xid1 = try tm.begin(.serializable);
+    const xid2 = try tm.begin(.serializable);
+
+    try tracker.registerRead(xid1, 100, &tm);
+    try tracker.registerRead(xid2, 100, &tm);
+
+    // Multiple readers on same table — no rw-antidependencies
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid1));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwOutCount(xid2));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid1));
+    try std.testing.expectEqual(@as(usize, 0), tracker.rwInCount(xid2));
+
+    try tm.commit(xid1);
+    try tm.commit(xid2);
+}
+
+test "TupleHeader — all field transitions (forInsert→markDeleted→markUpdated)" {
+    var header = TupleHeader.forInsert(100, 0);
+    try std.testing.expectEqual(@as(u32, 100), header.xmin);
+    try std.testing.expectEqual(INVALID_XID, header.xmax);
+    try std.testing.expectEqual(@as(u16, 0), header.cid);
+    try std.testing.expect(!header.flags.updated);
+
+    // Mark deleted
+    header.markDeleted(200, 1);
+    try std.testing.expectEqual(@as(u32, 200), header.xmax);
+    try std.testing.expectEqual(@as(u16, 1), header.cid);
+    try std.testing.expect(!header.flags.updated);
+
+    // Mark updated (overrides cid and flags)
+    header.markUpdated(300, 2);
+    try std.testing.expectEqual(@as(u32, 300), header.xmax);
+    try std.testing.expectEqual(@as(u16, 2), header.cid);
+    try std.testing.expect(header.flags.updated);
+}
+
+test "Snapshot — active_xids allocation is correct" {
+    const allocator = std.testing.allocator;
+
+    const active = try allocator.alloc(u32, 5);
+    active[0] = 10;
+    active[1] = 20;
+    active[2] = 30;
+    active[3] = 40;
+    active[4] = 50;
+
+    var snap = Snapshot{
+        .xmin = 10,
+        .xmax = 60,
+        .active_xids = active,
+        .allocator = allocator,
+    };
+
+    // Verify active XIDs
+    try std.testing.expectEqual(@as(usize, 5), snap.active_xids.len);
+    try std.testing.expect(snap.isActive(10));
+    try std.testing.expect(snap.isActive(30));
+    try std.testing.expect(snap.isActive(50));
+    try std.testing.expect(!snap.isActive(25));
+
+    snap.deinit();
+    // allocator detects leak if deinit didn't free properly
+}
+
+test "TransactionManager — READ COMMITTED gets fresh snapshots per statement" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // T1 READ COMMITTED — should get fresh snapshot each call
+    const xid1 = try tm.begin(.read_committed);
+
+    // First snapshot: only T1 active
+    var snap1_1 = try tm.getSnapshot(xid1);
+    defer snap1_1.deinit();
+    try std.testing.expect(snap1_1.isActive(xid1));
+    const len1 = snap1_1.active_xids.len;
+
+    // T2 begins (concurrent)
+    const xid2 = try tm.begin(.read_committed);
+
+    // T1 gets fresh snapshot: now includes T2
+    var snap1_2 = try tm.getSnapshot(xid1);
+    defer snap1_2.deinit();
+    try std.testing.expect(snap1_2.isActive(xid1));
+    try std.testing.expect(snap1_2.isActive(xid2));
+    try std.testing.expectEqual(len1 + 1, snap1_2.active_xids.len);
+
+    // T2 commits
+    try tm.commit(xid2);
+
+    // T1 gets another fresh snapshot: T2 is no longer active
+    var snap1_3 = try tm.getSnapshot(xid1);
+    defer snap1_3.deinit();
+    try std.testing.expect(!snap1_3.isActive(xid2));
+
+    try tm.commit(xid1);
+}
+
+test "TransactionManager — REPEATABLE READ reuses snapshot across calls" {
+    const allocator = std.testing.allocator;
+    var tm = TransactionManager.init(allocator);
+    defer tm.deinit();
+
+    // T1 REPEATABLE READ — snapshot taken at begin
+    const xid1 = try tm.begin(.repeatable_read);
+
+    // Multiple calls to getSnapshot should return same (frozen) snapshot
+    const snap1a = try tm.getSnapshot(xid1);
+    const snap1b = try tm.getSnapshot(xid1);
+
+    // Same snapshot values (not dereferencing pointers, just values)
+    try std.testing.expectEqual(snap1a.xmin, snap1b.xmin);
+    try std.testing.expectEqual(snap1a.xmax, snap1b.xmax);
+    try std.testing.expectEqual(snap1a.active_xids.len, snap1b.active_xids.len);
+
+    // Both getSnapshot calls return the same underlying snapshot, so we don't
+    // need to deinit both — only one deinit from TM at commit
+    try tm.commit(xid1);
+}
+
+test "isTupleVisible — xmax boundary with own txn at exact snapshot.xmax" {
+    const snap = Snapshot{
+        .xmin = 5,
+        .xmax = 10,
+        .active_xids = &.{},
+        .allocator = null,
+    };
+
+    // Tuple deleted by xid at exactly snapshot.xmax (future xid from snapshot POV)
+    const h = TupleHeader{
+        .xmin = 3,
+        .xmax = 10, // >= snapshot.xmax → future (not visible)
+        .cid = 0,
+        .flags = .{},
+    };
+    // xmin visible (3 < xmin), xmax NOT visible (10 >= xmax) → tuple IS visible
+    // Because the deleting transaction (10) was in the future of the snapshot
+    try std.testing.expect(isTupleVisible(h, snap, 8, 0));
+}
