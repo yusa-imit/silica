@@ -6,13 +6,14 @@
 > protocol, but treat the auto-memory system as the primary source of truth for recent
 > session detail — this file lags behind by design to avoid duplicate maintenance.
 
-## Current State (Session 502, 2026-08-25)
-- **Version**: v1.0.1 (production ready, all 12 phases complete); index-only-scan phased plan completed 7/7 (session 494)
-- **Mode**: Feature — continued in-progress bug fix (issue #125), per protocol bugs take priority over new feature work
-- **Dependencies**: sailor v2.94.4, zuda v2.2.0 (last reverified session 495)
-- **CI**: ✅ GREEN at session start
-- **Tests**: 4536/4558 passed, 22 skipped, 0 failed, `zig build` clean
-- **Open issues**: 2 — #125 SAVEPOINT rollback-after-commit bug (physical undo log fix, 7/8 steps done as of this session, see debugging.md), #126 column-level UNIQUE constraint never enforced (not yet fixed, see debugging.md)
+## Current State (Session 507, 2026-08-27)
+- **Version**: v1.0.1 (production ready, all 12 phases complete); index-only-scan phased plan completed 7/7 (session 494). #125 (SAVEPOINT/ROLLBACK undo-log) and #126 (column UNIQUE enforcement) — both CLOSED, fully fixed (commits `ca74a32`, `d24bb5e`), superseding the session-502 "in progress" note below which was stale by session 507.
+- **Mode**: Feature. CI green + 0 open issues at session start. Architect-reviewed bitmap index scans (full phased plan in architecture.md) and found a real prerequisite bug: non-unique `.btree` indexes reject INSERT of duplicate column values (filed **issue #128**). Implemented phase 0a (TDD: `IndexInfo.composite_key` field, backward-compatible serialize/deserialize, commit `6400232`) — groundwork only, bug not yet fixed end-to-end (phases 0b/0c remain: composite-key building in insertIndexEntries/deleteIndexEntries, multi-row IndexScanOp).
+- **Dependencies**: sailor v2.95.0, zuda v2.3.0 (bumped session 506)
+- **CI**: ✅ GREEN at session start; push for commit 6400232 pending verification
+- **Tests**: 4557/4580 passed, 23 skipped, 0 failed, `zig build` clean
+- **Open issues**: 1 — #128 (non-unique index duplicate-value INSERT bug / bitmap-scan prerequisite), phase 0a done, 0b/0c remain
+- **Next priority**: continue #128 phase 0b (engine.zig composite-key wiring in insertIndexEntries/deleteIndexEntries) since bugs take priority over new feature work; full bitmap-scan plan (5 phases after #128) documented in architecture.md for once #128 is closed
 
 ## Pattern: Maintenance Cycle
 Since v1.0.0 release, sessions follow a predictable pattern:
