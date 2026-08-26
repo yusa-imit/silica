@@ -38484,32 +38484,29 @@ test "GIN index on jsonb column — catalog wiring sets jsonb_ops opclass" {
     try testing.expect(idx.?.gin_opclass == .jsonb_ops);
 }
 
-test "GIN index on text column as tsvector placeholder — tests jsonb_ops wiring pattern" {
+test "GIN index on tsvector column assigns tsvector_ops opclass" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_text_opclass.db";
+    const path = "test_gin_tsvector_opclass.db";
     defer std.fs.cwd().deleteFile(path) catch {};
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    // For now, use TEXT column (TSVECTOR type has parser issues in CREATE TABLE)
-    // This test demonstrates the catalog wiring pattern for tsvector_ops.
-    // TODO: Fix parser to support TSVECTOR as column type, then enable full tsvector tests
-    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TEXT)");
+    // Create table with TSVECTOR column (now fully supported)
+    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TSVECTOR)");
     defer r1.close(testing.allocator);
 
-    // Create a GIN index on the text column (would map to tsvector_ops if body were TSVECTOR)
+    // Create a GIN index on the TSVECTOR column
     var r2 = try db.execSQL("CREATE INDEX idx_docs_body ON docs (body) USING GIN");
     defer r2.close(testing.allocator);
 
-    // For TEXT column, gin_opclass should remain .none (no native wiring)
-    // This test is a placeholder until TSVECTOR column type parsing is fixed
+    // For TSVECTOR column, gin_opclass should be .tsvector_ops (native wiring)
     var table_info = try db.catalog.getTable("docs");
     defer table_info.deinit(testing.allocator);
     const idx = table_info.findIndex("body");
     try testing.expect(idx != null);
     try testing.expectEqualStrings("body", idx.?.column_name);
     try testing.expect(idx.?.index_type == .gin);
-    try testing.expect(idx.?.gin_opclass == .none);
+    try testing.expect(idx.?.gin_opclass == catalog_mod.GinOpClass.tsvector_ops);
 }
 
 test "GIN index on scalar column — backward compatibility (gin_opclass remains .none)" {
@@ -38710,42 +38707,47 @@ test "GIN native storage — jsonb_ops INSERT populates native GIN posting list"
     try testing.expectEqual(@as(usize, 1), results.len);
 }
 
-test "GIN native storage — tsvector_ops INSERT (text placeholder, awaiting TSVECTOR column type)" {
+test "GIN native storage — tsvector_ops INSERT verifies opclass and GIN search" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const path = "test_gin_tsvector_native_insert.db";
     defer std.fs.cwd().deleteFile(path) catch {};
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    // TODO: Once TSVECTOR column type is fully supported in parser,
-    // replace TEXT with TSVECTOR and this test will verify tsvector_ops GIN wiring.
-    // For now, this is a placeholder demonstrating the test structure.
-    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TEXT)");
+    // Create table with TSVECTOR column (now fully supported)
+    var r1 = try db.execSQL("CREATE TABLE docs (id INTEGER, body TSVECTOR)");
     defer r1.close(testing.allocator);
 
-    // Create GIN index on text column (would be tsvector_ops if body were TSVECTOR)
+    // Create GIN index on TSVECTOR column
     var r2 = try db.execSQL("CREATE INDEX idx_docs_body ON docs (body) USING GIN");
     defer r2.close(testing.allocator);
 
-    // Insert a row with text value
-    var r3 = try db.execSQL("INSERT INTO docs (id, body) VALUES (1, 'hello world')");
+    // Insert rows with tsvector values
+    var r3 = try db.execSQL("INSERT INTO docs (id, body) VALUES (1, to_tsvector('hello world'))");
     defer r3.close(testing.allocator);
-
-    // Verify row exists
-    var r4 = try db.execSQL("SELECT * FROM docs WHERE id = 1");
+    var r4 = try db.execSQL("INSERT INTO docs (id, body) VALUES (2, to_tsvector('goodbye moon'))");
     defer r4.close(testing.allocator);
+
+    // Verify index uses tsvector_ops opclass
+    var table_info = try db.catalog.getTable("docs");
+    defer table_info.deinit(testing.allocator);
+    const idx = table_info.findIndex("body").?;
+    try testing.expectEqual(catalog_mod.GinOpClass.tsvector_ops, idx.gin_opclass);
+
+    // Verify GIN search returns correct document
+    var result = try db.execSQL("SELECT id FROM docs WHERE body @@ to_tsquery('hello')");
+    defer result.close(testing.allocator);
+    try testing.expect(result.rows != null);
     var count: usize = 0;
-    if (r4.rows) |*rows| {
-        while (try rows.next()) |*row_ptr| : (count += 1) {
-            var row = row_ptr.*;
-            defer row.deinit();
-        }
+    var found_id: i64 = -1;
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        found_id = row.values[0].integer;
+        count += 1;
     }
     try testing.expectEqual(@as(usize, 1), count);
-
-    // This test is disabled pending TSVECTOR column type support
-    // Expected behavior: GIN index on TSVECTOR column would use tsvector_ops opclass
-    // and support native GIN search on lexemes via TsvectorOpsOpClass
+    try testing.expectEqual(@as(i64, 1), found_id);
 }
 
 test "GIN native storage — DELETE removes from array_ops posting list" {
