@@ -8366,6 +8366,18 @@ pub const IndexScanOp = struct {
     /// Typed key value for covering scan (optional). When set, used in buildCoveringRow
     /// instead of the raw lookup_key reinterpreted as text. If null, falls back to raw-bytes-as-text.
     covering_key_value: ?Value = null,
+    /// When true, the index is a non-unique `.btree` index whose B+Tree keys are
+    /// `idx_key ++ row_key` composites (see `buildCompositeIndexKey`) rather than a
+    /// bare `idx_key`, so an equality lookup can match multiple rows. `next()` then
+    /// iterates `row_key_queue` instead of doing a single point `.get()`. Never true
+    /// for `.hash`/`.gist`/`.gin` (composite-key storage is `.btree`-only, mirroring
+    /// `covering_storage`'s own `.btree`-only restriction).
+    composite_key: bool = false,
+    /// Lazily-populated queue of candidate row_keys for a composite_key scan (populated
+    /// on the first `next()` call). Owned; freed in `close()`.
+    row_key_queue: ?[][]u8 = null,
+    /// Current position in `row_key_queue`.
+    queue_cursor: usize = 0,
 
     pub fn init(
         allocator: Allocator,
@@ -8430,7 +8442,90 @@ pub const IndexScanOp = struct {
         return Row{ .columns = cols, .values = out_values, .allocator = self.allocator };
     }
 
+    /// Fetch a row from the data B+Tree by row_key, applying MVCC visibility filtering
+    /// and default-column padding. Returns null for an orphaned index entry (no matching
+    /// data row) or an MVCC-invisible tuple. Callers iterating multiple candidates (the
+    /// `composite_key` path) must treat a null result as "skip this candidate," not
+    /// "the scan is exhausted" — see `next()`.
+    fn fetchRowFromDataTree(self: *IndexScanOp, data_row_key: []const u8) ExecError!?Row {
+        var data_tree = BTree.init(self.pool, self.data_root_page_id);
+        const row_data = data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
+        if (row_data == null) return null; // Orphaned index entry
+        defer self.allocator.free(row_data.?);
+
+        // MVCC visibility check
+        if (self.mvcc_ctx) |ctx| {
+            if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
+                const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    return null; // Tuple not visible
+                }
+                // Visible: deserialize column data (skip MVCC header)
+                const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                errdefer {
+                    for (values) |v| v.free(self.allocator);
+                    self.allocator.free(values);
+                }
+                return try self.padRow(values);
+            }
+        }
+
+        // No MVCC context or legacy row — still detect MVCC format and skip overhead
+        const row_bytes = if (mvcc_mod.isVersionedRow(row_data.?))
+            row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
+        else
+            row_data.?;
+        const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+        errdefer {
+            for (values) |v| v.free(self.allocator);
+            self.allocator.free(values);
+        }
+        return try self.padRow(values);
+    }
+
+    /// Pad `values` (shorter than `col_names` when an old row predates an `ALTER TABLE
+    /// ADD COLUMN`) with `col_defaults`/null and wrap into a `Row`. Takes ownership of `values`.
+    fn padRow(self: *IndexScanOp, values: []Value) ExecError!Row {
+        const padded_values = if (values.len < self.col_names.len) blk: {
+            const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+            for (values, 0..) |v, i| extended[i] = v;
+            for (values.len..self.col_names.len) |i| {
+                extended[i] = if (self.col_defaults) |defs|
+                    try defs[i].dupe(self.allocator)
+                else
+                    .null_value;
+            }
+            self.allocator.free(values);
+            break :blk extended;
+        } else values;
+
+        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        for (self.col_names, 0..) |c, i| cols[i] = c;
+
+        return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
+    }
+
     pub fn next(self: *IndexScanOp) ExecError!?Row {
+        // Composite-key indexes can hold multiple rows for the same lookup_key — iterate
+        // a lazily-populated queue of candidate row_keys instead of a single point lookup.
+        if (self.composite_key) {
+            if (self.row_key_queue == null) {
+                self.row_key_queue = collectRowKeysForEquality(self.allocator, self.pool, self.index_root_page_id, self.lookup_key) catch return ExecError.StorageError;
+            }
+            const queue = self.row_key_queue.?;
+            while (self.queue_cursor < queue.len) {
+                const candidate = queue[self.queue_cursor];
+                self.queue_cursor += 1;
+                // An invisible or orphaned candidate just means "skip it," not "stop
+                // the scan" — unlike the single-row path below, there may be more
+                // matching rows still queued.
+                if (try self.fetchRowFromDataTree(candidate)) |row| {
+                    return row;
+                }
+            }
+            return null;
+        }
+
         if (self.exhausted) return null;
         self.exhausted = true;
 
@@ -8485,80 +8580,15 @@ pub const IndexScanOp = struct {
             break :blk d.row_key;
         };
 
-        // Fetch the actual row from the data B+Tree
-        var data_tree = BTree.init(self.pool, self.data_root_page_id);
-        const row_data = data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
-        if (row_data == null) return null; // Orphaned index entry
-        defer self.allocator.free(row_data.?);
-
-        // MVCC visibility check
-        if (self.mvcc_ctx) |ctx| {
-            if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
-                const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
-                    return null; // Tuple not visible
-                }
-                // Visible: deserialize column data (skip MVCC header)
-                const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
-                errdefer {
-                    for (values) |v| v.free(self.allocator);
-                    self.allocator.free(values);
-                }
-                // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
-                const padded_values = if (values.len < self.col_names.len) blk: {
-                    const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
-                    for (values, 0..) |v, i| extended[i] = v;
-                    for (values.len..self.col_names.len) |i| {
-                        extended[i] = if (self.col_defaults) |defs|
-                            try defs[i].dupe(self.allocator)
-                        else
-                            .null_value;
-                    }
-                    self.allocator.free(values);
-                    break :blk extended;
-                } else values;
-                const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
-                for (self.col_names, 0..) |c, i| cols[i] = c;
-                return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
-            }
-        }
-
-        // No MVCC context or legacy row — still detect MVCC format and skip overhead
-        const row_bytes = if (mvcc_mod.isVersionedRow(row_data.?))
-            row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
-        else
-            row_data.?;
-        const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
-        errdefer {
-            for (values) |v| v.free(self.allocator);
-            self.allocator.free(values);
-        }
-
-        // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
-        const padded_values = if (values.len < self.col_names.len) blk: {
-            const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
-            for (values, 0..) |v, i| extended[i] = v;
-            for (values.len..self.col_names.len) |i| {
-                extended[i] = if (self.col_defaults) |defs|
-                    try defs[i].dupe(self.allocator)
-                else
-                    .null_value;
-            }
-            self.allocator.free(values);
-            break :blk extended;
-        } else values;
-
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
-        for (self.col_names, 0..) |c, i| cols[i] = c;
-
-        return Row{
-            .columns = cols,
-            .values = padded_values,
-            .allocator = self.allocator,
-        };
+        return try self.fetchRowFromDataTree(data_row_key);
     }
 
-    pub fn close(_: *IndexScanOp) void {}
+    pub fn close(self: *IndexScanOp) void {
+        if (self.row_key_queue) |queue| {
+            for (queue) |rk| self.allocator.free(rk);
+            self.allocator.free(queue);
+        }
+    }
 
     pub fn iterator(self: *IndexScanOp) RowIterator {
         return .{
@@ -31631,4 +31661,395 @@ test "step 5: IndexOnlyScanOp returns empty result on empty index" {
 
     // Should return no rows
     try std.testing.expectEqual(@as(usize, 0), rows.items.len);
+}
+
+// ── Phase 0c: IndexScanOp Multi-Row Iteration Tests (TDD Red Phase) ──────────────────────────────
+//
+// Tests for IndexScanOp.composite_key field and multi-row .next() iteration behavior.
+// When composite_key=true, the same indexed column value can have multiple rows (non-unique index).
+// Each .next() call must return a different row_key from the composite index, continuing the
+// scan even if a candidate row is MVCC-invisible or orphaned (missing from heap).
+//
+// These tests will fail to compile until zig-developer adds:
+// 1. IndexScanOp.composite_key: bool = false field
+// 2. Internal queue/cursor state for storing candidate row_keys
+// 3. Modified next() logic for multi-row iteration when composite_key=true
+
+test "phase 0c: IndexScanOp.composite_key multi-row returns all rows under same indexed value" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_phase0c_composite_multi_row.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    // Setup: create index and data B+Trees
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    const data_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, data_root);
+        try pager.writePage(data_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Insert 3 rows into data B+Tree, each with a unique row_key
+    var data_tree = BTree.init(&pool, data_root);
+    const row_keys = [3][]const u8{ "row1", "row2", "row3" };
+
+    for (row_keys) |rk| {
+        const values = [_]Value{.{ .text = rk }};
+        const row_data = try serializeRow(allocator, &values);
+        defer allocator.free(row_data);
+        try data_tree.insert(rk, row_data);
+    }
+
+    // Insert 3 composite keys into index B+Tree, all for the same idx_key "age=42"
+    // Composite key format: [4 bytes BE length of idx_key] [idx_key] [row_key]
+    var idx_tree = BTree.init(&pool, index_root);
+    const idx_key = "age=42";
+
+    for (row_keys) |rk| {
+        const composite_key = try buildCompositeIndexKey(allocator, idx_key, rk);
+        defer allocator.free(composite_key);
+        // Value is just the row_key (same as legacy behavior at storage layer)
+        try idx_tree.insert(composite_key, rk);
+    }
+
+    // Create IndexScanOp with composite_key=true
+    const col_names = [_][]const u8{"id"};
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        data_root,
+        index_root,
+        .btree,
+        idx_key,
+        &col_names,
+    );
+    index_scan.composite_key = true;
+    defer index_scan.close();
+
+    // Call next() 3 times and collect all rows
+    var returned_rows: usize = 0;
+    var row1 = try index_scan.next();
+    if (row1 != null) {
+        returned_rows += 1;
+        row1.?.deinit();
+    }
+    var row2 = try index_scan.next();
+    if (row2 != null) {
+        returned_rows += 1;
+        row2.?.deinit();
+    }
+    var row3 = try index_scan.next();
+    if (row3 != null) {
+        returned_rows += 1;
+        row3.?.deinit();
+    }
+
+    // Should have 3 rows
+    try std.testing.expectEqual(@as(usize, 3), returned_rows);
+
+    // 4th call should return null
+    const row4 = try index_scan.next();
+    try std.testing.expect(row4 == null);
+}
+
+test "phase 0c: IndexScanOp.composite_key MVCC filters but continues to next row" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_phase0c_composite_mvcc_filter.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    const data_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, data_root);
+        try pager.writePage(data_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Insert 3 rows into data B+Tree:
+    // row1: visible (xmin=5, xmax=INVALID)
+    // row2: invisible (xmin=50, future transaction)
+    // row3: visible (xmin=6, xmax=INVALID)
+    var data_tree = BTree.init(&pool, data_root);
+
+    const headers = [3]TupleHeader{
+        .{ .xmin = 5, .xmax = mvcc_mod.INVALID_XID, .cid = 0, .flags = .{} },
+        .{ .xmin = 50, .xmax = mvcc_mod.INVALID_XID, .cid = 0, .flags = .{} }, // Future xid
+        .{ .xmin = 6, .xmax = mvcc_mod.INVALID_XID, .cid = 0, .flags = .{} },
+    };
+
+    const row_keys = [3][]const u8{ "row1", "row2", "row3" };
+    for (row_keys, headers) |rk, hdr| {
+        const values = [_]Value{.{ .text = rk }};
+        const row_data = try mvcc_mod.serializeVersionedRow(allocator, hdr, &values);
+        defer allocator.free(row_data);
+        try data_tree.insert(rk, row_data);
+    }
+
+    // Insert composite keys for all 3 rows
+    var idx_tree = BTree.init(&pool, index_root);
+    const idx_key = "age=42";
+    for (row_keys) |rk| {
+        const composite_key = try buildCompositeIndexKey(allocator, idx_key, rk);
+        defer allocator.free(composite_key);
+        try idx_tree.insert(composite_key, rk);
+    }
+
+    // Create IndexScanOp with composite_key=true and MVCC context
+    const col_names = [_][]const u8{"id"};
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        data_root,
+        index_root,
+        .btree,
+        idx_key,
+        &col_names,
+    );
+    index_scan.composite_key = true;
+    defer index_scan.close();
+
+    // Set MVCC context: current_xid=30, snapshot sees xids < 31 as committed
+    const mvcc_ctx = MvccContext{
+        .enabled = true,
+        .snapshot = .{ .xmin = 0, .xmax = 31, .active_xids = &.{}, .allocator = null },
+        .current_xid = 30,
+        .current_cid = 0,
+        .tm = null,
+    };
+    index_scan.mvcc_ctx = mvcc_ctx;
+
+    // Collect visible rows (should skip invisible row2 and return row1 and row3)
+    var visible_count: usize = 0;
+    while (try index_scan.next()) |row| {
+        visible_count += 1;
+        var r = row;
+        r.deinit();
+    }
+
+    // Should have exactly 2 visible rows (row1 and row3), row2 filtered out
+    try std.testing.expectEqual(@as(usize, 2), visible_count);
+}
+
+test "phase 0c: IndexScanOp.composite_key orphaned entry doesn't terminate scan" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_phase0c_composite_orphan.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    const data_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, data_root);
+        try pager.writePage(data_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Insert only 2 rows into data B+Tree (row1 and row3)
+    var data_tree = BTree.init(&pool, data_root);
+    const row_keys = [2][]const u8{ "row1", "row3" };
+    for (row_keys) |rk| {
+        const values = [_]Value{.{ .text = rk }};
+        const row_data = try serializeRow(allocator, &values);
+        defer allocator.free(row_data);
+        try data_tree.insert(rk, row_data);
+    }
+
+    // Insert 3 composite keys in index (including row2 which is orphaned)
+    var idx_tree = BTree.init(&pool, index_root);
+    const idx_key = "age=42";
+    const all_row_keys = [_][]const u8{ "row1", "row2", "row3" };
+    for (all_row_keys) |rk| {
+        const composite_key = try buildCompositeIndexKey(allocator, idx_key, rk);
+        defer allocator.free(composite_key);
+        try idx_tree.insert(composite_key, rk);
+    }
+
+    // Create IndexScanOp with composite_key=true
+    const col_names = [_][]const u8{"id"};
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        data_root,
+        index_root,
+        .btree,
+        idx_key,
+        &col_names,
+    );
+    index_scan.composite_key = true;
+    defer index_scan.close();
+
+    // Collect rows, skipping the orphaned row2
+    var found_rows: usize = 0;
+    while (try index_scan.next()) |row| {
+        found_rows += 1;
+        var r = row;
+        r.deinit();
+    }
+
+    // Should have exactly 2 rows (row1 and row3), orphaned row2 skipped
+    try std.testing.expectEqual(@as(usize, 2), found_rows);
+}
+
+test "phase 0c: IndexScanOp.composite_key=false (legacy) single-row point lookup unchanged" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_phase0c_legacy_single_row.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    const data_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, data_root);
+        try pager.writePage(data_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Insert one row into data B+Tree
+    var data_tree = BTree.init(&pool, data_root);
+    const values = [_]Value{.{ .text = "row1" }};
+    const row_data = try serializeRow(allocator, &values);
+    defer allocator.free(row_data);
+    try data_tree.insert("row1", row_data);
+
+    // Insert one index entry (legacy format: bare idx_key → row_key)
+    var idx_tree = BTree.init(&pool, index_root);
+    const idx_key = "age=42";
+    try idx_tree.insert(idx_key, "row1");
+
+    // Create IndexScanOp with composite_key=false (or default)
+    const col_names = [_][]const u8{"id"};
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        data_root,
+        index_root,
+        .btree,
+        idx_key,
+        &col_names,
+    );
+    // composite_key defaults to false, don't set it (this should compile & work today)
+
+    // First call returns the row
+    var row1 = try index_scan.next();
+    try std.testing.expect(row1 != null);
+    if (row1) |*r| r.deinit();
+
+    // Second call returns null (exhausted = true)
+    const row2 = try index_scan.next();
+    try std.testing.expect(row2 == null);
+
+    // Third call also returns null (still exhausted)
+    const row3 = try index_scan.next();
+    try std.testing.expect(row3 == null);
+}
+
+test "phase 0c: IndexScanOp.composite_key empty match returns null immediately" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_phase0c_composite_empty.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    const data_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, data_root);
+        try pager.writePage(data_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Index is empty, no composite keys inserted
+
+    // Create IndexScanOp with composite_key=true for a non-existent value
+    const col_names = [_][]const u8{"id"};
+    var index_scan = IndexScanOp.init(
+        allocator,
+        &pool,
+        data_root,
+        index_root,
+        .btree,
+        "nonexistent_value",
+        &col_names,
+    );
+    index_scan.composite_key = true;
+    defer index_scan.close();
+
+    // First next() call should return null immediately
+    const row = try index_scan.next();
+    try std.testing.expect(row == null);
+
+    // Second call also null
+    const row2 = try index_scan.next();
+    try std.testing.expect(row2 == null);
 }

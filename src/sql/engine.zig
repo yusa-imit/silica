@@ -4281,6 +4281,12 @@ pub const Database = struct {
         // heap fetch. See `insertIndexEntries` for the storage-format invariant.
         idx_op.covering = idx_info.covering_storage;
 
+        // Composite-key indexes store `idx_key ++ row_key` B+Tree keys and can match
+        // multiple rows per equality lookup — IndexScanOp.next() switches from a single
+        // point `.get()` to iterating all matches. See `insertIndexEntries`/
+        // `collectRowKeysForEquality` for the storage-format invariant.
+        idx_op.composite_key = idx_info.composite_key;
+
         // Additionally, if every requested column is covered by the index, we can
         // skip the heap fetch entirely and build the row straight from the entry.
         if (idx_info.covering_storage and columnsAreCoveredByIndex(scan.columns, idx_info.column_name, idx_info.included_columns)) {
