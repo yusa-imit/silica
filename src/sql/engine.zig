@@ -4124,6 +4124,7 @@ pub const Database = struct {
             index_scan_op.col_defaults = col_defaults;
             // Set MVCC context for visibility filtering (RC snapshot stored in ops for cleanup)
             index_scan_op.mvcc_ctx = try self.getMvccContextWithOps(ops);
+            index_scan_op.composite_key = idx.composite_key;
             index_scan_op.initCursor(); // Must be called after heap placement
 
             ops.index_only_scan = index_scan_op;

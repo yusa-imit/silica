@@ -8619,6 +8619,9 @@ pub const IndexOnlyScanOp = struct {
     opened: bool = false,
     /// MVCC context for visibility filtering (null = all rows visible).
     mvcc_ctx: ?MvccContext = null,
+    /// If true, the B+Tree leaf keys are composite format (4-byte-length ++ idx_key ++ row_key);
+    /// extract idx_key for decoding. If false (default), leaf keys are plain idx_key.
+    composite_key: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -8709,7 +8712,17 @@ pub const IndexOnlyScanOp = struct {
                 }
             }
 
-            return try self.buildCoveringRow(Value{ .text = entry.?.key }, decoded.values);
+            // If composite_key=true, the leaf key is in composite format:
+            // [4-byte BE length of idx_key] [idx_key bytes] [row_key bytes]
+            // Extract just the idx_key portion for use as the indexed column value.
+            const key_value = if (self.composite_key) blk: {
+                if (entry.?.key.len < 4) return ExecError.InvalidRowData;
+                const idx_key_len = std.mem.readInt(u32, entry.?.key[0..4], .big);
+                if (entry.?.key.len < 4 + idx_key_len) return ExecError.InvalidRowData;
+                break :blk Value{ .text = entry.?.key[4 .. 4 + idx_key_len] };
+            } else Value{ .text = entry.?.key };
+
+            return try self.buildCoveringRow(key_value, decoded.values);
         }
     }
 
@@ -31661,6 +31674,133 @@ test "step 5: IndexOnlyScanOp returns empty result on empty index" {
 
     // Should return no rows
     try std.testing.expectEqual(@as(usize, 0), rows.items.len);
+}
+
+test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correctly" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_step5b_index_only_composite.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 10);
+    defer pool.deinit();
+
+    // Build a non-unique covering index with composite keys for 2 distinct indexed values,
+    // each with 2 rows (4 entries total).
+    // Each composite key is: [4-byte BE length] [idx_key] [row_key]
+    // But the index entry (covering data) is encoded separately.
+    var idx_tree = BTree.init(&pool, index_root);
+
+    // Group 1: idx_key="Alice", 2 rows (row1, row2)
+    {
+        const idx_key = "Alice";
+        const row_keys = [2][]const u8{ "row1", "row2" };
+        for (row_keys) |rk| {
+            var row_key_buf: [16]u8 = undefined;
+            @memcpy(row_key_buf[0..rk.len], rk);
+
+            const header = TupleHeader{
+                .xmin = 5,
+                .xmax = mvcc_mod.INVALID_XID,
+                .cid = 0,
+                .flags = .{},
+            };
+            const vals = [_]Value{.{ .integer = 100 }};
+            const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+            defer allocator.free(entry);
+
+            // Build composite key: [4-byte length] + idx_key + row_key
+            const composite_key = try buildCompositeIndexKey(allocator, idx_key, rk);
+            defer allocator.free(composite_key);
+            try idx_tree.insert(composite_key, entry);
+        }
+    }
+
+    // Group 2: idx_key="Bob", 2 rows (row3, row4)
+    {
+        const idx_key = "Bob";
+        const row_keys = [2][]const u8{ "row3", "row4" };
+        for (row_keys, 0..) |rk, i| {
+            var row_key_buf: [16]u8 = undefined;
+            @memcpy(row_key_buf[0..rk.len], rk);
+
+            const header = TupleHeader{
+                .xmin = 6,
+                .xmax = mvcc_mod.INVALID_XID,
+                .cid = 0,
+                .flags = .{},
+            };
+            // Use different included column values for row3 vs row4
+            const included_value = if (i == 0) @as(i64, 200) else @as(i64, 201);
+            const vals = [_]Value{.{ .integer = included_value }};
+            const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+            defer allocator.free(entry);
+
+            // Build composite key
+            const composite_key = try buildCompositeIndexKey(allocator, idx_key, rk);
+            defer allocator.free(composite_key);
+            try idx_tree.insert(composite_key, entry);
+        }
+    }
+
+    // Create IndexOnlyScanOp with composite_key=true
+    // covering_columns = ["name", "salary"] (indexed column first, then INCLUDE columns)
+    // col_names = ["name", "salary"] (want both)
+    const covering_col_names = [_][]const u8{ "name", "salary" };
+    const col_names = [_][]const u8{ "name", "salary" };
+
+    var index_only_scan = IndexOnlyScanOp.init(
+        allocator,
+        &pool,
+        index_root,
+        &covering_col_names,
+        &col_names,
+    );
+
+    // THIS SHOULD FAIL TO COMPILE OR ASSIGN: composite_key field doesn't exist on IndexOnlyScanOp yet
+    // (This is the expected TDD red state for the regression fix)
+    index_only_scan.composite_key = true;
+
+    var rows = std.ArrayListUnmanaged(Row){};
+    defer {
+        for (rows.items) |*r| r.deinit();
+        rows.deinit(allocator);
+    }
+
+    try index_only_scan.open();
+    while (try index_only_scan.next()) |row| {
+        try rows.append(allocator, row);
+    }
+    index_only_scan.close();
+
+    // Should have 4 rows total (2 "Alice" + 2 "Bob")
+    try std.testing.expectEqual(@as(usize, 4), rows.items.len);
+
+    // Verify indexed column (name) is decoded correctly from composite key, not garbage bytes
+    // Group 1: first 2 rows should have indexed value "Alice" (not composite-key bytes)
+    try std.testing.expectEqualStrings("Alice", rows.items[0].values[0].text);
+    try std.testing.expectEqual(@as(i64, 100), rows.items[0].values[1].integer);
+
+    try std.testing.expectEqualStrings("Alice", rows.items[1].values[0].text);
+    try std.testing.expectEqual(@as(i64, 100), rows.items[1].values[1].integer);
+
+    // Group 2: next 2 rows should have indexed value "Bob" (not composite-key garbage)
+    try std.testing.expectEqualStrings("Bob", rows.items[2].values[0].text);
+    try std.testing.expectEqual(@as(i64, 200), rows.items[2].values[1].integer);
+
+    try std.testing.expectEqualStrings("Bob", rows.items[3].values[0].text);
+    try std.testing.expectEqual(@as(i64, 201), rows.items[3].values[1].integer);
 }
 
 // ── Phase 0c: IndexScanOp Multi-Row Iteration Tests (TDD Red Phase) ──────────────────────────────
