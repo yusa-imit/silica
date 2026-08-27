@@ -148,6 +148,8 @@ Full agent transcript/reasoning available via session notes if a future session 
 
 ## Bitmap Index Scan — Architect Design (Session 507, 2026-08-27)
 
+**Status update (session 511, 2026-08-28)**: issue #128 (phase 0, below) is fully CLOSED — all sub-steps done across sessions 507-510. **Phase 1 (RowKeySet) DONE (commit `bb1aeef`)**: implemented in new `src/sql/bitmap.zig` exactly as specced below (`fromOwnedUnsorted`/`intersect`/`unionOf`/`deinit`), via TDD. One implementation gotcha not anticipated in the original design: `fromOwnedUnsorted`'s contract only takes ownership of the *inner* `[]u8` row_key copies, not the *outer* `[][]u8` array itself (the caller keeps managing that container's lifetime) — an initial `allocator.realloc()` on the caller's outer slice caused a double-free/segfault; fixed by allocating a fresh outer array for the deduped result instead. Next: phases 2-6 below, in order.
+
 **Problem**: prior bitmap-scan attempt was removed (commit `6406f01`) — `TidBitmap`/`BitmapIndexScanOp`/`BitmapAndOp`/`BitmapOrOp`/`BitmapHeapScanOp` modeled a physical `(page_id, slot_id)` heap TID that doesn't exist in Silica (rows live directly in a `row_key`-keyed B+Tree, no separate heap file). It derived that fake TID via `Wyhash.hash(row_key)` — a one-way hash — so `BitmapHeapScanOp` could never recover the real row. Also had zero MVCC visibility checks and was never wired into planner/optimizer/engine (dead code, only referenced from its own tests).
 
 **Fix direction**: don't hash — the bitmap set element must be the real `row_key` bytes, since `row_key` already is the address into the primary B+Tree (`BTree.get(allocator, row_key)`).
