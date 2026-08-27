@@ -36,6 +36,7 @@ pub const stats = @import("sql/stats.zig");
 pub const selectivity = @import("sql/selectivity.zig");
 pub const cost = @import("sql/cost.zig");
 pub const index_entry = @import("sql/index_entry.zig");
+pub const bitmap = @import("sql/bitmap.zig");
 // Fixed: Tests now use unique DB paths instead of shared :memory: (Session 58)
 pub const conformance_test = @import("sql/conformance_test.zig");
 
