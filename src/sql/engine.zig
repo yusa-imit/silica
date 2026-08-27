@@ -40890,6 +40890,32 @@ test "extractGinPredicate: returns null when column is on the right" {
     try testing.expect(result == null);
 }
 
+// Fetch the raw B+Tree leaf value for `idx_key` regardless of whether the index
+// stores plain keys or composite (idx_key ++ row_key) keys — composite_key defaults
+// to true for every non-unique .btree index (see phase 0d of #128), so a direct
+// `idx_tree.get(idx_key)` no longer finds the entry once an index is non-unique.
+// Caller owns the returned slice.
+fn fetchIndexRawValueForTest(allocator: Allocator, idx_tree: *BTree, idx_key: []const u8, composite_key: bool) !?[]u8 {
+    if (!composite_key) {
+        return idx_tree.get(allocator, idx_key);
+    }
+    const prefix = try executor_mod.compositeIndexKeyPrefix(allocator, idx_key);
+    defer allocator.free(prefix);
+
+    var cursor = btree_mod.Cursor.init(allocator, idx_tree);
+    defer cursor.deinit();
+    try cursor.seek(prefix);
+
+    if (try cursor.next()) |entry| {
+        defer allocator.free(entry.key);
+        if (entry.key.len >= prefix.len and std.mem.eql(u8, entry.key[0..prefix.len], prefix)) {
+            return entry.value;
+        }
+        allocator.free(entry.value);
+    }
+    return null;
+}
+
 // Step 3/7: DML Wiring Tests — covering index entry encoding (TDD Red phase)
 // These tests verify that insertIndexEntries correctly threads the header parameter
 // and encodes covering index entries when idx.covering_storage == true.
@@ -40947,7 +40973,7 @@ test "step 3: btree index with covering_storage=true writes covering entry, not 
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try idx_tree.get(allocator, idx_key);
+    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -41004,7 +41030,7 @@ test "step 3: btree index with covering_storage=false writes plain row_key (back
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try idx_tree.get(allocator, idx_key);
+    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -41104,7 +41130,7 @@ test "step 4: CREATE INDEX ... INCLUDE sets covering_storage=true and writes rea
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try idx_tree.get(allocator, idx_key);
+    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -41163,7 +41189,7 @@ test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backwar
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try idx_tree.get(allocator, idx_key);
+    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
