@@ -8711,6 +8711,7 @@ pub const Database = struct {
                     .state = initial_state,
                     .gin_opclass = gin_opclass,
                     .covering_storage = ci.included_columns.len > 0 and idx_type == .btree,
+                    .composite_key = idx_type == .btree and !ci.unique,
                 };
 
                 // Serialize the updated table and store in catalog
@@ -41872,4 +41873,116 @@ test "phase 0b: composite_key=false (legacy) still rejects duplicate indexed val
 
     // Should return UniqueConstraintViolation error
     try testing.expectError(error.UniqueConstraintViolation, result);
+}
+
+// ── Phase 0d: CREATE INDEX sets composite_key flag for non-unique B+Tree indexes ──
+// Tests verifying that the CREATE INDEX handler properly sets composite_key=true
+// for non-unique B+Tree indexes, enabling duplicate-value support at index creation time.
+
+test "phase 0d: CREATE INDEX on non-unique column sets composite_key=true" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0d_create_idx_composite_flag.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, tag TEXT)");
+    defer r1.close(allocator);
+
+    // Create non-unique B+Tree index on tag column
+    var r2 = try db.execSQL("CREATE INDEX idx_tag ON items (tag)");
+    defer r2.close(allocator);
+
+    // Verify index exists and has composite_key=true
+    var table_info = try db.catalog.getTable("items");
+    defer table_info.deinit(allocator);
+
+    const idx = table_info.findIndex("tag") orelse return error.MissingIndex;
+
+    // EXPECTED FAILURE: composite_key should be true but is false (not yet implemented in CREATE INDEX handler)
+    try testing.expect(idx.composite_key == true);
+}
+
+test "phase 0d: CREATE UNIQUE INDEX keeps composite_key=false" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0d_create_unique_idx_no_composite.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table
+    var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)");
+    defer r1.close(allocator);
+
+    // Create unique index on email column
+    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_email ON users (email)");
+    defer r2.close(allocator);
+
+    // Verify index exists and has composite_key=false (unique indexes don't need it)
+    var table_info = try db.catalog.getTable("users");
+    defer table_info.deinit(allocator);
+
+    const idx = table_info.findIndex("email") orelse return error.MissingIndex;
+
+    // EXPECTED PASS: unique indexes should NOT have composite_key=true
+    try testing.expect(!idx.composite_key);
+}
+
+test "phase 0d: end-to-end INSERT with duplicate indexed value on non-unique index" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase0d_insert_dup_indexed_value.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with id as primary key and tag as a regular column
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, tag TEXT)");
+    defer r1.close(allocator);
+
+    // Create non-unique index on tag column (should set composite_key=true after fix)
+    var r2 = try db.execSQL("CREATE INDEX idx_tag ON items (tag)");
+    defer r2.close(allocator);
+
+    // Insert first row with tag='apple'
+    var r3 = try db.execSQL("INSERT INTO items (id, tag) VALUES (1, 'apple')");
+    defer r3.close(allocator);
+
+    // EXPECTED FAILURE: second insert with same tag value fails today with DuplicateKey
+    // because CREATE INDEX doesn't set composite_key=true yet
+    var r4 = try db.execSQL("INSERT INTO items (id, tag) VALUES (2, 'apple')");
+    defer r4.close(allocator);
+
+    // Verify both rows exist by querying via the index
+    var r5 = try db.execSQL("SELECT id, tag FROM items WHERE tag = 'apple' ORDER BY id");
+    defer r5.close(allocator);
+
+    var row_count: usize = 0;
+    var first_id: i64 = undefined;
+    var second_id: i64 = undefined;
+
+    if (r5.rows) |*rows| {
+        while (try rows.next()) |*row_ptr| {
+            var row = row_ptr.*;
+            defer row.deinit();
+
+            if (row_count == 0) {
+                first_id = row.getColumn("id").?.integer;
+            } else if (row_count == 1) {
+                second_id = row.getColumn("id").?.integer;
+            }
+            row_count += 1;
+        }
+    }
+
+    // Both inserts should have succeeded, SELECT should return both rows
+    try testing.expectEqual(@as(usize, 2), row_count);
+    try testing.expectEqual(@as(i64, 1), first_id);
+    try testing.expectEqual(@as(i64, 2), second_id);
 }
