@@ -19,7 +19,6 @@ test "RowKeySet.fromOwnedUnsorted sorts and dedupes input" {
 
     // Create unsorted input with duplicates
     var items = try allocator.alloc([]u8, 5);
-    defer allocator.free(items);
 
     items[0] = try allocator.dupe(u8, "charlie");
     items[1] = try allocator.dupe(u8, "alice");
@@ -41,7 +40,6 @@ test "RowKeySet.fromOwnedUnsorted with empty input" {
     const allocator = testing.allocator;
 
     const items = try allocator.alloc([]u8, 0);
-    defer allocator.free(items);
 
     var set = try RowKeySet.fromOwnedUnsorted(allocator, items);
     defer set.deinit(allocator);
@@ -53,7 +51,6 @@ test "RowKeySet.fromOwnedUnsorted with single item" {
     const allocator = testing.allocator;
 
     var items = try allocator.alloc([]u8, 1);
-    defer allocator.free(items);
 
     items[0] = try allocator.dupe(u8, "single");
 
@@ -69,7 +66,6 @@ test "RowKeySet.intersect with partial overlap" {
 
     // Create set A: [alice, bob, charlie, david]
     var items_a = try allocator.alloc([]u8, 4);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
     items_a[2] = try allocator.dupe(u8, "charlie");
@@ -80,7 +76,6 @@ test "RowKeySet.intersect with partial overlap" {
 
     // Create set B: [bob, charlie, eve, frank]
     var items_b = try allocator.alloc([]u8, 4);
-    defer allocator.free(items_b);
     items_b[0] = try allocator.dupe(u8, "bob");
     items_b[1] = try allocator.dupe(u8, "charlie");
     items_b[2] = try allocator.dupe(u8, "eve");
@@ -103,7 +98,6 @@ test "RowKeySet.intersect with disjoint sets" {
 
     // Create set A: [alice, bob]
     var items_a = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
 
@@ -112,7 +106,6 @@ test "RowKeySet.intersect with disjoint sets" {
 
     // Create set B: [charlie, david]
     var items_b = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_b);
     items_b[0] = try allocator.dupe(u8, "charlie");
     items_b[1] = try allocator.dupe(u8, "david");
 
@@ -131,7 +124,6 @@ test "RowKeySet.intersect where one set is empty" {
 
     // Create set A: [alice, bob]
     var items_a = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
 
@@ -140,7 +132,6 @@ test "RowKeySet.intersect where one set is empty" {
 
     // Create empty set B
     const items_b = try allocator.alloc([]u8, 0);
-    defer allocator.free(items_b);
 
     var set_b = try RowKeySet.fromOwnedUnsorted(allocator, items_b);
     defer set_b.deinit(allocator);
@@ -157,7 +148,6 @@ test "RowKeySet.unionOf with partial overlap" {
 
     // Create set A: [alice, bob, charlie]
     var items_a = try allocator.alloc([]u8, 3);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
     items_a[2] = try allocator.dupe(u8, "charlie");
@@ -167,7 +157,6 @@ test "RowKeySet.unionOf with partial overlap" {
 
     // Create set B: [bob, charlie, david, eve]
     var items_b = try allocator.alloc([]u8, 4);
-    defer allocator.free(items_b);
     items_b[0] = try allocator.dupe(u8, "bob");
     items_b[1] = try allocator.dupe(u8, "charlie");
     items_b[2] = try allocator.dupe(u8, "david");
@@ -193,7 +182,6 @@ test "RowKeySet.unionOf with disjoint sets" {
 
     // Create set A: [alice, bob]
     var items_a = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
 
@@ -202,7 +190,6 @@ test "RowKeySet.unionOf with disjoint sets" {
 
     // Create set B: [charlie, david]
     var items_b = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_b);
     items_b[0] = try allocator.dupe(u8, "charlie");
     items_b[1] = try allocator.dupe(u8, "david");
 
@@ -225,7 +212,6 @@ test "RowKeySet.unionOf where one set is empty" {
 
     // Create set A: [alice, bob]
     var items_a = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
 
@@ -234,7 +220,6 @@ test "RowKeySet.unionOf where one set is empty" {
 
     // Create empty set B
     const items_b = try allocator.alloc([]u8, 0);
-    defer allocator.free(items_b);
 
     var set_b = try RowKeySet.fromOwnedUnsorted(allocator, items_b);
     defer set_b.deinit(allocator);
@@ -253,7 +238,6 @@ test "RowKeySet.deinit does not leak memory" {
 
     // Create set with multiple items
     var items = try allocator.alloc([]u8, 3);
-    defer allocator.free(items);
 
     items[0] = try allocator.dupe(u8, "alice");
     items[1] = try allocator.dupe(u8, "bob");
@@ -270,7 +254,6 @@ test "RowKeySet with binary row_keys (not just text)" {
 
     // Create binary row_keys (simulating 8-byte big-endian u64 format)
     var items = try allocator.alloc([]u8, 3);
-    defer allocator.free(items);
 
     // Row key 1: 0x0000000000000001
     items[0] = try allocator.dupe(u8, "\x00\x00\x00\x00\x00\x00\x00\x01");
@@ -293,7 +276,6 @@ test "RowKeySet.intersect creates fresh owned copies" {
 
     // Create set A
     var items_a = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
 
@@ -302,7 +284,6 @@ test "RowKeySet.intersect creates fresh owned copies" {
 
     // Create set B
     var items_b = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_b);
     items_b[0] = try allocator.dupe(u8, "bob");
     items_b[1] = try allocator.dupe(u8, "charlie");
 
@@ -326,7 +307,6 @@ test "RowKeySet.unionOf preserves original sets unchanged" {
 
     // Create set A
     var items_a = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_a);
     items_a[0] = try allocator.dupe(u8, "alice");
     items_a[1] = try allocator.dupe(u8, "bob");
 
@@ -335,7 +315,6 @@ test "RowKeySet.unionOf preserves original sets unchanged" {
 
     // Create set B
     var items_b = try allocator.alloc([]u8, 2);
-    defer allocator.free(items_b);
     items_b[0] = try allocator.dupe(u8, "bob");
     items_b[1] = try allocator.dupe(u8, "charlie");
 
@@ -386,6 +365,7 @@ pub const RowKeySet = struct {
 
         const deduped = try allocator.alloc([]u8, write);
         @memcpy(deduped, items[0..write]);
+        allocator.free(items); // Take full ownership: free the items array container
         return RowKeySet{ .items = deduped };
     }
 

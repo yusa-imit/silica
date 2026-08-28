@@ -17,6 +17,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
+const bitmap_mod = @import("bitmap.zig");
 const catalog_mod = @import("catalog.zig");
 const planner_mod = @import("planner.zig");
 const tokenizer_mod = @import("tokenizer.zig");
@@ -8598,6 +8599,48 @@ pub const IndexScanOp = struct {
                 .close = @ptrCast(&IndexScanOp.close),
             },
         };
+    }
+};
+
+/// Bitmap index scan: performs an equality lookup against one .btree secondary
+/// index and returns matching row_keys as a sorted, deduped RowKeySet.
+/// No heap I/O, no MVCC visibility checks — those are deferred to BitmapHeapScanOp.
+pub const BitmapIndexScanOp = struct {
+    allocator: Allocator,
+    pool: *BufferPool,
+    index_root_page_id: u32,
+    lookup_key: []const u8,
+    composite_key: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        pool: *BufferPool,
+        index_root_page_id: u32,
+        lookup_key: []const u8,
+    ) BitmapIndexScanOp {
+        return .{
+            .allocator = allocator,
+            .pool = pool,
+            .index_root_page_id = index_root_page_id,
+            .lookup_key = lookup_key,
+        };
+    }
+
+    /// Runs the equality lookup against the .btree index and returns a sorted,
+    /// deduped RowKeySet of matching row_keys. No heap I/O, no MVCC visibility
+    /// check — deferred to BitmapHeapScanOp (later phase). Caller owns the
+    /// returned RowKeySet.
+    pub fn scan(self: *BitmapIndexScanOp) ExecError!bitmap_mod.RowKeySet {
+        if (self.composite_key) {
+            const row_keys = collectRowKeysForEquality(self.allocator, self.pool, self.index_root_page_id, self.lookup_key) catch return ExecError.StorageError;
+            return bitmap_mod.RowKeySet.fromOwnedUnsorted(self.allocator, row_keys) catch return ExecError.OutOfMemory;
+        }
+
+        var idx_tree = BTree.init(self.pool, self.index_root_page_id);
+        const row_key = idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
+        const items = self.allocator.alloc([]u8, if (row_key != null) 1 else 0) catch return ExecError.OutOfMemory;
+        if (row_key) |rk| items[0] = rk;
+        return bitmap_mod.RowKeySet.fromOwnedUnsorted(self.allocator, items) catch return ExecError.OutOfMemory;
     }
 };
 
@@ -32204,4 +32247,212 @@ test "phase 0c: IndexScanOp.composite_key empty match returns null immediately" 
     // Second call also null
     const row2 = try index_scan.next();
     try std.testing.expect(row2 == null);
+}
+
+test "BitmapIndexScanOp point lookup single match (composite_key=false)" {
+    const allocator = std.testing.allocator;
+    const path = "test_bitmap_index_scan_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate a root leaf page for the index
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+
+    // Insert a single key-value pair: lookup_key -> row_key
+    const lookup_key = "user_id_123";
+    const row_key = "row_1";
+    try tree.insert(lookup_key, row_key);
+
+    // Create BitmapIndexScanOp with composite_key=false
+    var op = BitmapIndexScanOp.init(allocator, &pool, index_root, lookup_key);
+    op.composite_key = false;
+
+    // Scan should return a RowKeySet with exactly one row_key
+    var result = try op.scan();
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualSlices(u8, row_key, result.items[0]);
+}
+
+test "BitmapIndexScanOp point lookup no match (composite_key=false)" {
+    const allocator = std.testing.allocator;
+    const path = "test_bitmap_index_scan_no_match.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate a root leaf page for the index
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+
+    // Insert a key-value pair with a different key
+    try tree.insert("other_key", "row_999");
+
+    // Create BitmapIndexScanOp looking for a non-existent key
+    var op = BitmapIndexScanOp.init(allocator, &pool, index_root, "nonexistent_key");
+    op.composite_key = false;
+
+    // Scan should return an empty RowKeySet (no error, just empty result)
+    var result = try op.scan();
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "BitmapIndexScanOp composite-key lookup multiple matches" {
+    const allocator = std.testing.allocator;
+    const path = "test_bitmap_index_scan_composite.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate a root leaf page for the index
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+
+    const idx_key = "status_active";
+
+    // Insert composite keys for the same idx_key with multiple row_keys
+    const composite_key_1 = try buildCompositeIndexKey(allocator, idx_key, "row_1");
+    defer allocator.free(composite_key_1);
+    try tree.insert(composite_key_1, "");
+
+    const composite_key_2 = try buildCompositeIndexKey(allocator, idx_key, "row_2");
+    defer allocator.free(composite_key_2);
+    try tree.insert(composite_key_2, "");
+
+    const composite_key_3 = try buildCompositeIndexKey(allocator, idx_key, "row_3");
+    defer allocator.free(composite_key_3);
+    try tree.insert(composite_key_3, "");
+
+    // Insert a composite key for a different idx_key to verify no over-matching
+    const other_idx_key = "status_inactive";
+    const composite_key_other = try buildCompositeIndexKey(allocator, other_idx_key, "row_other");
+    defer allocator.free(composite_key_other);
+    try tree.insert(composite_key_other, "");
+
+    // Create BitmapIndexScanOp with composite_key=true
+    var op = BitmapIndexScanOp.init(allocator, &pool, index_root, idx_key);
+    op.composite_key = true;
+
+    // Scan should return a RowKeySet with exactly the 3 matching row_keys, sorted
+    var result = try op.scan();
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_2", result.items[1]);
+    try std.testing.expectEqualSlices(u8, "row_3", result.items[2]);
+}
+
+test "BitmapIndexScanOp composite-key lookup no match" {
+    const allocator = std.testing.allocator;
+    const path = "test_bitmap_index_scan_composite_no_match.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate a root leaf page for the index
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+
+    // Insert composite keys for a different idx_key
+    const other_idx_key = "status_inactive";
+    const composite_key = try buildCompositeIndexKey(allocator, other_idx_key, "row_999");
+    defer allocator.free(composite_key);
+    try tree.insert(composite_key, "");
+
+    // Create BitmapIndexScanOp looking for non-existent idx_key with composite_key=true
+    var op = BitmapIndexScanOp.init(allocator, &pool, index_root, "status_active");
+    op.composite_key = true;
+
+    // Scan should return an empty RowKeySet
+    var result = try op.scan();
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "BitmapIndexScanOp memory cleanup" {
+    const allocator = std.testing.allocator;
+    const path = "test_bitmap_index_scan_memory.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    // Allocate a root leaf page
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+
+    try tree.insert("key1", "row_a");
+    try tree.insert("key2", "row_b");
+
+    var op = BitmapIndexScanOp.init(allocator, &pool, index_root, "key1");
+
+    // Test that scan() properly allocates and returns a RowKeySet
+    var result = try op.scan();
+    defer result.deinit(allocator); // Must not leak
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_a", result.items[0]);
+
+    // Allocator will panic if we leak memory, so clean deallocation is validated
 }
