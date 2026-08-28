@@ -8642,6 +8642,101 @@ pub const BitmapIndexScanOp = struct {
         if (row_key) |rk| items[0] = rk;
         return bitmap_mod.RowKeySet.fromOwnedUnsorted(self.allocator, items) catch return ExecError.OutOfMemory;
     }
+
+    pub fn asBitmapPlan(self: *BitmapIndexScanOp) BitmapPlan {
+        return .{
+            .ptr = self,
+            .vtable = &.{ .scan = @ptrCast(&BitmapIndexScanOp.scan) },
+        };
+    }
+};
+
+/// Interface for anything that can produce a RowKeySet: BitmapIndexScanOp,
+/// BitmapAndOp, BitmapOrOp. Lets BitmapAndOp/BitmapOrOp combine arbitrary
+/// (possibly nested) bitmap-producing sub-plans without knowing their
+/// concrete type, mirroring the RowIterator vtable pattern used elsewhere
+/// in this file.
+pub const BitmapPlan = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        scan: *const fn (ptr: *anyopaque) ExecError!bitmap_mod.RowKeySet,
+    };
+
+    pub fn scan(self: BitmapPlan) ExecError!bitmap_mod.RowKeySet {
+        return self.vtable.scan(self.ptr);
+    }
+};
+
+/// Pure in-memory combinator: intersects the RowKeySets produced by N inputs.
+/// No I/O, no MVCC checks — inputs are re-scanned (not cached), so calling
+/// scan() more than once is safe and yields the same result each time.
+pub const BitmapAndOp = struct {
+    allocator: Allocator,
+    inputs: []const BitmapPlan,
+
+    pub fn init(allocator: Allocator, inputs: []const BitmapPlan) BitmapAndOp {
+        return .{ .allocator = allocator, .inputs = inputs };
+    }
+
+    pub fn scan(self: *BitmapAndOp) ExecError!bitmap_mod.RowKeySet {
+        std.debug.assert(self.inputs.len >= 1);
+        var acc = try self.inputs[0].scan();
+        for (self.inputs[1..]) |input| {
+            var next_set = try input.scan();
+            defer next_set.deinit(self.allocator);
+            const combined = bitmap_mod.RowKeySet.intersect(self.allocator, acc, next_set) catch {
+                acc.deinit(self.allocator);
+                return ExecError.OutOfMemory;
+            };
+            acc.deinit(self.allocator);
+            acc = combined;
+        }
+        return acc;
+    }
+
+    pub fn asBitmapPlan(self: *BitmapAndOp) BitmapPlan {
+        return .{
+            .ptr = self,
+            .vtable = &.{ .scan = @ptrCast(&BitmapAndOp.scan) },
+        };
+    }
+};
+
+/// Pure in-memory combinator: unions the RowKeySets produced by N inputs.
+/// No I/O, no MVCC checks — inputs are re-scanned (not cached), so calling
+/// scan() more than once is safe and yields the same result each time.
+pub const BitmapOrOp = struct {
+    allocator: Allocator,
+    inputs: []const BitmapPlan,
+
+    pub fn init(allocator: Allocator, inputs: []const BitmapPlan) BitmapOrOp {
+        return .{ .allocator = allocator, .inputs = inputs };
+    }
+
+    pub fn scan(self: *BitmapOrOp) ExecError!bitmap_mod.RowKeySet {
+        std.debug.assert(self.inputs.len >= 1);
+        var acc = try self.inputs[0].scan();
+        for (self.inputs[1..]) |input| {
+            var next_set = try input.scan();
+            defer next_set.deinit(self.allocator);
+            const combined = bitmap_mod.RowKeySet.unionOf(self.allocator, acc, next_set) catch {
+                acc.deinit(self.allocator);
+                return ExecError.OutOfMemory;
+            };
+            acc.deinit(self.allocator);
+            acc = combined;
+        }
+        return acc;
+    }
+
+    pub fn asBitmapPlan(self: *BitmapOrOp) BitmapPlan {
+        return .{
+            .ptr = self,
+            .vtable = &.{ .scan = @ptrCast(&BitmapOrOp.scan) },
+        };
+    }
 };
 
 /// Index-only scan: cursors over a covering (INCLUDE) secondary index B+Tree
@@ -32455,4 +32550,880 @@ test "BitmapIndexScanOp memory cleanup" {
     try std.testing.expectEqualSlices(u8, "row_a", result.items[0]);
 
     // Allocator will panic if we leak memory, so clean deallocation is validated
+}
+
+// ── Phase 3: BitmapAndOp and BitmapOrOp Tests ──────────────────────────────
+
+test "BitmapAndOp with two inputs partial overlap" {
+    const allocator = std.testing.allocator;
+
+    // Create first index with keys: [alice, bob, charlie, david]
+    const path1 = "test_bitmap_and_overlap_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("alice", "row_1");
+    try tree1.insert("bob", "row_2");
+    try tree1.insert("charlie", "row_3");
+    try tree1.insert("david", "row_4");
+
+    // Create second index with keys: [bob, charlie, eve, frank]
+    const path2 = "test_bitmap_and_overlap_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("bob", "row_2");
+    try tree2.insert("charlie", "row_3");
+    try tree2.insert("eve", "row_5");
+    try tree2.insert("frank", "row_6");
+
+    // Create BitmapIndexScanOp for first index
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "alice");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    // Create BitmapIndexScanOp for second index
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "bob");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    // Create BitmapAndOp with two inputs
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+
+    // AND should intersect: only common elements are those matching both conditions
+    var result = try and_op.scan();
+    defer result.deinit(allocator);
+
+    // Since scan1 returns row_1 (alice in index 1)
+    // and scan2 returns row_2 (bob in index 2)
+    // the intersection should be empty (no common row_keys)
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "BitmapOrOp with two inputs partial overlap" {
+    const allocator = std.testing.allocator;
+
+    // Create first index with keys: [alice, bob, charlie]
+    const path1 = "test_bitmap_or_overlap_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("alice", "row_1");
+    try tree1.insert("bob", "row_2");
+    try tree1.insert("charlie", "row_3");
+
+    // Create second index with keys: [bob, charlie, david, eve]
+    const path2 = "test_bitmap_or_overlap_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("bob", "row_2");
+    try tree2.insert("charlie", "row_3");
+    try tree2.insert("david", "row_4");
+    try tree2.insert("eve", "row_5");
+
+    // Create BitmapIndexScanOp for first index
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "alice");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    // Create BitmapIndexScanOp for second index
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "bob");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    // Create BitmapOrOp with two inputs
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+
+    // OR should union: row_1 from scan1, row_2 from scan2
+    var result = try or_op.scan();
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_2", result.items[1]);
+}
+
+test "BitmapAndOp with three inputs all common" {
+    const allocator = std.testing.allocator;
+
+    // Create three indices, each with one common row_key inserted at different keys
+    // Index 1: key "a" -> row_key "common_1"
+    const path1 = "test_bitmap_and_three_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("a", "common_1");
+    try tree1.insert("other_a", "other_1");
+
+    // Index 2: key "b" -> row_key "common_1"
+    const path2 = "test_bitmap_and_three_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("b", "common_1");
+    try tree2.insert("other_b", "other_2");
+
+    // Index 3: key "c" -> row_key "common_1"
+    const path3 = "test_bitmap_and_three_3.db";
+    defer std.fs.cwd().deleteFile(path3) catch {};
+
+    var pager3 = try Pager.init(allocator, path3, .{});
+    defer pager3.deinit();
+
+    const index_root3 = try pager3.allocPage();
+    {
+        const raw = try pager3.allocPageBuf();
+        defer pager3.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager3.page_size, index_root3);
+        try pager3.writePage(index_root3, raw);
+    }
+
+    var pool3 = try BufferPool.init(allocator, &pager3, 100);
+    defer pool3.deinit();
+
+    var tree3 = BTree.init(&pool3, index_root3);
+    try tree3.insert("c", "common_1");
+    try tree3.insert("other_c", "other_3");
+
+    // Create three scans
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "a");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "b");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    var scan3 = BitmapIndexScanOp.init(allocator, &pool3, index_root3, "c");
+    const scan3_plan = scan3.asBitmapPlan();
+
+    // AND of three inputs
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan, scan3_plan };
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+
+    var result = try and_op.scan();
+    defer result.deinit(allocator);
+
+    // All three inputs have "common_1", so result should have one item
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualSlices(u8, "common_1", result.items[0]);
+}
+
+test "BitmapOrOp with three disjoint sets" {
+    const allocator = std.testing.allocator;
+
+    // Index 1: key "a" -> row_key "row_1"
+    const path1 = "test_bitmap_or_disjoint_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("a", "row_1");
+
+    // Index 2: key "b" -> row_key "row_2"
+    const path2 = "test_bitmap_or_disjoint_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("b", "row_2");
+
+    // Index 3: key "c" -> row_key "row_3"
+    const path3 = "test_bitmap_or_disjoint_3.db";
+    defer std.fs.cwd().deleteFile(path3) catch {};
+
+    var pager3 = try Pager.init(allocator, path3, .{});
+    defer pager3.deinit();
+
+    const index_root3 = try pager3.allocPage();
+    {
+        const raw = try pager3.allocPageBuf();
+        defer pager3.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager3.page_size, index_root3);
+        try pager3.writePage(index_root3, raw);
+    }
+
+    var pool3 = try BufferPool.init(allocator, &pager3, 100);
+    defer pool3.deinit();
+
+    var tree3 = BTree.init(&pool3, index_root3);
+    try tree3.insert("c", "row_3");
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "a");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "b");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    var scan3 = BitmapIndexScanOp.init(allocator, &pool3, index_root3, "c");
+    const scan3_plan = scan3.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan, scan3_plan };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+
+    var result = try or_op.scan();
+    defer result.deinit(allocator);
+
+    // OR should return all three distinct row_keys
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_2", result.items[1]);
+    try std.testing.expectEqualSlices(u8, "row_3", result.items[2]);
+}
+
+test "BitmapAndOp with single input returns input unchanged" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_bitmap_and_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+    try tree.insert("key1", "row_1");
+    try tree.insert("key2", "row_2");
+
+    var scan = BitmapIndexScanOp.init(allocator, &pool, index_root, "key1");
+    const scan_plan = scan.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{scan_plan};
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+
+    var result = try and_op.scan();
+    defer result.deinit(allocator);
+
+    // Single input should be returned as-is
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+}
+
+test "BitmapOrOp with single input returns input unchanged" {
+    const allocator = std.testing.allocator;
+
+    const path = "test_bitmap_or_single.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var pager = try Pager.init(allocator, path, .{});
+    defer pager.deinit();
+
+    const index_root = try pager.allocPage();
+    {
+        const raw = try pager.allocPageBuf();
+        defer pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager.page_size, index_root);
+        try pager.writePage(index_root, raw);
+    }
+
+    var pool = try BufferPool.init(allocator, &pager, 100);
+    defer pool.deinit();
+
+    var tree = BTree.init(&pool, index_root);
+    try tree.insert("key1", "row_1");
+    try tree.insert("key2", "row_2");
+
+    var scan = BitmapIndexScanOp.init(allocator, &pool, index_root, "key1");
+    const scan_plan = scan.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{scan_plan};
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+
+    var result = try or_op.scan();
+    defer result.deinit(allocator);
+
+    // Single input should be returned as-is
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+}
+
+test "BitmapAndOp with disjoint sets returns empty" {
+    const allocator = std.testing.allocator;
+
+    const path1 = "test_bitmap_and_disjoint_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("key1", "row_1");
+    try tree1.insert("key2", "row_2");
+
+    const path2 = "test_bitmap_and_disjoint_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("key3", "row_3");
+    try tree2.insert("key4", "row_4");
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "key1");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "key3");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+
+    var result = try and_op.scan();
+    defer result.deinit(allocator);
+
+    // Disjoint sets should intersect to empty
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "BitmapOrOp with disjoint sets returns union of both" {
+    const allocator = std.testing.allocator;
+
+    const path1 = "test_bitmap_or_disjoint_pair_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("key1", "row_1");
+    try tree1.insert("key2", "row_2");
+
+    const path2 = "test_bitmap_or_disjoint_pair_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("key3", "row_3");
+    try tree2.insert("key4", "row_4");
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "key1");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "key3");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+
+    var result = try or_op.scan();
+    defer result.deinit(allocator);
+
+    // OR of disjoint sets should contain both row_keys
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_3", result.items[1]);
+}
+
+test "BitmapAndOp with one empty input returns empty" {
+    const allocator = std.testing.allocator;
+
+    const path1 = "test_bitmap_and_empty_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("key1", "row_1");
+
+    const path2 = "test_bitmap_and_empty_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    _ = &tree2; // Index 2 is intentionally left empty
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "key1");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "nonexistent");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+
+    var result = try and_op.scan();
+    defer result.deinit(allocator);
+
+    // AND with empty set should return empty
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "BitmapOrOp with one empty input returns non-empty" {
+    const allocator = std.testing.allocator;
+
+    const path1 = "test_bitmap_or_empty_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("key1", "row_1");
+
+    const path2 = "test_bitmap_or_empty_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    _ = &tree2; // Index 2 is intentionally left empty
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "key1");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "nonexistent");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+
+    var result = try or_op.scan();
+    defer result.deinit(allocator);
+
+    // OR with one empty set should return the non-empty set
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+}
+
+test "BitmapOrOp can nest BitmapAndOp as input via vtable" {
+    const allocator = std.testing.allocator;
+
+    // Create index 1: key "a" -> row_key "row_1"
+    const path1 = "test_bitmap_nest_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("a", "row_1");
+
+    // Create index 2: key "b" -> row_key "row_1"
+    const path2 = "test_bitmap_nest_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("b", "row_1");
+
+    // Create index 3: key "c" -> row_key "row_2"
+    const path3 = "test_bitmap_nest_3.db";
+    defer std.fs.cwd().deleteFile(path3) catch {};
+
+    var pager3 = try Pager.init(allocator, path3, .{});
+    defer pager3.deinit();
+
+    const index_root3 = try pager3.allocPage();
+    {
+        const raw = try pager3.allocPageBuf();
+        defer pager3.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager3.page_size, index_root3);
+        try pager3.writePage(index_root3, raw);
+    }
+
+    var pool3 = try BufferPool.init(allocator, &pager3, 100);
+    defer pool3.deinit();
+
+    var tree3 = BTree.init(&pool3, index_root3);
+    try tree3.insert("c", "row_2");
+
+    // Create BitmapIndexScanOp scans
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "a");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "b");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    var scan3 = BitmapIndexScanOp.init(allocator, &pool3, index_root3, "c");
+    const scan3_plan = scan3.asBitmapPlan();
+
+    // Create BitmapAndOp for intersection of scan1 and scan2 (both return row_1)
+    const and_inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var and_op = BitmapAndOp.init(allocator, &and_inputs);
+    const and_plan = and_op.asBitmapPlan();
+
+    // Create BitmapOrOp: union of (scan1 AND scan2) OR scan3
+    // (scan1 AND scan2) = row_1, scan3 = row_2
+    // result should be [row_1, row_2]
+    const or_inputs = [_]BitmapPlan{ and_plan, scan3_plan };
+    var or_op = BitmapOrOp.init(allocator, &or_inputs);
+
+    var result = try or_op.scan();
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_2", result.items[1]);
+}
+
+test "BitmapAndOp.scan() can be called multiple times without mutation" {
+    const allocator = std.testing.allocator;
+
+    const path1 = "test_bitmap_and_reusable_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("key1", "row_1");
+
+    const path2 = "test_bitmap_and_reusable_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("key2", "row_1");
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "key1");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "key2");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+
+    // First scan
+    var result1 = try and_op.scan();
+    defer result1.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result1.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result1.items[0]);
+
+    // Second scan should give identical results
+    var result2 = try and_op.scan();
+    defer result2.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result2.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result2.items[0]);
+}
+
+test "BitmapOrOp.scan() can be called multiple times without mutation" {
+    const allocator = std.testing.allocator;
+
+    const path1 = "test_bitmap_or_reusable_1.db";
+    defer std.fs.cwd().deleteFile(path1) catch {};
+
+    var pager1 = try Pager.init(allocator, path1, .{});
+    defer pager1.deinit();
+
+    const index_root1 = try pager1.allocPage();
+    {
+        const raw = try pager1.allocPageBuf();
+        defer pager1.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager1.page_size, index_root1);
+        try pager1.writePage(index_root1, raw);
+    }
+
+    var pool1 = try BufferPool.init(allocator, &pager1, 100);
+    defer pool1.deinit();
+
+    var tree1 = BTree.init(&pool1, index_root1);
+    try tree1.insert("key1", "row_1");
+
+    const path2 = "test_bitmap_or_reusable_2.db";
+    defer std.fs.cwd().deleteFile(path2) catch {};
+
+    var pager2 = try Pager.init(allocator, path2, .{});
+    defer pager2.deinit();
+
+    const index_root2 = try pager2.allocPage();
+    {
+        const raw = try pager2.allocPageBuf();
+        defer pager2.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, pager2.page_size, index_root2);
+        try pager2.writePage(index_root2, raw);
+    }
+
+    var pool2 = try BufferPool.init(allocator, &pager2, 100);
+    defer pool2.deinit();
+
+    var tree2 = BTree.init(&pool2, index_root2);
+    try tree2.insert("key2", "row_2");
+
+    var scan1 = BitmapIndexScanOp.init(allocator, &pool1, index_root1, "key1");
+    const scan1_plan = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &pool2, index_root2, "key2");
+    const scan2_plan = scan2.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ scan1_plan, scan2_plan };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+
+    // First scan
+    var result1 = try or_op.scan();
+    defer result1.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result1.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result1.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_2", result1.items[1]);
+
+    // Second scan should give identical results
+    var result2 = try or_op.scan();
+    defer result2.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result2.items.len);
+    try std.testing.expectEqualSlices(u8, "row_1", result2.items[0]);
+    try std.testing.expectEqualSlices(u8, "row_2", result2.items[1]);
 }
