@@ -8739,6 +8739,136 @@ pub const BitmapOrOp = struct {
     }
 };
 
+/// Root operator of bitmap index scan: walks the RowKeySet produced by a
+/// BitmapPlan (BitmapIndexScanOp / BitmapAndOp / BitmapOrOp), fetches each row
+/// from the data B+Tree by row_key, and applies MVCC visibility filtering.
+/// Orphaned entries (row_key not found) are skipped without stopping the scan.
+/// MVCC-invisible tuples are also skipped. Visible rows are returned in order.
+pub const BitmapHeapScanOp = struct {
+    allocator: Allocator,
+    pool: *BufferPool,
+    data_root_page_id: u32,
+    col_names: []const []const u8,
+    bitmap_plan: BitmapPlan,
+    /// MVCC context for visibility filtering (null = all rows visible).
+    mvcc_ctx: ?MvccContext = null,
+    /// Lazily-populated RowKeySet from bitmap_plan.scan() (on first next() call).
+    /// Owned; freed in close().
+    row_key_set: ?bitmap_mod.RowKeySet = null,
+    /// Current position in row_key_set.items.
+    row_key_set_cursor: usize = 0,
+
+    pub fn init(
+        allocator: Allocator,
+        pool: *BufferPool,
+        data_root_page_id: u32,
+        bitmap_plan: BitmapPlan,
+        col_names: []const []const u8,
+    ) BitmapHeapScanOp {
+        return .{
+            .allocator = allocator,
+            .pool = pool,
+            .data_root_page_id = data_root_page_id,
+            .col_names = col_names,
+            .bitmap_plan = bitmap_plan,
+        };
+    }
+
+    /// Fetch a row from the data B+Tree by row_key, applying MVCC visibility filtering.
+    /// Returns null for an orphaned index entry (no matching data row) or an MVCC-invisible
+    /// tuple. Callers iterating multiple candidates must treat a null result as
+    /// "skip this candidate," not "the scan is exhausted."
+    fn fetchRowFromDataTree(self: *BitmapHeapScanOp, data_row_key: []const u8) ExecError!?Row {
+        var data_tree = BTree.init(self.pool, self.data_root_page_id);
+        const row_data = data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
+        if (row_data == null) return null; // Orphaned index entry
+        defer self.allocator.free(row_data.?);
+
+        // MVCC visibility check
+        if (self.mvcc_ctx) |ctx| {
+            if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
+                const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    return null; // Tuple not visible
+                }
+                // Visible: deserialize column data (skip MVCC header)
+                const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                errdefer {
+                    for (values) |v| v.free(self.allocator);
+                    self.allocator.free(values);
+                }
+                return try self.padRow(values);
+            }
+        }
+
+        // No MVCC context or legacy row — still detect MVCC format and skip overhead
+        const row_bytes = if (mvcc_mod.isVersionedRow(row_data.?))
+            row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
+        else
+            row_data.?;
+        const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+        errdefer {
+            for (values) |v| v.free(self.allocator);
+            self.allocator.free(values);
+        }
+        return try self.padRow(values);
+    }
+
+    /// Pad `values` (shorter than `col_names` when an old row predates an `ALTER TABLE
+    /// ADD COLUMN`) with null and wrap into a `Row`. Takes ownership of `values`.
+    fn padRow(self: *BitmapHeapScanOp, values: []Value) ExecError!Row {
+        const padded_values = if (values.len < self.col_names.len) blk: {
+            const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+            for (values, 0..) |v, i| extended[i] = v;
+            for (values.len..self.col_names.len) |i| {
+                extended[i] = .null_value;
+            }
+            self.allocator.free(values);
+            break :blk extended;
+        } else values;
+
+        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        for (self.col_names, 0..) |c, i| cols[i] = c;
+
+        return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
+    }
+
+    pub fn next(self: *BitmapHeapScanOp) ExecError!?Row {
+        // Lazily populate RowKeySet on first call
+        if (self.row_key_set == null) {
+            self.row_key_set = try self.bitmap_plan.scan();
+        }
+
+        const set = self.row_key_set.?;
+        while (self.row_key_set_cursor < set.items.len) {
+            const row_key = set.items[self.row_key_set_cursor];
+            self.row_key_set_cursor += 1;
+            // An invisible or orphaned candidate just means "skip it," not "stop
+            // the scan" — there may be more matching rows still queued.
+            if (try self.fetchRowFromDataTree(row_key)) |row| {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    pub fn close(self: *BitmapHeapScanOp) void {
+        if (self.row_key_set) |*set| {
+            set.deinit(self.allocator);
+        }
+    }
+
+    pub fn iterator(self: *BitmapHeapScanOp) RowIterator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .next = @ptrCast(&BitmapHeapScanOp.next),
+                .close = @ptrCast(&BitmapHeapScanOp.close),
+            },
+        };
+    }
+};
+
 /// Index-only scan: cursors over a covering (INCLUDE) secondary index B+Tree
 /// directly, decoding each leaf via `index_entry.decodeIndexEntry` instead of
 /// fetching from the data B+Tree. Modeled on `ScanOp` but iterating the index
@@ -33426,4 +33556,664 @@ test "BitmapOrOp.scan() can be called multiple times without mutation" {
     try std.testing.expectEqual(@as(usize, 2), result2.items.len);
     try std.testing.expectEqualSlices(u8, "row_1", result2.items[0]);
     try std.testing.expectEqualSlices(u8, "row_2", result2.items[1]);
+}
+
+test "BitmapHeapScanOp basic scan with single BitmapIndexScanOp input" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_basic_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_basic_index.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    // Allocate data B+Tree root
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    // Allocate index B+Tree root
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Insert 2 rows into data B+Tree
+    var data_tree = BTree.init(&data_pool, data_root);
+    const row_values1 = [_]Value{ .{ .text = "Alice" }, .{ .integer = 30 } };
+    const row_data1 = try serializeRow(allocator, &row_values1);
+    defer allocator.free(row_data1);
+    try data_tree.insert("row_1", row_data1);
+
+    const row_values2 = [_]Value{ .{ .text = "Bob" }, .{ .integer = 25 } };
+    const row_data2 = try serializeRow(allocator, &row_values2);
+    defer allocator.free(row_data2);
+    try data_tree.insert("row_2", row_data2);
+
+    // Insert index entries: lookup_key -> row_key
+    var index_tree = BTree.init(&index_pool, index_root);
+    try index_tree.insert("age_30", "row_1");
+    try index_tree.insert("age_25", "row_2");
+
+    // Create BitmapIndexScanOp targeting age_30
+    var bitmap_scan = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "age_30");
+    const bitmap_plan = bitmap_scan.asBitmapPlan();
+
+    // Create BitmapHeapScanOp (expected to exist and take bitmap_plan + data_root)
+    const col_names = [_][]const u8{ "name", "age" };
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    defer heap_scan.close();
+
+    // Scan should return the matching row
+    const row1 = try heap_scan.next();
+    try std.testing.expect(row1 != null);
+    var r1 = row1.?;
+    try std.testing.expectEqual(@as(usize, 2), r1.values.len);
+    try std.testing.expectEqualSlices(u8, "Alice", r1.values[0].text);
+    try std.testing.expectEqual(@as(i64, 30), r1.values[1].integer);
+    r1.deinit();
+
+    // Second row should be null (only age_30 was in the lookup)
+    const row2 = try heap_scan.next();
+    try std.testing.expect(row2 == null);
+}
+
+test "BitmapHeapScanOp with BitmapAndOp intersection input" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_and_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index1_path = "test_bitmap_heap_and_idx1.db";
+    defer std.fs.cwd().deleteFile(index1_path) catch {};
+
+    const index2_path = "test_bitmap_heap_and_idx2.db";
+    defer std.fs.cwd().deleteFile(index2_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index1_pager = try Pager.init(allocator, index1_path, .{});
+    defer index1_pager.deinit();
+
+    var index2_pager = try Pager.init(allocator, index2_path, .{});
+    defer index2_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index1_root = try index1_pager.allocPage();
+    {
+        const raw = try index1_pager.allocPageBuf();
+        defer index1_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index1_pager.page_size, index1_root);
+        try index1_pager.writePage(index1_root, raw);
+    }
+
+    const index2_root = try index2_pager.allocPage();
+    {
+        const raw = try index2_pager.allocPageBuf();
+        defer index2_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index2_pager.page_size, index2_root);
+        try index2_pager.writePage(index2_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index1_pool = try BufferPool.init(allocator, &index1_pager, 10);
+    defer index1_pool.deinit();
+
+    var index2_pool = try BufferPool.init(allocator, &index2_pager, 10);
+    defer index2_pool.deinit();
+
+    // Insert 3 data rows
+    var data_tree = BTree.init(&data_pool, data_root);
+    const vals1 = [_]Value{ .{ .text = "Alice" } };
+    const data1 = try serializeRow(allocator, &vals1);
+    defer allocator.free(data1);
+    try data_tree.insert("row_1", data1);
+
+    const vals2 = [_]Value{ .{ .text = "Bob" } };
+    const data2 = try serializeRow(allocator, &vals2);
+    defer allocator.free(data2);
+    try data_tree.insert("row_2", data2);
+
+    const vals3 = [_]Value{ .{ .text = "Charlie" } };
+    const data3 = try serializeRow(allocator, &vals3);
+    defer allocator.free(data3);
+    try data_tree.insert("row_3", data3);
+
+    // Index 1: status=active -> row_1
+    var idx1_tree = BTree.init(&index1_pool, index1_root);
+    try idx1_tree.insert("status_active", "row_1");
+
+    // Index 2: priority=high -> row_1
+    var idx2_tree = BTree.init(&index2_pool, index2_root);
+    try idx2_tree.insert("priority_high", "row_1");
+
+    // Create two BitmapIndexScanOp: one for status, one for priority
+    var scan1 = BitmapIndexScanOp.init(allocator, &index1_pool, index1_root, "status_active");
+    const plan1 = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &index2_pool, index2_root, "priority_high");
+    const plan2 = scan2.asBitmapPlan();
+
+    // Combine with AND (both match row_1, so intersection = row_1)
+    const inputs = [_]BitmapPlan{ plan1, plan2 };
+    var and_op = BitmapAndOp.init(allocator, &inputs);
+    const and_plan = and_op.asBitmapPlan();
+
+    // Create BitmapHeapScanOp with the AND plan
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, and_plan, &col_names);
+    defer heap_scan.close();
+
+    // Should return only row_1 (matching both conditions)
+    const row = try heap_scan.next();
+    try std.testing.expect(row != null);
+    var r = row.?;
+    try std.testing.expectEqualSlices(u8, "Alice", r.values[0].text);
+    r.deinit();
+
+    // No more rows
+    const next_row = try heap_scan.next();
+    try std.testing.expect(next_row == null);
+}
+
+test "BitmapHeapScanOp with BitmapOrOp union input" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_or_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index1_path = "test_bitmap_heap_or_idx1.db";
+    defer std.fs.cwd().deleteFile(index1_path) catch {};
+
+    const index2_path = "test_bitmap_heap_or_idx2.db";
+    defer std.fs.cwd().deleteFile(index2_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index1_pager = try Pager.init(allocator, index1_path, .{});
+    defer index1_pager.deinit();
+
+    var index2_pager = try Pager.init(allocator, index2_path, .{});
+    defer index2_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index1_root = try index1_pager.allocPage();
+    {
+        const raw = try index1_pager.allocPageBuf();
+        defer index1_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index1_pager.page_size, index1_root);
+        try index1_pager.writePage(index1_root, raw);
+    }
+
+    const index2_root = try index2_pager.allocPage();
+    {
+        const raw = try index2_pager.allocPageBuf();
+        defer index2_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index2_pager.page_size, index2_root);
+        try index2_pager.writePage(index2_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index1_pool = try BufferPool.init(allocator, &index1_pager, 10);
+    defer index1_pool.deinit();
+
+    var index2_pool = try BufferPool.init(allocator, &index2_pager, 10);
+    defer index2_pool.deinit();
+
+    // Insert 2 data rows
+    var data_tree = BTree.init(&data_pool, data_root);
+    const vals1 = [_]Value{ .{ .text = "Alice" } };
+    const data1 = try serializeRow(allocator, &vals1);
+    defer allocator.free(data1);
+    try data_tree.insert("row_1", data1);
+
+    const vals2 = [_]Value{ .{ .text = "Bob" } };
+    const data2 = try serializeRow(allocator, &vals2);
+    defer allocator.free(data2);
+    try data_tree.insert("row_2", data2);
+
+    // Index 1: status=active -> {row_1}
+    var idx1_tree = BTree.init(&index1_pool, index1_root);
+    try idx1_tree.insert("status_active", "row_1");
+
+    // Index 2: priority=high -> {row_2}
+    var idx2_tree = BTree.init(&index2_pool, index2_root);
+    try idx2_tree.insert("priority_high", "row_2");
+
+    // Create two BitmapIndexScanOp
+    var scan1 = BitmapIndexScanOp.init(allocator, &index1_pool, index1_root, "status_active");
+    const plan1 = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &index2_pool, index2_root, "priority_high");
+    const plan2 = scan2.asBitmapPlan();
+
+    // Combine with OR (union = row_1 and row_2)
+    const inputs = [_]BitmapPlan{ plan1, plan2 };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+    const or_plan = or_op.asBitmapPlan();
+
+    // Create BitmapHeapScanOp with the OR plan
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, or_plan, &col_names);
+    defer heap_scan.close();
+
+    // Should return both rows (union)
+    var count: usize = 0;
+    while (try heap_scan.next()) |row| {
+        count += 1;
+        var r = row;
+        try std.testing.expect(std.mem.eql(u8, r.values[0].text, "Alice") or std.mem.eql(u8, r.values[0].text, "Bob"));
+        r.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "BitmapHeapScanOp MVCC visibility filters invisible tuple" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_mvcc_invisible_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_mvcc_invisible_idx.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Insert a versioned row with xmax set (deleted)
+    var data_tree = BTree.init(&data_pool, data_root);
+    const deleted_header = TupleHeader{
+        .xmin = 5,
+        .xmax = 20,  // Tuple is deleted
+        .cid = 0,
+        .flags = .{},
+    };
+    const vals = [_]Value{ .{ .text = "Deleted" } };
+    const versioned_data = try mvcc_mod.serializeVersionedRow(allocator, deleted_header, &vals);
+    defer allocator.free(versioned_data);
+    try data_tree.insert("row_1", versioned_data);
+
+    // Insert index entry
+    var index_tree = BTree.init(&index_pool, index_root);
+    try index_tree.insert("key_1", "row_1");
+
+    // Create BitmapIndexScanOp
+    var bitmap_scan = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_1");
+    const bitmap_plan = bitmap_scan.asBitmapPlan();
+
+    // Create BitmapHeapScanOp with MVCC context
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    defer heap_scan.close();
+
+    // Set MVCC context: current_xid=30, snapshot sees xids < 31 as committed
+    const mvcc_ctx = MvccContext{
+        .enabled = true,
+        .snapshot = .{ .xmin = 0, .xmax = 31, .active_xids = &.{}, .allocator = null },
+        .current_xid = 30,
+        .current_cid = 0,
+        .tm = null,
+    };
+    heap_scan.mvcc_ctx = mvcc_ctx;
+
+    // Should return null (tuple is invisible due to xmax being in committed range)
+    const row = try heap_scan.next();
+    try std.testing.expect(row == null);
+}
+
+test "BitmapHeapScanOp MVCC visibility includes visible tuple" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_mvcc_visible_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_mvcc_visible_idx.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Insert a visible versioned row (xmin is committed, xmax is invalid)
+    var data_tree = BTree.init(&data_pool, data_root);
+    const visible_header = TupleHeader{
+        .xmin = 10,
+        .xmax = mvcc_mod.INVALID_XID,
+        .cid = 0,
+        .flags = .{},
+    };
+    const vals = [_]Value{ .{ .text = "Visible" } };
+    const versioned_data = try mvcc_mod.serializeVersionedRow(allocator, visible_header, &vals);
+    defer allocator.free(versioned_data);
+    try data_tree.insert("row_1", versioned_data);
+
+    // Insert index entry
+    var index_tree = BTree.init(&index_pool, index_root);
+    try index_tree.insert("key_1", "row_1");
+
+    // Create BitmapIndexScanOp
+    var bitmap_scan = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_1");
+    const bitmap_plan = bitmap_scan.asBitmapPlan();
+
+    // Create BitmapHeapScanOp with MVCC context
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    defer heap_scan.close();
+
+    // Set MVCC context: current_xid=30, snapshot sees xids < 31 as committed
+    const mvcc_ctx = MvccContext{
+        .enabled = true,
+        .snapshot = .{ .xmin = 0, .xmax = 31, .active_xids = &.{}, .allocator = null },
+        .current_xid = 30,
+        .current_cid = 0,
+        .tm = null,
+    };
+    heap_scan.mvcc_ctx = mvcc_ctx;
+
+    // Should return the visible row
+    const row = try heap_scan.next();
+    try std.testing.expect(row != null);
+    var r = row.?;
+    try std.testing.expectEqualSlices(u8, "Visible", r.values[0].text);
+    r.deinit();
+
+    // No more rows
+    const next_row = try heap_scan.next();
+    try std.testing.expect(next_row == null);
+}
+
+test "BitmapHeapScanOp skips orphaned index entries without stopping" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_orphan_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_orphan_idx.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Insert 2 data rows
+    var data_tree = BTree.init(&data_pool, data_root);
+    const vals1 = [_]Value{ .{ .text = "First" } };
+    const data1 = try serializeRow(allocator, &vals1);
+    defer allocator.free(data1);
+    try data_tree.insert("row_1", data1);
+
+    const vals2 = [_]Value{ .{ .text = "Third" } };
+    const data2 = try serializeRow(allocator, &vals2);
+    defer allocator.free(data2);
+    try data_tree.insert("row_3", data2);
+
+    // Insert index entries: key_1 -> row_1 (exists), key_2 -> row_2 (orphaned), key_3 -> row_3 (exists)
+    var index_tree = BTree.init(&index_pool, index_root);
+    try index_tree.insert("key_1", "row_1");
+    try index_tree.insert("key_2", "row_2");  // No corresponding data row
+    try index_tree.insert("key_3", "row_3");
+
+    // Scan key_1, key_2, key_3 via separate BitmapIndexScanOp and combine with OR to get all three row_key candidates
+    var scan1 = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_1");
+    const plan1 = scan1.asBitmapPlan();
+
+    var scan2 = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_2");
+    const plan2 = scan2.asBitmapPlan();
+
+    var scan3 = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_3");
+    const plan3 = scan3.asBitmapPlan();
+
+    const inputs = [_]BitmapPlan{ plan1, plan2, plan3 };
+    var or_op = BitmapOrOp.init(allocator, &inputs);
+    const or_plan = or_op.asBitmapPlan();
+
+    // Create BitmapHeapScanOp
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, or_plan, &col_names);
+    defer heap_scan.close();
+
+    // Should return row_1 and row_3, skip row_2 (orphaned)
+    var count: usize = 0;
+    var seen_first = false;
+    var seen_third = false;
+    while (try heap_scan.next()) |row| {
+        count += 1;
+        var r = row;
+        if (std.mem.eql(u8, r.values[0].text, "First")) seen_first = true;
+        if (std.mem.eql(u8, r.values[0].text, "Third")) seen_third = true;
+        r.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(seen_first);
+    try std.testing.expect(seen_third);
+}
+
+test "BitmapHeapScanOp with empty RowKeySet returns null immediately" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_empty_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_empty_idx.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Create BitmapIndexScanOp with a lookup_key that has no matches
+    var bitmap_scan = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "nonexistent_key");
+    const bitmap_plan = bitmap_scan.asBitmapPlan();
+
+    // Create BitmapHeapScanOp
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    defer heap_scan.close();
+
+    // Should return null immediately (empty RowKeySet)
+    const row = try heap_scan.next();
+    try std.testing.expect(row == null);
+}
+
+test "BitmapHeapScanOp memory cleanup with close()" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_cleanup_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_cleanup_idx.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Insert a data row
+    var data_tree = BTree.init(&data_pool, data_root);
+    const vals = [_]Value{ .{ .text = "Test" } };
+    const data = try serializeRow(allocator, &vals);
+    defer allocator.free(data);
+    try data_tree.insert("row_1", data);
+
+    // Insert index entry
+    var index_tree = BTree.init(&index_pool, index_root);
+    try index_tree.insert("key_1", "row_1");
+
+    // Create BitmapIndexScanOp
+    var bitmap_scan = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_1");
+    const bitmap_plan = bitmap_scan.asBitmapPlan();
+
+    // Create BitmapHeapScanOp
+    const col_names = [_][]const u8{"name"};
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+
+    // Call next() to populate the internal RowKeySet
+    const row = try heap_scan.next();
+    try std.testing.expect(row != null);
+    var r = row.?;
+    r.deinit();
+
+    // Call close() to clean up the RowKeySet
+    heap_scan.close();
+    // If there's a leak in close(), std.testing.allocator will catch it
 }
