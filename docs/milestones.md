@@ -143,8 +143,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.95.0
-- **Latest available**: v2.95.0
+- **Current in silica**: v2.96.1
+- **Latest available**: v2.96.1
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -250,8 +250,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### zuda Library
 
-- **Current**: v2.0.4 (integrated)
-- **Latest available**: v2.0.4
+- **Current**: v2.3.0 (integrated)
+- **Latest available**: v2.3.0
 - **Repo**: https://github.com/yusa-imit/zuda
 - **Migration Status**: 1/3 completed — Deadlock Detection ✅ DONE
 

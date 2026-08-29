@@ -34217,3 +34217,83 @@ test "BitmapHeapScanOp memory cleanup with close()" {
     heap_scan.close();
     // If there's a leak in close(), std.testing.allocator will catch it
 }
+
+test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (ALTER TABLE ADD COLUMN)" {
+    const allocator = std.testing.allocator;
+
+    const data_path = "test_bitmap_heap_padrow_data.db";
+    defer std.fs.cwd().deleteFile(data_path) catch {};
+
+    const index_path = "test_bitmap_heap_padrow_idx.db";
+    defer std.fs.cwd().deleteFile(index_path) catch {};
+
+    var data_pager = try Pager.init(allocator, data_path, .{});
+    defer data_pager.deinit();
+
+    var index_pager = try Pager.init(allocator, index_path, .{});
+    defer index_pager.deinit();
+
+    const data_root = try data_pager.allocPage();
+    {
+        const raw = try data_pager.allocPageBuf();
+        defer data_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, data_pager.page_size, data_root);
+        try data_pager.writePage(data_root, raw);
+    }
+
+    const index_root = try index_pager.allocPage();
+    {
+        const raw = try index_pager.allocPageBuf();
+        defer index_pager.freePageBuf(raw);
+        btree_mod.initLeafPage(raw, index_pager.page_size, index_root);
+        try index_pager.writePage(index_root, raw);
+    }
+
+    var data_pool = try BufferPool.init(allocator, &data_pager, 10);
+    defer data_pool.deinit();
+
+    var index_pool = try BufferPool.init(allocator, &index_pager, 10);
+    defer index_pool.deinit();
+
+    // Insert a row with only 1 value (simulating a row inserted before ALTER TABLE ADD COLUMN)
+    var data_tree = BTree.init(&data_pool, data_root);
+    const row_values = [_]Value{ .{ .text = "Alice" } };
+    const row_data = try serializeRow(allocator, &row_values);
+    defer allocator.free(row_data);
+    try data_tree.insert("row_1", row_data);
+
+    // Insert index entry
+    var index_tree = BTree.init(&index_pool, index_root);
+    try index_tree.insert("name_Alice", "row_1");
+
+    // Create BitmapIndexScanOp
+    var bitmap_scan = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "name_Alice");
+    const bitmap_plan = bitmap_scan.asBitmapPlan();
+
+    // Create BitmapHeapScanOp with MORE columns than the stored row has
+    // (simulating ALTER TABLE ADD COLUMN adding "age" and "email")
+    const col_names = [_][]const u8{ "name", "age", "email" };
+    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    defer heap_scan.close();
+
+    // Scan should return the row with padding
+    const row = try heap_scan.next();
+    try std.testing.expect(row != null);
+    var r = row.?;
+
+    // Verify the row has 3 values (padded)
+    try std.testing.expectEqual(@as(usize, 3), r.values.len);
+
+    // First value is the stored one
+    try std.testing.expectEqualSlices(u8, "Alice", r.values[0].text);
+
+    // Remaining values are .null_value
+    try std.testing.expectEqual(Value.null_value, r.values[1]);
+    try std.testing.expectEqual(Value.null_value, r.values[2]);
+
+    r.deinit();
+
+    // No more rows
+    const next_row = try heap_scan.next();
+    try std.testing.expect(next_row == null);
+}
