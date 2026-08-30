@@ -180,9 +180,11 @@ Full agent transcript/reasoning available via session notes if a future session 
 3. `BitmapAndOp`/`BitmapOrOp` — small, pure combinators.
 4. `BitmapHeapScanOp` — medium, this is where rule-15 correctness lives, deserves the most test scrutiny.
 5. `engine.zig` planner wiring (`collectAndLeaves`/`collectOrLeaves`/`tryBuildBitmapScan`/`OperatorChain` changes/`buildFilter` integration) — medium-to-large, riskiest phase (predicate-tree walking + `OperatorChain` lifecycle changes).
-6. Cleanup — document scope limits (no joins, no covering-storage interaction, no mixed AND-of-OR trees, `.btree`-only) in code comments + this file, mirroring GIN/index-only-scan's own "explicitly out of scope" sections.
+6. ✅ **DONE (session 520)** Cleanup — document scope limits (no joins, no covering-storage interaction, no mixed AND-of-OR trees, `.btree`-only) in code comments + this file, mirroring GIN/index-only-scan's own "explicitly out of scope" sections.
 
 **Explicitly out of scope for phase 1**: joins, mixed AND-of-OR/OR-of-AND predicate trees, non-`.btree` index types (`.hash`/`.gist`/`.gin` excluded from bitmap leaves, consistent with covering-storage's own `.btree`-only restriction), interaction with covering-storage (bitmap heap scan always does a full row fetch, doesn't attempt to read covering payloads).
+
+**Status: ALL 6 PHASES DONE (sessions 511-520)**. Phase 1 `RowKeySet` (`src/sql/bitmap.zig`, commit `bb1aeef`). Phase 2 `BitmapIndexScanOp` (`executor.zig`, commit `4a5bce9`). Phase 3 `BitmapAndOp`/`BitmapOrOp` (`executor.zig`, commit `38d5df5`). Phase 4 `BitmapHeapScanOp` (`executor.zig`, commit `3b4d2aa`). Phase 5 `collectAndLeaves`/`collectOrLeaves`/`tryBuildBitmapScan`/`buildBitmapAndScan`/`buildBitmapOrScan` + `OperatorChain` lifecycle wiring, tried in `buildFilter` (`engine.zig`, commit `85e7e28`, session 520 — was found sitting uncommitted in the working tree at session start, `zig build test` verified green before committing). Phase 6 this entry + `tryBuildBitmapScan`'s doc comment in `engine.zig` (session 520). Bitmap index scan is feature-complete end-to-end via SQL for single-table flat-AND/flat-OR indexed-equality predicates. No follow-up tracked.
 
 ## File Format
 

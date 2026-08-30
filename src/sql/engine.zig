@@ -4561,6 +4561,17 @@ pub const Database = struct {
     ///
     /// The result is ALWAYS wrapped in a FilterOp re-check of the full original predicate
     /// (applied by the caller, mandatory since bitmap operations may drop non-indexed leaves).
+    ///
+    /// Explicitly out of scope (mirrors GIN's / index-only-scan's own "out of scope" sections
+    /// in architecture.md): joins (single-table scans only — `collectAndLeaves`/`collectOrLeaves`
+    /// only look at columns of `scan.table`); mixed AND-of-OR / OR-of-AND predicate trees (only a
+    /// flat top-level AND or flat top-level OR is recognized, checked via the `expr.* != .binary_op`
+    /// / `op.op == .@"and"`/`.@"or"` guards in `collectAndLeaves`/`collectOrLeaves`); non-`.btree`
+    /// index types (`.hash`/`.gist`/`.gin` leaves are skipped, same restriction as covering-storage);
+    /// and covering-storage interaction (`buildBitmapAndScan`/`buildBitmapOrScan` always route through
+    /// `BitmapHeapScanOp`, which does a full row fetch — it never reads a covering index payload).
+    /// None of these fail loudly: they just make `tryBuildBitmapScan` return `null`, falling through
+    /// to the pre-existing full-scan + `FilterOp` behavior, so there's no regression risk.
     fn tryBuildBitmapScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
         // Look up the table to find schema and index info
         var table_info = self.catalog.getTable(scan.table) catch return null;
