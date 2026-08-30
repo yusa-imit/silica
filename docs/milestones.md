@@ -48,7 +48,7 @@
 - [x] GiST framework (Generalized Search Tree)
 - [x] GIN framework (Generalized Inverted Index)
 - [x] CREATE INDEX CONCURRENTLY
-- [ ] Bitmap index scans — removed session 480 (STABILIZATION): `TidBitmap`/`BitmapIndexScanOp`/`BitmapAndOp`/`BitmapOrOp`/`BitmapHeapScanOp` existed only as unit-tested dead code in executor.zig, never wired into planner/optimizer, and were architecturally broken (derived fake `page_id`/`slot_id` via a one-way hash of the row key, so `BitmapHeapScanOp` could never actually recover rows — hence most of its own tests were permanently skipped). Needs a real physical-TID design + planner integration before reattempting; see `.claude/memory/next-priorities.md`.
+- [x] Bitmap index scans — fully redesigned and shipped sessions 511-520 (6-phase plan in `.claude/memory/architecture.md`): `RowKeySet` (`src/sql/bitmap.zig`) replaces the old fake-TID hashing with the row key itself as locator; `BitmapIndexScanOp`/`BitmapAndOp`/`BitmapOrOp`/`BitmapHeapScanOp` (executor.zig) wired end-to-end into the planner/optimizer (`tryBuildBitmapScan`/`buildBitmapAndScan`/`buildBitmapOrScan` in engine.zig) for single-table flat-AND/flat-OR indexed-equality predicates. See `.claude/memory/next-priorities.md` for documented scope limits (joins, mixed AND-of-OR trees, non-btree indexes not covered).
 
 ### Milestone 23: Operational Tools (Phase 12) ✅ COMPLETE
 
