@@ -58,6 +58,8 @@ pub const WalReceiver = struct {
     wal_file: ?std.fs.File,
     /// Apply buffer
     apply_buffer: std.ArrayList(u8),
+    /// Optional TCP stream for transport (phase 2+)
+    stream: ?std.net.Stream = null,
 
     pub fn init(allocator: Allocator, config: Config) !WalReceiver {
         return .{

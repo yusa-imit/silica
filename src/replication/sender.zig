@@ -63,6 +63,8 @@ pub const WalSender = struct {
     timeline_id: u32,
     /// Current WAL end position
     wal_end: LSN,
+    /// Optional TCP stream for transport (phase 2+)
+    stream: ?std.net.Stream = null,
 
     pub fn init(
         allocator: Allocator,
