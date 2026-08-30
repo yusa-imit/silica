@@ -102,6 +102,34 @@ pub const WalFrameHeader = struct {
     }
 };
 
+// ── LSN (Log Sequence Number) ─────────────────────────────────────────
+
+/// A replication-stable log sequence number. `checkpoint_seq` matches
+/// `WalHeader.checkpoint_seq` (the epoch); `frame_index` is the frame's
+/// ordinal position within that epoch, NOT a byte offset — checkpoint()
+/// truncates the file, so a bare byte offset is not globally monotonic
+/// across checkpoints.
+pub const Lsn = struct {
+    checkpoint_seq: u32,
+    frame_index: u32,
+
+    /// Total order: compares checkpoint_seq first, then frame_index.
+    pub fn order(a: Lsn, b: Lsn) std.math.Order {
+        if (a.checkpoint_seq != b.checkpoint_seq) {
+            return std.math.order(a.checkpoint_seq, b.checkpoint_seq);
+        }
+        return std.math.order(a.frame_index, b.frame_index);
+    }
+
+    pub fn lessThan(a: Lsn, b: Lsn) bool {
+        return a.order(b) == .lt;
+    }
+
+    pub fn eql(a: Lsn, b: Lsn) bool {
+        return a.checkpoint_seq == b.checkpoint_seq and a.frame_index == b.frame_index;
+    }
+};
+
 // ── WAL Manager ────────────────────────────────────────────────────────
 
 pub const Wal = struct {
@@ -300,6 +328,70 @@ pub const Wal = struct {
         }
 
         return false;
+    }
+
+    // ── Replication Read Path ─────────────────────────────────
+
+    /// Returns the LSN of the current committed write frontier —
+    /// (header.checkpoint_seq, committed_frame_count). This is what a
+    /// WalSender should treat as "everything up to here is safe to stream."
+    pub fn currentLsn(self: *const Wal) Lsn {
+        return .{ .checkpoint_seq = self.header.checkpoint_seq, .frame_index = self.committed_frame_count };
+    }
+
+    /// Converts a frame index (within the current checkpoint epoch) to an Lsn.
+    pub fn lsnAtFrame(self: *const Wal, frame_idx: u32) Lsn {
+        return .{ .checkpoint_seq = self.header.checkpoint_seq, .frame_index = frame_idx };
+    }
+
+    /// Reads whole committed WAL frames (header + page data, byte-identical
+    /// to what writeFrame wrote to disk) starting at start_lsn into buf,
+    /// without ever splitting a frame across the returned bytes. Only
+    /// committed frames are ever returned — pending/uncommitted frames are
+    /// never exposed via this API, even if total_frame_count is ahead of
+    /// committed_frame_count.
+    pub fn readRawFrames(self: *Wal, start_lsn: Lsn, buf: []u8) !struct {
+        bytes_read: usize,
+        next_lsn: Lsn,
+    } {
+        const frame_size = WAL_FRAME_HEADER_SIZE + self.page_size;
+        if (buf.len < frame_size) return error.BufferTooSmall;
+
+        if (start_lsn.checkpoint_seq < self.header.checkpoint_seq) {
+            // Requested epoch was already truncated away by a checkpoint.
+            return error.LsnFromEarlierEpoch;
+        }
+        if (start_lsn.checkpoint_seq > self.header.checkpoint_seq) {
+            return error.LsnFromFutureEpoch;
+        }
+
+        if (start_lsn.frame_index >= self.committed_frame_count) {
+            // Caller is already caught up — normal case, not an error.
+            return .{ .bytes_read = 0, .next_lsn = start_lsn };
+        }
+
+        const file = self.file orelse return .{ .bytes_read = 0, .next_lsn = start_lsn };
+
+        const max_frames_by_buf: u32 = @intCast(buf.len / frame_size);
+        const available_frames = self.committed_frame_count - start_lsn.frame_index;
+        const frames_to_read = @min(max_frames_by_buf, available_frames);
+
+        var bytes_read: usize = 0;
+        var frame_idx = start_lsn.frame_index;
+        var i: u32 = 0;
+        while (i < frames_to_read) : (i += 1) {
+            const offset = self.frameOffset(frame_idx);
+            const dest = buf[bytes_read..][0..frame_size];
+            const n = try file.preadAll(dest, offset);
+            if (n < frame_size) break; // truncated on disk — stop, don't return a partial frame
+            bytes_read += frame_size;
+            frame_idx += 1;
+        }
+
+        return .{
+            .bytes_read = bytes_read,
+            .next_lsn = .{ .checkpoint_seq = self.header.checkpoint_seq, .frame_index = frame_idx },
+        };
     }
 
     // ── Checkpoint ─────────────────────────────────────────────
@@ -1254,4 +1346,404 @@ test "Wal many frame writes in single commit" {
         const expected: u8 = @truncate(page_id);
         try testing.expectEqual(expected, buf[0]);
     }
+}
+
+// ── Lsn and readRawFrames Tests ────────────────────────────────
+
+test "Lsn ordering: same epoch, different frame indices" {
+    const lsn1 = Lsn{ .checkpoint_seq = 5, .frame_index = 10 };
+    const lsn2 = Lsn{ .checkpoint_seq = 5, .frame_index = 20 };
+
+    // lsn1 < lsn2
+    try testing.expect(lsn1.lessThan(lsn2));
+    try testing.expect(!lsn2.lessThan(lsn1));
+    try testing.expect(!lsn1.eql(lsn2));
+
+    // lsn1 == lsn1
+    try testing.expect(lsn1.eql(lsn1));
+    try testing.expect(!lsn1.lessThan(lsn1));
+
+    // Test order() returns correct std.math.Order
+    try testing.expectEqual(std.math.Order.lt, lsn1.order(lsn2));
+    try testing.expectEqual(std.math.Order.gt, lsn2.order(lsn1));
+    try testing.expectEqual(std.math.Order.eq, lsn1.order(lsn1));
+}
+
+test "Lsn ordering: higher epoch always orders after lower epoch, regardless of frame_index" {
+    const lsn_epoch1_high_frame = Lsn{ .checkpoint_seq = 1, .frame_index = 1000 };
+    const lsn_epoch2_low_frame = Lsn{ .checkpoint_seq = 2, .frame_index = 0 };
+
+    // Even though epoch1 has higher frame_index, epoch2 should order as greater
+    // (checkpoint_seq is the primary sort key)
+    try testing.expect(lsn_epoch1_high_frame.lessThan(lsn_epoch2_low_frame));
+    try testing.expect(!lsn_epoch2_low_frame.lessThan(lsn_epoch1_high_frame));
+    try testing.expectEqual(std.math.Order.lt, lsn_epoch1_high_frame.order(lsn_epoch2_low_frame));
+}
+
+test "currentLsn reflects committed frontier, ignores pending frames" {
+    const path = "test_lsn_current.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_lsn_current.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0xAA);
+
+    // Write 2 frames and commit
+    try wal.writeFrame(1, &page_data);
+    try wal.writeFrame(2, &page_data);
+    try wal.commit(2);
+
+    const lsn1 = wal.currentLsn();
+    try testing.expectEqual(@as(u32, 0), lsn1.checkpoint_seq); // initial epoch
+    try testing.expectEqual(@as(u32, 2), lsn1.frame_index);    // 2 committed frames
+
+    // Write a 3rd frame without committing
+    try wal.writeFrame(3, &page_data);
+    const lsn2 = wal.currentLsn();
+
+    // currentLsn should not advance (pending frame is not reflected)
+    try testing.expectEqual(lsn1.checkpoint_seq, lsn2.checkpoint_seq);
+    try testing.expectEqual(lsn1.frame_index, lsn2.frame_index);
+}
+
+test "lsnAtFrame returns LSN for given frame index in current epoch" {
+    const path = "test_lsn_at_frame.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_lsn_at_frame.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+
+    // Write and commit 3 frames
+    try wal.writeFrame(1, &page_data);
+    try wal.writeFrame(2, &page_data);
+    try wal.writeFrame(3, &page_data);
+    try wal.commit(3);
+
+    const epoch = wal.header.checkpoint_seq;
+
+    // lsnAtFrame should return (current_epoch, frame_index)
+    const lsn0 = wal.lsnAtFrame(0);
+    try testing.expectEqual(epoch, lsn0.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 0), lsn0.frame_index);
+
+    const lsn1 = wal.lsnAtFrame(1);
+    try testing.expectEqual(epoch, lsn1.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 1), lsn1.frame_index);
+
+    const lsn2 = wal.lsnAtFrame(2);
+    try testing.expectEqual(epoch, lsn2.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 2), lsn2.frame_index);
+}
+
+test "readRawFrames round-trip: read all committed frames with recognizable content" {
+    const path = "test_read_raw_frames_roundtrip.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_roundtrip.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Create 3 frames with distinct marker bytes
+    var page1: [512]u8 = undefined;
+    var page2: [512]u8 = undefined;
+    var page3: [512]u8 = undefined;
+    @memset(&page1, 0x11);
+    @memset(&page2, 0x22);
+    @memset(&page3, 0x33);
+
+    try wal.writeFrame(10, &page1);
+    try wal.writeFrame(20, &page2);
+    try wal.writeFrame(30, &page3);
+    try wal.commit(3);
+
+    // Allocate buffer for 3 frames (header + page data each)
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    const buf = try testing.allocator.alloc(u8, frame_size * 3);
+    defer testing.allocator.free(buf);
+
+    // Read all frames from the beginning
+    const result = try wal.readRawFrames(wal.lsnAtFrame(0), buf);
+
+    // Verify bytes_read is exactly 3 frames
+    const expected_bytes = frame_size * 3;
+    try testing.expectEqual(expected_bytes, result.bytes_read);
+
+    // Verify next_lsn equals currentLsn (caught up)
+    try testing.expect(result.next_lsn.eql(wal.currentLsn()));
+
+    // Decode and verify each frame's header and page content
+    var offset: usize = 0;
+
+    // Frame 0
+    const fh0 = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 10), fh0.page_id);
+    offset += WAL_FRAME_HEADER_SIZE;
+    const page_data0 = buf[offset..][0..512];
+    try testing.expectEqual(@as(u8, 0x11), page_data0[0]);
+    offset += 512;
+
+    // Frame 1
+    const fh1 = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 20), fh1.page_id);
+    offset += WAL_FRAME_HEADER_SIZE;
+    const page_data1 = buf[offset..][0..512];
+    try testing.expectEqual(@as(u8, 0x22), page_data1[0]);
+    offset += 512;
+
+    // Frame 2
+    const fh2 = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 30), fh2.page_id);
+    offset += WAL_FRAME_HEADER_SIZE;
+    const page_data2 = buf[offset..][0..512];
+    try testing.expectEqual(@as(u8, 0x33), page_data2[0]);
+}
+
+test "readRawFrames never splits frame across multiple calls" {
+    const path = "test_read_raw_frames_no_split.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_no_split.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+
+    // Write and commit 3 frames
+    try wal.writeFrame(1, &page_data);
+    try wal.writeFrame(2, &page_data);
+    try wal.writeFrame(3, &page_data);
+    try wal.commit(3);
+
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+
+    // Allocate buffer for 1.5 frames (should only return 1 frame, not split the 2nd)
+    const buf = try testing.allocator.alloc(u8, frame_size + frame_size / 2);
+    defer testing.allocator.free(buf);
+
+    const result = try wal.readRawFrames(wal.lsnAtFrame(0), buf);
+
+    // Should return exactly 1 frame's worth of bytes, not 1.5
+    try testing.expectEqual(frame_size, result.bytes_read);
+
+    // next_lsn should be at frame_index=1 (advanced by exactly 1)
+    try testing.expectEqual(@as(u32, 0), result.next_lsn.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 1), result.next_lsn.frame_index);
+}
+
+test "readRawFrames returns error.BufferTooSmall if buffer smaller than one frame" {
+    const path = "test_read_raw_frames_small_buf.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_small_buf.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(1);
+
+    // Buffer too small (4 bytes < one frame)
+    var tiny_buf: [4]u8 = undefined;
+    const result = wal.readRawFrames(wal.lsnAtFrame(0), &tiny_buf);
+
+    try testing.expectError(error.BufferTooSmall, result);
+}
+
+test "readRawFrames returns zero bytes when already caught up (no new data)" {
+    const path = "test_read_raw_frames_caught_up.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_caught_up.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+
+    try wal.writeFrame(1, &page_data);
+    try wal.commit(1);
+
+    // Get current LSN (at the committed frontier)
+    const current_lsn = wal.currentLsn();
+
+    // Allocate a reasonable buffer
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    const buf = try testing.allocator.alloc(u8, frame_size * 2);
+    defer testing.allocator.free(buf);
+
+    // Call readRawFrames at the current LSN (nothing new to read)
+    const result = try wal.readRawFrames(current_lsn, buf);
+
+    // Should return 0 bytes (normal case, not an error)
+    try testing.expectEqual(@as(usize, 0), result.bytes_read);
+
+    // next_lsn should equal the input start_lsn
+    try testing.expect(result.next_lsn.eql(current_lsn));
+}
+
+test "readRawFrames excludes pending (uncommitted) frames" {
+    const path = "test_read_raw_frames_no_pending.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_no_pending.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0xAA);
+
+    // Write a frame without committing
+    try wal.writeFrame(1, &page_data);
+
+    // Attempt to read from the beginning
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    const buf = try testing.allocator.alloc(u8, frame_size);
+    defer testing.allocator.free(buf);
+
+    const result = try wal.readRawFrames(wal.lsnAtFrame(0), buf);
+
+    // Should return 0 bytes (pending frame is never exposed)
+    try testing.expectEqual(@as(usize, 0), result.bytes_read);
+
+    // next_lsn should be unchanged
+    try testing.expect(result.next_lsn.eql(wal.lsnAtFrame(0)));
+}
+
+test "readRawFrames rejects LSN from earlier epoch after checkpoint" {
+    const path = "test_read_raw_frames_old_epoch.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_old_epoch.db-wal") catch {};
+
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+
+    // Create pager and WAL
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+    const pid = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write and commit a frame in epoch 0
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0);
+    const hdr = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 0 };
+    hdr.serialize(page_data[0..PAGE_HEADER_SIZE]);
+    try wal.writeFrame(pid, &page_data);
+    try wal.commit(pager.page_count);
+
+    // Record LSN from epoch 0
+    const old_epoch = wal.header.checkpoint_seq;
+    const old_lsn = wal.lsnAtFrame(0);
+
+    // Perform checkpoint (increments epoch and truncates WAL)
+    try wal.checkpoint(&pager);
+
+    // Verify epoch incremented
+    try testing.expect(wal.header.checkpoint_seq > old_epoch);
+
+    // Try to read from old epoch LSN — should fail
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    const buf = try testing.allocator.alloc(u8, frame_size);
+    defer testing.allocator.free(buf);
+
+    const result = wal.readRawFrames(old_lsn, buf);
+    try testing.expectError(error.LsnFromEarlierEpoch, result);
+
+    pager.deinit();
+}
+
+test "readRawFrames multi-call resumption: chain LSNs to stream all frames" {
+    const path = "test_read_raw_frames_resume.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_read_raw_frames_resume.db-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write 2 frames and commit
+    var page1: [512]u8 = undefined;
+    var page2: [512]u8 = undefined;
+    @memset(&page1, 0x11);
+    @memset(&page2, 0x22);
+
+    try wal.writeFrame(10, &page1);
+    try wal.writeFrame(20, &page2);
+    try wal.commit(2);
+
+    // Write 3 more frames and commit separately
+    var page3: [512]u8 = undefined;
+    var page4: [512]u8 = undefined;
+    var page5: [512]u8 = undefined;
+    @memset(&page3, 0x33);
+    @memset(&page4, 0x44);
+    @memset(&page5, 0x55);
+
+    try wal.writeFrame(30, &page3);
+    try wal.writeFrame(40, &page4);
+    try wal.writeFrame(50, &page5);
+    try wal.commit(5);
+
+    // Allocate buffer for 2 frames at a time
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    const buf = try testing.allocator.alloc(u8, frame_size * 2);
+    defer testing.allocator.free(buf);
+
+    var next_lsn = wal.lsnAtFrame(0);
+    var frames_seen: u32 = 0;
+
+    // First call: read up to 2 frames
+    var result = try wal.readRawFrames(next_lsn, buf);
+    try testing.expectEqual(frame_size * 2, result.bytes_read);
+    frames_seen += 2;
+    next_lsn = result.next_lsn;
+
+    // Verify first two frame page_ids
+    var offset: usize = 0;
+    var fh = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 10), fh.page_id);
+    offset += frame_size;
+    fh = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 20), fh.page_id);
+
+    // Second call: read remaining 3 frames (but buffer holds only 2, so only 2 returned)
+    result = try wal.readRawFrames(next_lsn, buf);
+    try testing.expectEqual(frame_size * 2, result.bytes_read);
+    frames_seen += 2;
+    next_lsn = result.next_lsn;
+
+    // Verify these are page_ids 30 and 40
+    offset = 0;
+    fh = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 30), fh.page_id);
+    offset += frame_size;
+    fh = WalFrameHeader.deserialize(buf[offset..][0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 40), fh.page_id);
+
+    // Third call: read last frame
+    result = try wal.readRawFrames(next_lsn, buf);
+    try testing.expectEqual(frame_size, result.bytes_read);
+    frames_seen += 1;
+    next_lsn = result.next_lsn;
+
+    // Verify last frame is page_id 50
+    fh = WalFrameHeader.deserialize(buf[0..WAL_FRAME_HEADER_SIZE]);
+    try testing.expectEqual(@as(u32, 50), fh.page_id);
+
+    // Fourth call: should be caught up
+    result = try wal.readRawFrames(next_lsn, buf);
+    try testing.expectEqual(@as(usize, 0), result.bytes_read);
+
+    // Total frames seen should be 5
+    try testing.expectEqual(@as(u32, 5), frames_seen);
 }
