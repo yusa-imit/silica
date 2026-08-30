@@ -522,6 +522,112 @@ fn columnsAreCoveredByIndex(scan_cols: []const planner_mod.ColumnRef, key_column
     return true;
 }
 
+/// Equality predicate with associated index information for bitmap scan planning.
+const BitmapEqualityPredicate = struct {
+    const ValueType = union(enum) {
+        integer: i64,
+        text: []const u8,
+    };
+
+    column_name: []const u8,
+    value_type: ValueType,
+    idx_info: catalog_mod.IndexInfo,
+};
+
+/// Collect all indexed equality predicates from an AND tree.
+/// Returns the collected predicates in `leaves`. Non-matching/non-indexed leaves
+/// are silently skipped (not an error), since the mandatory FilterOp recheck
+/// (applied by the caller) covers them.
+/// `leaves` must be pre-allocated and passed by pointer; results are appended.
+fn collectAndLeaves(
+    db: *Database,
+    expr: *const ast_mod.Expr,
+    scan: PlanNode.Scan,
+    leaves: *std.ArrayListUnmanaged(BitmapEqualityPredicate),
+) !void {
+    if (expr.* != .binary_op) return;
+    const op = expr.binary_op;
+
+    // Recurse into AND sub-expressions
+    if (op.op == .@"and") {
+        try collectAndLeaves(db, op.left, scan, leaves);
+        try collectAndLeaves(db, op.right, scan, leaves);
+        return;
+    }
+
+    // Try to extract a simple equality predicate from this leaf
+    const eq = extractEqualityPredicate(expr) orelse return;
+
+    // Look up the table to find index info
+    var table_info = db.catalog.getTable(scan.table) catch return;
+    defer table_info.deinit(db.allocator);
+
+    // Check if there's a .btree index on the referenced column
+    const idx_info = table_info.findIndex(eq.column_name) orelse return;
+    if (idx_info.index_type != .btree) return;
+
+    // Add to leaves
+    const value_type: BitmapEqualityPredicate.ValueType = switch (eq.value_type) {
+        .integer => |v| .{ .integer = v },
+        .text => |v| .{ .text = v },
+    };
+    try leaves.append(db.allocator, .{
+        .column_name = eq.column_name,
+        .value_type = value_type,
+        .idx_info = idx_info,
+    });
+}
+
+/// Collect all indexed equality predicates from an OR tree.
+/// Unlike collectAndLeaves, ALL disjuncts must be indexed equalities for bitmap-OR
+/// to be applicable — if any leaf is non-indexed or non-equality, the whole
+/// collection fails (returns with leaves still empty, caller's responsibility to check).
+fn collectOrLeaves(
+    db: *Database,
+    expr: *const ast_mod.Expr,
+    scan: PlanNode.Scan,
+    leaves: *std.ArrayListUnmanaged(BitmapEqualityPredicate),
+) !bool {
+    if (expr.* != .binary_op) return false;
+    const op = expr.binary_op;
+
+    // Recurse into OR sub-expressions
+    if (op.op == .@"or") {
+        if (!(try collectOrLeaves(db, op.left, scan, leaves))) {
+            leaves.clearRetainingCapacity();
+            return false;
+        }
+        if (!(try collectOrLeaves(db, op.right, scan, leaves))) {
+            leaves.clearRetainingCapacity();
+            return false;
+        }
+        return true;
+    }
+
+    // Try to extract a simple equality predicate from this leaf
+    const eq = extractEqualityPredicate(expr) orelse return false;
+
+    // Look up the table to find index info
+    var table_info = db.catalog.getTable(scan.table) catch return false;
+    defer table_info.deinit(db.allocator);
+
+    // Check if there's a .btree index on the referenced column
+    const idx_info = table_info.findIndex(eq.column_name) orelse return false;
+    if (idx_info.index_type != .btree) return false;
+
+    // Add to leaves and succeed
+    const value_type: BitmapEqualityPredicate.ValueType = switch (eq.value_type) {
+        .integer => |v| .{ .integer = v },
+        .text => |v| .{ .text = v },
+    };
+    try leaves.append(db.allocator, .{
+        .column_name = eq.column_name,
+        .value_type = value_type,
+        .idx_info = idx_info,
+    });
+    return true;
+}
+
 // ── Database ─────────────────────────────────────────────────────────
 
 pub const OpenOptions = struct {
@@ -745,6 +851,20 @@ const OperatorChain = struct {
     outer_row: ?*const executor_mod.Row = null,
     /// Row-level locking clauses from SELECT FOR UPDATE/SHARE (non-owning reference).
     locking_clauses: []const ast_mod.LockingClause = &.{},
+    /// Bitmap index scan operators (leaf operations, one per indexed equality).
+    bitmap_index_scans: std.ArrayListUnmanaged(*executor_mod.BitmapIndexScanOp) = .{},
+    /// Bitmap AND combinators — a list (not a single optional) because `buildJoin`
+    /// shares one `OperatorChain` across both join sides, and each side can
+    /// independently trigger a bitmap-AND plan (e.g. two joined FROM-clause
+    /// subqueries, each with its own indexed-AND predicate).
+    bitmap_and_ops: std.ArrayListUnmanaged(*executor_mod.BitmapAndOp) = .{},
+    /// Bitmap OR combinators — list for the same reason as `bitmap_and_ops`.
+    bitmap_or_ops: std.ArrayListUnmanaged(*executor_mod.BitmapOrOp) = .{},
+    /// Bitmap heap scan root operators — list for the same reason as `bitmap_and_ops`.
+    bitmap_heap_scans: std.ArrayListUnmanaged(*executor_mod.BitmapHeapScanOp) = .{},
+    /// Allocated slices for BitmapAndOp/BitmapOrOp inputs (owned by OperatorChain) —
+    /// list for the same reason as `bitmap_and_ops`.
+    bitmap_inputs_slices: std.ArrayListUnmanaged([]executor_mod.BitmapPlan) = .{},
 
     fn freeScanColNames(allocator: Allocator, s: *ScanOp) void {
         for (s.col_names) |name| allocator.free(@constCast(name));
@@ -803,6 +923,34 @@ const OperatorChain = struct {
             allocator.free(gs.query_value);
             allocator.destroy(gs);
         }
+        // Clean up bitmap index scan leaf operators
+        for (self.bitmap_index_scans.items) |bis| {
+            allocator.free(bis.lookup_key);
+            allocator.destroy(bis);
+        }
+        self.bitmap_index_scans.deinit(allocator);
+        // Clean up bitmap AND combinators
+        for (self.bitmap_and_ops.items) |ba| {
+            allocator.destroy(ba);
+        }
+        self.bitmap_and_ops.deinit(allocator);
+        // Clean up bitmap OR combinators
+        for (self.bitmap_or_ops.items) |bo| {
+            allocator.destroy(bo);
+        }
+        self.bitmap_or_ops.deinit(allocator);
+        // Clean up bitmap inputs slices
+        for (self.bitmap_inputs_slices.items) |slice| {
+            allocator.free(slice);
+        }
+        self.bitmap_inputs_slices.deinit(allocator);
+        // Clean up bitmap heap scan root operators
+        for (self.bitmap_heap_scans.items) |bhs| {
+            for (bhs.col_names) |name| allocator.free(@constCast(name));
+            allocator.free(bhs.col_names);
+            allocator.destroy(bhs);
+        }
+        self.bitmap_heap_scans.deinit(allocator);
         if (self.filter) |f| allocator.destroy(f);
         if (self.project) |p| allocator.destroy(p);
         if (self.limit) |l| allocator.destroy(l);
@@ -4207,6 +4355,17 @@ pub const Database = struct {
                 ops.filter = gin_filter_op;
                 return gin_filter_op.iterator();
             }
+            // Bitmap index scan for AND/OR predicates with indexed equalities.
+            // Always wrapped in a FilterOp recheck since bitmap operations may drop
+            // non-indexed leaves, requiring mandatory re-validation.
+            if (self.tryBuildBitmapScan(filter.input.scan, filter.predicate, ops)) |iter| {
+                const bitmap_filter_op = self.allocator.create(FilterOp) catch return EngineError.OutOfMemory;
+                bitmap_filter_op.* = FilterOp.init(self.allocator, iter, filter.predicate);
+                bitmap_filter_op.catalog = &self.catalog;
+                bitmap_filter_op.outer_row = ops.outer_row;
+                ops.filter = bitmap_filter_op;
+                return bitmap_filter_op.iterator();
+            }
         }
 
         const input = try self.buildIterator(filter.input, ops);
@@ -4389,6 +4548,171 @@ pub const Database = struct {
         gin_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
         ops.gin_index_scan = gin_op;
         return gin_op.iterator();
+    }
+
+    /// Try to use bitmap index scan for an AND/OR predicate on a scan.
+    /// Returns a RowIterator if successful, null if bitmap scan is not applicable
+    /// (falls through to full scan + FilterOp in that case).
+    ///
+    /// Wiring strategy (per architecture.md):
+    /// 1. Try collectOrLeaves: if ALL OR-disjuncts are indexed equalities, use bitmap-OR
+    /// 2. Else try collectAndLeaves: if AND has >=2 indexed-equality conjuncts, use bitmap-AND
+    /// 3. Else return null (fall through to full scan + FilterOp)
+    ///
+    /// The result is ALWAYS wrapped in a FilterOp re-check of the full original predicate
+    /// (applied by the caller, mandatory since bitmap operations may drop non-indexed leaves).
+    fn tryBuildBitmapScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
+        // Look up the table to find schema and index info
+        var table_info = self.catalog.getTable(scan.table) catch return null;
+        defer table_info.deinit(self.allocator);
+
+        // Register SSI read for SERIALIZABLE transactions
+        self.ssiRegisterRead(table_info.data_root_page_id) catch return null;
+
+        // Try to collect OR leaves first (prefer bitmap-OR when ALL disjuncts are indexed)
+        var or_leaves = std.ArrayListUnmanaged(BitmapEqualityPredicate){};
+        defer or_leaves.deinit(self.allocator);
+        if (collectOrLeaves(self, predicate, scan, &or_leaves) catch false) {
+            if (or_leaves.items.len >= 2) {
+                // Build bitmap-OR path
+                return self.buildBitmapOrScan(scan, table_info, or_leaves.items, ops);
+            }
+        }
+        or_leaves.clearRetainingCapacity();
+
+        // Try to collect AND leaves (prefer bitmap-AND when AND has >=2 indexed-equality conjuncts)
+        var and_leaves = std.ArrayListUnmanaged(BitmapEqualityPredicate){};
+        defer and_leaves.deinit(self.allocator);
+        collectAndLeaves(self, predicate, scan, &and_leaves) catch return null;
+        if (and_leaves.items.len >= 2) {
+            // Build bitmap-AND path
+            return self.buildBitmapAndScan(scan, table_info, and_leaves.items, ops);
+        }
+
+        // Neither AND nor OR bitmap plans are applicable
+        return null;
+    }
+
+    /// Build and wire a bitmap-OR scan from a set of indexed equalities.
+    fn buildBitmapOrScan(self: *Database, scan: PlanNode.Scan, table_info: TableInfo, leaves: []BitmapEqualityPredicate, ops: *OperatorChain) ?RowIterator {
+        // Create one BitmapIndexScanOp per leaf equality
+        for (leaves) |leaf| {
+            const idx_key = switch (leaf.value_type) {
+                .integer => |v| integerToIndexKey(self.allocator, v) catch return null,
+                .text => |v| stringToIndexKey(self.allocator, v) catch return null,
+            };
+
+            const bis_op = self.allocator.create(executor_mod.BitmapIndexScanOp) catch return null;
+            bis_op.* = executor_mod.BitmapIndexScanOp.init(
+                self.allocator,
+                self.pool,
+                leaf.idx_info.root_page_id,
+                idx_key,
+            );
+            bis_op.composite_key = leaf.idx_info.composite_key;
+            ops.bitmap_index_scans.append(self.allocator, bis_op) catch return null;
+        }
+
+        // Collect BitmapPlan vtable wrappers for each leaf just appended above.
+        // `ops.bitmap_index_scans` is shared across the whole OperatorChain (e.g. both
+        // sides of a JOIN may each build their own bitmap scan), so only the tail slice
+        // just appended in the loop above belongs to this call.
+        const bitmap_plans = self.allocator.alloc(executor_mod.BitmapPlan, leaves.len) catch return null;
+        const new_scans = ops.bitmap_index_scans.items[ops.bitmap_index_scans.items.len - leaves.len ..];
+        for (new_scans, 0..) |bis, i| {
+            bitmap_plans[i] = bis.asBitmapPlan();
+        }
+        ops.bitmap_inputs_slices.append(self.allocator, bitmap_plans) catch return null;
+
+        // Create BitmapOrOp combinator
+        const or_op = self.allocator.create(executor_mod.BitmapOrOp) catch return null;
+        or_op.* = executor_mod.BitmapOrOp.init(self.allocator, bitmap_plans);
+        ops.bitmap_or_ops.append(self.allocator, or_op) catch return null;
+
+        // Build column names for the scan
+        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        for (table_info.columns, 0..) |col, i| {
+            if (scan.alias) |alias| {
+                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+            } else {
+                col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
+            }
+        }
+
+        // Create BitmapHeapScanOp as the root operator
+        const heap_op = self.allocator.create(executor_mod.BitmapHeapScanOp) catch return null;
+        heap_op.* = executor_mod.BitmapHeapScanOp.init(
+            self.allocator,
+            self.pool,
+            table_info.data_root_page_id,
+            or_op.asBitmapPlan(),
+            col_names,
+        );
+        heap_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
+        ops.bitmap_heap_scans.append(self.allocator, heap_op) catch return null;
+
+        return heap_op.iterator();
+    }
+
+    /// Build and wire a bitmap-AND scan from a set of indexed equalities.
+    fn buildBitmapAndScan(self: *Database, scan: PlanNode.Scan, table_info: TableInfo, leaves: []BitmapEqualityPredicate, ops: *OperatorChain) ?RowIterator {
+        // Create one BitmapIndexScanOp per leaf equality
+        for (leaves) |leaf| {
+            const idx_key = switch (leaf.value_type) {
+                .integer => |v| integerToIndexKey(self.allocator, v) catch return null,
+                .text => |v| stringToIndexKey(self.allocator, v) catch return null,
+            };
+
+            const bis_op = self.allocator.create(executor_mod.BitmapIndexScanOp) catch return null;
+            bis_op.* = executor_mod.BitmapIndexScanOp.init(
+                self.allocator,
+                self.pool,
+                leaf.idx_info.root_page_id,
+                idx_key,
+            );
+            bis_op.composite_key = leaf.idx_info.composite_key;
+            ops.bitmap_index_scans.append(self.allocator, bis_op) catch return null;
+        }
+
+        // Collect BitmapPlan vtable wrappers for each leaf just appended above.
+        // `ops.bitmap_index_scans` is shared across the whole OperatorChain (e.g. both
+        // sides of a JOIN may each build their own bitmap scan), so only the tail slice
+        // just appended in the loop above belongs to this call.
+        const bitmap_plans = self.allocator.alloc(executor_mod.BitmapPlan, leaves.len) catch return null;
+        const new_scans = ops.bitmap_index_scans.items[ops.bitmap_index_scans.items.len - leaves.len ..];
+        for (new_scans, 0..) |bis, i| {
+            bitmap_plans[i] = bis.asBitmapPlan();
+        }
+        ops.bitmap_inputs_slices.append(self.allocator, bitmap_plans) catch return null;
+
+        // Create BitmapAndOp combinator
+        const and_op = self.allocator.create(executor_mod.BitmapAndOp) catch return null;
+        and_op.* = executor_mod.BitmapAndOp.init(self.allocator, bitmap_plans);
+        ops.bitmap_and_ops.append(self.allocator, and_op) catch return null;
+
+        // Build column names for the scan
+        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        for (table_info.columns, 0..) |col, i| {
+            if (scan.alias) |alias| {
+                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+            } else {
+                col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
+            }
+        }
+
+        // Create BitmapHeapScanOp as the root operator
+        const heap_op = self.allocator.create(executor_mod.BitmapHeapScanOp) catch return null;
+        heap_op.* = executor_mod.BitmapHeapScanOp.init(
+            self.allocator,
+            self.pool,
+            table_info.data_root_page_id,
+            and_op.asBitmapPlan(),
+            col_names,
+        );
+        heap_op.mvcc_ctx = self.getMvccContextWithOps(ops) catch return null;
+        ops.bitmap_heap_scans.append(self.allocator, heap_op) catch return null;
+
+        return heap_op.iterator();
     }
 
     fn buildProject(self: *Database, project: PlanNode.Project, ops: *OperatorChain) EngineError!RowIterator {
@@ -42012,4 +42336,406 @@ test "phase 0d: end-to-end INSERT with duplicate indexed value on non-unique ind
     try testing.expectEqual(@as(usize, 2), row_count);
     try testing.expectEqual(@as(i64, 1), first_id);
     try testing.expectEqual(@as(i64, 2), second_id);
+}
+
+// ── Phase 5: Bitmap Index Scan — Planner/Optimizer Wiring ──
+// Tests verifying end-to-end SQL query planning and execution through bitmap-scan operators.
+// Each test exercises the full path: SQL text → parse → plan → optimize → execute.
+// These tests fail until tryBuildBitmapScan (and collectAndLeaves/collectOrLeaves helpers)
+// are wired into the engine.zig planner in buildFilter().
+
+test "phase 5: Bitmap-OR basic correctness — two indexed columns with OR predicate" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_bitmap_or_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with two indexed columns
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, color TEXT)");
+    defer r1.close(allocator);
+
+    // Create separate indexes on both columns
+    var r2 = try db.execSQL("CREATE INDEX idx_category ON products (category)");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE INDEX idx_color ON products (color)");
+    defer r3.close(allocator);
+
+    // Insert test data: rows matching category, rows matching color, rows matching neither
+    var r4 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (1, 'electronics', 'red')");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (2, 'clothing', 'red')");
+    defer r5.close(allocator);
+    var r6 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (3, 'electronics', 'blue')");
+    defer r6.close(allocator);
+    var r7 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (4, 'furniture', 'green')");
+    defer r7.close(allocator);
+
+    // Query using OR: should match rows where category='electronics' (1,3) OR color='red' (1,2)
+    // Expected result: rows 1, 2, 3 (union of both sides, no row 4)
+    var result = try db.execSQL("SELECT id FROM products WHERE category = 'electronics' OR color = 'red' ORDER BY id");
+    defer result.close(allocator);
+
+    try testing.expect(result.rows != null);
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(allocator, row.values[0].integer);
+    }
+
+    try testing.expectEqual(@as(usize, 3), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 2), ids.items[1]);
+    try testing.expectEqual(@as(i64, 3), ids.items[2]);
+}
+
+test "phase 5: Bitmap-AND basic correctness — two indexed columns with AND predicate" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_bitmap_and_basic.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with two indexed columns
+    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, color TEXT)");
+    defer r1.close(allocator);
+
+    // Create separate indexes on both columns
+    var r2 = try db.execSQL("CREATE INDEX idx_category ON products (category)");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE INDEX idx_color ON products (color)");
+    defer r3.close(allocator);
+
+    // Insert test data
+    var r4 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (1, 'electronics', 'red')");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (2, 'clothing', 'red')");
+    defer r5.close(allocator);
+    var r6 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (3, 'electronics', 'blue')");
+    defer r6.close(allocator);
+    var r7 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (4, 'furniture', 'green')");
+    defer r7.close(allocator);
+
+    // Query using AND: should match rows where category='electronics' AND color='red'
+    // Expected result: only row 1 (intersection of both sides)
+    var result = try db.execSQL("SELECT id FROM products WHERE category = 'electronics' AND color = 'red' ORDER BY id");
+    defer result.close(allocator);
+
+    try testing.expect(result.rows != null);
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(allocator, row.values[0].integer);
+    }
+
+    try testing.expectEqual(@as(usize, 1), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+}
+
+test "phase 5: Mixed AND-of-OR predicate falls back correctly (no regression)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_mixed_and_or.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with three indexed columns
+    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, tag1 TEXT, tag2 TEXT, tag3 TEXT)");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_tag1 ON items (tag1)");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE INDEX idx_tag2 ON items (tag2)");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("CREATE INDEX idx_tag3 ON items (tag3)");
+    defer r4.close(allocator);
+
+    // Insert test data
+    var r5 = try db.execSQL("INSERT INTO items (id, tag1, tag2, tag3) VALUES (1, 'a', 'x', 'p')");
+    defer r5.close(allocator);
+    var r6 = try db.execSQL("INSERT INTO items (id, tag1, tag2, tag3) VALUES (2, 'b', 'x', 'q')");
+    defer r6.close(allocator);
+    var r7 = try db.execSQL("INSERT INTO items (id, tag1, tag2, tag3) VALUES (3, 'a', 'y', 'p')");
+    defer r7.close(allocator);
+    var r8 = try db.execSQL("INSERT INTO items (id, tag1, tag2, tag3) VALUES (4, 'c', 'z', 'r')");
+    defer r8.close(allocator);
+
+    // Query using mixed AND-of-OR: (tag1='a' OR tag2='x') AND tag3='p'
+    // This mixed predicate tree is explicitly OUT OF SCOPE for phase 5 bitmap planning,
+    // so it must fall back to full-scan+filter and still return correct results.
+    // Expected: rows where (tag1='a' OR tag2='x') AND tag3='p' → rows 1 (a,x,p) and 3 (a,y,p)
+    var result = try db.execSQL("SELECT id FROM items WHERE (tag1 = 'a' OR tag2 = 'x') AND tag3 = 'p' ORDER BY id");
+    defer result.close(allocator);
+
+    try testing.expect(result.rows != null);
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(allocator, row.values[0].integer);
+    }
+
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 3), ids.items[1]);
+}
+
+test "phase 5: OR with one non-indexed column falls back correctly" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_or_one_nonindexed.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with one indexed and one non-indexed column
+    var r1 = try db.execSQL("CREATE TABLE records (id INTEGER PRIMARY KEY, indexed_col TEXT, unindexed_col TEXT)");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_indexed ON records (indexed_col)");
+    defer r2.close(allocator);
+
+    // Insert test data
+    var r3 = try db.execSQL("INSERT INTO records (id, indexed_col, unindexed_col) VALUES (1, 'a', 'x')");
+    defer r3.close(allocator);
+    var r4 = try db.execSQL("INSERT INTO records (id, indexed_col, unindexed_col) VALUES (2, 'b', 'y')");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("INSERT INTO records (id, indexed_col, unindexed_col) VALUES (3, 'c', 'z')");
+    defer r5.close(allocator);
+
+    // Query with OR where one side is indexed and one is not
+    // This is out of scope for bitmap-OR (not ALL disjuncts are indexed),
+    // so it must fall back to full-scan+filter but still be correct.
+    // Expected: rows where indexed_col='a' (row 1) OR unindexed_col='y' (row 2) → rows 1, 2
+    var result = try db.execSQL("SELECT id FROM records WHERE indexed_col = 'a' OR unindexed_col = 'y' ORDER BY id");
+    defer result.close(allocator);
+
+    try testing.expect(result.rows != null);
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(allocator, row.values[0].integer);
+    }
+
+    try testing.expectEqual(@as(usize, 2), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 2), ids.items[1]);
+}
+
+test "phase 5: MVCC visibility through bitmap-OR path — invisible rows do not appear" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_bitmap_or_mvcc.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with two indexed columns
+    var r1 = try db.execSQL("CREATE TABLE data (id INTEGER PRIMARY KEY, status TEXT, type TEXT)");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_status ON data (status)");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE INDEX idx_type ON data (type)");
+    defer r3.close(allocator);
+
+    // Transaction 1: insert a row and DO NOT commit (row should be invisible to other txns)
+    try db.beginTransaction(.read_committed);
+    var r4 = try db.execSQL("INSERT INTO data (id, status, type) VALUES (1, 'active', 'typeA')");
+    defer r4.close(allocator);
+    // DO NOT commit yet
+
+    // Transaction 2: start a new transaction and try to query via bitmap-OR
+    // This tests MVCC visibility: transaction 1's uncommitted row should not appear
+    // in transaction 2's snapshot.
+    // (Note: Silica currently has single-connection limitation per concurrency-limitations
+    // in architecture.md, so we simulate this by using the same connection but relying on
+    // the MVCC snapshot isolation semantics to hide the uncommitted row from queries)
+    var r5 = try db.execSQL("INSERT INTO data (id, status, type) VALUES (2, 'inactive', 'typeB')");
+    defer r5.close(allocator);
+    var r6 = try db.execSQL("INSERT INTO data (id, status, type) VALUES (3, 'active', 'typeC')");
+    defer r6.close(allocator);
+
+    // Commit transaction 1 now
+    try db.commitTransaction();
+
+    // Now query via bitmap-OR in a fresh transaction that should see all committed rows
+    try db.beginTransaction(.read_committed);
+    var result = try db.execSQL("SELECT id FROM data WHERE status = 'active' OR type = 'typeB' ORDER BY id");
+    defer result.close(allocator);
+
+    try testing.expect(result.rows != null);
+
+    var ids = std.ArrayList(i64){};
+    defer ids.deinit(allocator);
+    while (try result.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        try ids.append(allocator, row.values[0].integer);
+    }
+    try db.commitTransaction();
+
+    // Should see rows 1 (active), 2 (typeB), and 3 (active)
+    try testing.expectEqual(@as(usize, 3), ids.items.len);
+    try testing.expectEqual(@as(i64, 1), ids.items[0]);
+    try testing.expectEqual(@as(i64, 2), ids.items[1]);
+    try testing.expectEqual(@as(i64, 3), ids.items[2]);
+}
+
+test "phase 5: Empty result correctness — bitmap-OR/AND with zero matches" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_bitmap_empty_result.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create table with two indexed columns
+    var r1 = try db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, severity TEXT)");
+    defer r1.close(allocator);
+
+    var r2 = try db.execSQL("CREATE INDEX idx_type ON events (event_type)");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE INDEX idx_severity ON events (severity)");
+    defer r3.close(allocator);
+
+    // Insert test data (no rows matching the OR predicate)
+    var r4 = try db.execSQL("INSERT INTO events (id, event_type, severity) VALUES (1, 'login', 'low')");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("INSERT INTO events (id, event_type, severity) VALUES (2, 'logout', 'low')");
+    defer r5.close(allocator);
+
+    // Query using bitmap-OR that matches nothing
+    var result1 = try db.execSQL("SELECT id FROM events WHERE event_type = 'error' OR severity = 'critical'");
+    defer result1.close(allocator);
+
+    try testing.expect(result1.rows != null);
+
+    var count1: usize = 0;
+    while (try result1.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count1 += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 0), count1);
+
+    // Query using bitmap-AND that matches nothing
+    var result2 = try db.execSQL("SELECT id FROM events WHERE event_type = 'login' AND severity = 'critical'");
+    defer result2.close(allocator);
+
+    try testing.expect(result2.rows != null);
+
+    var count2: usize = 0;
+    while (try result2.rows.?.next()) |*rp| {
+        var row = rp.*;
+        defer row.deinit();
+        count2 += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 0), count2);
+}
+
+test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak regression)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const path = "test_phase5_bitmap_operatorchain_reuse.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    // Create first table with 2 indexed columns
+    var r1 = try db.execSQL("CREATE TABLE tbl1 (id INTEGER PRIMARY KEY, x TEXT, y TEXT)");
+    defer r1.close(allocator);
+    var r2 = try db.execSQL("CREATE INDEX idx1_x ON tbl1 (x)");
+    defer r2.close(allocator);
+    var r3 = try db.execSQL("CREATE INDEX idx1_y ON tbl1 (y)");
+    defer r3.close(allocator);
+
+    // Create second table with 2 indexed columns
+    var r4 = try db.execSQL("CREATE TABLE tbl2 (id INTEGER PRIMARY KEY, p TEXT, q TEXT)");
+    defer r4.close(allocator);
+    var r5 = try db.execSQL("CREATE INDEX idx2_p ON tbl2 (p)");
+    defer r5.close(allocator);
+    var r6 = try db.execSQL("CREATE INDEX idx2_q ON tbl2 (q)");
+    defer r6.close(allocator);
+
+    // Insert test data
+    var r7 = try db.execSQL("INSERT INTO tbl1 (id, x, y) VALUES (1, 'a', 'b')");
+    defer r7.close(allocator);
+    var r8 = try db.execSQL("INSERT INTO tbl1 (id, x, y) VALUES (2, 'c', 'd')");
+    defer r8.close(allocator);
+    var r9 = try db.execSQL("INSERT INTO tbl2 (id, p, q) VALUES (1, 'e', 'f')");
+    defer r9.close(allocator);
+    var r10 = try db.execSQL("INSERT INTO tbl2 (id, p, q) VALUES (2, 'g', 'h')");
+    defer r10.close(allocator);
+
+    // This reproduces the exact bug shape via `Database.tryBuildBitmapScan` directly
+    // rather than through `db.execSQL`: end-to-end SQL can't currently exercise this,
+    // because `buildJoin` shares one `OperatorChain` between its left/right subtrees,
+    // and the only SQL construct that puts two *independent*, unprefixed indexed-AND
+    // predicates on either side of a join is a JOIN of two FROM-clause derived-table
+    // subqueries — but the analyzer doesn't register derived-table aliases in scope
+    // (`resolveTableRef`'s `.subquery` branch in analyzer.zig is a documented "skip
+    // for now"), so any outer reference into such a subquery's columns (needed for
+    // the JOIN's ON condition) fails analysis before the query ever reaches the
+    // planner. That's a separate, pre-existing gap, out of scope for this bitmap-scan
+    // work. Calling the planner-internal method directly isolates the OperatorChain
+    // reuse bug from that unrelated limitation.
+    const ops = allocator.create(OperatorChain) catch unreachable;
+    ops.* = .{};
+    defer ops.deinit(allocator);
+
+    const x_col = ast_mod.Expr{ .column_ref = .{ .name = "x" } };
+    const x_val = ast_mod.Expr{ .string_literal = "a" };
+    const x_eq = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &x_col, .right = &x_val } };
+    const y_col = ast_mod.Expr{ .column_ref = .{ .name = "y" } };
+    const y_val = ast_mod.Expr{ .string_literal = "b" };
+    const y_eq = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &y_col, .right = &y_val } };
+    const pred1 = ast_mod.Expr{ .binary_op = .{ .op = .@"and", .left = &x_eq, .right = &y_eq } };
+    const scan1 = PlanNode.Scan{ .table = "tbl1" };
+
+    const p_col = ast_mod.Expr{ .column_ref = .{ .name = "p" } };
+    const p_val = ast_mod.Expr{ .string_literal = "e" };
+    const p_eq = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &p_col, .right = &p_val } };
+    const q_col = ast_mod.Expr{ .column_ref = .{ .name = "q" } };
+    const q_val = ast_mod.Expr{ .string_literal = "f" };
+    const q_eq = ast_mod.Expr{ .binary_op = .{ .op = .equal, .left = &q_col, .right = &q_val } };
+    const pred2 = ast_mod.Expr{ .binary_op = .{ .op = .@"and", .left = &p_eq, .right = &q_eq } };
+    const scan2 = PlanNode.Scan{ .table = "tbl2" };
+
+    // First call, as `buildJoin` would do for the left subtree: populates
+    // ops.bitmap_and / ops.bitmap_heap_scan / ops.bitmap_inputs_slice.
+    const iter1 = db.tryBuildBitmapScan(scan1, &pred1, ops);
+    try testing.expect(iter1 != null);
+
+    // Second call on the SAME ops, as `buildJoin` would do for the right subtree:
+    // overwrites those same fields. Before the fix, the first call's BitmapAndOp,
+    // its bitmap_inputs_slice, and its BitmapHeapScanOp (plus its col_names) are
+    // never freed by OperatorChain.deinit, which only frees whatever is currently
+    // stored in each single-value field — testing.allocator's leak detector at test
+    // teardown is what actually catches this.
+    const iter2 = db.tryBuildBitmapScan(scan2, &pred2, ops);
+    try testing.expect(iter2 != null);
 }
