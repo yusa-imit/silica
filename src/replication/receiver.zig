@@ -9,6 +9,8 @@ const protocol = @import("protocol.zig");
 const LSN = protocol.LSN;
 const BackendMessage = protocol.BackendMessage;
 const FrontendMessage = protocol.FrontendMessage;
+const wal_mod = @import("../tx/wal.zig");
+const page_mod = @import("../storage/page.zig");
 
 /// WAL Receiver errors
 pub const Error = error{
@@ -60,6 +62,10 @@ pub const WalReceiver = struct {
     apply_buffer: std.ArrayList(u8),
     /// Optional TCP stream for transport (phase 2+)
     stream: ?std.net.Stream = null,
+    /// Optional local WAL for phase 4+ real frame application
+    local_wal: ?*wal_mod.Wal = null,
+    /// Optional local Pager for phase 4+ real frame application
+    local_pager: ?*page_mod.Pager = null,
 
     pub fn init(allocator: Allocator, config: Config) !WalReceiver {
         return .{
@@ -113,8 +119,24 @@ pub const WalReceiver = struct {
         try self.apply_buffer.appendSlice(self.allocator, data);
         self.write_lsn = wal_end;
 
-        // TODO: Actual WAL file writing and application
-        // For now, just update positions
+        // Phase 4+: If local_wal is set, apply frames to local storage
+        if (self.local_wal != null) {
+            const local_wal = self.local_wal.?;
+            const frame_size = wal_mod.WAL_FRAME_HEADER_SIZE + local_wal.page_size;
+
+            // Verify data is whole frames
+            if (data.len % frame_size != 0) {
+                return Error.InvalidWalData;
+            }
+
+            // Parse and apply each frame
+            var offset: usize = 0;
+            while (offset < data.len) : (offset += frame_size) {
+                const frame_bytes = data[offset..][0..frame_size];
+                try local_wal.appendRawFrame(frame_bytes);
+            }
+        }
+
         try self.flushWal();
         try self.applyWal();
     }
@@ -137,7 +159,12 @@ pub const WalReceiver = struct {
 
     /// Apply WAL data to database
     fn applyWal(self: *WalReceiver) !void {
-        // TODO: Actual WAL application
+        // Phase 4+: When local_wal and local_pager are set, checkpoint after applying frames
+        // to ensure committed changes are written to the main database file
+        if (self.local_wal != null and self.local_pager != null) {
+            try self.local_wal.?.checkpoint(self.local_pager.?);
+        }
+
         self.apply_lsn = self.flush_lsn;
         self.apply_buffer.clearRetainingCapacity();
     }
@@ -600,4 +627,178 @@ test "WalReceiver — process WAL data updates all LSN fields" {
     try std.testing.expectEqual(@as(LSN, 1000), receiver.write_lsn);
     try std.testing.expectEqual(@as(LSN, 1000), receiver.flush_lsn);
     try std.testing.expectEqual(@as(LSN, 1000), receiver.apply_lsn);
+}
+
+// Phase 4: Real WAL Application Tests
+// ============================================================================
+
+test "Phase 4: receiver applies real WAL frames to local Wal and Pager" {
+    const allocator = std.testing.allocator;
+    const src_path = "test_receiver_phase4_src.db";
+    defer std.fs.cwd().deleteFile(src_path) catch {};
+    defer std.fs.cwd().deleteFile(src_path ++ "-wal") catch {};
+
+    const dst_path = "test_receiver_phase4_dst.db";
+    defer std.fs.cwd().deleteFile(dst_path) catch {};
+    defer std.fs.cwd().deleteFile(dst_path ++ "-wal") catch {};
+
+    // Source side: create Wal, write pages, commit
+    var src_wal = try wal_mod.Wal.init(allocator, src_path, 4096);
+    defer src_wal.deinit();
+
+    var page_data1: [4096]u8 = undefined;
+    @memset(&page_data1, 0x11);
+    page_data1[0] = 0x03; // PageType.leaf
+    try src_wal.writeFrame(42, &page_data1);
+
+    var page_data2: [4096]u8 = undefined;
+    @memset(&page_data2, 0x22);
+    page_data2[0] = 0x03; // PageType.leaf
+    try src_wal.writeFrame(43, &page_data2);
+
+    try src_wal.commit(2);
+
+    // Read raw frames back
+    const frame_size = wal_mod.WAL_FRAME_HEADER_SIZE + 4096;
+    var frame_buf = try allocator.alloc(u8, frame_size * 3);
+    defer allocator.free(frame_buf);
+
+    const start_lsn = src_wal.lsnAtFrame(0);
+    const read_result = try src_wal.readRawFrames(start_lsn, frame_buf);
+    try std.testing.expect(read_result.bytes_read > 0);
+
+    // Destination side: create Pager and Wal
+    var dst_pager = try page_mod.Pager.init(allocator, dst_path, .{ .page_size = 4096 });
+    defer dst_pager.deinit();
+
+    var dst_wal = try wal_mod.Wal.init(allocator, dst_path, 4096);
+    defer dst_wal.deinit();
+
+    // Create receiver with local_wal and local_pager set
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    receiver.local_wal = &dst_wal;
+    receiver.local_pager = &dst_pager;
+
+    try receiver.connect(0);
+
+    // Process the raw frame bytes
+    try receiver.processWalData(0, read_result.bytes_read, frame_buf[0..read_result.bytes_read]);
+
+    // After processWalData with commit frames, checkpoint should have run
+    // So pages should be in the main database file (via dst_pager)
+    var read_buf: [4096]u8 = undefined;
+    try dst_pager.readPage(42, &read_buf);
+    // Compare non-checksum bytes (0-11 and 16-4095); bytes 12-15 are recomputed checksum
+    try std.testing.expectEqualSlices(u8, page_data1[0..12], read_buf[0..12]);
+    try std.testing.expectEqualSlices(u8, page_data1[16..], read_buf[16..]);
+
+    try dst_pager.readPage(43, &read_buf);
+    try std.testing.expectEqualSlices(u8, page_data2[0..12], read_buf[0..12]);
+    try std.testing.expectEqualSlices(u8, page_data2[16..], read_buf[16..]);
+}
+
+test "Phase 4: receiver with non-commit frame does not checkpoint yet" {
+    const allocator = std.testing.allocator;
+    const src_path = "test_receiver_phase4_noncommit_src.db";
+    defer std.fs.cwd().deleteFile(src_path) catch {};
+    defer std.fs.cwd().deleteFile(src_path ++ "-wal") catch {};
+
+    const dst_path = "test_receiver_phase4_noncommit_dst.db";
+    defer std.fs.cwd().deleteFile(dst_path) catch {};
+    defer std.fs.cwd().deleteFile(dst_path ++ "-wal") catch {};
+
+    // Source side: write 2 frames and commit
+    var src_wal = try wal_mod.Wal.init(allocator, src_path, 4096);
+    defer src_wal.deinit();
+
+    var page_data1: [4096]u8 = undefined;
+    @memset(&page_data1, 0x33);
+    try src_wal.writeFrame(100, &page_data1);
+
+    var page_data2: [4096]u8 = undefined;
+    @memset(&page_data2, 0x44);
+    try src_wal.writeFrame(101, &page_data2);
+
+    try src_wal.commit(2);
+
+    // Read raw frames
+    const frame_size = wal_mod.WAL_FRAME_HEADER_SIZE + 4096;
+    var frame_buf = try allocator.alloc(u8, frame_size * 2);
+    defer allocator.free(frame_buf);
+
+    const start_lsn = src_wal.lsnAtFrame(0);
+    const read_result = try src_wal.readRawFrames(start_lsn, frame_buf);
+    try std.testing.expect(read_result.bytes_read > 0);
+
+    // Extract just the first frame (non-commit)
+    const first_frame = frame_buf[0..frame_size];
+
+    // Destination side
+    var dst_pager = try page_mod.Pager.init(allocator, dst_path, .{ .page_size = 4096 });
+    defer dst_pager.deinit();
+
+    var dst_wal = try wal_mod.Wal.init(allocator, dst_path, 4096);
+    defer dst_wal.deinit();
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    receiver.local_wal = &dst_wal;
+    receiver.local_pager = &dst_pager;
+
+    try receiver.connect(0);
+
+    // Process only the first (non-commit) frame
+    try receiver.processWalData(0, first_frame.len, first_frame);
+
+    // After processing non-commit frame, checkpoint should NOT have run
+    // So page should NOT be in the main database file yet
+    // (It would be in WAL pending, but not in the main DB)
+    try std.testing.expectEqual(@as(u32, 0), dst_wal.committed_frame_count);
+
+    // Verify pager has unchanged page_count (no checkpoint occurred)
+    // pager starts with 2 pages (header + schema root), unchanged since no checkpoint ran
+    try std.testing.expectEqual(@as(u32, 2), dst_pager.page_count);
+}
+
+test "Phase 4: regression guard — receiver with null local_wal/local_pager unchanged behavior" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{
+        .primary_conninfo = "host=primary",
+        .slot_name = "test-slot",
+    };
+
+    var receiver = try WalReceiver.init(allocator, config);
+    defer receiver.deinit();
+
+    // Explicitly verify local_wal and local_pager are null (regression guard)
+    try std.testing.expectEqual(@as(?*wal_mod.Wal, null), receiver.local_wal);
+    try std.testing.expectEqual(@as(?*page_mod.Pager, null), receiver.local_pager);
+
+    // With both null, processWalData should behave like old stub:
+    // Just update LSNs and clear buffer, no actual WAL/Pager application
+    try receiver.connect(0);
+
+    const data = "stub-wal-data";
+    try receiver.processWalData(0, data.len, data);
+
+    // LSNs should be updated
+    try std.testing.expectEqual(@as(LSN, @intCast(data.len)), receiver.write_lsn);
+    try std.testing.expectEqual(@as(LSN, @intCast(data.len)), receiver.apply_lsn);
+
+    // Buffer should be cleared
+    try std.testing.expectEqual(@as(usize, 0), receiver.apply_buffer.items.len);
 }

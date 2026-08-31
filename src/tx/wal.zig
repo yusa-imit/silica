@@ -307,6 +307,53 @@ pub const Wal = struct {
         self.total_frame_count = self.committed_frame_count;
     }
 
+    /// Append a raw, already-formed frame (header + page data) verbatim to the WAL file.
+    /// frame_bytes must be exactly WAL_FRAME_HEADER_SIZE + page_size bytes.
+    /// The frame is NOT recomputed or validated — assumes it came from readRawFrames().
+    /// If the frame is a commit frame (db_page_count > 0), promotes all pending entries.
+    pub fn appendRawFrame(self: *Wal, frame_bytes: []const u8) !void {
+        const frame_size = WAL_FRAME_HEADER_SIZE + self.page_size;
+        std.debug.assert(frame_bytes.len == frame_size);
+
+        // Ensure WAL file is open
+        if (self.file == null) {
+            try self.createWalFile();
+        }
+        const file = self.file.?;
+
+        // Deserialize just the header to get page_id and check if commit
+        const fh_buf = frame_bytes[0..WAL_FRAME_HEADER_SIZE];
+        const fh = WalFrameHeader.deserialize(fh_buf);
+
+        // Write the raw bytes verbatim at the current frame offset
+        const offset = self.frameOffset(self.total_frame_count);
+        try file.pwriteAll(frame_bytes, offset);
+
+        // Update pending index
+        try self.pending_index.put(fh.page_id, self.total_frame_count);
+        self.total_frame_count += 1;
+
+        // If commit frame, promote pending → committed (same as commit() does)
+        if (fh.isCommit()) {
+            // Update WAL header frame count
+            self.header.frame_count = self.total_frame_count;
+            var hdr_buf: [WAL_HEADER_SIZE]u8 = undefined;
+            self.header.serialize(&hdr_buf);
+            try file.pwriteAll(&hdr_buf, 0);
+
+            // fsync
+            try file.sync();
+
+            // Promote pending → committed
+            var it = self.pending_index.iterator();
+            while (it.next()) |entry| {
+                try self.page_index.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            self.pending_index.clearRetainingCapacity();
+            self.committed_frame_count = self.total_frame_count;
+        }
+    }
+
     // ── Read Path ──────────────────────────────────────────────
 
     /// Check if the WAL contains a version of the given page.
@@ -404,8 +451,32 @@ pub const Wal = struct {
         const page_buf = try self.allocator.alloc(u8, self.page_size);
         defer self.allocator.free(page_buf);
 
-        // Track max db_page_count from commit frames
+        // First pass: determine the page count the pager needs to accommodate
+        // every page we're about to write, *before* writing any of them —
+        // writePage() bounds-checks against pager.page_count, so growing it
+        // must happen up front rather than after the write loop.
         var max_db_page_count: u32 = 0;
+        {
+            var scan_it = self.page_index.iterator();
+            while (scan_it.next()) |entry| {
+                const page_id = entry.key_ptr.*;
+                const frame_idx = entry.value_ptr.*;
+
+                const fh_offset = self.frameOffset(frame_idx);
+                var fh_buf: [WAL_FRAME_HEADER_SIZE]u8 = undefined;
+                _ = try file.preadAll(&fh_buf, fh_offset);
+                const fh = WalFrameHeader.deserialize(&fh_buf);
+                if (fh.db_page_count > max_db_page_count) {
+                    max_db_page_count = fh.db_page_count;
+                }
+                if (page_id + 1 > max_db_page_count) {
+                    max_db_page_count = page_id + 1;
+                }
+            }
+        }
+        if (max_db_page_count > pager.page_count) {
+            pager.page_count = max_db_page_count;
+        }
 
         // Write each committed page to the main DB
         var it = self.page_index.iterator();
@@ -416,22 +487,8 @@ pub const Wal = struct {
             // Read the frame's page data
             try self.readFrameData(file, frame_idx, page_buf);
 
-            // Read frame header to get db_page_count for commit frames
-            const fh_offset = self.frameOffset(frame_idx);
-            var fh_buf: [WAL_FRAME_HEADER_SIZE]u8 = undefined;
-            _ = try file.preadAll(&fh_buf, fh_offset);
-            const fh = WalFrameHeader.deserialize(&fh_buf);
-            if (fh.db_page_count > max_db_page_count) {
-                max_db_page_count = fh.db_page_count;
-            }
-
             // Write to main DB
             try pager.writePage(page_id, page_buf);
-        }
-
-        // Update pager's page_count if needed
-        if (max_db_page_count > pager.page_count) {
-            pager.page_count = max_db_page_count;
         }
 
         // Flush the pager's header page
@@ -1746,4 +1803,101 @@ test "readRawFrames multi-call resumption: chain LSNs to stream all frames" {
 
     // Total frames seen should be 5
     try testing.expectEqual(@as(u32, 5), frames_seen);
+}
+
+test "Phase 4: appendRawFrame verbatim round-trip with commit promotion" {
+    const path_src = "test_wal_phase4_src.db";
+    defer std.fs.cwd().deleteFile(path_src) catch {};
+    defer std.fs.cwd().deleteFile(path_src ++ "-wal") catch {};
+
+    const path_dst = "test_wal_phase4_dst.db";
+    defer std.fs.cwd().deleteFile(path_dst) catch {};
+    defer std.fs.cwd().deleteFile(path_dst ++ "-wal") catch {};
+
+    // Create source WAL and write 2 frames
+    var src_wal = try Wal.init(testing.allocator, path_src, 512);
+    defer src_wal.deinit();
+
+    var page_data1: [512]u8 = undefined;
+    @memset(&page_data1, 0xAA);
+    try src_wal.writeFrame(10, &page_data1);
+
+    var page_data2: [512]u8 = undefined;
+    @memset(&page_data2, 0xBB);
+    try src_wal.writeFrame(20, &page_data2);
+
+    try src_wal.commit(2);
+
+    // Read raw frames back via readRawFrames
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    var frame_buf = try testing.allocator.alloc(u8, frame_size * 3);
+    defer testing.allocator.free(frame_buf);
+
+    const start_lsn = src_wal.lsnAtFrame(0);
+    const read_result = try src_wal.readRawFrames(start_lsn, frame_buf);
+    try testing.expect(read_result.bytes_read > 0);
+
+    // Destination WAL
+    var dst_wal = try Wal.init(testing.allocator, path_dst, 512);
+    defer dst_wal.deinit();
+
+    // Extract first frame (non-commit) and second frame (commit)
+    const frame1_bytes = frame_buf[0..frame_size];
+    const frame2_bytes = frame_buf[frame_size..][0..frame_size];
+
+    // Append first frame (non-commit)
+    try dst_wal.appendRawFrame(frame1_bytes);
+
+    // After first frame, should be pending (committed_frame_count = 0)
+    try testing.expectEqual(@as(u32, 0), dst_wal.committed_frame_count);
+    try testing.expectEqual(@as(u32, 1), dst_wal.total_frame_count);
+
+    // But readPage should find it in pending_index
+    var read_buf: [512]u8 = undefined;
+    const found1 = try dst_wal.readPage(10, &read_buf);
+    try testing.expect(found1);
+    try testing.expectEqualSlices(u8, &page_data1, &read_buf);
+
+    // Append second frame (commit)
+    try dst_wal.appendRawFrame(frame2_bytes);
+
+    // After commit frame, should promote to committed
+    try testing.expectEqual(@as(u32, 2), dst_wal.committed_frame_count);
+    try testing.expectEqual(@as(u32, 2), dst_wal.total_frame_count);
+
+    // Both pages should be readable from committed index
+    const found10 = try dst_wal.readPage(10, &read_buf);
+    try testing.expect(found10);
+    try testing.expectEqualSlices(u8, &page_data1, &read_buf);
+
+    const found20 = try dst_wal.readPage(20, &read_buf);
+    try testing.expect(found20);
+    try testing.expectEqualSlices(u8, &page_data2, &read_buf);
+}
+
+test "Phase 4: appendRawFrame is purely additive — normal writeFrame/commit unchanged" {
+    const path = "test_wal_phase4_regression.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile(path ++ "-wal") catch {};
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write and commit via normal writeFrame/commit (no appendRawFrame)
+    var page_data: [512]u8 = undefined;
+    @memset(&page_data, 0x99);
+    try wal.writeFrame(5, &page_data);
+    try wal.commit(1);
+
+    // Verify normal counts and indexes work as before
+    try testing.expectEqual(@as(u32, 1), wal.committed_frame_count);
+    try testing.expectEqual(@as(u32, 1), wal.total_frame_count);
+    try testing.expect(wal.page_index.get(5) != null);
+    try testing.expectEqual(@as(u32, 0), wal.pending_index.count());
+
+    // Verify readPage still works
+    var read_buf: [512]u8 = undefined;
+    const found = try wal.readPage(5, &read_buf);
+    try testing.expect(found);
+    try testing.expectEqualSlices(u8, &page_data, &read_buf);
 }
