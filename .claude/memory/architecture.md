@@ -233,4 +233,4 @@ Page 2..N: Data & Index pages
 - `cascade.zig:201`'s cycle-detection TODO and `standby.zig:136`'s abort-signal TODO are unrelated pre-existing gaps in adjacent modules — worth a follow-up issue, not part of this plan.
 - Logical replication / CDC — explicitly future-roadmap (PRD §15), not applicable to physical WAL streaming.
 
-**Status**: design-only (architect review), no code written. Ready for phase-1 implementation in a future session, one phase at a time, same discipline as the bitmap-index-scan and GIN plans above.
+**Status**: Phases 1-3/5 DONE. Phase 1 (LSN type + `Wal.readRawFrames`, commit `f671e80`). Phase 2 (real TCP transport in `src/replication/transport.zig`, commit `bc93fdd`). Phase 3 (sender reads real WAL frames via `Wal.readRawFrames`, `WalSender` gained optional `wal`/`wal_mutex` fields, commit `8e3c56b`). Next: phase 4 (receiver applies real frames to its own local WAL + Pager), then phase 5 (end-to-end loopback integration test). Phase 6 remains explicitly deferred.
