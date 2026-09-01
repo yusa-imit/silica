@@ -10,6 +10,7 @@ const LSN = protocol.LSN;
 const BackendMessage = protocol.BackendMessage;
 const FrontendMessage = protocol.FrontendMessage;
 const wal_mod = @import("../tx/wal.zig");
+const Lsn = wal_mod.Lsn;
 const page_mod = @import("../storage/page.zig");
 
 /// WAL Receiver errors
@@ -25,6 +26,20 @@ pub const Error = error{
     /// Apply failed
     ApplyFailed,
 } || Allocator.Error || std.fs.File.WriteError || std.fs.File.ReadError;
+
+/// Pack Lsn into u64: (checkpoint_seq << 32) | frame_index
+pub fn packLsn(lsn: Lsn) LSN {
+    return (@as(LSN, @intCast(lsn.checkpoint_seq)) << 32) |
+           (@as(LSN, @intCast(lsn.frame_index)));
+}
+
+/// Unpack u64 into Lsn: checkpoint_seq = val >> 32, frame_index = val & 0xFFFFFFFF
+pub fn unpackLsn(val: LSN) Lsn {
+    return .{
+        .checkpoint_seq = @intCast(val >> 32),
+        .frame_index = @intCast(val & 0xFFFFFFFF),
+    };
+}
 
 /// WAL Receiver configuration
 pub const Config = struct {
@@ -46,12 +61,12 @@ pub const WalReceiver = struct {
     allocator: Allocator,
     /// Configuration
     config: Config,
-    /// Last received LSN (write_lsn)
-    write_lsn: LSN,
-    /// Last flushed LSN (flush_lsn)
-    flush_lsn: LSN,
-    /// Last applied LSN (apply_lsn)
-    apply_lsn: LSN,
+    /// Last received LSN (write_lsn) as Lsn struct
+    write_lsn: Lsn,
+    /// Last flushed LSN (flush_lsn) as Lsn struct
+    flush_lsn: Lsn,
+    /// Last applied LSN (apply_lsn) as Lsn struct
+    apply_lsn: Lsn,
     /// Last status update timestamp
     last_status_update: i64,
     /// Connection established flag
@@ -71,9 +86,9 @@ pub const WalReceiver = struct {
         return .{
             .allocator = allocator,
             .config = config,
-            .write_lsn = 0,
-            .flush_lsn = 0,
-            .apply_lsn = 0,
+            .write_lsn = .{ .checkpoint_seq = 0, .frame_index = 0 },
+            .flush_lsn = .{ .checkpoint_seq = 0, .frame_index = 0 },
+            .apply_lsn = .{ .checkpoint_seq = 0, .frame_index = 0 },
             .last_status_update = std.time.microTimestamp(),
             .connected = false,
             .wal_file = null,
@@ -92,10 +107,11 @@ pub const WalReceiver = struct {
     pub fn connect(self: *WalReceiver, start_lsn: LSN) !void {
         // TODO: Actual TCP connection to primary
         // For now, just mark as connected
+        const start_lsn_struct = unpackLsn(start_lsn);
         self.connected = true;
-        self.write_lsn = start_lsn;
-        self.flush_lsn = start_lsn;
-        self.apply_lsn = start_lsn;
+        self.write_lsn = start_lsn_struct;
+        self.flush_lsn = start_lsn_struct;
+        self.apply_lsn = start_lsn_struct;
     }
 
     /// Disconnect from primary
@@ -110,14 +126,19 @@ pub const WalReceiver = struct {
         wal_end: LSN,
         data: []const u8,
     ) !void {
+        // Convert wire-format u64 LSN to Lsn struct for comparison
+        const wal_start_struct = unpackLsn(wal_start);
+        const wal_end_struct = unpackLsn(wal_end);
+
         // Verify LSN continuity
-        if (wal_start != self.write_lsn) {
+        if (wal_start_struct.checkpoint_seq != self.write_lsn.checkpoint_seq or
+            wal_start_struct.frame_index != self.write_lsn.frame_index) {
             return Error.LsnMismatch;
         }
 
         // Write to WAL buffer
         try self.apply_buffer.appendSlice(self.allocator, data);
-        self.write_lsn = wal_end;
+        self.write_lsn = wal_end_struct;
 
         // Phase 4+: If local_wal is set, apply frames to local storage
         if (self.local_wal != null) {
@@ -174,9 +195,9 @@ pub const WalReceiver = struct {
         self.last_status_update = std.time.microTimestamp();
         return .{
             .standby_status = .{
-                .write_lsn = self.write_lsn,
-                .flush_lsn = self.flush_lsn,
-                .apply_lsn = self.apply_lsn,
+                .write_lsn = packLsn(self.write_lsn),
+                .flush_lsn = packLsn(self.flush_lsn),
+                .apply_lsn = packLsn(self.apply_lsn),
                 .client_timestamp = self.last_status_update,
                 .reply_requested = reply_requested,
             },
@@ -241,10 +262,11 @@ pub const WalReceiver = struct {
 
     /// Get current replication lag in bytes
     pub fn getReplicationLag(self: *WalReceiver, primary_wal_end: LSN) i64 {
-        if (primary_wal_end < self.apply_lsn) {
+        const apply_lsn_u64 = packLsn(self.apply_lsn);
+        if (primary_wal_end < apply_lsn_u64) {
             return 0; // Replica ahead (shouldn't happen)
         }
-        return @as(i64, @intCast(primary_wal_end - self.apply_lsn));
+        return @as(i64, @intCast(primary_wal_end - apply_lsn_u64));
     }
 };
 
@@ -263,9 +285,10 @@ test "WalReceiver init and deinit" {
     var receiver = try WalReceiver.init(allocator, config);
     defer receiver.deinit();
 
-    try std.testing.expectEqual(@as(LSN, 0), receiver.write_lsn);
-    try std.testing.expectEqual(@as(LSN, 0), receiver.flush_lsn);
-    try std.testing.expectEqual(@as(LSN, 0), receiver.apply_lsn);
+    const expected_lsn = Lsn{ .checkpoint_seq = 0, .frame_index = 0 };
+    try std.testing.expectEqual(expected_lsn, receiver.write_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.flush_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.apply_lsn);
     try std.testing.expectEqual(false, receiver.connected);
 }
 
@@ -282,10 +305,11 @@ test "WalReceiver connect" {
 
     try receiver.connect(1000);
 
+    const expected_lsn = unpackLsn(1000);
     try std.testing.expectEqual(true, receiver.connected);
-    try std.testing.expectEqual(@as(LSN, 1000), receiver.write_lsn);
-    try std.testing.expectEqual(@as(LSN, 1000), receiver.flush_lsn);
-    try std.testing.expectEqual(@as(LSN, 1000), receiver.apply_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.write_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.flush_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.apply_lsn);
 }
 
 test "WalReceiver disconnect" {
@@ -321,9 +345,10 @@ test "WalReceiver process WAL data" {
     const data = "test wal data";
     try receiver.processWalData(1000, 1000 + data.len, data);
 
-    try std.testing.expectEqual(@as(LSN, 1000 + data.len), receiver.write_lsn);
-    try std.testing.expectEqual(@as(LSN, 1000 + data.len), receiver.flush_lsn);
-    try std.testing.expectEqual(@as(LSN, 1000 + data.len), receiver.apply_lsn);
+    const expected_lsn = unpackLsn(1000 + data.len);
+    try std.testing.expectEqual(expected_lsn, receiver.write_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.flush_lsn);
+    try std.testing.expectEqual(expected_lsn, receiver.apply_lsn);
 }
 
 test "WalReceiver process WAL data with LSN mismatch" {
@@ -374,9 +399,9 @@ test "WalReceiver create status update" {
     var receiver = try WalReceiver.init(allocator, config);
     defer receiver.deinit();
 
-    receiver.write_lsn = 1000;
-    receiver.flush_lsn = 800;
-    receiver.apply_lsn = 600;
+    receiver.write_lsn = unpackLsn(1000);
+    receiver.flush_lsn = unpackLsn(800);
+    receiver.apply_lsn = unpackLsn(600);
 
     const msg = receiver.createStatusUpdate(true);
 
@@ -453,7 +478,7 @@ test "WalReceiver get replication lag" {
     var receiver = try WalReceiver.init(allocator, config);
     defer receiver.deinit();
 
-    receiver.apply_lsn = 1000;
+    receiver.apply_lsn = unpackLsn(1000);
 
     const lag = receiver.getReplicationLag(5000);
     try std.testing.expectEqual(@as(i64, 4000), lag);
@@ -478,13 +503,13 @@ test "WalReceiver continuous WAL application" {
 
     // Apply multiple chunks
     try receiver.processWalData(0, 100, "chunk1");
-    try std.testing.expectEqual(@as(LSN, 100), receiver.apply_lsn);
+    try std.testing.expectEqual(unpackLsn(100), receiver.apply_lsn);
 
     try receiver.processWalData(100, 250, "chunk2");
-    try std.testing.expectEqual(@as(LSN, 250), receiver.apply_lsn);
+    try std.testing.expectEqual(unpackLsn(250), receiver.apply_lsn);
 
     try receiver.processWalData(250, 300, "chunk3");
-    try std.testing.expectEqual(@as(LSN, 300), receiver.apply_lsn);
+    try std.testing.expectEqual(unpackLsn(300), receiver.apply_lsn);
 }
 
 // Edge case tests
@@ -500,7 +525,7 @@ test "WalReceiver — very large replication lag" {
     var receiver = try WalReceiver.init(allocator, config);
     defer receiver.deinit();
 
-    receiver.apply_lsn = 1000;
+    receiver.apply_lsn = unpackLsn(1000);
 
     // Test with very large primary WAL end (but within i64 range for lag calculation)
     const large_lsn: LSN = std.math.maxInt(i64) - 100;
@@ -559,7 +584,7 @@ test "WalReceiver — process WAL data with zero-length data" {
 
     // Process empty chunk
     try receiver.processWalData(0, 0, "");
-    try std.testing.expectEqual(@as(LSN, 0), receiver.apply_lsn);
+    try std.testing.expectEqual(unpackLsn(0), receiver.apply_lsn);
 }
 
 test "WalReceiver — very long slot name" {
@@ -624,9 +649,10 @@ test "WalReceiver — process WAL data updates all LSN fields" {
     try receiver.processWalData(0, 1000, "test-data");
 
     // All LSN fields should be updated
-    try std.testing.expectEqual(@as(LSN, 1000), receiver.write_lsn);
-    try std.testing.expectEqual(@as(LSN, 1000), receiver.flush_lsn);
-    try std.testing.expectEqual(@as(LSN, 1000), receiver.apply_lsn);
+    const expected_lsn_1000 = unpackLsn(1000);
+    try std.testing.expectEqual(expected_lsn_1000, receiver.write_lsn);
+    try std.testing.expectEqual(expected_lsn_1000, receiver.flush_lsn);
+    try std.testing.expectEqual(expected_lsn_1000, receiver.apply_lsn);
 }
 
 // Phase 4: Real WAL Application Tests
@@ -796,8 +822,9 @@ test "Phase 4: regression guard — receiver with null local_wal/local_pager unc
     try receiver.processWalData(0, data.len, data);
 
     // LSNs should be updated
-    try std.testing.expectEqual(@as(LSN, @intCast(data.len)), receiver.write_lsn);
-    try std.testing.expectEqual(@as(LSN, @intCast(data.len)), receiver.apply_lsn);
+    const expected_lsn_data_len = unpackLsn(@intCast(data.len));
+    try std.testing.expectEqual(expected_lsn_data_len, receiver.write_lsn);
+    try std.testing.expectEqual(expected_lsn_data_len, receiver.apply_lsn);
 
     // Buffer should be cleared
     try std.testing.expectEqual(@as(usize, 0), receiver.apply_buffer.items.len);

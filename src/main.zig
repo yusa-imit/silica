@@ -66,6 +66,7 @@ pub const replication_backup = @import("replication/backup.zig");
 pub const replication_monitor = @import("replication/monitor.zig");
 pub const replication_switchover = @import("replication/switchover.zig");
 pub const replication_transport = @import("replication/transport.zig");
+pub const replication_integration_test = @import("replication/integration_test.zig");
 
 // Note: Server modules (wire, connection, server) are not imported here
 // to avoid circular dependencies (they import "silica"). Their tests
