@@ -143,8 +143,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 
 ### Sailor Library
 
-- **Current in silica**: v2.96.1
-- **Latest available**: v2.96.1
+- **Current in silica**: v2.98.0
+- **Latest available**: v2.98.0
 - **Repo**: https://github.com/yusa-imit/sailor
 
 | Version | Features | Status | Notes |
@@ -241,6 +241,8 @@ Dependency order: Storage -> SQL -> Transaction(MVCC) -> Catalog(Views/Triggers)
 | v2.95.0 | AreaChart widget, arg.zig suggestions | DONE | AreaChart: filled area chart (up to 8 series, 64 points/series), stacked/unstacked modes, auto-scale with baseline, NaN/Infinity-safe. arg.zig: Levenshtein-based "Did you mean?" suggestions for unknown flags. No breaking changes. No TUI overlay use case identified yet for AreaChart — 4540/4563 tests pass post-upgrade — Session 504 (issue #127) |
 | v2.96.0 | Rating widget, bracketed-paste, arg.zig subcommands | DONE | Rating widget (`sailor.tui.widgets.Rating`): star/symbol discrete rating display, no TUI overlay use case identified yet. Repl bracketed-paste wiring: multiline paste now a single literal insert instead of per-line (no silica REPL-input regression observed). arg.zig subcommand dispatch (`Commands(comptime commands: []const CommandDef)`): not yet adopted by silica's cli.zig. No breaking changes — 4575/4598 tests pass post-upgrade — Session 510 (issue #129) |
 | v2.96.1 | bug fix (Infinity/NaN safety in 4 widgets) | DONE | `@intFromFloat` panic guards added to `BoxPlot.valueToRow`, `FunnelChart` bar_width, `Particle.update` opacity ratio, `MetricsPanel.renderSparkline` bar index — closes sailor's v2.97.0 Infinity Safety Audit milestone (34 widgets triaged). No breaking changes. No source changes needed in silica — 4593/4616 tests pass post-upgrade — Session 513 (issue #130) |
+| v2.97.0 | readline-style editing & terminal input | DONE | Readline-style line editing, validator-linked multi-line REPL continuation, real terminal input decoding for TUI async loop, Plain key-value formatter. No breaking changes. No source changes needed in silica — 4633/4656 tests pass post-upgrade — Session 523 (prior, table entry backfilled) |
+| v2.98.0 | tooltip & splitpane enhancements | DONE | tooltip.zig: timeout-based auto-dismiss (`timeout_ticks`/`withTimeout()`/`tick()`), show-delay (`show_delay_ticks`/`withShowDelay()`), Trigger enum (`notifyHover()`/`notifyFocus()`), optional fade-in animation. splitpane.zig: drag-handle resize (`isOnDivider()` hit-test + `resizeAt()`). Event-loop-agnostic (pure state-transition methods). No breaking changes — all new fields default to prior behavior. No source changes needed in silica — 4660/4683 tests pass post-upgrade — Session 527 (issue #132) |
 
 **High-priority sailor upgrades for silica**:
 - v1.9.0: ~~CompletionPopup for SQL keyword/table/column completion~~ ✅ **DONE** (Session 63 — custom rendering due to sailor#13)
