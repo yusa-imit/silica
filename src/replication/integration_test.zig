@@ -90,7 +90,7 @@ pub fn runReceiverLoop(
         // Try to receive a message from sender
         const msg_result = transport.receiveBackendMessage(stream, allocator) catch |err| {
             // Stream closed or error
-            if (err == error.EndOfStream or err == error.ConnectionClosed) {
+            if (err == error.EndOfStream or err == error.ConnectionClosed or err == error.NotOpenForReading) {
                 if (stop.load(.acquire)) {
                     return;
                 }
@@ -124,6 +124,42 @@ pub fn runReceiverLoop(
             const status = receiver.createStatusUpdate(false);
             try transport.sendFrontendMessage(stream, allocator, status);
         }
+    }
+}
+
+/// Sender status reader loop: reads FrontendMessages from replica (standby status updates),
+/// invokes sender.processStandbyStatus to update slot LSN positions.
+pub fn runSenderStatusReaderLoop(
+    sender: *WalSender,
+    stream: std.net.Stream,
+    allocator: Allocator,
+    stop: *std.atomic.Value(bool),
+) !void {
+    while (!stop.load(.acquire)) {
+        // Try to receive a FrontendMessage from replica
+        const msg_result = transport.receiveFrontendMessage(stream, allocator) catch |err| {
+            // Stream closed or error
+            if (err == error.EndOfStream or err == error.ConnectionClosed or err == error.NotOpenForReading) {
+                if (stop.load(.acquire)) {
+                    return;
+                }
+                return err;
+            }
+
+            return err;
+        };
+
+        // Dispatch based on message type
+        switch (msg_result) {
+            .standby_status => |ss| {
+                try sender.processStandbyStatus(ss.write_lsn, ss.flush_lsn, ss.apply_lsn);
+            },
+            else => {
+                // Ignore other message types in status reader loop
+            },
+        }
+
+        transport.deinitFrontendMessage(allocator, @constCast(&msg_result));
     }
 }
 
@@ -227,11 +263,14 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
 
     // ── Setup: Create sender and receiver ──
 
-    const sender_config = sender_mod.Config{};
+    const sender_config = sender_mod.Config{ .keepalive_interval_ms = 200 };
     const sender_slot_mgr = try allocator.create(slot.SlotManager);
     defer allocator.destroy(sender_slot_mgr);
     sender_slot_mgr.* = slot.SlotManager.init(allocator);
     defer sender_slot_mgr.deinit();
+
+    // Create and activate the replication slot on the sender
+    try sender_slot_mgr.createSlot("test-replica-slot", false);
 
     var sender = try WalSender.init(
         allocator,
@@ -242,6 +281,9 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
     );
     defer {
         allocator.free(sender.system_id);
+        if (sender.slot_name) |name| {
+            allocator.free(name);
+        }
     }
 
     sender.wal = &primary_wal;
@@ -251,9 +293,13 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
     sender.wal_mutex = &wal_mutex;
     sender.stream = server_stream;
 
+    // Start replication on the created slot
+    try sender.startReplication("test-replica-slot", 0);
+
     const receiver_config = receiver_mod.Config{
         .primary_conninfo = "host=127.0.0.1",
         .slot_name = "test-replica-slot",
+        .status_interval_ms = 200,
     };
     var receiver = try receiver_mod.WalReceiver.init(allocator, receiver_config);
     defer receiver.deinit();
@@ -282,6 +328,17 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
         &receiver_stop,
     });
 
+    // ── Spawn sender status reader thread ──
+    // This thread reads FrontendMessages (standby_status updates) from the replica
+    // and invokes sender.processStandbyStatus to update the slot's confirmed_flush_lsn.
+
+    const status_reader_thread = try std.Thread.spawn(.{}, runSenderStatusReaderLoop, .{
+        &sender,
+        server_stream,
+        allocator,
+        &sender_stop,
+    });
+
     // ── Wait for replication to converge (with timeout) ──
 
     const timeout_ms = 5000;
@@ -299,6 +356,11 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
         std.Thread.sleep(100_000_000); // 100 ms
     }
 
+    // ── Wait a bit more to allow status messages to flow ──
+    // The receiver sends status updates every status_interval_ms (200ms).
+    // Give time for at least 2-3 round-trips and for sender to receive & process.
+    std.Thread.sleep(1_500_000_000); // 1.5s
+
     // ── Initiate clean shutdown ──
 
     sender_stop.store(true, .release);
@@ -308,6 +370,7 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
 
     sender_thread.join();
     receiver_thread.join();
+    status_reader_thread.join();
 
     // ── Verify convergence ──
 
@@ -346,14 +409,14 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
     try std.testing.expectEqualSlices(u8, primary_buf[16..], replica_buf[16..]);
 
     // ── Verify standby status feedback reached sender ──
-    // The receiver should have incremented its write_lsn/flush_lsn/apply_lsn,
-    // which would be sent back in standby_status frames.
-    // After both transactions complete, apply_lsn should reflect real progress.
+    // The receiver periodically sends standby_status messages (at status_interval_ms = 200ms)
+    // which are read by the status reader thread and processed by sender.processStandbyStatus().
+    // This updates the slot's confirmed_flush_lsn. We verify the feedback loop worked by
+    // checking that the slot's confirmed_flush_lsn was updated from its initial value of 0.
 
     try std.testing.expect(receiver.apply_lsn.frame_index > 0);
-    // When processStandbyStatus is called in the sender loop with real feedback,
-    // the slot's confirmed_flush_lsn should be updated from 0.
-    // For now, we verify receiver made progress by checking apply_lsn is non-zero.
+    const final_slot = try sender_slot_mgr.getSlot("test-replica-slot");
+    try std.testing.expect(final_slot.confirmed_flush_lsn > 0);
 }
 
 /// Helper thread function to accept one incoming connection.
