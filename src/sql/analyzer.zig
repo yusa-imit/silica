@@ -93,6 +93,14 @@ pub const Analyzer = struct {
     arena: std.heap.ArenaAllocator,
     /// CTE names in scope (name → column info from CTE definition).
     cte_columns: std.StringHashMapUnmanaged([]const ColumnInfo),
+    /// Set while analyzing a MATCH_RECOGNIZE DEFINE/MEASURES expression: the
+    /// declared pattern variable names, so `var.column` qualifiers can be
+    /// resolved against the underlying source table instead of a table alias.
+    mr_pattern_vars: ?[]const []const u8 = null,
+    /// Columns of the MATCH_RECOGNIZE source table, used to resolve
+    /// `var.column` qualifiers while `mr_pattern_vars` is set. Null when the
+    /// source has no known column list (e.g. an unresolved subquery source).
+    mr_source_columns: ?[]const ColumnInfo = null,
 
     pub fn init(allocator: Allocator, schema: SchemaProvider) Analyzer {
         return .{
@@ -1183,11 +1191,91 @@ pub const Analyzer = struct {
                 // Register values table columns in scope
                 self.addValuesTableToScope(ref);
             },
-            .match_recognize => {
-                // MATCH_RECOGNIZE analysis deferred to Phase 2 (semantic validation of pattern/define/measures)
-                // For now, just resolve the underlying source reference
+            .match_recognize => |mr| {
+                // Resolve the underlying source first so its columns are in
+                // scope for PARTITION BY/ORDER BY, and so we can capture its
+                // column list for var.column qualifier resolution below.
+                const before_len = self.scope_tables.items.len;
+                self.resolveTableRef(mr.source);
+                const source_columns: ?[]const ColumnInfo = if (self.scope_tables.items.len > before_len)
+                    self.scope_tables.items[self.scope_tables.items.len - 1].columns
+                else
+                    null; // e.g. subquery source: not registered in scope, skip column validation
+
+                if (mr.spec.order_by.len == 0) {
+                    self.addError(.invalid_expression, "MATCH_RECOGNIZE requires an ORDER BY clause", .{});
+                }
+
+                var pattern_vars = std.ArrayListUnmanaged([]const u8){};
+                defer pattern_vars.deinit(self.allocator);
+                self.collectPatternVariables(mr.spec.pattern, &pattern_vars);
+
+                for (mr.spec.define) |def| {
+                    if (!containsIgnoreCase(pattern_vars.items, def.variable)) {
+                        self.addError(.invalid_expression, "DEFINE variable '{s}' does not appear in PATTERN", .{def.variable});
+                    }
+                }
+
+                // DEFINE/MEASURES expressions get pattern-variable-aware column
+                // resolution and are allowed to use PREV/NEXT/FIRST/LAST/
+                // MATCH_NUMBER/CLASSIFIER.
+                self.mr_pattern_vars = pattern_vars.items;
+                self.mr_source_columns = source_columns;
+                for (mr.spec.define) |def| self.analyzeExpr(def.condition);
+                for (mr.spec.measures) |m| self.analyzeExpr(m.expr);
+                self.mr_pattern_vars = null;
+                self.mr_source_columns = null;
+
+                // PARTITION BY/ORDER BY reference the source table's columns
+                // directly (not pattern-variable-qualified).
+                for (mr.spec.partition_by) |e| self.analyzeExpr(e);
+                for (mr.spec.order_by) |ob| self.analyzeExpr(ob.expr);
             },
         }
+    }
+
+    /// Walk a MATCH_RECOGNIZE PATTERN tree, collecting the distinct (case-insensitive)
+    /// pattern variable names it references.
+    fn collectPatternVariables(self: *Analyzer, node: *const ast.PatternNode, out: *std.ArrayListUnmanaged([]const u8)) void {
+        switch (node.*) {
+            .variable => |v| {
+                if (!containsIgnoreCase(out.items, v)) {
+                    out.append(self.allocator, v) catch {};
+                }
+            },
+            .concat => |nodes| for (nodes) |n| self.collectPatternVariables(n, out),
+            .alternation => |nodes| for (nodes) |n| self.collectPatternVariables(n, out),
+            .group => |inner| self.collectPatternVariables(inner, out),
+            .quantified => |q| self.collectPatternVariables(q.node, out),
+        }
+    }
+
+    fn containsIgnoreCase(list: []const []const u8, name: []const u8) bool {
+        for (list) |item| {
+            if (std.ascii.eqlIgnoreCase(item, name)) return true;
+        }
+        return false;
+    }
+
+    /// True for the SQL:2016 MATCH_RECOGNIZE navigation/context functions,
+    /// which are only meaningful inside a MATCH_RECOGNIZE DEFINE/MEASURES expression.
+    fn isMatchRecognizeNavFunction(name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(name, "prev") or
+            std.ascii.eqlIgnoreCase(name, "next") or
+            std.ascii.eqlIgnoreCase(name, "first") or
+            std.ascii.eqlIgnoreCase(name, "last") or
+            std.ascii.eqlIgnoreCase(name, "match_number") or
+            std.ascii.eqlIgnoreCase(name, "classifier");
+    }
+
+    /// Resolve `name.prefix.?.name` where `name.prefix` is a MATCH_RECOGNIZE
+    /// pattern variable (not a table alias) against `mr_source_columns`.
+    fn resolveMatchRecognizeColumn(self: *Analyzer, name: ast.Name) void {
+        const cols = self.mr_source_columns orelse return; // unknown schema (e.g. subquery source): accept without validation
+        for (cols) |col| {
+            if (std.ascii.eqlIgnoreCase(col.name, name.name)) return;
+        }
+        self.addError(.column_not_found, "column '{s}' not found in table referenced by pattern variable '{s}'", .{ name.name, name.prefix.? });
     }
 
     // ── Expression Analysis ─────────────────────────────────────────
@@ -1196,7 +1284,16 @@ pub const Analyzer = struct {
         switch (expr.*) {
             .integer_literal, .float_literal, .string_literal, .blob_literal, .boolean_literal, .null_literal => {},
             .column_ref => |name| {
-                _ = self.resolveColumn(name);
+                var resolved_as_pattern_var = false;
+                if (self.mr_pattern_vars) |pvars| {
+                    if (name.prefix) |prefix| {
+                        if (containsIgnoreCase(pvars, prefix)) {
+                            self.resolveMatchRecognizeColumn(name);
+                            resolved_as_pattern_var = true;
+                        }
+                    }
+                }
+                if (!resolved_as_pattern_var) _ = self.resolveColumn(name);
             },
             .unary_op => |u| {
                 self.analyzeExpr(u.operand);
@@ -1206,6 +1303,9 @@ pub const Analyzer = struct {
                 self.analyzeExpr(b.right);
             },
             .function_call => |f| {
+                if (isMatchRecognizeNavFunction(f.name) and self.mr_pattern_vars == null) {
+                    self.addError(.invalid_expression, "{s}() can only be used inside a MATCH_RECOGNIZE clause", .{f.name});
+                }
                 for (f.args, 0..) |arg, arg_idx| {
                     // Skip resolution for * in aggregate functions like COUNT(*)
                     if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*")) continue;
@@ -3667,5 +3767,176 @@ test "MERGE with subquery source does not crash" {
     analyzer.analyze(.{ .merge = stmt });
     // We just verify it doesn't crash; error status doesn't matter for subquery test
     _ = analyzer.hasErrors();
+}
+
+// ── MATCH_RECOGNIZE Phase 2 Tests (Semantic Validation) ──────────────────
+
+test "MATCH_RECOGNIZE: valid full clause with ORDER BY, PATTERN, DEFINE produces no errors" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id MEASURES price AS m1 PATTERN (A B+) DEFINE B AS B.price > 100) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "MATCH_RECOGNIZE: missing ORDER BY produces invalid_expression error" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (MEASURES price AS m1 PATTERN (A B+) DEFINE B AS B.price > 100) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "MATCH_RECOGNIZE: DEFINE variable not used in PATTERN produces invalid_expression error" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > 100, Z AS Z.price > 50) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "MATCH_RECOGNIZE: PATTERN variable with no DEFINE entry is valid" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > 100) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "MATCH_RECOGNIZE: DEFINE referencing unknown column via pattern variable qualifier produces column_not_found" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.nonexistent_col > 0) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_not_found = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_not_found) found_not_found = true;
+    }
+    try std.testing.expect(found_not_found);
+}
+
+test "MATCH_RECOGNIZE: DEFINE referencing valid column via pattern variable qualifier produces no errors" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > 0) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(!analyzer.hasErrors());
+}
+
+test "PREV used outside MATCH_RECOGNIZE produces invalid_expression error" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT PREV(id) FROM t;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_invalid = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .invalid_expression) found_invalid = true;
+    }
+    try std.testing.expect(found_invalid);
+}
+
+test "MATCH_RECOGNIZE: PARTITION BY unknown column produces column_not_found" {
+    const allocator = std.testing.allocator;
+    var schema = MemorySchema.init(allocator);
+    defer schema.deinit();
+
+    schema.addTable("t", &.{
+        .{ .name = "id", .column_type = .integer, .flags = .{} },
+        .{ .name = "price", .column_type = .integer, .flags = .{} },
+    });
+
+    var analyzer = try parseAndAnalyze(allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (PARTITION BY nonexistent_col ORDER BY id PATTERN (A+) DEFINE A AS A.price > 0) AS mr;",
+        schema.provider());
+    defer analyzer.deinit();
+
+    try std.testing.expect(analyzer.hasErrors());
+    var found_not_found = false;
+    for (analyzer.errors.items) |err| {
+        if (err.kind == .column_not_found) found_not_found = true;
+    }
+    try std.testing.expect(found_not_found);
 }
 
