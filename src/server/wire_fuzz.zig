@@ -183,11 +183,15 @@ test "Fuzz Parse.parse with malformed lengths" {
             try buf.appendSlice(allocator, name);
         }
 
-        // Query string length
+        // Query string length (allocation bounded — an i32 length field can
+        // claim up to ~2GB, which under the debug allocator's safety
+        // instrumentation turns a single fuzz iteration into a multi-minute
+        // stall; capping keeps the declared-vs-actual mismatch coverage
+        // without the resource blowup)
         const query_len = random.int(i32);
         try buf.writer(allocator).writeInt(i32, query_len, .big);
-        if (query_len > 0) {
-            const query = try allocator.alloc(u8, @abs(query_len));
+        if (query_len > 0 and query_len < 4096) {
+            const query = try allocator.alloc(u8, @intCast(query_len));
             defer allocator.free(query);
             random.bytes(query);
             try buf.appendSlice(allocator, query);
