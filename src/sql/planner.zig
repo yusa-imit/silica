@@ -1081,6 +1081,11 @@ pub const Planner = struct {
                     .column_names = vt.column_names,
                 } });
             },
+            .match_recognize => {
+                // MATCH_RECOGNIZE planning deferred to Phase 3 (once AST is validated)
+                // For now, return an "unsupported" error
+                return error.UnsupportedStatement;
+            },
         };
     }
 

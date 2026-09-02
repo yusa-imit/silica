@@ -10342,6 +10342,7 @@ pub const Database = struct {
             .subquery => return null,
             .table_function => return null, // Table functions not supported in updatable views
             .values_table => return null, // VALUES tables not supported in updatable views
+            .match_recognize => return null, // MATCH_RECOGNIZE not supported in updatable views (Phase 1 doesn't support this)
         };
 
         // Verify the base table actually exists (not another view — for simplicity)

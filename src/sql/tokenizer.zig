@@ -247,6 +247,9 @@ pub const TokenType = enum {
     kw_percent_rank,
     kw_cume_dist,
 
+    // Keywords — Row Pattern Matching (SQL:2016 MATCH_RECOGNIZE)
+    kw_match_recognize,
+
     // Keywords — Transaction
     kw_begin,
     kw_commit,
@@ -975,6 +978,7 @@ fn lookupKeyword(text: []const u8) ?TokenType {
         .{ "nth_value", .kw_nth_value },
         .{ "percent_rank", .kw_percent_rank },
         .{ "cume_dist", .kw_cume_dist },
+        .{ "match_recognize", .kw_match_recognize },
         // Transaction
         .{ "begin", .kw_begin },
         .{ "commit", .kw_commit },
@@ -1953,4 +1957,25 @@ test "window frame EXCLUDE keywords" {
 test "CYCLE keyword for recursive CTE" {
     try expectSingleToken("cycle", .kw_cycle, "cycle");
     try expectSingleToken("CYCLE", .kw_cycle, "CYCLE");
+}
+
+test "MATCH_RECOGNIZE tokenizes as single kw_match_recognize token" {
+    try expectSingleToken("match_recognize", .kw_match_recognize, "match_recognize");
+    try expectSingleToken("MATCH_RECOGNIZE", .kw_match_recognize, "MATCH_RECOGNIZE");
+}
+
+test "MATCH_RECOGNIZE in context tokenizes correctly" {
+    const sql = "FROM t MATCH_RECOGNIZE (PATTERN (A+))";
+    try expectTokens(sql, &.{
+        .kw_from,
+        .identifier, // t
+        .kw_match_recognize,
+        .left_paren,
+        .identifier, // PATTERN — soft keyword, not reserved
+        .left_paren,
+        .identifier, // A
+        .plus,
+        .right_paren,
+        .right_paren,
+    });
 }

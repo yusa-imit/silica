@@ -754,13 +754,21 @@ pub const Parser = struct {
                     column_names = cols.toOwnedSlice(a) catch return error.OutOfMemory;
                 }
 
-                return self.arena.create(ast.TableRef, .{
+                const values_ref = self.arena.create(ast.TableRef, .{
                     .values_table = .{
                         .rows = rows.toOwnedSlice(a) catch return error.OutOfMemory,
                         .alias = alias,
                         .column_names = column_names,
                     },
                 }) catch return error.OutOfMemory;
+
+                // Check for MATCH_RECOGNIZE
+                if (self.check(.kw_match_recognize)) {
+                    _ = self.advance(); // consume kw_match_recognize
+                    return self.parseMatchRecognize(values_ref);
+                }
+
+                return values_ref;
             }
 
             if (self.check(.kw_select)) {
@@ -769,9 +777,17 @@ pub const Parser = struct {
                 _ = self.match(.kw_as);
                 const alias = try self.expectIdentifier();
                 const sel_ptr = self.arena.create(ast.SelectStmt, select) catch return error.OutOfMemory;
-                return self.arena.create(ast.TableRef, .{
+                const subquery_ref = self.arena.create(ast.TableRef, .{
                     .subquery = .{ .select = sel_ptr, .alias = alias, .is_lateral = is_lateral },
                 }) catch return error.OutOfMemory;
+
+                // Check for MATCH_RECOGNIZE
+                if (self.check(.kw_match_recognize)) {
+                    _ = self.advance(); // consume kw_match_recognize
+                    return self.parseMatchRecognize(subquery_ref);
+                }
+
+                return subquery_ref;
             }
             try self.addError(self.peek(), "expected SELECT or VALUES in subquery");
             return error.ParseFailed;
@@ -829,7 +845,7 @@ pub const Parser = struct {
                 alias = self.lexeme(self.advance());
             }
 
-            return self.arena.create(ast.TableRef, .{
+            const func_ref = self.arena.create(ast.TableRef, .{
                 .table_function = .{
                     .name = name,
                     .args = args.toOwnedSlice(a) catch return error.OutOfMemory,
@@ -839,6 +855,14 @@ pub const Parser = struct {
                     .column_names = column_names,
                 },
             }) catch return error.OutOfMemory;
+
+            // Check for MATCH_RECOGNIZE
+            if (self.check(.kw_match_recognize)) {
+                _ = self.advance(); // consume kw_match_recognize
+                return self.parseMatchRecognize(func_ref);
+            }
+
+            return func_ref;
         }
 
         // Regular table name
@@ -854,9 +878,17 @@ pub const Parser = struct {
             tablesample = try self.parseTableSample();
         }
 
-        return self.arena.create(ast.TableRef, .{
+        const table_ref = self.arena.create(ast.TableRef, .{
             .table_name = .{ .name = name, .alias = alias, .tablesample = tablesample },
         }) catch return error.OutOfMemory;
+
+        // Check for MATCH_RECOGNIZE
+        if (self.check(.kw_match_recognize)) {
+            _ = self.advance(); // consume kw_match_recognize
+            return self.parseMatchRecognize(table_ref);
+        }
+
+        return table_ref;
     }
 
     fn parseTableSample(self: *Parser) Error!ast.TableSample {
@@ -898,6 +930,256 @@ pub const Parser = struct {
             };
         }
         return .{ .method = method, .percent = percent, .seed = seed };
+    }
+
+    /// Parse MATCH_RECOGNIZE clause: (PARTITION BY ... ORDER BY ... MEASURES ... PATTERN ... DEFINE ...)
+    fn parseMatchRecognize(self: *Parser, source: *const ast.TableRef) Error!*const ast.TableRef {
+        const a = self.alloc();
+        _ = try self.expect(.left_paren);
+
+        // Parse PARTITION BY (optional)
+        var partition_by = std.ArrayListUnmanaged(*const ast.Expr){};
+        if (self.match(.kw_partition)) {
+            _ = try self.expect(.kw_by);
+            while (true) {
+                partition_by.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // Parse ORDER BY (optional in parser, but required by analyzer)
+        var order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
+        if (self.match(.kw_order)) {
+            _ = try self.expect(.kw_by);
+            while (true) {
+                const expr = try self.parseExpr(0);
+                var dir: ast.OrderDirection = .asc;
+                if (self.match(.kw_desc)) {
+                    dir = .desc;
+                } else {
+                    _ = self.match(.kw_asc);
+                }
+
+                var nulls: ?ast.NullsOrder = null;
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                    _ = self.advance();
+                    if (self.peek().type == .identifier) {
+                        const kw = self.lexeme(self.peek());
+                        if (std.ascii.eqlIgnoreCase(kw, "first")) {
+                            _ = self.advance();
+                            nulls = .first;
+                        } else if (std.ascii.eqlIgnoreCase(kw, "last")) {
+                            _ = self.advance();
+                            nulls = .last;
+                        }
+                    }
+                }
+
+                order_by.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // Parse MEASURES (optional)
+        var measures = std.ArrayListUnmanaged(ast.MeasureItem){};
+        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "measures")) {
+            _ = self.advance(); // consume "measures"
+            while (true) {
+                const expr = try self.parseExpr(0);
+                _ = try self.expect(.kw_as);
+                const alias = try self.expectIdentifier();
+                measures.append(a, .{ .expr = expr, .alias = alias }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        // Parse ONE ROW PER MATCH / ALL ROWS PER MATCH (optional, default ONE ROW)
+        var rows_per_match: ast.RowsPerMatch = .one_row;
+        if (self.match(.kw_all)) {
+            _ = try self.expect(.kw_rows);
+            rows_per_match = .all_rows;
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+                _ = self.advance();
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                    _ = self.advance();
+                }
+            }
+        } else if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "one")) {
+            _ = self.advance();
+            _ = try self.expect(.kw_row);
+            rows_per_match = .one_row;
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+                _ = self.advance();
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                    _ = self.advance();
+                }
+            }
+        }
+
+        // Parse AFTER MATCH SKIP (optional, default PAST LAST ROW)
+        var after_match_skip: ast.AfterMatchSkip = .past_last_row;
+        if (self.match(.kw_after)) {
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                _ = self.advance();
+            }
+            _ = try self.expect(.kw_skip);
+            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "past")) {
+                _ = self.advance();
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "last")) {
+                    _ = self.advance();
+                }
+                _ = try self.expect(.kw_row);
+                after_match_skip = .past_last_row;
+            } else if (self.match(.kw_to)) {
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next")) {
+                    _ = self.advance();
+                }
+                _ = try self.expect(.kw_row);
+                after_match_skip = .to_next_row;
+            } else {
+                try self.addError(self.peek(), "expected PAST LAST ROW or TO NEXT ROW after AFTER MATCH SKIP");
+                return error.ParseFailed;
+            }
+        }
+
+        // Parse PATTERN (required)
+        if (!(self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "pattern"))) {
+            try self.addError(self.peek(), "expected PATTERN clause in MATCH_RECOGNIZE");
+            return error.ParseFailed;
+        }
+        _ = self.advance(); // consume "pattern"
+
+        _ = try self.expect(.left_paren);
+        const pattern = try self.parsePatternExpr();
+        _ = try self.expect(.right_paren);
+
+        // Parse DEFINE (optional)
+        var define = std.ArrayListUnmanaged(ast.DefineItem){};
+        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "define")) {
+            _ = self.advance(); // consume "define"
+            while (true) {
+                const variable = try self.expectIdentifier();
+                _ = try self.expect(.kw_as);
+                const condition = try self.parseExpr(0);
+                define.append(a, .{ .variable = variable, .condition = condition }) catch return error.OutOfMemory;
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        _ = try self.expect(.right_paren);
+
+        // Parse optional AS alias
+        var alias: ?[]const u8 = null;
+        if (self.match(.kw_as)) {
+            alias = try self.expectIdentifier();
+        }
+
+        // Create the MATCH_RECOGNIZE TableRef
+        const spec = ast.MatchRecognizeSpec{
+            .partition_by = partition_by.toOwnedSlice(a) catch return error.OutOfMemory,
+            .order_by = order_by.toOwnedSlice(a) catch return error.OutOfMemory,
+            .measures = measures.toOwnedSlice(a) catch return error.OutOfMemory,
+            .rows_per_match = rows_per_match,
+            .after_match_skip = after_match_skip,
+            .pattern = pattern,
+            .define = define.toOwnedSlice(a) catch return error.OutOfMemory,
+        };
+
+        return self.arena.create(ast.TableRef, .{
+            .match_recognize = .{ .source = source, .spec = spec, .alias = alias },
+        }) catch return error.OutOfMemory;
+    }
+
+    /// Parse pattern expression with correct precedence:
+    /// alternation (|) < concatenation (juxtaposition) < quantifier (+, *, ?) < grouping ()
+    fn parsePatternExpr(self: *Parser) Error!*const ast.PatternNode {
+        return self.parsePatternAlternation();
+    }
+
+    /// Parse alternation (lowest precedence): A | B | C
+    fn parsePatternAlternation(self: *Parser) Error!*const ast.PatternNode {
+        const a = self.alloc();
+        var nodes = std.ArrayListUnmanaged(*const ast.PatternNode){};
+
+        nodes.append(a, try self.parsePatternConcatenation()) catch return error.OutOfMemory;
+
+        while (self.match(.bitwise_or)) {
+            nodes.append(a, try self.parsePatternConcatenation()) catch return error.OutOfMemory;
+        }
+
+        if (nodes.items.len == 1) {
+            return nodes.items[0];
+        }
+
+        return self.arena.create(ast.PatternNode, .{
+            .alternation = nodes.toOwnedSlice(a) catch return error.OutOfMemory,
+        }) catch return error.OutOfMemory;
+    }
+
+    /// Parse concatenation (middle precedence): A B C
+    fn parsePatternConcatenation(self: *Parser) Error!*const ast.PatternNode {
+        const a = self.alloc();
+        var nodes = std.ArrayListUnmanaged(*const ast.PatternNode){};
+
+        // Keep parsing quantified nodes until we hit a closing paren or bitwise_or
+        while (!self.check(.right_paren) and !self.check(.bitwise_or)) {
+            nodes.append(a, try self.parsePatternQuantified()) catch return error.OutOfMemory;
+        }
+
+        if (nodes.items.len == 0) {
+            try self.addError(self.peek(), "expected pattern element");
+            return error.ParseFailed;
+        }
+
+        if (nodes.items.len == 1) {
+            return nodes.items[0];
+        }
+
+        return self.arena.create(ast.PatternNode, .{
+            .concat = nodes.toOwnedSlice(a) catch return error.OutOfMemory,
+        }) catch return error.OutOfMemory;
+    }
+
+    /// Parse quantified pattern (higher precedence): A+ B* C?
+    fn parsePatternQuantified(self: *Parser) Error!*const ast.PatternNode {
+        const node = try self.parsePatternPrimary();
+
+        if (self.match(.plus)) {
+            return self.arena.create(ast.PatternNode, .{
+                .quantified = .{ .node = node, .quantifier = .one_or_more },
+            }) catch return error.OutOfMemory;
+        } else if (self.match(.star)) {
+            return self.arena.create(ast.PatternNode, .{
+                .quantified = .{ .node = node, .quantifier = .zero_or_more },
+            }) catch return error.OutOfMemory;
+        } else if (self.match(.placeholder)) {
+            return self.arena.create(ast.PatternNode, .{
+                .quantified = .{ .node = node, .quantifier = .zero_or_one },
+            }) catch return error.OutOfMemory;
+        }
+
+        return node;
+    }
+
+    /// Parse primary pattern: identifier or grouped expression
+    fn parsePatternPrimary(self: *Parser) Error!*const ast.PatternNode {
+        if (self.match(.left_paren)) {
+            const inner = try self.parsePatternExpr();
+            _ = try self.expect(.right_paren);
+            return self.arena.create(ast.PatternNode, .{
+                .group = inner,
+            }) catch return error.OutOfMemory;
+        }
+
+        if (self.check(.identifier)) {
+            const name = try self.expectIdentifier();
+            return self.arena.create(ast.PatternNode, .{
+                .variable = name,
+            }) catch return error.OutOfMemory;
+        }
+
+        try self.addError(self.peek(), "expected pattern variable or group");
+        return error.ParseFailed;
     }
 
     fn peekIsClauseKeyword(self: *const Parser) bool {
@@ -7535,4 +7817,128 @@ test "parse CYCLE clause without CYCLE (no cycle field)" {
     const sel = r.stmt.select;
     try std.testing.expectEqual(@as(usize, 1), sel.ctes.len);
     try std.testing.expect(sel.ctes[0].cycle == null);
+}
+
+// ── MATCH_RECOGNIZE tests (SQL:2016 row pattern matching) ──────────────────────────
+
+test "MATCH_RECOGNIZE: full clause parses into TableRef.match_recognize" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "PARTITION BY p " ++
+            "ORDER BY o " ++
+            "MEASURES m AS alias1 " ++
+            "ONE ROW PER MATCH " ++
+            "AFTER MATCH SKIP PAST LAST ROW " ++
+            "PATTERN (A B+ C?) " ++
+            "DEFINE B AS cond1, C AS cond2" ++
+        ") AS mr",
+    );
+    defer r.deinit();
+
+    const sel = r.stmt.select;
+    try std.testing.expect(sel.from != null);
+    try std.testing.expect(sel.from.?.* == .match_recognize);
+
+    const mr = sel.from.?.match_recognize;
+    try std.testing.expectEqualStrings("mr", mr.alias.?);
+    try std.testing.expectEqualStrings("t", mr.source.table_name.name);
+
+    const spec = mr.spec;
+    try std.testing.expectEqual(@as(usize, 1), spec.partition_by.len);
+    try std.testing.expectEqual(@as(usize, 1), spec.order_by.len);
+    try std.testing.expectEqual(@as(usize, 1), spec.measures.len);
+    try std.testing.expectEqualStrings("alias1", spec.measures[0].alias);
+    try std.testing.expectEqual(ast.RowsPerMatch.one_row, spec.rows_per_match);
+    try std.testing.expectEqual(ast.AfterMatchSkip.past_last_row, spec.after_match_skip);
+    try std.testing.expectEqual(@as(usize, 2), spec.define.len);
+    try std.testing.expectEqualStrings("B", spec.define[0].variable);
+    try std.testing.expectEqualStrings("C", spec.define[1].variable);
+}
+
+test "MATCH_RECOGNIZE: PATTERN with precedence (A (B | C)+ D?) parses correct nesting" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "PATTERN (A (B | C)+ D?) " ++
+            "DEFINE B AS b_cond, C AS c_cond, D AS d_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const mr = r.stmt.select.from.?.match_recognize;
+    const pattern = mr.spec.pattern;
+
+    // Top level should be concat: [A, quantified(group(alternation(B,C)), +), quantified(D, ?)]
+    try std.testing.expect(pattern.* == .concat);
+    const concat_nodes = pattern.concat;
+    try std.testing.expectEqual(@as(usize, 3), concat_nodes.len);
+
+    // First node: A (variable)
+    try std.testing.expect(concat_nodes[0].* == .variable);
+    try std.testing.expectEqualStrings("A", concat_nodes[0].variable);
+
+    // Second node: (B | C)+ (quantified group wrapping alternation)
+    try std.testing.expect(concat_nodes[1].* == .quantified);
+    const node_b_or_c = concat_nodes[1].quantified;
+    try std.testing.expectEqual(ast.PatternQuantifier.one_or_more, node_b_or_c.quantifier);
+    try std.testing.expect(node_b_or_c.node.* == .group);
+
+    const group_alternation = node_b_or_c.node.group;
+    try std.testing.expect(group_alternation.* == .alternation);
+    const alt_nodes = group_alternation.alternation;
+    try std.testing.expectEqual(@as(usize, 2), alt_nodes.len);
+    try std.testing.expect(alt_nodes[0].* == .variable);
+    try std.testing.expectEqualStrings("B", alt_nodes[0].variable);
+    try std.testing.expect(alt_nodes[1].* == .variable);
+    try std.testing.expectEqualStrings("C", alt_nodes[1].variable);
+
+    // Third node: D? (quantified variable)
+    try std.testing.expect(concat_nodes[2].* == .quantified);
+    const node_d = concat_nodes[2].quantified;
+    try std.testing.expectEqual(ast.PatternQuantifier.zero_or_one, node_d.quantifier);
+    try std.testing.expect(node_d.node.* == .variable);
+    try std.testing.expectEqualStrings("D", node_d.node.variable);
+}
+
+test "MATCH_RECOGNIZE: missing PATTERN clause returns parse error" {
+    const result = testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "MEASURES m AS m1 " ++
+            "DEFINE A AS a_cond" ++
+        ")",
+    );
+
+    // Expect parse to fail because PATTERN is required
+    try std.testing.expectError(error.ParseFailed, result);
+}
+
+test "MATCH_RECOGNIZE: ALL ROWS PER MATCH variant parses" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "ALL ROWS PER MATCH " ++
+            "PATTERN (A+) " ++
+            "DEFINE A AS a_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const spec = r.stmt.select.from.?.match_recognize.spec;
+    try std.testing.expectEqual(ast.RowsPerMatch.all_rows, spec.rows_per_match);
+}
+
+test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW variant parses" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "AFTER MATCH SKIP TO NEXT ROW " ++
+            "PATTERN (A+) " ++
+            "DEFINE A AS a_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const spec = r.stmt.select.from.?.match_recognize.spec;
+    try std.testing.expectEqual(ast.AfterMatchSkip.to_next_row, spec.after_match_skip);
 }

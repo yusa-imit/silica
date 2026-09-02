@@ -173,6 +173,15 @@ pub const TableRef = union(enum) {
         alias: []const u8,
         column_names: []const []const u8 = &.{},
     },
+    /// MATCH_RECOGNIZE (SQL:2016) row pattern matching: wraps a table reference with pattern matching logic
+    match_recognize: struct {
+        /// The underlying table reference to pattern-match against
+        source: *const TableRef,
+        /// Pattern matching specification (PARTITION BY, ORDER BY, MEASURES, PATTERN, DEFINE, etc.)
+        spec: MatchRecognizeSpec,
+        /// Optional alias for the match result (e.g., AS mr)
+        alias: ?[]const u8 = null,
+    },
 };
 
 /// SELECT result column.
@@ -437,6 +446,76 @@ pub const WindowDef = struct {
     partition_by: []const *const Expr = &.{},
     order_by: []const OrderByItem = &.{},
     frame: ?*const WindowFrameSpec = null,
+};
+
+/// MATCH_RECOGNIZE (SQL:2016) — Row pattern matching quantifier
+pub const PatternQuantifier = enum {
+    one_or_more,   // +
+    zero_or_more,  // *
+    zero_or_one,   // ?
+};
+
+/// MATCH_RECOGNIZE pattern node — recursive structure for PATTERN clause
+pub const PatternNode = union(enum) {
+    /// Pattern variable reference (e.g., A, B, C)
+    variable: []const u8,
+    /// Concatenation (implicit juxtaposition): e.g., A B C
+    concat: []const *const PatternNode,
+    /// Alternation: e.g., A | B | C
+    alternation: []const *const PatternNode,
+    /// Grouping: e.g., (A B)
+    group: *const PatternNode,
+    /// Quantified node: e.g., A+, B*, C?
+    quantified: struct {
+        node: *const PatternNode,
+        quantifier: PatternQuantifier,
+    },
+};
+
+/// DEFINE clause item — associates a pattern variable with a row condition
+pub const DefineItem = struct {
+    /// Pattern variable name
+    variable: []const u8,
+    /// Condition expression (may reference PREV/NEXT/FIRST/LAST, var.column)
+    condition: *const Expr,
+};
+
+/// MEASURES clause item — computes a result column from a match
+pub const MeasureItem = struct {
+    /// Expression to compute (may reference PREV/NEXT/FIRST/LAST, MATCH_NUMBER, CLASSIFIER)
+    expr: *const Expr,
+    /// Result column alias
+    alias: []const u8,
+};
+
+/// Rows per match: ONE ROW or ALL ROWS (SQL:2016)
+pub const RowsPerMatch = enum {
+    one_row,   // ONE ROW PER MATCH (default)
+    all_rows,  // ALL ROWS PER MATCH
+};
+
+/// After match skip strategy (SQL:2016) — limited v1 scope
+pub const AfterMatchSkip = enum {
+    past_last_row, // SKIP PAST LAST ROW (default)
+    to_next_row,   // SKIP TO NEXT ROW
+};
+
+/// MATCH_RECOGNIZE specification — groups all pattern-matching clauses
+pub const MatchRecognizeSpec = struct {
+    /// PARTITION BY expressions
+    partition_by: []const *const Expr = &.{},
+    /// ORDER BY items (required by analyzer, optional in parser)
+    order_by: []const OrderByItem = &.{},
+    /// MEASURES computed columns
+    measures: []const MeasureItem = &.{},
+    /// ONE ROW PER MATCH or ALL ROWS PER MATCH
+    rows_per_match: RowsPerMatch = .one_row,
+    /// AFTER MATCH SKIP strategy
+    after_match_skip: AfterMatchSkip = .past_last_row,
+    /// PATTERN clause — the actual pattern to match
+    pattern: *const PatternNode,
+    /// DEFINE clause — maps pattern variables to conditions
+    define: []const DefineItem = &.{},
 };
 
 /// A single CTE definition in a WITH clause.

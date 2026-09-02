@@ -1183,6 +1183,10 @@ pub const Analyzer = struct {
                 // Register values table columns in scope
                 self.addValuesTableToScope(ref);
             },
+            .match_recognize => {
+                // MATCH_RECOGNIZE analysis deferred to Phase 2 (semantic validation of pattern/define/measures)
+                // For now, just resolve the underlying source reference
+            },
         }
     }
 
