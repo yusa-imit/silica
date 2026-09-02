@@ -830,6 +830,7 @@ const OperatorChain = struct {
     distinct: ?*DistinctOp = null,
     set_op: ?*SetOpOp = null,
     window: ?*WindowOp = null,
+    match_recognize: ?*executor_mod.MatchRecognizeOp = null,
     /// Operator chains for set operation sub-queries (need cleanup).
     set_op_chains: std.ArrayListUnmanaged(*OperatorChain) = .{},
     /// Materialized CTE results: name → MaterializedOp*.
@@ -966,6 +967,7 @@ const OperatorChain = struct {
         if (self.distinct) |d| allocator.destroy(d);
         if (self.set_op) |s| allocator.destroy(s);
         if (self.window) |w| allocator.destroy(w);
+        if (self.match_recognize) |mr| allocator.destroy(mr);
         if (self.stat_activity_scan) |s| allocator.destroy(s);
         if (self.locks_scan) |l| allocator.destroy(l);
         if (self.lateral_join) |lj| allocator.destroy(lj);
@@ -2754,10 +2756,11 @@ pub const Database = struct {
     /// as of phase 3 — see .claude/memory/architecture.md). Fail cleanly rather
     /// than silently returning wrong rows.
     fn buildMatchRecognize(self: *Database, mr: PlanNode.MatchRecognize, ops: *OperatorChain) EngineError!RowIterator {
-        _ = self;
-        _ = mr;
-        _ = ops;
-        return EngineError.ExecutionError;
+        const input = try self.buildIterator(mr.input, ops);
+        const match_recognize_op = self.allocator.create(executor_mod.MatchRecognizeOp) catch return EngineError.OutOfMemory;
+        match_recognize_op.* = executor_mod.MatchRecognizeOp.init(self.allocator, input, mr.spec, self.catalog);
+        ops.match_recognize = match_recognize_op;
+        return match_recognize_op.iterator();
     }
 
     fn buildScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
