@@ -89,6 +89,10 @@ pub fn runReceiverLoop(
     while (!stop.load(.acquire)) {
         // Try to receive a message from sender
         const msg_result = transport.receiveBackendMessage(stream, allocator) catch |err| {
+            // Read timed out (SO_RCVTIMEO): no message yet, recheck stop flag.
+            if (err == error.WouldBlock) {
+                continue;
+            }
             // Stream closed or error
             if (err == error.EndOfStream or err == error.ConnectionClosed or err == error.NotOpenForReading) {
                 if (stop.load(.acquire)) {
@@ -138,6 +142,10 @@ pub fn runSenderStatusReaderLoop(
     while (!stop.load(.acquire)) {
         // Try to receive a FrontendMessage from replica
         const msg_result = transport.receiveFrontendMessage(stream, allocator) catch |err| {
+            // Read timed out (SO_RCVTIMEO): no message yet, recheck stop flag.
+            if (err == error.WouldBlock) {
+                continue;
+            }
             // Stream closed or error
             if (err == error.EndOfStream or err == error.ConnectionClosed or err == error.NotOpenForReading) {
                 if (stop.load(.acquire)) {
@@ -229,6 +237,12 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
     var server_stream = accepted_stream.?;
     // Closed explicitly below (before thread join) to unblock in-flight reads;
     // no defer here to avoid a double-close panic.
+
+    // Bound blocking reads on both ends so loop threads periodically recheck
+    // their stop flag even if shutdown() doesn't reliably unblock a
+    // concurrent blocking recv() on the CI runner's kernel.
+    try transport.setReceiveTimeout(server_stream, 200);
+    try transport.setReceiveTimeout(client_stream, 200);
 
     // ── Setup: Write 2+ transactions to primary WAL ──
 
@@ -365,6 +379,14 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
 
     sender_stop.store(true, .release);
     receiver_stop.store(true, .release);
+
+    // shutdown() (not just close()) is required to reliably unblock threads
+    // parked in a blocking read/write on these fds: server_stream is shared
+    // by sender_thread (writer) and status_reader_thread (reader), and on
+    // Linux, close() from a different thread does not wake a concurrent
+    // blocking syscall on the same fd — only shutdown() is guaranteed to.
+    std.posix.shutdown(server_stream.handle, .both) catch {};
+    std.posix.shutdown(client_stream.handle, .both) catch {};
     server_stream.close();
     client_stream.close();
 

@@ -270,6 +270,18 @@ pub fn receiveBackendMessage(stream: std.net.Stream, allocator: Allocator) !Back
     return parseBackendMessage(allocator, &reader);
 }
 
+/// Set a receive timeout on the stream's underlying socket so a blocking read
+/// periodically returns error.WouldBlock instead of blocking indefinitely.
+/// Loop threads use this to recheck a stop flag even when a peer-side
+/// shutdown() doesn't reliably unblock a concurrent blocking recv() (observed
+/// hanging a CI run for its full timeout with no other symptom).
+pub fn setReceiveTimeout(stream: std.net.Stream, timeout_ms: u32) !void {
+    var tv: std.posix.timeval = undefined;
+    tv.sec = @intCast(timeout_ms / 1000);
+    tv.usec = @intCast((timeout_ms % 1000) * 1000);
+    try std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 const testing = std.testing;
