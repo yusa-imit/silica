@@ -113,6 +113,7 @@ pub const Optimizer = struct {
             .limit => |l| try self.collectScanNames(l.input, scan_names, allocator),
             .distinct => |d| try self.collectScanNames(d.input, scan_names, allocator),
             .window => |w| try self.collectScanNames(w.input, scan_names, allocator),
+            .match_recognize => |mr| try self.collectScanNames(mr.input, scan_names, allocator),
             .join => |j| {
                 try self.collectScanNames(j.left, scan_names, allocator);
                 try self.collectScanNames(j.right, scan_names, allocator);
@@ -185,6 +186,20 @@ pub const Optimizer = struct {
                 for (w.funcs) |func| {
                     try self.collectColumnRefsFromExpr(func, allocator, scan_names, result);
                 }
+            },
+            .match_recognize => |mr| {
+                // NOTE: DEFINE/MEASURES column refs qualified by a pattern variable
+                // (e.g. `B.price`) won't match any real scan alias in `scan_names`,
+                // so collectColumnRefsFromExpr silently skips marking them required.
+                // Harmless today since MATCH_RECOGNIZE never reaches execution
+                // (buildMatchRecognize errors before any scan is read) — revisit if
+                // column pruning is ever wired to actually narrow a scan feeding a
+                // MATCH_RECOGNIZE node.
+                try self.collectColumnRefsFromNode(mr.input, allocator, scan_names, result);
+                for (mr.spec.partition_by) |expr| try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                for (mr.spec.order_by) |item| try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                for (mr.spec.measures) |m| try self.collectColumnRefsFromExpr(m.expr, allocator, scan_names, result);
+                for (mr.spec.define) |d| try self.collectColumnRefsFromExpr(d.condition, allocator, scan_names, result);
             },
             .limit => |l| {
                 try self.collectColumnRefsFromNode(l.input, allocator, scan_names, result);
@@ -430,6 +445,14 @@ pub const Optimizer = struct {
                     .input = opt_input,
                     .funcs = w.funcs,
                     .aliases = w.aliases,
+                } });
+            },
+            .match_recognize => |mr| {
+                const opt_input = try self.optimizeNode(mr.input);
+                return self.createNode(.{ .match_recognize = .{
+                    .input = opt_input,
+                    .spec = mr.spec,
+                    .alias = mr.alias,
                 } });
             },
             .scan => |s| self.optimizeScan(s),

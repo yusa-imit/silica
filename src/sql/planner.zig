@@ -169,6 +169,10 @@ pub const PlanNode = union(enum) {
     distinct: Distinct,
     /// Window — compute window functions over the input rows.
     window: Window,
+    /// MATCH_RECOGNIZE — SQL:2016 row pattern matching over the input rows.
+    /// Execution not yet implemented (see .claude/memory/architecture.md
+    /// "MATCH_RECOGNIZE — Architect Design"); planning and EXPLAIN work.
+    match_recognize: MatchRecognize,
     /// Empty — produces no rows (e.g., for DDL results).
     empty: Empty,
 
@@ -287,6 +291,12 @@ pub const PlanNode = union(enum) {
         funcs: []const *const ast.Expr,
         /// Aliases for each window function (from SELECT AS clause).
         aliases: []const ?[]const u8,
+    };
+
+    pub const MatchRecognize = struct {
+        input: *const PlanNode,
+        spec: ast.MatchRecognizeSpec,
+        alias: ?[]const u8 = null,
     };
 
     pub const Values = struct {
@@ -459,6 +469,7 @@ fn findScanTable(node: *const PlanNode) ?[]const u8 {
         .distinct => |d| findScanTable(d.input),
         .aggregate => |a| findScanTable(a.input),
         .window => |w| findScanTable(w.input),
+        .match_recognize => |mr| findScanTable(mr.input),
         else => null,
     };
 }
@@ -1081,10 +1092,13 @@ pub const Planner = struct {
                     .column_names = vt.column_names,
                 } });
             },
-            .match_recognize => {
-                // MATCH_RECOGNIZE planning deferred to Phase 3 (once AST is validated)
-                // For now, return an "unsupported" error
-                return error.UnsupportedStatement;
+            .match_recognize => |mr| {
+                const sub_plan = try self.planTableRef(mr.source);
+                return self.createNode(.{ .match_recognize = .{
+                    .input = sub_plan,
+                    .spec = mr.spec,
+                    .alias = mr.alias,
+                } });
             },
         };
     }
@@ -1522,6 +1536,10 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
         .window => |w| {
             try writer.print("Window ({d} funcs)\n", .{w.funcs.len});
             try formatPlan(w.input, writer, depth + 1);
+        },
+        .match_recognize => |mr| {
+            try writer.print("MatchRecognize (rows_per_match={s}, skip={s})\n", .{ @tagName(mr.spec.rows_per_match), @tagName(mr.spec.after_match_skip) });
+            try formatPlan(mr.input, writer, depth + 1);
         },
         .values => |v| {
             try writer.print("Values: {s} ({d} rows)\n", .{ v.table, v.rows.len });
@@ -3566,4 +3584,93 @@ test "deriveOutputSchema - SELECT * from table" {
     try testing.expectEqualStrings("name", output_schema.fields[1].name);
     try testing.expectEqualStrings("email", output_schema.fields[2].name);
     try testing.expectEqualStrings("age", output_schema.fields[3].name);
+}
+
+// ── MATCH_RECOGNIZE Phase 3 Tests (planTableRef + formatPlan) ─────────────
+
+test "planTableRef: MATCH_RECOGNIZE produces PlanNode.match_recognize wrapping planned source" {
+    const allocator = testing.allocator;
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS mr;",
+        &arena, &schema);
+
+    // planSelect always wraps the FROM body in a Project node (step 3.6 of
+    // planSelect), so the match_recognize node sits one level below root.
+    try testing.expect(plan.root.* == .project);
+    try testing.expect(plan.root.project.input.* == .match_recognize);
+
+    // The input should be a scan of the "orders" table
+    const mr = plan.root.project.input.match_recognize;
+    try testing.expect(mr.input.* == .scan);
+    try testing.expectEqualStrings("orders", mr.input.scan.table);
+}
+
+test "planTableRef: MATCH_RECOGNIZE preserves alias in plan node" {
+    const allocator = testing.allocator;
+    var arena = ast.AstArena.init(allocator);
+    defer arena.deinit();
+    var schema = testSchema(allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(allocator,
+        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS my_mr;",
+        &arena, &schema);
+
+    try testing.expect(plan.root.* == .project);
+    try testing.expect(plan.root.project.input.* == .match_recognize);
+    const mr = plan.root.project.input.match_recognize;
+    try testing.expect(mr.alias != null);
+    try testing.expectEqualStrings("my_mr", mr.alias.?);
+}
+
+test "formatPlan: MATCH_RECOGNIZE node outputs MatchRecognize text" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS mr;",
+        &arena, &schema);
+
+    // Collect formatPlan output via fixedBufferStream
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+
+    try formatPlan(plan.root, &w, 0);
+    const output = fbs.getWritten();
+
+    // Verify output contains "MatchRecognize"
+    try testing.expect(std.mem.indexOf(u8, output, "MatchRecognize") != null);
+    // Verify nested Scan line appears
+    try testing.expect(std.mem.indexOf(u8, output, "Scan: orders") != null);
+}
+
+test "formatPlan: MATCH_RECOGNIZE indents nested scan correctly" {
+    var arena = ast.AstArena.init(testing.allocator);
+    defer arena.deinit();
+    var schema = testSchema(testing.allocator);
+    defer schema.deinit();
+
+    const plan = try parseAndPlan(testing.allocator,
+        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0);",
+        &arena, &schema);
+
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var w = fbs.writer();
+
+    try formatPlan(plan.root, &w, 1);
+    const output = fbs.getWritten();
+
+    // Output should start with 2 spaces (depth=1, 2 spaces per level)
+    try testing.expect(output.len >= 2);
+    try testing.expect(output[0] == ' ');
+    try testing.expect(output[1] == ' ');
 }

@@ -214,6 +214,7 @@ fn extractPlanColumns(node: *const PlanNode) []const ColumnRef {
         .aggregate => |a| extractPlanColumns(a.input),
         .distinct => |d| extractPlanColumns(d.input),
         .window => |w| extractPlanColumns(w.input),
+        .match_recognize => |mr| extractPlanColumns(mr.input),
         .join => |j| extractPlanColumns(j.left),
         .set_op => |s| extractPlanColumns(s.left),
         .values => &.{},
@@ -1751,6 +1752,11 @@ pub const Database = struct {
                 .funcs = w.funcs, // Window function exprs could have bind parameters, but rare
                 .aliases = w.aliases,
             } },
+            .match_recognize => |mr| .{ .match_recognize = .{
+                .input = try substituteParamsInNode(template_arena, execution_arena, mr.input, params),
+                .spec = mr.spec, // PARTITION BY/ORDER BY/MEASURES/DEFINE exprs could have bind parameters, but rare
+                .alias = mr.alias,
+            } },
         };
         return new_node;
     }
@@ -2507,6 +2513,14 @@ pub const Database = struct {
     // ── SELECT execution ──────────────────────────────────────────────
 
     fn executeSelect(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
+        // On success, ownership of `arena` transfers to the returned QueryResult
+        // (freed via QueryResult.close()). On any error return below, nobody else
+        // owns it, so free it here to avoid leaking the whole query's AST/plan arena.
+        errdefer {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
+
         const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
         ops.* = .{};
         ops.locking_clauses = plan.locking_clauses;
@@ -2730,9 +2744,20 @@ pub const Database = struct {
             .set_op => |s| self.buildSetOp(s, ops),
             .distinct => |d| self.buildDistinct(d, ops),
             .window => |w| self.buildWindow(w, ops),
+            .match_recognize => |mr| self.buildMatchRecognize(mr, ops),
             .values => |v| self.buildValues(v, ops),
             .empty => |e| self.buildEmpty(e, ops),
         };
+    }
+
+    /// MATCH_RECOGNIZE execution is not yet implemented (planning/EXPLAIN work
+    /// as of phase 3 — see .claude/memory/architecture.md). Fail cleanly rather
+    /// than silently returning wrong rows.
+    fn buildMatchRecognize(self: *Database, mr: PlanNode.MatchRecognize, ops: *OperatorChain) EngineError!RowIterator {
+        _ = self;
+        _ = mr;
+        _ = ops;
+        return EngineError.ExecutionError;
     }
 
     fn buildScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
@@ -42750,4 +42775,20 @@ test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak
     // teardown is what actually catches this.
     const iter2 = db.tryBuildBitmapScan(scan2, &pred2, ops);
     try testing.expect(iter2 != null);
+}
+
+// ── MATCH_RECOGNIZE Phase 3 Tests (execution stub) ─────────────────────────
+
+test "MATCH_RECOGNIZE: execSQL returns a clean ExecutionError (execution not yet implemented)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_match_recognize_stub.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    const result = db.execSQL("SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.price > 0)");
+    try testing.expectError(EngineError.ExecutionError, result);
 }
