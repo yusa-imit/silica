@@ -2752,13 +2752,10 @@ pub const Database = struct {
         };
     }
 
-    /// MATCH_RECOGNIZE execution is not yet implemented (planning/EXPLAIN work
-    /// as of phase 3 — see .claude/memory/architecture.md). Fail cleanly rather
-    /// than silently returning wrong rows.
     fn buildMatchRecognize(self: *Database, mr: PlanNode.MatchRecognize, ops: *OperatorChain) EngineError!RowIterator {
         const input = try self.buildIterator(mr.input, ops);
         const match_recognize_op = self.allocator.create(executor_mod.MatchRecognizeOp) catch return EngineError.OutOfMemory;
-        match_recognize_op.* = executor_mod.MatchRecognizeOp.init(self.allocator, input, mr.spec, self.catalog);
+        match_recognize_op.* = executor_mod.MatchRecognizeOp.init(self.allocator, input, mr.spec, &self.catalog);
         ops.match_recognize = match_recognize_op;
         return match_recognize_op.iterator();
     }
