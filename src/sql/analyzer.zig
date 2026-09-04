@@ -1230,6 +1230,28 @@ pub const Analyzer = struct {
                 // directly (not pattern-variable-qualified).
                 for (mr.spec.partition_by) |e| self.analyzeExpr(e);
                 for (mr.spec.order_by) |ob| self.analyzeExpr(ob.expr);
+
+                // Register MEASURES aliases as resolvable columns on this FROM item so the
+                // outer SELECT/WHERE can reference them (e.g. `MEASURES FIRST(A.price) AS
+                // first_price` makes `first_price` a real output column of MATCH_RECOGNIZE,
+                // not of the underlying table). Source table columns stay in scope too since
+                // ALL ROWS PER MATCH passes them through; ONE ROW PER MATCH's narrower
+                // restriction to only PARTITION BY + MEASURES columns is enforced by the
+                // executor, not here.
+                if (mr.spec.measures.len > 0 and self.scope_tables.items.len > before_len) {
+                    const scope_idx = self.scope_tables.items.len - 1;
+                    const existing = self.scope_tables.items[scope_idx].columns;
+                    const arena = self.arena.allocator();
+                    const combined = arena.alloc(ColumnInfo, existing.len + mr.spec.measures.len) catch {
+                        self.addError(.invalid_expression, "out of memory", .{});
+                        return;
+                    };
+                    @memcpy(combined[0..existing.len], existing);
+                    for (mr.spec.measures, 0..) |m, i| {
+                        combined[existing.len + i] = .{ .name = m.alias, .column_type = .untyped, .flags = .{} };
+                    }
+                    self.scope_tables.items[scope_idx].columns = combined;
+                }
             },
         }
     }
