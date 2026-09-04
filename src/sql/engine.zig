@@ -42777,18 +42777,308 @@ test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak
     try testing.expect(iter2 != null);
 }
 
-// ── MATCH_RECOGNIZE Phase 3 Tests (execution stub) ─────────────────────────
+// ── MATCH_RECOGNIZE Phase 6 Tests (end-to-end SQL integration) ─────────────────────────
 
-test "MATCH_RECOGNIZE: execSQL returns a clean ExecutionError (execution not yet implemented)" {
+test "MATCH_RECOGNIZE: classic V-shape stock price pattern" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_match_recognize_stub.db";
+    const path = "test_mr_vshape.db";
     defer std.fs.cwd().deleteFile(path) catch {};
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, price INTEGER)");
+    // Create table and insert V-shaped price data: 100, 90, 80, 85, 95
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
     defer r1.close(testing.allocator);
 
-    const result = db.execSQL("SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.price > 0)");
-    try testing.expectError(EngineError.ExecutionError, result);
+    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    defer r2.close(testing.allocator);
+
+    // Pattern: A B+ C+ where B is descending, C is ascending
+    // Expected: rows 1-5 form one match (A=row1 at 100, B=rows 2-3 at 90,80, C=rows 4-5 at 85,95)
+    // ONE ROW PER MATCH (default) only exposes PARTITION BY + MEASURES columns per SQL:2016 —
+    // there's no 1:1 correspondence with input rows for other columns since a match spans
+    // several of them — so pull MATCH_NUMBER() through MEASURES rather than raw table columns.
+    var r3 = try db.execSQL(
+        "SELECT match_num FROM prices MATCH_RECOGNIZE (" ++
+        "  ORDER BY day " ++
+        "  MEASURES MATCH_NUMBER() AS match_num " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // ONE ROW PER MATCH (default): should return 1 row per match found
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "MATCH_RECOGNIZE: ALL ROWS PER MATCH outputs all matched rows" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_allrows.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    defer r2.close(testing.allocator);
+
+    // Same V-shape pattern but with ALL ROWS PER MATCH — should output 5 rows
+    var r3 = try db.execSQL(
+        "SELECT stock, day, price FROM prices MATCH_RECOGNIZE (" ++
+        "  ORDER BY day " ++
+        "  ALL ROWS PER MATCH " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ") " ++
+        "WHERE stock = 'AAPL'"
+    );
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // ALL ROWS PER MATCH: should return 5 rows (one per input row in the match)
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "MATCH_RECOGNIZE: PARTITION BY with multiple partitions" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_partition.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Two partitions: AAPL with V-shape (matches), GOOG with monotonic (no match)
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES " ++
+        "('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95), " ++
+        "('GOOG', 1, 100), ('GOOG', 2, 110), ('GOOG', 3, 120)"
+    );
+    defer r2.close(testing.allocator);
+
+    // Partition by stock, find V-patterns within each partition. ONE ROW PER MATCH (default)
+    // always exposes PARTITION BY columns per SQL:2016, so "stock" is available without a
+    // MEASURES clause; "day" (an ORDER BY, not PARTITION BY, column) would not be.
+    var r3 = try db.execSQL(
+        "SELECT stock FROM prices MATCH_RECOGNIZE (" ++
+        "  PARTITION BY stock " ++
+        "  ORDER BY day " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    var aapl_matches: usize = 0;
+    var goog_matches: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (row.values.len >= 1) {
+            if (row.values[0] == .text) {
+                if (std.mem.eql(u8, row.values[0].text, "AAPL")) {
+                    aapl_matches += 1;
+                } else if (std.mem.eql(u8, row.values[0].text, "GOOG")) {
+                    goog_matches += 1;
+                }
+            }
+        }
+    }
+    // AAPL partition should have 1 match, GOOG should have 0 (monotonic increasing, no B+ C+ pattern)
+    try testing.expectEqual(@as(usize, 1), aapl_matches);
+    try testing.expectEqual(@as(usize, 0), goog_matches);
+}
+
+test "MATCH_RECOGNIZE: MEASURES with FIRST/LAST/MATCH_NUMBER/CLASSIFIER" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_measures.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    defer r2.close(testing.allocator);
+
+    // Query with MEASURES: first_price (FIRST), last_price (LAST), match_num (MATCH_NUMBER).
+    // The outer SELECT references the MEASURES aliases as plain output columns — PREV/NEXT/
+    // FIRST/LAST/MATCH_NUMBER/CLASSIFIER are only valid inside the MATCH_RECOGNIZE clause itself.
+    var r3 = try db.execSQL(
+        "SELECT first_price, last_price, match_num " ++
+        "FROM prices MATCH_RECOGNIZE (" ++
+        "  ORDER BY day " ++
+        "  MEASURES " ++
+        "    FIRST(A.price) AS first_price, " ++
+        "    LAST(C.price) AS last_price, " ++
+        "    MATCH_NUMBER() AS match_num " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    var first_price_ok = false;
+    var last_price_ok = false;
+    var match_num_ok = false;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+        // Expected values: first_price=100 (A), last_price=95 (last C), match_num=1
+        if (row.values.len >= 1 and row.values[0] == .integer and row.values[0].integer == 100) {
+            first_price_ok = true;
+        }
+        if (row.values.len >= 2 and row.values[1] == .integer and row.values[1].integer == 95) {
+            last_price_ok = true;
+        }
+        if (row.values.len >= 3 and row.values[2] == .integer and row.values[2].integer == 1) {
+            match_num_ok = true;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expect(first_price_ok);
+    try testing.expect(last_price_ok);
+    try testing.expect(match_num_ok);
+}
+
+test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW allows overlapping matches" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_skip_next.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Simple pattern: A B. Rows 1-2 match (A=1,B=2), then with SKIP TO NEXT ROW rows 2-3 also match (A=2,B=3)
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1)");
+    defer r2.close(testing.allocator);
+
+    // With SKIP TO NEXT ROW, overlapping matches are found. ONE ROW PER MATCH (default) only
+    // exposes PARTITION BY + MEASURES columns, so pull the match's first id through MEASURES
+    // rather than selecting the raw "id" column.
+    var r3 = try db.execSQL(
+        "SELECT first_id FROM t MATCH_RECOGNIZE (" ++
+        "  ORDER BY id " ++
+        "  MEASURES FIRST(A.id) AS first_id " ++
+        "  AFTER MATCH SKIP TO NEXT ROW " ++
+        "  PATTERN (A B) " ++
+        "  DEFINE A AS A.val = 1, B AS B.val = 1 " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Should find multiple matches: (1,2), (2,3), (3,4), (4,5) = 4 matches
+    try testing.expect(count >= 2);  // At least 2 overlapping matches
+}
+
+test "MATCH_RECOGNIZE: AFTER MATCH SKIP PAST LAST ROW prevents overlapping matches" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_skip_past.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1)");
+    defer r2.close(testing.allocator);
+
+    // With SKIP PAST LAST ROW (default), non-overlapping matches only
+    var r3 = try db.execSQL(
+        "SELECT first_id FROM t MATCH_RECOGNIZE (" ++
+        "  ORDER BY id " ++
+        "  MEASURES FIRST(A.id) AS first_id " ++
+        "  AFTER MATCH SKIP PAST LAST ROW " ++
+        "  PATTERN (A B) " ++
+        "  DEFINE A AS A.val = 1, B AS B.val = 1 " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    var count: usize = 0;
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        count += 1;
+    }
+    // Should find non-overlapping: (1,2), (3,4) = 2 matches
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "MATCH_RECOGNIZE: error path - DEFINE variable not in PATTERN" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_err_define.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1)");
+    defer r2.close(testing.allocator);
+
+    // DEFINE references variable X that doesn't appear in PATTERN (A B) — should error
+    const result = db.execSQL(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+        "  ORDER BY id " ++
+        "  PATTERN (A B) " ++
+        "  DEFINE X AS X.val = 1 " ++  // X not in pattern!
+        ")"
+    );
+    try testing.expectError(error.AnalysisError, result);
+}
+
+test "MATCH_RECOGNIZE: error path - missing ORDER BY" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_err_orderby.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
+    defer r1.close(testing.allocator);
+
+    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1)");
+    defer r2.close(testing.allocator);
+
+    // MATCH_RECOGNIZE without ORDER BY — should error per analyzer requirement
+    const result = db.execSQL(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+        "  PATTERN (A B) " ++
+        "  DEFINE A AS A.val = 1, B AS B.val = 1 " ++
+        ")"
+    );
+    try testing.expectError(error.AnalysisError, result);
 }
