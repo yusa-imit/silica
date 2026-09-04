@@ -480,12 +480,20 @@ pub const DefineItem = struct {
     condition: *const Expr,
 };
 
+/// MEASURES clause semantics (SQL:2016) — RUNNING is default
+pub const MeasureSemantics = enum {
+    running,  // RUNNING — measure re-evaluated per row (default)
+    final,    // FINAL — measure evaluated once at end of match
+};
+
 /// MEASURES clause item — computes a result column from a match
 pub const MeasureItem = struct {
     /// Expression to compute (may reference PREV/NEXT/FIRST/LAST, MATCH_NUMBER, CLASSIFIER)
     expr: *const Expr,
     /// Result column alias
     alias: []const u8,
+    /// RUNNING (default) or FINAL semantics (SQL:2016)
+    semantics: MeasureSemantics = .running,
 };
 
 /// Rows per match: ONE ROW or ALL ROWS (SQL:2016)

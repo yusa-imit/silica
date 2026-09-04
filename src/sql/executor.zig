@@ -10375,10 +10375,19 @@ pub const MatchRecognizeOp = struct {
             for (self.spec.measures) |measure| {
                 columns.append(alloc, measure.alias) catch return ExecError.OutOfMemory;
 
+                // For RUNNING semantics, create a truncated match view that only includes rows
+                // up to the current row. For FINAL semantics, use the full match.
+                const truncated_match = pattern_match_mod.Match{
+                    .start = match.start,
+                    .end_exclusive = match.start + row_offset + 1,
+                    .variable_per_row = match.variable_per_row[0 .. row_offset + 1],
+                };
+                const effective_match: *const pattern_match_mod.Match = if (measure.semantics == .running) &truncated_match else match;
+
                 const match_eval_ctx = MatchEvalContext{
                     .op = self,
                     .all_rows = all_rows,
-                    .match = match,
+                    .match = effective_match,
                     .allocator = alloc,
                     .in_define = false,
                     .current_row_offset = match.start + row_offset,

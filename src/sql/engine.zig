@@ -43082,3 +43082,161 @@ test "MATCH_RECOGNIZE: error path - missing ORDER BY" {
     );
     try testing.expectError(error.AnalysisError, result);
 }
+
+test "MATCH_RECOGNIZE MEASURES SEMANTICS: RUNNING LAST() in ALL ROWS PER MATCH grows per row" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_running_semantics.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // V-shape pattern: prices 100,90,80,85,95 over 5 days
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)"
+    );
+    defer r2.close(testing.allocator);
+
+    // ALL ROWS PER MATCH with RUNNING LAST(price) — should emit 5 rows where running_last value
+    // grows from 100→90→80→85→95 (the match "so far" at each row)
+    var r3 = try db.execSQL(
+        "SELECT price, running_last FROM prices MATCH_RECOGNIZE (" ++
+        "  ORDER BY day " ++
+        "  ALL ROWS PER MATCH " ++
+        "  MEASURES RUNNING LAST(price) AS running_last " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    // Collect all rows and verify running_last values
+    var running_last_values = std.ArrayListUnmanaged(i64){};
+    defer running_last_values.deinit(testing.allocator);
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (row.values.len >= 2 and row.values[1] == .integer) {
+            running_last_values.append(testing.allocator, row.values[1].integer) catch return error.OutOfMemory;
+        }
+    }
+
+    // Should have 5 output rows (one per input row in the match)
+    try testing.expectEqual(@as(usize, 5), running_last_values.items.len);
+
+    // RUNNING semantics: values should grow/change: 100, 90, 80, 85, 95
+    // (each row's value is the price of the match "up to" that row)
+    try testing.expectEqual(@as(i64, 100), running_last_values.items[0]);
+    try testing.expectEqual(@as(i64, 90), running_last_values.items[1]);
+    try testing.expectEqual(@as(i64, 80), running_last_values.items[2]);
+    try testing.expectEqual(@as(i64, 85), running_last_values.items[3]);
+    try testing.expectEqual(@as(i64, 95), running_last_values.items[4]);
+}
+
+test "MATCH_RECOGNIZE MEASURES SEMANTICS: FINAL LAST() in ALL ROWS PER MATCH is constant" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_final_semantics.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Same V-shape pattern: prices 100,90,80,85,95 over 5 days
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)"
+    );
+    defer r2.close(testing.allocator);
+
+    // ALL ROWS PER MATCH with FINAL LAST(price) — should emit 5 rows where final_last value
+    // is constant at 95 (the match's final row) for all 5 rows
+    var r3 = try db.execSQL(
+        "SELECT price, final_last FROM prices MATCH_RECOGNIZE (" ++
+        "  ORDER BY day " ++
+        "  ALL ROWS PER MATCH " ++
+        "  MEASURES FINAL LAST(price) AS final_last " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    // Collect all rows and verify final_last values
+    var final_last_values = std.ArrayListUnmanaged(i64){};
+    defer final_last_values.deinit(testing.allocator);
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (row.values.len >= 2 and row.values[1] == .integer) {
+            final_last_values.append(testing.allocator, row.values[1].integer) catch return error.OutOfMemory;
+        }
+    }
+
+    // Should have 5 output rows (one per input row in the match)
+    try testing.expectEqual(@as(usize, 5), final_last_values.items.len);
+
+    // FINAL semantics: all values should be 95 (the match's final row)
+    for (final_last_values.items) |val| {
+        try testing.expectEqual(@as(i64, 95), val);
+    }
+}
+
+test "MATCH_RECOGNIZE MEASURES SEMANTICS: no keyword defaults to RUNNING (grows per row)" {
+    if (!ENABLE_TESTS) return error.SkipZigTest;
+    const path = "test_mr_default_semantics.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    var db = try createTestDb(testing.allocator, path);
+    defer cleanupTestDb(&db, path);
+
+    var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
+    defer r1.close(testing.allocator);
+
+    // Same V-shape pattern: prices 100,90,80,85,95 over 5 days
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)"
+    );
+    defer r2.close(testing.allocator);
+
+    // ALL ROWS PER MATCH without RUNNING/FINAL keyword — should default to RUNNING
+    // (values grow per row, same as explicit RUNNING)
+    var r3 = try db.execSQL(
+        "SELECT price, default_last FROM prices MATCH_RECOGNIZE (" ++
+        "  ORDER BY day " ++
+        "  ALL ROWS PER MATCH " ++
+        "  MEASURES LAST(price) AS default_last " ++
+        "  PATTERN (A B+ C+) " ++
+        "  DEFINE B AS B.price < PREV(B.price), " ++
+        "         C AS C.price > PREV(C.price) " ++
+        ")"
+    );
+    defer r3.close(testing.allocator);
+
+    // Collect all rows and verify default_last values
+    var default_last_values = std.ArrayListUnmanaged(i64){};
+    defer default_last_values.deinit(testing.allocator);
+
+    while (try r3.rows.?.next()) |*row_ptr| {
+        var row = row_ptr.*;
+        defer row.deinit();
+        if (row.values.len >= 2 and row.values[1] == .integer) {
+            default_last_values.append(testing.allocator, row.values[1].integer) catch return error.OutOfMemory;
+        }
+    }
+
+    // Should have 5 output rows (one per input row in the match)
+    try testing.expectEqual(@as(usize, 5), default_last_values.items.len);
+
+    // Default (no keyword) should behave as RUNNING: values grow: 100, 90, 80, 85, 95
+    try testing.expectEqual(@as(i64, 100), default_last_values.items[0]);
+    try testing.expectEqual(@as(i64, 90), default_last_values.items[1]);
+    try testing.expectEqual(@as(i64, 80), default_last_values.items[2]);
+    try testing.expectEqual(@as(i64, 85), default_last_values.items[3]);
+    try testing.expectEqual(@as(i64, 95), default_last_values.items[4]);
+}

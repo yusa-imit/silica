@@ -947,97 +947,108 @@ pub const Parser = struct {
             }
         }
 
-        // Parse ORDER BY (optional in parser, but required by analyzer)
+        // Parse ORDER BY, MEASURES, ALL/ONE ROWS PER MATCH, AFTER MATCH SKIP in flexible order.
+        // These clauses can appear in any order before PATTERN.
         var order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
-        if (self.match(.kw_order)) {
-            _ = try self.expect(.kw_by);
-            while (true) {
-                const expr = try self.parseExpr(0);
-                var dir: ast.OrderDirection = .asc;
-                if (self.match(.kw_desc)) {
-                    dir = .desc;
-                } else {
-                    _ = self.match(.kw_asc);
-                }
+        var measures = std.ArrayListUnmanaged(ast.MeasureItem){};
+        var rows_per_match: ast.RowsPerMatch = .one_row;
+        var after_match_skip: ast.AfterMatchSkip = .past_last_row;
 
-                var nulls: ?ast.NullsOrder = null;
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
-                    _ = self.advance();
-                    if (self.peek().type == .identifier) {
-                        const kw = self.lexeme(self.peek());
-                        if (std.ascii.eqlIgnoreCase(kw, "first")) {
-                            _ = self.advance();
-                            nulls = .first;
-                        } else if (std.ascii.eqlIgnoreCase(kw, "last")) {
-                            _ = self.advance();
-                            nulls = .last;
+        // Parse optional clauses until we reach PATTERN
+        while (!(self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "pattern"))) {
+            if (self.match(.kw_order)) {
+                _ = try self.expect(.kw_by);
+                while (true) {
+                    const expr = try self.parseExpr(0);
+                    var dir: ast.OrderDirection = .asc;
+                    if (self.match(.kw_desc)) {
+                        dir = .desc;
+                    } else {
+                        _ = self.match(.kw_asc);
+                    }
+
+                    var nulls: ?ast.NullsOrder = null;
+                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                        _ = self.advance();
+                        if (self.peek().type == .identifier) {
+                            const kw = self.lexeme(self.peek());
+                            if (std.ascii.eqlIgnoreCase(kw, "first")) {
+                                _ = self.advance();
+                                nulls = .first;
+                            } else if (std.ascii.eqlIgnoreCase(kw, "last")) {
+                                _ = self.advance();
+                                nulls = .last;
+                            }
                         }
                     }
+
+                    order_by.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
                 }
-
-                order_by.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
-                if (!self.match(.comma)) break;
-            }
-        }
-
-        // Parse MEASURES (optional)
-        var measures = std.ArrayListUnmanaged(ast.MeasureItem){};
-        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "measures")) {
-            _ = self.advance(); // consume "measures"
-            while (true) {
-                const expr = try self.parseExpr(0);
-                _ = try self.expect(.kw_as);
-                const alias = try self.expectIdentifier();
-                measures.append(a, .{ .expr = expr, .alias = alias }) catch return error.OutOfMemory;
-                if (!self.match(.comma)) break;
-            }
-        }
-
-        // Parse ONE ROW PER MATCH / ALL ROWS PER MATCH (optional, default ONE ROW)
-        var rows_per_match: ast.RowsPerMatch = .one_row;
-        if (self.match(.kw_all)) {
-            _ = try self.expect(.kw_rows);
-            rows_per_match = .all_rows;
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+            } else if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "measures")) {
+                _ = self.advance(); // consume "measures"
+                while (true) {
+                    // Optionally consume RUNNING or FINAL keyword (soft keywords)
+                    var semantics: ast.MeasureSemantics = .running; // default
+                    if (self.peek().type == .identifier) {
+                        const lex = self.lexeme(self.peek());
+                        if (std.ascii.eqlIgnoreCase(lex, "running")) {
+                            _ = self.advance();
+                            semantics = .running;
+                        } else if (std.ascii.eqlIgnoreCase(lex, "final")) {
+                            _ = self.advance();
+                            semantics = .final;
+                        }
+                    }
+                    const expr = try self.parseExpr(0);
+                    _ = try self.expect(.kw_as);
+                    const alias = try self.expectIdentifier();
+                    measures.append(a, .{ .expr = expr, .alias = alias, .semantics = semantics }) catch return error.OutOfMemory;
+                    if (!self.match(.comma)) break;
+                }
+            } else if (self.match(.kw_all)) {
+                _ = try self.expect(.kw_rows);
+                rows_per_match = .all_rows;
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+                    _ = self.advance();
+                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                        _ = self.advance();
+                    }
+                }
+            } else if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "one")) {
                 _ = self.advance();
+                _ = try self.expect(.kw_row);
+                rows_per_match = .one_row;
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+                    _ = self.advance();
+                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                        _ = self.advance();
+                    }
+                }
+            } else if (self.match(.kw_after)) {
                 if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
                     _ = self.advance();
                 }
-            }
-        } else if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "one")) {
-            _ = self.advance();
-            _ = try self.expect(.kw_row);
-            rows_per_match = .one_row;
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
-                _ = self.advance();
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                _ = try self.expect(.kw_skip);
+                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "past")) {
                     _ = self.advance();
+                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "last")) {
+                        _ = self.advance();
+                    }
+                    _ = try self.expect(.kw_row);
+                    after_match_skip = .past_last_row;
+                } else if (self.match(.kw_to)) {
+                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next")) {
+                        _ = self.advance();
+                    }
+                    _ = try self.expect(.kw_row);
+                    after_match_skip = .to_next_row;
+                } else {
+                    try self.addError(self.peek(), "expected PAST LAST ROW or TO NEXT ROW after AFTER MATCH SKIP");
+                    return error.ParseFailed;
                 }
-            }
-        }
-
-        // Parse AFTER MATCH SKIP (optional, default PAST LAST ROW)
-        var after_match_skip: ast.AfterMatchSkip = .past_last_row;
-        if (self.match(.kw_after)) {
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
-                _ = self.advance();
-            }
-            _ = try self.expect(.kw_skip);
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "past")) {
-                _ = self.advance();
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "last")) {
-                    _ = self.advance();
-                }
-                _ = try self.expect(.kw_row);
-                after_match_skip = .past_last_row;
-            } else if (self.match(.kw_to)) {
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next")) {
-                    _ = self.advance();
-                }
-                _ = try self.expect(.kw_row);
-                after_match_skip = .to_next_row;
             } else {
-                try self.addError(self.peek(), "expected PAST LAST ROW or TO NEXT ROW after AFTER MATCH SKIP");
+                try self.addError(self.peek(), "expected ORDER BY, MEASURES, ALL/ONE ROWS PER MATCH, AFTER MATCH SKIP, or PATTERN in MATCH_RECOGNIZE");
                 return error.ParseFailed;
             }
         }
@@ -7941,4 +7952,85 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW variant parses" {
 
     const spec = r.stmt.select.from.?.match_recognize.spec;
     try std.testing.expectEqual(ast.AfterMatchSkip.to_next_row, spec.after_match_skip);
+}
+
+test "MATCH_RECOGNIZE MEASURES: RUNNING keyword sets semantics to running" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "MEASURES RUNNING LAST(C.price) AS running_last " ++
+            "PATTERN (A B+ C+) " ++
+            "DEFINE B AS b_cond, C AS c_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const spec = r.stmt.select.from.?.match_recognize.spec;
+    try std.testing.expectEqual(@as(usize, 1), spec.measures.len);
+    try std.testing.expectEqualStrings("running_last", spec.measures[0].alias);
+    try std.testing.expectEqual(ast.MeasureSemantics.running, spec.measures[0].semantics);
+}
+
+test "MATCH_RECOGNIZE MEASURES: FINAL keyword sets semantics to final" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "MEASURES FINAL LAST(C.price) AS final_last " ++
+            "PATTERN (A B+ C+) " ++
+            "DEFINE B AS b_cond, C AS c_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const spec = r.stmt.select.from.?.match_recognize.spec;
+    try std.testing.expectEqual(@as(usize, 1), spec.measures.len);
+    try std.testing.expectEqualStrings("final_last", spec.measures[0].alias);
+    try std.testing.expectEqual(ast.MeasureSemantics.final, spec.measures[0].semantics);
+}
+
+test "MATCH_RECOGNIZE MEASURES: no keyword defaults to running semantics" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "MEASURES LAST(C.price) AS default_last " ++
+            "PATTERN (A B+ C+) " ++
+            "DEFINE B AS b_cond, C AS c_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const spec = r.stmt.select.from.?.match_recognize.spec;
+    try std.testing.expectEqual(@as(usize, 1), spec.measures.len);
+    try std.testing.expectEqualStrings("default_last", spec.measures[0].alias);
+    try std.testing.expectEqual(ast.MeasureSemantics.running, spec.measures[0].semantics);
+}
+
+test "MATCH_RECOGNIZE MEASURES: multiple items with mixed semantics parse correctly" {
+    var r = try testParseWithArena(
+        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+            "ORDER BY o " ++
+            "MEASURES " ++
+            "  FINAL LAST(C.price) AS final_last, " ++
+            "  RUNNING LAST(B.price) AS running_last, " ++
+            "  LAST(A.price) AS default_last " ++
+            "PATTERN (A B+ C+) " ++
+            "DEFINE B AS b_cond, C AS c_cond" ++
+        ")",
+    );
+    defer r.deinit();
+
+    const spec = r.stmt.select.from.?.match_recognize.spec;
+    try std.testing.expectEqual(@as(usize, 3), spec.measures.len);
+
+    // First measure: FINAL
+    try std.testing.expectEqualStrings("final_last", spec.measures[0].alias);
+    try std.testing.expectEqual(ast.MeasureSemantics.final, spec.measures[0].semantics);
+
+    // Second measure: RUNNING
+    try std.testing.expectEqualStrings("running_last", spec.measures[1].alias);
+    try std.testing.expectEqual(ast.MeasureSemantics.running, spec.measures[1].semantics);
+
+    // Third measure: default (RUNNING)
+    try std.testing.expectEqualStrings("default_last", spec.measures[2].alias);
+    try std.testing.expectEqual(ast.MeasureSemantics.running, spec.measures[2].semantics);
 }
