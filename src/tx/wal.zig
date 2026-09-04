@@ -128,6 +128,20 @@ pub const Lsn = struct {
     pub fn eql(a: Lsn, b: Lsn) bool {
         return a.checkpoint_seq == b.checkpoint_seq and a.frame_index == b.frame_index;
     }
+
+    /// Pack Lsn into u64: (checkpoint_seq << 32) | frame_index
+    pub fn pack(self: Lsn) u64 {
+        return (@as(u64, @intCast(self.checkpoint_seq)) << 32) |
+               (@as(u64, @intCast(self.frame_index)));
+    }
+
+    /// Unpack u64 into Lsn: checkpoint_seq = val >> 32, frame_index = val & 0xFFFFFFFF
+    pub fn unpack(val: u64) Lsn {
+        return .{
+            .checkpoint_seq = @intCast(val >> 32),
+            .frame_index = @intCast(val & 0xFFFFFFFF),
+        };
+    }
 };
 
 // ── WAL Manager ────────────────────────────────────────────────────────
@@ -1900,4 +1914,82 @@ test "Phase 4: appendRawFrame is purely additive — normal writeFrame/commit un
     const found = try wal.readPage(5, &read_buf);
     try testing.expect(found);
     try testing.expectEqualSlices(u8, &page_data, &read_buf);
+}
+
+// ── Phase 6: LSN pack/unpack methods (for replication retention) ────────────
+
+test "Lsn.pack() and Lsn.unpack() round-trip" {
+    // Test that pack then unpack returns the original Lsn
+    const original = Lsn{ .checkpoint_seq = 42, .frame_index = 12345 };
+    const packed_val = original.pack();
+    const unpacked = Lsn.unpack(packed_val);
+
+    try testing.expectEqual(original.checkpoint_seq, unpacked.checkpoint_seq);
+    try testing.expectEqual(original.frame_index, unpacked.frame_index);
+    try testing.expect(original.eql(unpacked));
+}
+
+test "Lsn.pack() encodes as (checkpoint_seq << 32) | frame_index" {
+    // Verify exact bit layout with hand-computed values
+
+    // Test 1: checkpoint_seq=0, frame_index=0 → u64(0)
+    const lsn1 = Lsn{ .checkpoint_seq = 0, .frame_index = 0 };
+    try testing.expectEqual(@as(u64, 0), lsn1.pack());
+
+    // Test 2: checkpoint_seq=1, frame_index=0 → u64(1) << 32 = 0x0000000100000000
+    const lsn2 = Lsn{ .checkpoint_seq = 1, .frame_index = 0 };
+    try testing.expectEqual(@as(u64, 0x0000000100000000), lsn2.pack());
+
+    // Test 3: checkpoint_seq=0, frame_index=256 → u64(256) = 0x0000000000000100
+    const lsn3 = Lsn{ .checkpoint_seq = 0, .frame_index = 256 };
+    try testing.expectEqual(@as(u64, 0x0000000000000100), lsn3.pack());
+
+    // Test 4: checkpoint_seq=5, frame_index=1000 → (5 << 32) | 1000
+    const lsn4 = Lsn{ .checkpoint_seq = 5, .frame_index = 1000 };
+    const expected = (@as(u64, 5) << 32) | 1000;
+    try testing.expectEqual(expected, lsn4.pack());
+
+    // Test 5: max values
+    const lsn_max = Lsn{ .checkpoint_seq = 0xFFFFFFFF, .frame_index = 0xFFFFFFFF };
+    try testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), lsn_max.pack());
+}
+
+test "Lsn.order() agrees with pack() comparison across checkpoint boundaries" {
+    // Verify that Lsn.order() gives the same result as comparing packed u64 values
+    // especially when crossing checkpoint_seq boundaries
+
+    // Test 1: same checkpoint_seq, different frame_index
+    const lsn_a = Lsn{ .checkpoint_seq = 5, .frame_index = 100 };
+    const lsn_b = Lsn{ .checkpoint_seq = 5, .frame_index = 200 };
+
+    const order_ab = lsn_a.order(lsn_b);
+    const packed_a = lsn_a.pack();
+    const packed_b = lsn_b.pack();
+    const order_packed_ab = std.math.order(packed_a, packed_b);
+
+    try testing.expectEqual(order_ab, order_packed_ab);
+    try testing.expect(lsn_a.lessThan(lsn_b));
+    try testing.expect(packed_a < packed_b);
+
+    // Test 2: crossing checkpoint_seq boundary (the critical case)
+    // lsn_epoch1_high_frame has high frame_index but lower checkpoint_seq
+    // lsn_epoch2_low_frame has low frame_index but higher checkpoint_seq
+    // The higher checkpoint_seq should always win, even with lower frame_index
+    const lsn_epoch1_high = Lsn{ .checkpoint_seq = 1, .frame_index = 1000 };
+    const lsn_epoch2_low = Lsn{ .checkpoint_seq = 2, .frame_index = 0 };
+
+    const order_boundary = lsn_epoch1_high.order(lsn_epoch2_low);
+    const packed_epoch1_val = lsn_epoch1_high.pack();
+    const packed_epoch2_val = lsn_epoch2_low.pack();
+    const order_packed_boundary = std.math.order(packed_epoch1_val, packed_epoch2_val);
+
+    try testing.expectEqual(order_boundary, order_packed_boundary);
+    try testing.expect(lsn_epoch1_high.lessThan(lsn_epoch2_low));
+    try testing.expect(packed_epoch1_val < packed_epoch2_val);
+
+    // Test 3: verify numerical correctness at the boundary
+    // checkpoint_seq=1, frame_index=1000 → (1 << 32) | 1000 = 0x00000001000003E8
+    // checkpoint_seq=2, frame_index=0 → (2 << 32) | 0 = 0x0000000200000000
+    // The second is indeed larger
+    try testing.expect(packed_epoch1_val < packed_epoch2_val);
 }

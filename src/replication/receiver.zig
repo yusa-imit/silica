@@ -29,16 +29,12 @@ pub const Error = error{
 
 /// Pack Lsn into u64: (checkpoint_seq << 32) | frame_index
 pub fn packLsn(lsn: Lsn) LSN {
-    return (@as(LSN, @intCast(lsn.checkpoint_seq)) << 32) |
-           (@as(LSN, @intCast(lsn.frame_index)));
+    return @intCast(lsn.pack());
 }
 
 /// Unpack u64 into Lsn: checkpoint_seq = val >> 32, frame_index = val & 0xFFFFFFFF
 pub fn unpackLsn(val: LSN) Lsn {
-    return .{
-        .checkpoint_seq = @intCast(val >> 32),
-        .frame_index = @intCast(val & 0xFFFFFFFF),
-    };
+    return Lsn.unpack(val);
 }
 
 /// WAL Receiver configuration

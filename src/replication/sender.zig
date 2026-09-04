@@ -157,7 +157,7 @@ pub const WalSender = struct {
     ) !void {
         if (self.slot_name) |name| {
             // Update slot's confirmed flush LSN
-            try self.slot_manager.updateSlotLSN(name, null, flush_lsn);
+            try self.slot_manager.updateSlotLSN(name, flush_lsn, flush_lsn);
 
             // Update synchronous replication coordinator
             if (self.sync_coordinator) |coord| {
@@ -170,16 +170,12 @@ pub const WalSender = struct {
 
     /// Pack Lsn into u64: (checkpoint_seq << 32) | frame_index
     fn packLsn(lsn: wal_mod.Lsn) LSN {
-        return (@as(LSN, @intCast(lsn.checkpoint_seq)) << 32) |
-               (@as(LSN, @intCast(lsn.frame_index)));
+        return @intCast(lsn.pack());
     }
 
     /// Unpack u64 into Lsn: checkpoint_seq = val >> 32, frame_index = val & 0xFFFFFFFF
     fn unpackLsn(val: LSN) wal_mod.Lsn {
-        return .{
-            .checkpoint_seq = @intCast(val >> 32),
-            .frame_index = @intCast(val & 0xFFFFFFFF),
-        };
+        return wal_mod.Lsn.unpack(val);
     }
 
     /// Read WAL data chunk at current LSN
@@ -838,6 +834,79 @@ test "WalSender — LSN ordering validation" {
     // Slot confirmed_flush_lsn should be updated to flush_lsn
     const slot_info = try slot_mgr.getSlot("test-slot");
     try std.testing.expectEqual(@as(LSN, 2000), slot_info.confirmed_flush_lsn);
+}
+
+// ============================================================================
+// Phase 6: WAL Checkpoint vs Replication Retention Tests
+// ============================================================================
+
+test "Phase 6: regression — processStandbyStatus must update restart_lsn" {
+    // This test catches the bug where processStandbyStatus hardcodes restart_lsn=null,
+    // so the slot's restart_lsn never advances in production (stays at zero-init value).
+    // The fix changes line 160 from:
+    //   updateSlotLSN(name, null, flush_lsn)
+    // to:
+    //   updateSlotLSN(name, flush_lsn, flush_lsn)
+    // so that restart_lsn actually tracks what the replica has flushed.
+
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    // Create and activate a slot
+    try slot_mgr.createSlot("replica-slot", false);
+    defer slot_mgr.dropSlot("replica-slot") catch {};
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Start replication
+    try sender.startReplication("replica-slot", 0);
+    defer sender.stopReplication() catch {};
+
+    // Get initial slot state (restart_lsn should be 0)
+    var slot_info = try slot_mgr.getSlot("replica-slot");
+    try std.testing.expectEqual(@as(LSN, 0), slot_info.restart_lsn);
+    try std.testing.expectEqual(@as(LSN, 0), slot_info.confirmed_flush_lsn);
+
+    // Simulate replica flushing WAL up to LSN 5000
+    const test_flush_lsn: LSN = 5000;
+    try sender.processStandbyStatus(test_flush_lsn, test_flush_lsn, 0);
+
+    // After fix: restart_lsn must be updated to the flush_lsn value
+    // BEFORE FIX: restart_lsn stays at 0 (null was passed to updateSlotLSN)
+    slot_info = try slot_mgr.getSlot("replica-slot");
+    try std.testing.expectEqual(test_flush_lsn, slot_info.confirmed_flush_lsn);
+    try std.testing.expectEqual(test_flush_lsn, slot_info.restart_lsn); // THIS MUST FAIL BEFORE FIX
+}
+
+test "Phase 6: LSN pack/unpack cross-module compatibility" {
+    // Verify that the new Lsn.pack() and Lsn.unpack() produce the same
+    // bit layout as the private packLsn/unpackLsn functions in sender.zig
+
+    const allocator = std.testing.allocator;
+
+    var slot_mgr = slot.SlotManager.init(allocator);
+    defer slot_mgr.deinit();
+
+    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{});
+    defer sender.deinit();
+
+    // Create a Lsn value with known checkpoint_seq and frame_index
+    const test_lsn = wal_mod.Lsn{ .checkpoint_seq = 7, .frame_index = 2048 };
+
+    // Pack it using the new public method
+    const packed_val = test_lsn.pack();
+
+    // Verify the bit layout: (checkpoint_seq << 32) | frame_index
+    const expected_packed = (@as(LSN, 7) << 32) | 2048;
+    try std.testing.expectEqual(expected_packed, packed_val);
+
+    // Unpack and verify round-trip
+    const unpacked = wal_mod.Lsn.unpack(packed_val);
+    try std.testing.expectEqual(@as(u32, 7), unpacked.checkpoint_seq);
+    try std.testing.expectEqual(@as(u32, 2048), unpacked.frame_index);
 }
 
 // ============================================================================
