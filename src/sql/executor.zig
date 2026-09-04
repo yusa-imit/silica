@@ -10220,21 +10220,34 @@ pub const MatchRecognizeOp = struct {
         };
         std.sort.block(usize, indices, sort_ctx, MatchSortContext.lessThan);
 
-        // 3. Walk partition boundaries and find matches within each partition
-        var partition_start: usize = 0;
+        // 2b. Physically materialize rows in sorted order. pattern_match_mod treats row
+        // positions as a flat, contiguous index space (it just does pos, pos+1, pos+2, ...)
+        // with no indirection table, so partitions — and the rows within them — MUST be
+        // contiguous in whatever array we hand it. Using `indices` as an indirection layer
+        // instead of physically reordering here previously caused matches to read the wrong
+        // rows (or run off the end of a partition) whenever partition/order-by reordering was
+        // non-trivial, and let a match's end_exclusive land outside `partition_indices`
+        // entirely (an unmapped position past the last row), which stalled the AFTER MATCH
+        // SKIP PAST LAST ROW scan position forever — an infinite loop.
+        const sorted_rows = alloc.alloc(Row, input_rows.items.len) catch return ExecError.OutOfMemory;
+        defer alloc.free(sorted_rows);
+        for (indices, 0..) |orig_idx, i| sorted_rows[i] = input_rows.items[orig_idx];
+
+        // 3. Walk partition boundaries (now contiguous) and find matches within each partition
         var pi: usize = 0;
-        while (pi < indices.len) {
-            partition_start = pi;
+        while (pi < sorted_rows.len) {
+            const partition_start = pi;
             var partition_end = pi + 1;
-            while (partition_end < indices.len) {
-                if (!samePartitionMatch(alloc, self.spec.partition_by, &input_rows.items[indices[partition_start]], &input_rows.items[indices[partition_end]])) {
+            while (partition_end < sorted_rows.len) {
+                if (!samePartitionMatch(alloc, self.spec.partition_by, &sorted_rows[partition_start], &sorted_rows[partition_end])) {
                     break;
                 }
                 partition_end += 1;
             }
 
-            // Within this partition, find matches
-            try self.findMatchesInPartition(alloc, input_rows.items, indices[partition_start..partition_end]);
+            // Within this partition, find matches. Match positions are relative to this slice,
+            // so they can never span partitions.
+            try self.findMatchesInPartition(alloc, sorted_rows[partition_start..partition_end]);
 
             pi = partition_end;
         }
@@ -10242,58 +10255,52 @@ pub const MatchRecognizeOp = struct {
         self.materialized = true;
     }
 
-    fn findMatchesInPartition(self: *MatchRecognizeOp, alloc: Allocator, all_rows: []const Row, partition_indices: []const usize) ExecError!void {
-        if (partition_indices.len == 0) return;
+    fn findMatchesInPartition(self: *MatchRecognizeOp, alloc: Allocator, partition_rows: []const Row) ExecError!void {
+        if (partition_rows.len == 0) return;
 
         var scan_pos: usize = 0;
 
-        while (scan_pos < partition_indices.len) {
-            const global_start_idx = partition_indices[scan_pos];
-
+        while (scan_pos < partition_rows.len) {
             // Try to find a match starting at scan_pos (within this partition)
             const match_ctx = MatchContextImpl{
                 .op = self,
-                .partition_indices = partition_indices,
-                .all_rows = all_rows,
+                .all_rows = partition_rows,
                 .allocator = alloc,
             };
 
             if (try pattern_match_mod.findMatch(
                 alloc,
                 self.spec.pattern,
-                all_rows.len,
-                global_start_idx,
+                partition_rows.len,
+                scan_pos,
                 match_ctx.toMatchContext(),
             )) |match| {
                 defer alloc.free(match.variable_per_row);
 
+                // MATCH_NUMBER() is 1-based and read by MEASURES during emit, so it must be
+                // incremented before emitting the match it identifies, not after.
+                self.match_number += 1;
+
                 // Emit output row(s) based on rows_per_match
                 switch (self.spec.rows_per_match) {
                     .one_row => {
-                        try self.emitOneRowPerMatch(alloc, all_rows, &match);
+                        try self.emitOneRowPerMatch(alloc, partition_rows, &match);
                     },
                     .all_rows => {
-                        try self.emitAllRowsPerMatch(alloc, all_rows, &match);
+                        try self.emitAllRowsPerMatch(alloc, partition_rows, &match);
                     },
                 }
 
-                self.match_number += 1;
-
-                // Advance scan position based on after_match_skip
+                // Advance scan position based on after_match_skip. match.start/end_exclusive
+                // are already partition-relative positions, so no lookup is needed.
                 switch (self.spec.after_match_skip) {
-                    .past_last_row => {
-                        // Find the offset of match.end_exclusive in partition
-                        for (partition_indices, 0..) |global_idx, offset| {
-                            if (global_idx == match.end_exclusive) {
-                                scan_pos = offset;
-                                break;
-                            }
-                        }
-                    },
-                    .to_next_row => {
-                        scan_pos += 1;
-                    },
+                    .past_last_row => scan_pos = match.end_exclusive,
+                    .to_next_row => scan_pos = match.start + 1,
                 }
+
+                // A pattern like (A*) can match zero rows. Guarantee forward progress so a
+                // zero-length match can never stall the scan.
+                if (scan_pos <= match.start) scan_pos = match.start + 1;
             } else {
                 // No match at this position, advance by 1
                 scan_pos += 1;
@@ -10302,12 +10309,22 @@ pub const MatchRecognizeOp = struct {
     }
 
     fn emitOneRowPerMatch(self: *MatchRecognizeOp, alloc: Allocator, all_rows: []const Row, match: *const pattern_match_mod.Match) ExecError!void {
-        // Build output row with MEASURE columns
+        // Build output row with PARTITION BY + MEASURE columns
         var columns = std.ArrayListUnmanaged([]const u8){};
         defer columns.deinit(alloc);
 
         var values = std.ArrayListUnmanaged(Value){};
         defer values.deinit(alloc);
+
+        // Per SQL:2016, ONE ROW PER MATCH always exposes the PARTITION BY columns — every row
+        // in the match shares the same partition key by construction — in addition to any
+        // MEASURES. Other per-row columns are not addressable in this mode (use MEASURES with
+        // FIRST()/LAST() to pull a specific row's value).
+        for (self.spec.partition_by) |pb_expr| {
+            const val = evalExpr(alloc, pb_expr, &all_rows[match.start], self.catalog) catch Value.null_value;
+            columns.append(alloc, exprColumnName(pb_expr)) catch return ExecError.OutOfMemory;
+            values.append(alloc, val) catch return ExecError.OutOfMemory;
+        }
 
         // Emit columns and values for each measure
         for (self.spec.measures) |measure| {
@@ -10335,13 +10352,25 @@ pub const MatchRecognizeOp = struct {
     }
 
     fn emitAllRowsPerMatch(self: *MatchRecognizeOp, alloc: Allocator, all_rows: []const Row, match: *const pattern_match_mod.Match) ExecError!void {
-        // Emit one row per matched input row, with MEASURES re-evaluated per row
+        // Emit one row per matched input row. Per SQL:2016, ALL ROWS PER MATCH exposes each
+        // matched row's own columns (there is a 1:1 correspondence with input rows here, unlike
+        // ONE ROW PER MATCH), plus any MEASURES re-evaluated per row.
         for (match.variable_per_row, 0..) |_, row_offset| {
             var columns = std.ArrayListUnmanaged([]const u8){};
             defer columns.deinit(alloc);
 
             var values = std.ArrayListUnmanaged(Value){};
             defer values.deinit(alloc);
+
+            const source_row = &all_rows[match.start + row_offset];
+            for (source_row.columns, 0..) |col_name, i| {
+                columns.append(alloc, col_name) catch return ExecError.OutOfMemory;
+                const val = if (i < source_row.values.len)
+                    source_row.values[i].dupe(alloc) catch return ExecError.OutOfMemory
+                else
+                    Value.null_value;
+                values.append(alloc, val) catch return ExecError.OutOfMemory;
+            }
 
             for (self.spec.measures) |measure| {
                 columns.append(alloc, measure.alias) catch return ExecError.OutOfMemory;
@@ -10372,34 +10401,55 @@ pub const MatchRecognizeOp = struct {
     /// Evaluate an expression within MATCH_RECOGNIZE context, handling special functions
     fn evalMatchExpr(self: *MatchRecognizeOp, alloc: Allocator, expr: *const ast.Expr, ctx: MatchEvalContext) ExecError!Value {
         // Check for special MATCH_RECOGNIZE functions
-        if (expr.* == .function_call) {
-            const fc = expr.function_call;
-            var name_buf: [32]u8 = undefined;
-            const name_lower = toLowerMatch(fc.name, &name_buf);
+        switch (expr.*) {
+            .function_call => |fc| {
+                var name_buf: [32]u8 = undefined;
+                const name_lower = toLowerMatch(fc.name, &name_buf);
 
-            if (std.mem.eql(u8, name_lower, "prev")) {
-                return try self.evalPrev(alloc, fc.args, ctx);
-            } else if (std.mem.eql(u8, name_lower, "next")) {
-                return try self.evalNext(alloc, fc.args, ctx);
-            } else if (std.mem.eql(u8, name_lower, "first")) {
-                return try self.evalFirst(alloc, fc.args, ctx);
-            } else if (std.mem.eql(u8, name_lower, "last")) {
-                return try self.evalLast(alloc, fc.args, ctx);
-            } else if (std.mem.eql(u8, name_lower, "match_number")) {
-                return Value{ .integer = @intCast(self.match_number) };
-            } else if (std.mem.eql(u8, name_lower, "classifier")) {
-                if (ctx.match != null and ctx.current_row_offset != null) {
-                    const offset = ctx.current_row_offset.? - ctx.match.?.start;
-                    if (offset < ctx.match.?.variable_per_row.len) {
-                        const var_name = ctx.match.?.variable_per_row[offset];
-                        return Value{ .text = var_name };
+                if (std.mem.eql(u8, name_lower, "prev")) {
+                    return try self.evalPrev(alloc, fc.args, ctx);
+                } else if (std.mem.eql(u8, name_lower, "next")) {
+                    return try self.evalNext(alloc, fc.args, ctx);
+                } else if (std.mem.eql(u8, name_lower, "first")) {
+                    return try self.evalFirst(alloc, fc.args, ctx);
+                } else if (std.mem.eql(u8, name_lower, "last")) {
+                    return try self.evalLast(alloc, fc.args, ctx);
+                } else if (std.mem.eql(u8, name_lower, "match_number")) {
+                    return Value{ .integer = @intCast(self.match_number) };
+                } else if (std.mem.eql(u8, name_lower, "classifier")) {
+                    if (ctx.match != null and ctx.current_row_offset != null) {
+                        const offset = ctx.current_row_offset.? - ctx.match.?.start;
+                        if (offset < ctx.match.?.variable_per_row.len) {
+                            const var_name = ctx.match.?.variable_per_row[offset];
+                            return Value{ .text = var_name };
+                        }
                     }
+                    return Value.null_value;
                 }
-                return Value.null_value;
-            }
+                // Not a MATCH_RECOGNIZE navigation function — fall through to plain evaluation.
+            },
+            // Recurse structurally so a PREV()/NEXT()/FIRST()/LAST()/MATCH_NUMBER()/CLASSIFIER()
+            // call nested inside a comparison (the realistic case — e.g. `B.price < PREV(B.price)`)
+            // is still intercepted. Without this, only a DEFINE/MEASURES expression consisting of
+            // nothing but a bare navigation-function call would ever resolve correctly.
+            .paren => |inner| return self.evalMatchExpr(alloc, inner, ctx),
+            .unary_op => |op| {
+                const operand = try self.evalMatchExpr(alloc, op.operand, ctx);
+                defer operand.free(alloc);
+                return evalUnaryOp(op.op, operand);
+            },
+            .binary_op => |op| {
+                const left = try self.evalMatchExpr(alloc, op.left, ctx);
+                defer left.free(alloc);
+                const right = try self.evalMatchExpr(alloc, op.right, ctx);
+                defer right.free(alloc);
+                return evalBinaryOp(alloc, op.op, left, right);
+            },
+            else => {},
         }
 
-        // For regular expressions, evaluate against the current row (or last row if not specified)
+        // Literal, column_ref, non-nav function call, or any other node without
+        // MATCH_RECOGNIZE-specific semantics: evaluate against the current row (or last row if not specified)
         const current_row_idx = ctx.current_row_offset orelse (if (ctx.match) |m| m.end_exclusive - 1 else 0);
         const current_row = &ctx.all_rows[current_row_idx];
 
@@ -10500,7 +10550,6 @@ pub const MatchRecognizeOp = struct {
 
     const MatchContextImpl = struct {
         op: *MatchRecognizeOp,
-        partition_indices: []const usize,
         all_rows: []const Row,
         allocator: Allocator,
 
@@ -10511,14 +10560,31 @@ pub const MatchRecognizeOp = struct {
             };
         }
 
-        fn tryVariable(ptr: *anyopaque, variable: []const u8, row_idx: usize, _: usize, _: []const []const u8) bool {
+        fn tryVariable(ptr: *anyopaque, variable: []const u8, row_idx: usize, match_start: usize, bindings_so_far: []const []const u8) bool {
             const self = @as(*MatchContextImpl, @ptrCast(@alignCast(ptr)));
 
             // Find DefineItem for this variable
             for (self.op.spec.define) |define_item| {
                 if (std.mem.eql(u8, define_item.variable, variable)) {
-                    // Evaluate the condition expression against the row at row_idx
-                    const condition_result = evalExpr(self.allocator, define_item.condition, &self.all_rows[row_idx], self.op.catalog) catch return false;
+                    // Evaluate through evalMatchExpr (not the plain scalar evalExpr) so that
+                    // PREV()/NEXT()/FIRST()/LAST() navigation functions inside DEFINE resolve
+                    // correctly. Rows [match_start, row_idx) are the tentative bindings accepted
+                    // so far in this backtracking attempt; row_idx is the row under test and has
+                    // no binding yet, so it stands in as the synthetic match's end_exclusive.
+                    const tentative_match = pattern_match_mod.Match{
+                        .start = match_start,
+                        .end_exclusive = row_idx,
+                        .variable_per_row = bindings_so_far,
+                    };
+                    const eval_ctx = MatchEvalContext{
+                        .op = self.op,
+                        .all_rows = self.all_rows,
+                        .match = &tentative_match,
+                        .allocator = self.allocator,
+                        .in_define = true,
+                        .current_row_offset = row_idx,
+                    };
+                    const condition_result = self.op.evalMatchExpr(self.allocator, define_item.condition, eval_ctx) catch return false;
                     defer condition_result.free(self.allocator);
 
                     // Check if result is truthy
@@ -35112,14 +35178,21 @@ test "MatchRecognizeOp no match found: pattern never matches input" {
     try data.addRow(&.{ Value{ .text = "Z" } });
     defer data.deinit();
 
-    // Pattern A B C
+    // Pattern A B C, where B requires a value that never appears in the input — with no
+    // DEFINE clause at all, every variable matches unconditionally, so this needs a real,
+    // always-false condition to actually exercise the "no match" path.
     const var_a = ast.PatternNode{ .variable = "A" };
     const var_b = ast.PatternNode{ .variable = "B" };
     const var_c = ast.PatternNode{ .variable = "C" };
     const pattern_children = [_]*const ast.PatternNode{ &var_a, &var_b, &var_c };
     const pattern = ast.PatternNode{ .concat = &pattern_children };
 
-    const define_items = &[_]ast.DefineItem{};
+    const b_col = ast.Expr{ .column_ref = .{ .name = "val" } };
+    const nonexistent = ast.Expr{ .string_literal = "does-not-exist" };
+    const b_condition = ast.Expr{ .binary_op = .{ .op = .equal, .left = &b_col, .right = &nonexistent } };
+    const define_items = &[_]ast.DefineItem{
+        .{ .variable = "B", .condition = &b_condition },
+    };
     const measure_items = &[_]ast.MeasureItem{};
     const order_by_items = &[_]ast.OrderByItem{};
 
