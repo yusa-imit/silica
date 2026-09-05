@@ -1,10 +1,12 @@
 zig-out/
 .zig-cache/
+zig-pkg/
 *.o
 *.a
 *.so
 *.dylib
 *.dll
+*.log
 
 # Database files (test artifacts)
 *.db
@@ -14,6 +16,9 @@ zig-out/
 
 # Test output files
 test_output.txt
+test_*
+/test
+verify_*
 
 # IDE
 .vscode/

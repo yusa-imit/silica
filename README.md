@@ -341,8 +341,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 1. Install Zig 0.15.x from [ziglang.org](https://ziglang.org/download/)
 2. Clone the repository: `git clone https://github.com/yusa-imit/silica.git`
 3. Build and test: `zig build && zig build test`
-4. Make your changes following the coding standards in [CLAUDE.md](CLAUDE.md)
-5. Ensure all tests pass before submitting a PR
+4. Ensure all tests pass before submitting a PR
 
 ### Coding Standards
 
