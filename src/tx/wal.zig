@@ -165,6 +165,13 @@ pub const Wal = struct {
     /// Number of committed frames.
     committed_frame_count: u32,
 
+    /// Optional retention callback: queries minimum LSN that must be retained for replication.
+    /// Returns null if nothing to retain (e.g., no active slots), or u64 (packed Lsn) if retention needed.
+    min_retained_lsn_fn: ?*const fn (ctx: *anyopaque) ?u64 = null,
+
+    /// Opaque context pointer passed to min_retained_lsn_fn.
+    min_retained_lsn_ctx: ?*anyopaque = null,
+
     // ── Lifecycle ──────────────────────────────────────────────
 
     pub fn init(allocator: Allocator, db_path: []const u8, page_size: u32) !Wal {
@@ -186,6 +193,8 @@ pub const Wal = struct {
             .pending_index = std.AutoHashMap(u32, u32).init(allocator),
             .total_frame_count = 0,
             .committed_frame_count = 0,
+            .min_retained_lsn_fn = null,
+            .min_retained_lsn_ctx = null,
         };
         errdefer {
             wal.page_index.deinit();
@@ -218,6 +227,30 @@ pub const Wal = struct {
         self.allocator.free(self.wal_path);
         self.page_index.deinit();
         self.pending_index.deinit();
+    }
+
+    /// Register a retention callback that queries the minimum LSN that must be retained.
+    /// ctx: pointer to a concrete context type; f: function of type fn (@TypeOf(ctx)) ?u64.
+    /// The callback is wrapped in a comptime-generated trampoline for type erasure.
+    pub fn setRetentionCallback(self: *Wal, ctx: anytype, comptime f: fn (@TypeOf(ctx)) ?u64) void {
+        const ContextType = @TypeOf(ctx);
+
+        // Comptime-generated trampoline struct
+        const Trampoline = struct {
+            pub fn call(erased_ctx: *anyopaque) ?u64 {
+                const concrete_ctx: ContextType = @ptrCast(@alignCast(erased_ctx));
+                return f(concrete_ctx);
+            }
+        };
+
+        self.min_retained_lsn_fn = Trampoline.call;
+        self.min_retained_lsn_ctx = @ptrCast(ctx);
+    }
+
+    /// Clear the retention callback (revert to default truncate-always behavior).
+    pub fn clearRetentionCallback(self: *Wal) void {
+        self.min_retained_lsn_fn = null;
+        self.min_retained_lsn_ctx = null;
     }
 
     // ── Write Path ─────────────────────────────────────────────
@@ -457,13 +490,19 @@ pub const Wal = struct {
 
     // ── Checkpoint ─────────────────────────────────────────────
 
-    /// Copy all committed WAL pages to the main DB file, then reset the WAL.
+    /// Copy all committed WAL pages to the main DB file, then conditionally reset the WAL.
+    /// If a retention callback is registered and reports a lagging replica, the flush happens
+    /// but truncation is deferred until the replica catches up.
     pub fn checkpoint(self: *Wal, pager: *Pager) !void {
-        if (self.page_index.count() == 0) return; // nothing to checkpoint
+        // Modified guard: also allow no-new-writes retry via committed_frame_count check
+        if (self.page_index.count() == 0 and self.committed_frame_count == 0) return;
 
         const file = self.file orelse return;
         const page_buf = try self.allocator.alloc(u8, self.page_size);
         defer self.allocator.free(page_buf);
+
+        // Capture current LSN before any state changes (for retention comparison)
+        const current_lsn = self.currentLsn();
 
         // First pass: determine the page count the pager needs to accommodate
         // every page we're about to write, *before* writing any of them —
@@ -492,45 +531,70 @@ pub const Wal = struct {
             pager.page_count = max_db_page_count;
         }
 
-        // Write each committed page to the main DB
-        var it = self.page_index.iterator();
-        while (it.next()) |entry| {
-            const page_id = entry.key_ptr.*;
-            const frame_idx = entry.value_ptr.*;
+        // FLUSH STEP (UNCONDITIONAL — always runs when there's something to flush)
+        if (self.page_index.count() > 0) {
+            // Write each committed page to the main DB
+            var it = self.page_index.iterator();
+            while (it.next()) |entry| {
+                const page_id = entry.key_ptr.*;
+                const frame_idx = entry.value_ptr.*;
 
-            // Read the frame's page data
-            try self.readFrameData(file, frame_idx, page_buf);
+                // Read the frame's page data
+                try self.readFrameData(file, frame_idx, page_buf);
 
-            // Write to main DB
-            try pager.writePage(page_id, page_buf);
+                // Write to main DB
+                try pager.writePage(page_id, page_buf);
+            }
+
+            // Flush the pager's header page
+            try pager.flushHeader();
+
+            // fsync main DB
+            pager.sync() catch {};
         }
 
-        // Flush the pager's header page
-        try pager.flushHeader();
+        // RECLAIM STEP (CONDITIONAL — may be deferred if retention callback reports replica behind)
+        // Decide whether to truncate the WAL based on retention callback
+        var should_reclaim = true;
 
-        // fsync main DB
-        pager.sync() catch {};
+        if (self.min_retained_lsn_fn) |retention_fn| {
+            // Retention callback is registered
+            if (self.min_retained_lsn_ctx) |ctx| {
+                if (retention_fn(ctx)) |min_retained_packed| {
+                    // Callback returned a value — compare it against current LSN
+                    const min_retained_lsn = Lsn.unpack(min_retained_packed);
+                    // If min_retained_lsn < current_lsn, replica is behind — defer truncation
+                    if (min_retained_lsn.lessThan(current_lsn)) {
+                        should_reclaim = false;
+                    }
+                }
+                // If callback returned null, should_reclaim stays true (nothing to retain)
+            }
+        }
+        // If no callback registered, should_reclaim stays true (default truncate-always behavior)
 
-        // Reset WAL — truncate and write fresh header
-        try file.setEndPos(0);
-        self.header.checkpoint_seq += 1;
-        self.header.frame_count = 0;
-        // Generate new salts
-        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.milliTimestamp())));
-        const random = rng.random();
-        self.header.salt_1 = random.int(u32);
-        self.header.salt_2 = random.int(u32);
+        if (should_reclaim) {
+            // Reset WAL — truncate and write fresh header
+            try file.setEndPos(0);
+            self.header.checkpoint_seq += 1;
+            self.header.frame_count = 0;
+            // Generate new salts
+            var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.milliTimestamp())));
+            const random = rng.random();
+            self.header.salt_1 = random.int(u32);
+            self.header.salt_2 = random.int(u32);
 
-        var hdr_buf: [WAL_HEADER_SIZE]u8 = undefined;
-        self.header.serialize(&hdr_buf);
-        try file.pwriteAll(&hdr_buf, 0);
-        try file.sync();
+            var hdr_buf: [WAL_HEADER_SIZE]u8 = undefined;
+            self.header.serialize(&hdr_buf);
+            try file.pwriteAll(&hdr_buf, 0);
+            try file.sync();
 
-        // Clear indexes
-        self.page_index.clearRetainingCapacity();
-        self.pending_index.clearRetainingCapacity();
-        self.total_frame_count = 0;
-        self.committed_frame_count = 0;
+            // Clear indexes
+            self.page_index.clearRetainingCapacity();
+            self.pending_index.clearRetainingCapacity();
+            self.total_frame_count = 0;
+            self.committed_frame_count = 0;
+        }
     }
 
     // ── Recovery ───────────────────────────────────────────────
@@ -1992,4 +2056,298 @@ test "Lsn.order() agrees with pack() comparison across checkpoint boundaries" {
     // checkpoint_seq=2, frame_index=0 → (2 << 32) | 0 = 0x0000000200000000
     // The second is indeed larger
     try testing.expect(packed_epoch1_val < packed_epoch2_val);
+}
+
+// ── Phase 6: Checkpoint vs Replication Retention ────────────────────
+
+/// Context struct for Phase 6 test callbacks (mutable min_retained_lsn value)
+const RetentionCallbackContext = struct {
+    min_retained_lsn: ?u64 = null,
+
+    pub fn callback(self: *RetentionCallbackContext) ?u64 {
+        return self.min_retained_lsn;
+    }
+};
+
+test "Phase 6: checkpoint with retention callback reporting behind current LSN — flushes but doesn't truncate" {
+    const path = "test_phase6_retention_behind.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_phase6_retention_behind.db-wal") catch {};
+
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+
+    // Create pager and WAL
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+    const pid = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write and commit 2 frames
+    var page1: [512]u8 = undefined;
+    var page2: [512]u8 = undefined;
+    @memset(&page1, 0xAA);
+    @memset(&page2, 0xBB);
+    var hdr1 = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 1 };
+    hdr1.serialize(page1[0..PAGE_HEADER_SIZE]);
+    var hdr2 = PageHeader{ .page_type = .leaf, .page_id = pid + 1, .cell_count = 2 };
+    hdr2.serialize(page2[0..PAGE_HEADER_SIZE]);
+
+    try wal.writeFrame(pid, &page1);
+    try wal.writeFrame(pid + 1, &page2);
+    try wal.commit(pager.page_count);
+
+    // Record state before checkpoint
+    const checkpoint_seq_before = wal.header.checkpoint_seq;
+    const total_frame_count_before = wal.total_frame_count;
+    const current_lsn = wal.currentLsn();
+
+    // Register a retention callback that reports a lagging replica (behind current LSN)
+    const behind_lsn = Lsn{ .checkpoint_seq = current_lsn.checkpoint_seq, .frame_index = 0 };
+    var ctx = RetentionCallbackContext{
+        .min_retained_lsn = behind_lsn.pack(),
+    };
+    wal.setRetentionCallback(&ctx, RetentionCallbackContext.callback);
+
+    // Call checkpoint — should flush pages but NOT truncate WAL
+    try wal.checkpoint(&pager);
+
+    // Verify flush happened: pages should be in main DB
+    var read_buf: [512]u8 = undefined;
+    try pager.readPage(pid, &read_buf);
+    try testing.expectEqual(@as(u8, 0xAA), read_buf[PAGE_HEADER_SIZE]);
+    try pager.readPage(pid + 1, &read_buf);
+    try testing.expectEqual(@as(u8, 0xBB), read_buf[PAGE_HEADER_SIZE]);
+
+    // Verify truncation was SKIPPED: checkpoint_seq and frame counts unchanged
+    try testing.expectEqual(checkpoint_seq_before, wal.header.checkpoint_seq);
+    try testing.expectEqual(total_frame_count_before, wal.total_frame_count);
+    try testing.expect(wal.page_index.count() > 0); // page_index still populated
+
+    pager.deinit();
+}
+
+test "Phase 6: checkpoint with retention callback catching up — truncation now happens" {
+    const path = "test_phase6_retention_catchup.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_phase6_retention_catchup.db-wal") catch {};
+
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+    const pid = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write and commit 1 frame
+    var page1: [512]u8 = undefined;
+    @memset(&page1, 0xCC);
+    var hdr = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 1 };
+    hdr.serialize(page1[0..PAGE_HEADER_SIZE]);
+
+    try wal.writeFrame(pid, &page1);
+    try wal.commit(pager.page_count);
+
+    // Register retention callback with lagging LSN
+    const lagging_lsn = Lsn{ .checkpoint_seq = 0, .frame_index = 0 };
+    var ctx = RetentionCallbackContext{
+        .min_retained_lsn = lagging_lsn.pack(),
+    };
+    wal.setRetentionCallback(&ctx, RetentionCallbackContext.callback);
+
+    // First checkpoint — should defer truncation
+    const checkpoint_seq_before = wal.header.checkpoint_seq;
+    try wal.checkpoint(&pager);
+    try testing.expectEqual(checkpoint_seq_before, wal.header.checkpoint_seq);
+
+    // Now advance the callback to report caught-up LSN
+    const current_lsn = wal.currentLsn(); // Note: after deferred checkpoint, currentLsn includes frames we kept
+    const caught_up_callback_lsn = Lsn{ .checkpoint_seq = current_lsn.checkpoint_seq, .frame_index = 999 };
+    ctx.min_retained_lsn = caught_up_callback_lsn.pack(); // way ahead
+
+    // Second checkpoint with no new writes — should now truncate
+    try wal.checkpoint(&pager);
+    try testing.expectEqual(checkpoint_seq_before + 1, wal.header.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count); // WAL reset
+
+    pager.deinit();
+}
+
+test "Phase 6: multiple write/commit rounds with retention deferred, then one catch-up checkpoint reclaims all" {
+    const path = "test_phase6_retention_multiple_rounds.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_phase6_retention_multiple_rounds.db-wal") catch {};
+
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+    const pid = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Setup retention callback that always reports behind
+    const initial_behind_lsn = Lsn{ .checkpoint_seq = 0, .frame_index = 0 };
+    var ctx = RetentionCallbackContext{
+        .min_retained_lsn = initial_behind_lsn.pack(),
+    };
+    wal.setRetentionCallback(&ctx, RetentionCallbackContext.callback);
+
+    // Round 1: write page, commit, checkpoint (should defer)
+    var page1: [512]u8 = undefined;
+    @memset(&page1, 0x11);
+    var hdr1 = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 1 };
+    hdr1.serialize(page1[0..PAGE_HEADER_SIZE]);
+    try wal.writeFrame(pid, &page1);
+    try wal.commit(pager.page_count);
+    try wal.checkpoint(&pager);
+
+    const frame_count_after_round1 = wal.total_frame_count;
+    try testing.expect(frame_count_after_round1 > 0); // WAL not truncated
+
+    // Round 2: write different page, commit, checkpoint (should still defer, frames accumulate)
+    var page2: [512]u8 = undefined;
+    @memset(&page2, 0x22);
+    var hdr2 = PageHeader{ .page_type = .leaf, .page_id = pid + 1, .cell_count = 2 };
+    hdr2.serialize(page2[0..PAGE_HEADER_SIZE]);
+    try wal.writeFrame(pid + 1, &page2);
+    try wal.commit(pager.page_count);
+    try wal.checkpoint(&pager);
+
+    const frame_count_after_round2 = wal.total_frame_count;
+    try testing.expect(frame_count_after_round2 > frame_count_after_round1); // frames appended
+
+    // Round 3: write third page, commit, checkpoint (deferred again)
+    var page3: [512]u8 = undefined;
+    @memset(&page3, 0x33);
+    var hdr3 = PageHeader{ .page_type = .leaf, .page_id = pid + 2, .cell_count = 3 };
+    hdr3.serialize(page3[0..PAGE_HEADER_SIZE]);
+    try wal.writeFrame(pid + 2, &page3);
+    try wal.commit(pager.page_count);
+    try wal.checkpoint(&pager);
+
+    const frame_count_after_round3 = wal.total_frame_count;
+    try testing.expect(frame_count_after_round3 > frame_count_after_round2);
+
+    // Now catch up: advance callback to current LSN
+    const caught_up_lsn = wal.currentLsn();
+    const final_caught_up_lsn = Lsn{ .checkpoint_seq = caught_up_lsn.checkpoint_seq, .frame_index = 999 };
+    ctx.min_retained_lsn = final_caught_up_lsn.pack();
+
+    // Final checkpoint — should reclaim all frames in one shot
+    const checkpoint_seq_before_final = wal.header.checkpoint_seq;
+    try wal.checkpoint(&pager);
+
+    try testing.expectEqual(checkpoint_seq_before_final + 1, wal.header.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count); // everything reclaimed
+    try testing.expectEqual(@as(u32, 0), wal.page_index.count());
+
+    pager.deinit();
+}
+
+test "Phase 6: regression proof — readRawFrames still works on not-yet-truncated epoch while retention deferred" {
+    const path = "test_phase6_readrawframes_deferred.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_phase6_readrawframes_deferred.db-wal") catch {};
+
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+    const pid = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write 3 frames with distinct markers
+    var pages: [3][512]u8 = undefined;
+    @memset(&pages[0], 0x11);
+    @memset(&pages[1], 0x22);
+    @memset(&pages[2], 0x33);
+
+    var hdr0 = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 0 };
+    hdr0.serialize(pages[0][0..PAGE_HEADER_SIZE]);
+    var hdr1 = PageHeader{ .page_type = .leaf, .page_id = pid + 1, .cell_count = 1 };
+    hdr1.serialize(pages[1][0..PAGE_HEADER_SIZE]);
+    var hdr2 = PageHeader{ .page_type = .leaf, .page_id = pid + 2, .cell_count = 2 };
+    hdr2.serialize(pages[2][0..PAGE_HEADER_SIZE]);
+
+    try wal.writeFrame(pid, &pages[0]);
+    try wal.writeFrame(pid + 1, &pages[1]);
+    try wal.writeFrame(pid + 2, &pages[2]);
+    try wal.commit(pager.page_count);
+
+    // Record LSN of first frame before checkpoint
+    const frame0_lsn = wal.lsnAtFrame(0);
+
+    // Register retention callback reporting behind
+    const regression_behind_lsn = Lsn{ .checkpoint_seq = 0, .frame_index = 0 };
+    var ctx = RetentionCallbackContext{
+        .min_retained_lsn = regression_behind_lsn.pack(),
+    };
+    wal.setRetentionCallback(&ctx, RetentionCallbackContext.callback);
+
+    // Checkpoint — should defer truncation, keeping the epoch intact
+    try wal.checkpoint(&pager);
+
+    // Now attempt readRawFrames from frame 0 — should still succeed (epoch not discarded)
+    const frame_size = WAL_FRAME_HEADER_SIZE + 512;
+    const read_buf = try testing.allocator.alloc(u8, frame_size * 3);
+    defer testing.allocator.free(read_buf);
+
+    const read_result = try wal.readRawFrames(frame0_lsn, read_buf);
+
+    // Should have successfully read all 3 frames
+    try testing.expect(read_result.bytes_read > 0);
+    try testing.expectEqual(frame_size * 3, read_result.bytes_read);
+
+    // Verify frame content markers survived
+    var offset: usize = 0;
+    offset += WAL_FRAME_HEADER_SIZE; // skip first frame header
+    try testing.expectEqual(@as(u8, 0x11), read_buf[offset]);
+    offset += 512 + WAL_FRAME_HEADER_SIZE;
+    try testing.expectEqual(@as(u8, 0x22), read_buf[offset]);
+    offset += 512 + WAL_FRAME_HEADER_SIZE;
+    try testing.expectEqual(@as(u8, 0x33), read_buf[offset]);
+
+    pager.deinit();
+}
+
+test "Phase 6: checkpoint with no retention callback registered behaves like today (no change)" {
+    const path = "test_phase6_no_callback.db";
+    defer std.fs.cwd().deleteFile(path) catch {};
+    defer std.fs.cwd().deleteFile("test_phase6_no_callback.db-wal") catch {};
+
+    const PageHeader = page_mod.PageHeader;
+    const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
+
+    var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
+    const pid = try pager.allocPage();
+
+    var wal = try Wal.init(testing.allocator, path, 512);
+    defer wal.deinit();
+
+    // Write and commit
+    var page: [512]u8 = undefined;
+    @memset(&page, 0x42);
+    var hdr = PageHeader{ .page_type = .leaf, .page_id = pid, .cell_count = 0 };
+    hdr.serialize(page[0..PAGE_HEADER_SIZE]);
+
+    try wal.writeFrame(pid, &page);
+    try wal.commit(pager.page_count);
+
+    // Don't register callback — should truncate unconditionally
+    const checkpoint_seq_before = wal.header.checkpoint_seq;
+    try wal.checkpoint(&pager);
+
+    // Should have truncated
+    try testing.expectEqual(checkpoint_seq_before + 1, wal.header.checkpoint_seq);
+    try testing.expectEqual(@as(u32, 0), wal.total_frame_count);
+    try testing.expectEqual(@as(u32, 0), wal.page_index.count());
+
+    pager.deinit();
 }
