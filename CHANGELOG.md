@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,
+  plan 001 item 1) — `checkpoint()` now flushes committed pages to the main DB file
+  unconditionally, then defers WAL truncation when a registered callback reports a replica
+  still lagging behind the current LSN. Unwired (no caller yet) pending a future phase that
+  connects a real replication `SlotManager`.
 - **Configuration Hot-Reload** (Sessions 280-284)
   - FileWatcher implementation with platform-specific backends (macOS kqueue, Linux inotify)
   - Automatic configuration file monitoring for silica.conf hot-reload
