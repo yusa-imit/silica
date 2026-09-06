@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Repo hygiene** (plan 001 item 2, part 1): removed the empty, untracked `src/query/`
+  directory; added `README.md`, `LICENSE`, `docs` to `build.zig.zon` `.paths` so packaging
+  includes them. Scratch-DB-to-tmp-dir migration split into its own plan item (1,350+ literal
+  paths across 23 files — out of scope for one cycle).
+
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,
   plan 001 item 1) — `checkpoint()` now flushes committed pages to the main DB file
