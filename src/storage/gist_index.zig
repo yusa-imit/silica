@@ -323,7 +323,7 @@ pub const GiST = struct {
         // Write predicate size and tuple_id in header area
         const header_offset = GIST_HEADER_SIZE + (entry_count * GIST_ENTRY_HEADER_SIZE);
         std.mem.writeInt(u16, frame.data[header_offset..][0..2], @intCast(predicate.len), .little);
-        std.mem.writeInt(u32, frame.data[header_offset + 2..][0..4], tuple_id, .little);
+        std.mem.writeInt(u32, frame.data[header_offset + 2 ..][0..4], tuple_id, .little);
 
         // Write predicate data at end
         const pred_offset = computePredicateOffset(frame.data.len, entry_count, entry_count);
@@ -458,8 +458,15 @@ fn computePredicateOffset(page_len: usize, current_idx: usize, total_entries: us
 
 test "GiST init creates valid tree" {
     const allocator = std.testing.allocator;
-    const path = "test_gist_init.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gist_init.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();

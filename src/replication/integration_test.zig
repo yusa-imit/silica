@@ -173,13 +173,17 @@ pub fn runSenderStatusReaderLoop(
 
 test "Phase 5: end-to-end WAL replication over real loopback socket" {
     const allocator = std.testing.allocator;
-    const primary_path = "test_phase5_primary.db";
-    const replica_path = "test_phase5_replica.db";
 
-    defer std.fs.cwd().deleteFile(primary_path) catch {};
-    defer std.fs.cwd().deleteFile(primary_path ++ "-wal") catch {};
-    defer std.fs.cwd().deleteFile(replica_path) catch {};
-    defer std.fs.cwd().deleteFile(replica_path ++ "-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var primary_path_buf: [512]u8 = undefined;
+    const primary_path = try std.fmt.bufPrint(&primary_path_buf, "{s}/test_phase5_primary.db", .{dir_path});
+    var replica_path_buf: [512]u8 = undefined;
+    const replica_path = try std.fmt.bufPrint(&replica_path_buf, "{s}/test_phase5_replica.db", .{dir_path});
 
     // ── Setup: Create primary Wal + Pager ──
 
