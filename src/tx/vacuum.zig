@@ -761,8 +761,14 @@ test "vacuumTable — removes dead tuples from aborted transactions" {
     const allocator = std.testing.allocator;
 
     // Set up storage: pager + buffer pool
-    const test_path = "test_vacuum_dead_aborted.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_dead_aborted.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -840,8 +846,14 @@ test "vacuumTable — removes dead tuples from aborted transactions" {
 test "vacuumTable — removes committed deletes below horizon" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_dead_deleted.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_dead_deleted.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -898,8 +910,14 @@ test "vacuumTable — removes committed deletes below horizon" {
 test "vacuumTable — freezes old committed tuples" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_freeze.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_freeze.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -966,8 +984,14 @@ test "vacuumTable — freezes old committed tuples" {
 test "vacuumTable — skips legacy (non-MVCC) rows" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_legacy.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_legacy.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1012,8 +1036,14 @@ test "vacuumTable — skips legacy (non-MVCC) rows" {
 test "vacuumTable — empty table" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_empty.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_empty.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1210,8 +1240,14 @@ test "isDeadTuple — xmax aborted means not dead" {
 test "vacuumTable — all tuples dead" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_all_dead.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_all_dead.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1267,8 +1303,14 @@ test "vacuumTable — all tuples dead" {
 test "vacuumTable — all tuples live and freezable" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_all_live.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_all_live.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1335,8 +1377,14 @@ test "vacuumTable — all tuples live and freezable" {
 test "vacuum updates FSM after dead tuple removal" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_fsm.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_fsm.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1410,8 +1458,14 @@ test "vacuum updates FSM after dead tuple removal" {
 test "vacuum FSM reflects free space correctly" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_fsm2.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_fsm2.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1809,8 +1863,14 @@ test "AutoVacuumDaemon — getTablesNeedingVacuum handles OutOfMemory" {
 test "vacuumTable — handles B+Tree errors gracefully" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_btree_err.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_btree_err.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1862,8 +1922,14 @@ test "vacuumTable — handles B+Tree errors gracefully" {
 test "vacuumTable — handles invalid root page" {
     const allocator = std.testing.allocator;
 
-    const test_path = "test_vacuum_invalid_root.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_invalid_root.db", .{dir_path});
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
