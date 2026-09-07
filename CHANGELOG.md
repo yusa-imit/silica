@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `storage/gist_index.zig`, `replication/integration_test.zig`, `tui.zig`, and
   `replication/receiver.zig` now write into a `std.testing.tmpDir` instead of the repo root,
   matching the existing pattern in `config/file.zig`/`tx/jepsen_test.zig`. ~19 files remain.
+- **Repo hygiene** (plan 001 item 2, part 2, batch 2): test scratch DBs in `storage/fsm.zig` (7),
+  `tx/vacuum.zig` (11), and `server/server.zig` (12) now write into a `std.testing.tmpDir`
+  instead of the repo root — 30 occurrences, 3 files. `tx/jepsen_test.zig` needed no change
+  (already compliant). 15 files (~1,485 occurrences) remain.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

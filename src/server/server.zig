@@ -408,8 +408,14 @@ test "Server.init and deinit" {
     const allocator = std.testing.allocator;
 
     // Create a temporary database for testing
-    const db_path = "test_server.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server.db", .{dir_path});
 
     // Initialize server
     var server = try Server.init(allocator, .{
@@ -427,8 +433,14 @@ test "Server.init and deinit" {
 test "Server.init with custom config" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_custom.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_custom.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .host = "127.0.0.1",
@@ -445,8 +457,14 @@ test "Server.init with custom config" {
 test "Server.stop sets running flag" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_stop.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_stop.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -461,8 +479,14 @@ test "Server.stop sets running flag" {
 test "Server.waitForConnections returns immediately when no active connections" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_wait_none.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_wait_none.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -477,8 +501,14 @@ test "Server.waitForConnections returns immediately when no active connections" 
 test "Server.waitForConnections waits for active connections" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_wait_active.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_wait_active.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -506,8 +536,14 @@ test "Server.waitForConnections waits for active connections" {
 test "Server.waitForConnections times out when connections don't finish" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_wait_timeout.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_wait_timeout.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -527,8 +563,14 @@ test "Server.waitForConnections times out when connections don't finish" {
 test "Server.shutdown with no active connections" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_shutdown_clean.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_clean.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -546,8 +588,14 @@ test "Server.shutdown with no active connections" {
 test "Server.shutdown with timeout on active connections" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_shutdown_timeout.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_timeout.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -569,8 +617,14 @@ test "Server.shutdown with timeout on active connections" {
 test "Server.active_connections - atomicity of increment/decrement" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_atomicity.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_atomicity.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -605,8 +659,14 @@ test "Server.active_connections - atomicity of increment/decrement" {
 test "Server.max_connections - enforce connection limit" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_max_conn.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_max_conn.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -641,8 +701,14 @@ test "Server.max_connections - enforce connection limit" {
 test "Server.active_connections - stress test with many concurrent threads" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_concurrent_stress.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_concurrent_stress.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -687,8 +753,14 @@ test "Server.active_connections - stress test with many concurrent threads" {
 test "Server.shutdown - stress test with rapid connections" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_server_shutdown_stress.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_stress.db", .{dir_path});
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,

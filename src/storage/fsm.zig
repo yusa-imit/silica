@@ -424,7 +424,7 @@ test "findPage returns page with enough space" {
     try std.testing.expectEqual(@as(?u32, null), fsm.findPage(100));
 
     // Add pages with different free space amounts
-    try fsm.update(10, 500);  // ~31 category
+    try fsm.update(10, 500); // ~31 category
     try fsm.update(20, 2000); // ~125 category
     try fsm.update(30, 4000); // ~250 category
 
@@ -501,9 +501,9 @@ test "getStats" {
     try std.testing.expectEqual(@as(f64, 0), stats.avg_category);
 
     // Add various pages
-    try fsm.update(1, 100);   // nearly full
-    try fsm.update(2, 4072);  // empty (category 255)
-    try fsm.update(3, 2000);  // half full
+    try fsm.update(1, 100); // nearly full
+    try fsm.update(2, 4072); // empty (category 255)
+    try fsm.update(3, 2000); // half full
 
     stats = fsm.getStats();
     try std.testing.expectEqual(@as(u32, 3), stats.tracked_pages);
@@ -541,8 +541,14 @@ test "entriesPerPage calculation" {
 
 test "disk persistence roundtrip" {
     // Create a temporary database file
-    const test_path = "test_fsm_persist.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_persist.db", .{dir_path});
 
     var pager = try page_mod.Pager.init(std.testing.allocator, test_path, .{});
     defer pager.deinit();
@@ -577,8 +583,14 @@ test "disk persistence roundtrip" {
 }
 
 test "disk persistence with many entries spanning multiple pages" {
-    const test_path = "test_fsm_multi_page.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_multi_page.db", .{dir_path});
 
     // Use small page size to force multiple FSM pages
     var pager = try page_mod.Pager.init(std.testing.allocator, test_path, .{ .page_size = 512 });
@@ -611,8 +623,14 @@ test "disk persistence with many entries spanning multiple pages" {
 }
 
 test "loadFromDisk with invalid head returns empty" {
-    const test_path = "test_fsm_invalid.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_invalid.db", .{dir_path});
 
     var pager = try page_mod.Pager.init(std.testing.allocator, test_path, .{});
     defer pager.deinit();
@@ -630,8 +648,14 @@ test "loadFromDisk with invalid head returns empty" {
 }
 
 test "empty FSM saveToDisk returns 0" {
-    const test_path = "test_fsm_empty.db";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_empty.db", .{dir_path});
 
     var pager = try page_mod.Pager.init(std.testing.allocator, test_path, .{});
     defer pager.deinit();
@@ -728,8 +752,14 @@ test "FSM saveToDisk with invalid pager" {
     try fsm.update(20, 2000);
 
     // Test with a closed pager file
-    const path = "test_fsm_save_error.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_save_error.db", .{dir_path});
 
     var pager = try page_mod.Pager.init(std.testing.allocator, path, .{});
     pager.deinit(); // Close the file
@@ -741,8 +771,15 @@ test "FSM saveToDisk with invalid pager" {
 
 test "FSM loadFromDisk with corrupted data" {
     const allocator = std.testing.allocator;
-    const path = "test_fsm_load_corrupt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_load_corrupt.db", .{dir_path});
 
     var pager = try page_mod.Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -768,8 +805,14 @@ test "FSM loadFromDisk with page beyond file bounds" {
     var fsm = FreeSpaceMap.init(std.testing.allocator, 4096);
     defer fsm.deinit();
 
-    const path = "test_fsm_load_bounds.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fsm_load_bounds.db", .{dir_path});
 
     var pager = try page_mod.Pager.init(std.testing.allocator, path, .{});
     defer pager.deinit();
