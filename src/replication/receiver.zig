@@ -128,7 +128,8 @@ pub const WalReceiver = struct {
 
         // Verify LSN continuity
         if (wal_start_struct.checkpoint_seq != self.write_lsn.checkpoint_seq or
-            wal_start_struct.frame_index != self.write_lsn.frame_index) {
+            wal_start_struct.frame_index != self.write_lsn.frame_index)
+        {
             return Error.LsnMismatch;
         }
 
@@ -656,13 +657,18 @@ test "WalReceiver — process WAL data updates all LSN fields" {
 
 test "Phase 4: receiver applies real WAL frames to local Wal and Pager" {
     const allocator = std.testing.allocator;
-    const src_path = "test_receiver_phase4_src.db";
-    defer std.fs.cwd().deleteFile(src_path) catch {};
-    defer std.fs.cwd().deleteFile(src_path ++ "-wal") catch {};
 
-    const dst_path = "test_receiver_phase4_dst.db";
-    defer std.fs.cwd().deleteFile(dst_path) catch {};
-    defer std.fs.cwd().deleteFile(dst_path ++ "-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var src_path_buf: [512]u8 = undefined;
+    const src_path = try std.fmt.bufPrint(&src_path_buf, "{s}/test_receiver_phase4_src.db", .{dir_path});
+
+    var dst_path_buf: [512]u8 = undefined;
+    const dst_path = try std.fmt.bufPrint(&dst_path_buf, "{s}/test_receiver_phase4_dst.db", .{dir_path});
 
     // Source side: create Wal, write pages, commit
     var src_wal = try wal_mod.Wal.init(allocator, src_path, 4096);
@@ -728,13 +734,18 @@ test "Phase 4: receiver applies real WAL frames to local Wal and Pager" {
 
 test "Phase 4: receiver with non-commit frame does not checkpoint yet" {
     const allocator = std.testing.allocator;
-    const src_path = "test_receiver_phase4_noncommit_src.db";
-    defer std.fs.cwd().deleteFile(src_path) catch {};
-    defer std.fs.cwd().deleteFile(src_path ++ "-wal") catch {};
 
-    const dst_path = "test_receiver_phase4_noncommit_dst.db";
-    defer std.fs.cwd().deleteFile(dst_path) catch {};
-    defer std.fs.cwd().deleteFile(dst_path ++ "-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var src_path_buf: [512]u8 = undefined;
+    const src_path = try std.fmt.bufPrint(&src_path_buf, "{s}/test_receiver_phase4_noncommit_src.db", .{dir_path});
+
+    var dst_path_buf: [512]u8 = undefined;
+    const dst_path = try std.fmt.bufPrint(&dst_path_buf, "{s}/test_receiver_phase4_noncommit_dst.db", .{dir_path});
 
     // Source side: write 2 frames and commit
     var src_wal = try wal_mod.Wal.init(allocator, src_path, 4096);

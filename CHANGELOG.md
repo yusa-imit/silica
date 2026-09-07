@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory; added `README.md`, `LICENSE`, `docs` to `build.zig.zon` `.paths` so packaging
   includes them. Scratch-DB-to-tmp-dir migration split into its own plan item (1,350+ literal
   paths across 23 files — out of scope for one cycle).
+- **Repo hygiene** (plan 001 item 2, part 2, batch 1): test scratch DBs in
+  `storage/gist_index.zig`, `replication/integration_test.zig`, `tui.zig`, and
+  `replication/receiver.zig` now write into a `std.testing.tmpDir` instead of the repo root,
+  matching the existing pattern in `config/file.zig`/`tx/jepsen_test.zig`. ~19 files remain.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

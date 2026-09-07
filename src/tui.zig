@@ -145,7 +145,7 @@ fn sqlContains(sql: []const u8, keyword: []const u8) bool {
     if (sql.len < keyword.len) return false;
     var i: usize = 0;
     while (i + keyword.len <= sql.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(sql[i..i+keyword.len], keyword)) return true;
+        if (std.ascii.eqlIgnoreCase(sql[i .. i + keyword.len], keyword)) return true;
     }
     return false;
 }
@@ -483,13 +483,14 @@ const App = struct {
         self.clearCompletions();
 
         const sql_keywords = [_][]const u8{
-            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET",
-            "DELETE", "CREATE", "TABLE", "INDEX", "DROP", "ALTER", "PRIMARY", "KEY",
-            "FOREIGN", "REFERENCES", "UNIQUE", "NOT", "NULL", "DEFAULT", "CHECK",
-            "AND", "OR", "IN", "LIKE", "BETWEEN", "IS", "AS", "ON", "JOIN", "LEFT",
-            "RIGHT", "INNER", "OUTER", "GROUP", "BY", "HAVING", "ORDER", "ASC", "DESC",
-            "LIMIT", "OFFSET", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX",
-            "INTEGER", "REAL", "TEXT", "BLOB", "BOOLEAN", "DATE", "TIME", "TIMESTAMP",
+            "SELECT",  "FROM",       "WHERE",   "INSERT",  "INTO",     "VALUES",  "UPDATE",  "SET",
+            "DELETE",  "CREATE",     "TABLE",   "INDEX",   "DROP",     "ALTER",   "PRIMARY", "KEY",
+            "FOREIGN", "REFERENCES", "UNIQUE",  "NOT",     "NULL",     "DEFAULT", "CHECK",   "AND",
+            "OR",      "IN",         "LIKE",    "BETWEEN", "IS",       "AS",      "ON",      "JOIN",
+            "LEFT",    "RIGHT",      "INNER",   "OUTER",   "GROUP",    "BY",      "HAVING",  "ORDER",
+            "ASC",     "DESC",       "LIMIT",   "OFFSET",  "DISTINCT", "COUNT",   "SUM",     "AVG",
+            "MIN",     "MAX",        "INTEGER", "REAL",    "TEXT",     "BLOB",    "BOOLEAN", "DATE",
+            "TIME",    "TIMESTAMP",
         };
 
         // Filter keywords by prefix
@@ -595,9 +596,7 @@ const App = struct {
         const is_ddl = std.ascii.startsWithIgnoreCase(trimmed, "CREATE") or
             std.ascii.startsWithIgnoreCase(trimmed, "DROP") or
             std.ascii.startsWithIgnoreCase(trimmed, "ALTER");
-        const kind: sailor.activity_feed.Kind = if (is_ddl) .action
-            else if (success) .success
-            else .error_kind;
+        const kind: sailor.activity_feed.Kind = if (is_ddl) .action else if (success) .success else .error_kind;
         const idx = self.activity_count % ACTIVITY_LOG_MAX;
         const copy_len = @min(trimmed.len, ACTIVITY_EVENT_MAX);
         @memcpy(self.activity_event_bufs[idx][0..copy_len], trimmed[0..copy_len]);
@@ -734,15 +733,15 @@ const App = struct {
 
     fn executeRingMenuAction(self: *App) void {
         switch (self.ring_menu_selected) {
-            0 => self.executeSQL(),         // Execute
-            1 => self.focus = .schema,      // Schema
-            2 => self.focus = .results,     // Results
-            3 => self.refreshSchema(),      // Refresh
-            4 => {                           // Clear
+            0 => self.executeSQL(), // Execute
+            1 => self.focus = .schema, // Schema
+            2 => self.focus = .results, // Results
+            3 => self.refreshSchema(), // Refresh
+            4 => { // Clear
                 self.input_text.clearRetainingCapacity();
                 self.input_cursor = 0;
             },
-            5 => self.should_quit = true,   // Quit
+            5 => self.should_quit = true, // Quit
             else => {},
         }
     }
@@ -2151,7 +2150,10 @@ fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     // Render visible items manually with different styles for tables vs columns
     var row: u16 = 0;
     var idx = app.schema_offset;
-    while (row < inner.height and idx < app.schema_items.items.len) : ({ row += 1; idx += 1; }) {
+    while (row < inner.height and idx < app.schema_items.items.len) : ({
+        row += 1;
+        idx += 1;
+    }) {
         const item = app.schema_items.items[idx];
         const is_table = isTableIndex(app.schema_table_indices.items, idx);
         const is_selected = is_focused and idx == app.schema_selected;
@@ -2464,9 +2466,9 @@ fn renderDetailOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withSelectedKeyStyle(.{ .fg = .cyan, .bold = true, .reverse = true })
         .withSelectedValueStyle(.{ .reverse = true })
         .withBlock((tui.widgets.Block{
-            .title = row_label,
-            .title_position = .top_left,
-        }).withBorderStyle(.{ .fg = .cyan }));
+        .title = row_label,
+        .title_position = .top_left,
+    }).withBorderStyle(.{ .fg = .cyan }));
     viewer.render(buf, popup_area);
 }
 
@@ -2496,9 +2498,9 @@ fn renderRingMenu(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withSelectedStyle(tui.Style{ .fg = .yellow, .bold = true })
         .withCenterStyle(tui.Style{ .fg = .cyan, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Context Menu (↑↓←→ navigate · Enter select · m/Esc close) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+        .title = " Context Menu (↑↓←→ navigate · Enter select · m/Esc close) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .cyan }));
 
     menu.render(buf, popup_area);
 }
@@ -2534,9 +2536,9 @@ fn renderTimerOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withStatusStyle(.{ .fg = .yellow })
         .withLapStyle(.{ .fg = .white })
         .withBlock((tui.widgets.Block{
-            .title = " Query Timer (t/Esc:close) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .green }));
+        .title = " Query Timer (t/Esc:close) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .green }));
 
     sw.render(buf, popup_area);
 }
@@ -2613,9 +2615,9 @@ fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedColumn(app.kanban_focused_col)
         .withFocusedCard(app.kanban_focused_card)
         .withBlock((tui.widgets.Block{
-            .title = " Query History (b/Esc:close  \xe2\x86\x90\xe2\x86\x92:col  \xe2\x86\x91\xe2\x86\x93:card) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Query History (b/Esc:close  \xe2\x86\x90\xe2\x86\x92:col  \xe2\x86\x91\xe2\x86\x93:card) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     kb.render(buf, popup_area);
 }
@@ -2694,9 +2696,9 @@ fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedStyle(tui.Style{ .fg = .cyan, .bold = true })
         .withShowScores(false)
         .withBlock((tui.widgets.Block{
-            .title = " Query Plan (Esc:close) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .blue }));
+        .title = " Query Plan (Esc:close) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .blue }));
 
     bv.render(buf, popup_area);
 }
@@ -2733,9 +2735,9 @@ fn renderActivityFeed(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withInfoStyle(tui.Style{ .fg = .white })
         .withFocusedStyle(tui.Style{ .fg = .black, .bg = .white, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Activity Log  ↑↓ navigate  a/Esc close ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Activity Log  ↑↓ navigate  a/Esc close ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     feed.render(buf, popup_area);
 }
@@ -2787,9 +2789,9 @@ fn renderGanttChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withCompleteStyle(.{ .fg = .green })
         .withFocusedStyle(.{ .fg = .black, .bg = .cyan, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Query Timeline (g/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .yellow }));
+        .title = " Query Timeline (g/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .yellow }));
 
     chart.render(buf, popup_area);
 }
@@ -2824,9 +2826,9 @@ fn renderFlowChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withHSpacing(4)
         .withVSpacing(2)
         .withBlock((tui.widgets.Block{
-            .title = " Query Pipeline (f/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Query Pipeline (f/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     chart.render(buf, popup_area);
 }
@@ -2877,9 +2879,9 @@ fn renderMindMap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withNodeHeight(3)
         .withHGap(3)
         .withBlock((tui.widgets.Block{
-            .title = " Schema Map (n/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+        .title = " Schema Map (n/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .cyan }));
 
     map.render(buf, popup_area);
 }
@@ -2958,9 +2960,9 @@ fn renderRadarChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withAxisStyle(.{ .fg = .bright_black })
         .withFocusedStyle(.{ .fg = .cyan, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Query Profile (r/Esc:close  \xe2\x86\x90\xe2\x86\x92:series) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Query Profile (r/Esc:close  \xe2\x86\x90\xe2\x86\x92:series) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     chart.render(buf, popup_area);
 }
@@ -2998,9 +3000,9 @@ fn renderHexEditor(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowOffset(true)
         .withCursorStyle(.{ .fg = .cyan, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Page Viewer (x/Esc:close  \xe2\x86\x90\xe2\x86\x92:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Page Viewer (x/Esc:close  \xe2\x86\x90\xe2\x86\x92:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     editor.render(buf, popup_area);
 }
@@ -3073,9 +3075,9 @@ fn renderTreemap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedStyle(.{ .bold = true })
         .withLabelStyle(.{ .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Table Space (\xe2\x86\x91\xe2\x86\x93\xe2\x86\x90\xe2\x86\x92:navigate  w/Esc:close) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Table Space (\xe2\x86\x91\xe2\x86\x93\xe2\x86\x90\xe2\x86\x92:navigate  w/Esc:close) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     tm.render(buf, popup_area);
 }
@@ -3155,9 +3157,9 @@ fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withHeaderStyle(.{ .fg = .cyan, .bold = true })
         .withFocusedStyle(.{ .fg = .yellow, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " Query Metrics (v/Esc:close  arrows:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Query Metrics (v/Esc:close  arrows:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     mv.render(buf, popup_area);
 }
@@ -3233,9 +3235,9 @@ fn renderSankeyDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFlowStyle(.{ .fg = .bright_black })
         .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
         .withBlock((tui.widgets.Block{
-            .title = " SQL Data Flow (s/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " SQL Data Flow (s/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     sk.render(buf, popup_area);
 }
@@ -3312,9 +3314,9 @@ fn renderBubbleChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
         .withAxisStyle(.{ .fg = .bright_black })
         .withBlock((tui.widgets.Block{
-            .title = " Query Performance (u/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Query Performance (u/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     bc.render(buf, popup_area);
 }
@@ -3377,9 +3379,9 @@ fn renderChordDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
         .withStyle(.{ .fg = .white })
         .withBlock((tui.widgets.Block{
-            .title = " SQL Operation Flow (c/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " SQL Operation Flow (c/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     cd.render(buf, popup_area);
 }
@@ -3410,8 +3412,8 @@ fn renderWaterfallChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .{ .label = "INSERT", .value = counts[1], .kind = .relative },
         .{ .label = "UPDATE", .value = counts[2], .kind = .relative },
         .{ .label = "DELETE", .value = counts[3], .kind = .relative },
-        .{ .label = "DDL",    .value = counts[4], .kind = .relative },
-        .{ .label = "Total",  .value = 0.0,        .kind = .total },
+        .{ .label = "DDL", .value = counts[4], .kind = .relative },
+        .{ .label = "Total", .value = 0.0, .kind = .total },
     };
 
     // Centered overlay: ~70% width, ~70% height
@@ -3437,9 +3439,9 @@ fn renderWaterfallChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowValues(true)
         .withShowConnectors(true)
         .withBlock((tui.widgets.Block{
-            .title = " SQL Query Breakdown (e/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " SQL Query Breakdown (e/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     wc.render(buf, popup_area);
 }
@@ -3511,9 +3513,9 @@ fn renderFunnelChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowPercentages(true)
         .withFocused(app.funnel_focused)
         .withBlock((tui.widgets.Block{
-            .title = " SQL Query Funnel (l/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " SQL Query Funnel (l/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     fc.render(buf, popup_area);
 }
@@ -3576,9 +3578,9 @@ fn renderDotPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowValues(true)
         .withFocused(app.dotplot_focused)
         .withBlock((tui.widgets.Block{
-            .title = " Avg Query Duration by Type ms (d/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+        .title = " Avg Query Duration by Type ms (d/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .cyan }));
 
     dp.render(buf, popup_area);
 }
@@ -3638,9 +3640,9 @@ fn renderRadialBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowValues(true)
         .withFocused(app.radialbar_focused)
         .withBlock((tui.widgets.Block{
-            .title = " DB Health Metrics (h/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .green }));
+        .title = " DB Health Metrics (h/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .green }));
 
     rb.render(buf, popup_area);
 }
@@ -3680,9 +3682,9 @@ fn renderStreamGraph(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowLabels(true)
         .withFocused(app.streamgraph_focused)
         .withBlock((tui.widgets.Block{
-            .title = " Query Type Volume Over Time (y/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .green }));
+        .title = " Query Type Volume Over Time (y/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .green }));
 
     sg.render(buf, popup_area);
 }
@@ -3731,9 +3733,9 @@ fn renderViolinPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowLabels(true)
         .withFocused(app.violin_focused)
         .withBlock((tui.widgets.Block{
-            .title = " Query Duration Distribution by Type (j/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .magenta }));
+        .title = " Query Duration Distribution by Type (j/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     vp.render(buf, popup_area);
 }
@@ -3795,9 +3797,9 @@ fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowValues(true)
         .withFocused(app.sunburst_focused)
         .withBlock((tui.widgets.Block{
-            .title = " Query Type & Duration Breakdown (k/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .yellow }));
+        .title = " Query Type & Duration Breakdown (k/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .yellow }));
 
     sb.render(buf, popup_area);
 }
@@ -3847,9 +3849,9 @@ fn renderBoxPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowOutliers(true)
         .withFocused(app.boxplot_focused)
         .withBlock((tui.widgets.Block{
-            .title = " Query Duration Distribution (o/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-            .borders = .all,
-        }).withBorderStyle(tui.Style{ .fg = .cyan }));
+        .title = " Query Duration Distribution (o/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .cyan }));
 
     bp.render(buf, popup_area);
 }
@@ -4657,8 +4659,14 @@ test "getTableHelp shows table metadata tooltip" {
     const allocator = testing.allocator;
 
     // Create unique database file to avoid state persistence across tests
-    const path = "test_table_help_users.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_table_help_users.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -4696,8 +4704,14 @@ test "getTableHelp truncates long column lists" {
     const allocator = testing.allocator;
 
     // Create unique database file to avoid state persistence across tests
-    const path = "test_table_help_products.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_table_help_products.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
