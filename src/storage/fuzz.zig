@@ -138,7 +138,14 @@ fn verifyTreeContents(
 
 test "fuzz: random insert-delete sequences" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_insert_delete.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_insert_delete.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 4096, 500);
     defer tt.deinit();
@@ -206,7 +213,14 @@ test "fuzz: random insert-delete sequences" {
 
 test "fuzz: random operations with 512-byte pages" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_small_pages.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_small_pages.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 512, 500);
     defer tt.deinit();
@@ -268,7 +282,14 @@ test "fuzz: random operations with 512-byte pages" {
 
 test "fuzz: mixed overflow and inline values" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_overflow_mix.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_overflow_mix.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 4096, 500);
     defer tt.deinit();
@@ -338,7 +359,14 @@ test "fuzz: mixed overflow and inline values" {
 
 test "fuzz: insert all, delete all, reinsert all" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_reinsert.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_reinsert.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 4096, 500);
     defer tt.deinit();
@@ -404,7 +432,14 @@ test "fuzz: insert all, delete all, reinsert all" {
 
 test "fuzz: cursor scan matches point lookups after random ops" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_cursor_consistency.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_cursor_consistency.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 1024, 500);
     defer tt.deinit();
@@ -491,7 +526,14 @@ test "fuzz: cursor scan matches point lookups after random ops" {
 
 test "fuzz: cursor seek finds correct positions" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_cursor_seek.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_cursor_seek.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 2048, 500);
     defer tt.deinit();
@@ -553,9 +595,15 @@ test "fuzz: correctness across page sizes" {
     const allocator = std.testing.allocator;
     const page_sizes = [_]u32{ 512, 1024, 2048, 4096 };
 
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
     for (page_sizes) |ps| {
-        var path_buf: [64]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "test_fuzz_pagesize_{d}.db", .{ps}) catch unreachable;
+        var path_buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_pagesize_{d}.db", .{ dir_path, ps }) catch unreachable;
 
         var tt = try TestTree.init(allocator, path, ps, 500);
         defer tt.deinit();
@@ -613,7 +661,14 @@ test "fuzz: correctness across page sizes" {
 
 test "fuzz: sequential insert, random delete pattern" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_seq_insert_rand_delete.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_seq_insert_rand_delete.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 4096, 500);
     defer tt.deinit();
@@ -676,7 +731,14 @@ test "fuzz: sequential insert, random delete pattern" {
 
 test "fuzz: reverse order inserts with small pages" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_reverse_small.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_reverse_small.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 512, 500);
     defer tt.deinit();
@@ -719,7 +781,14 @@ test "fuzz: reverse order inserts with small pages" {
 
 test "fuzz: overflow values with 512-byte pages" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_overflow_small_pages.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_overflow_small_pages.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 512, 500);
     defer tt.deinit();
@@ -781,7 +850,14 @@ test "fuzz: overflow values with 512-byte pages" {
 
 test "fuzz: grow-shrink cycles" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_grow_shrink.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_grow_shrink.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 2048, 500);
     defer tt.deinit();
@@ -848,7 +924,14 @@ test "fuzz: grow-shrink cycles" {
 
 test "fuzz: duplicate key rejection is consistent" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_duplicates.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_duplicates.db", .{dir_path});
 
     var tt = try TestTree.init(allocator, path, 4096, 500);
     defer tt.deinit();

@@ -310,13 +310,17 @@ test "inlineValueSize - calculation" {
 test "write and read overflow chain - single page" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_single.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -336,13 +340,17 @@ test "write and read overflow chain - single page" {
 test "write and read overflow chain - multiple pages" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_multi.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_multi.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -374,13 +382,17 @@ test "write and read overflow chain - multiple pages" {
 test "write and read overflow chain - with inline prefix" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_prefix.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_prefix.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -405,13 +417,17 @@ test "write and read overflow chain - with inline prefix" {
 test "free overflow chain" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_free.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_free.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -440,13 +456,17 @@ test "free overflow chain" {
 test "overflow chain - empty data returns zero" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_empty.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 10);
     defer pool.deinit();
@@ -459,13 +479,17 @@ test "overflow chain - empty data returns zero" {
 test "overflow chain - exact page boundary" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_exact.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_exact.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -488,13 +512,17 @@ test "overflow chain - exact page boundary" {
 test "overflow chain - large multi-page chain" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_large.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_large.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 200);
     defer pool.deinit();
@@ -519,13 +547,17 @@ test "overflow chain - large multi-page chain" {
 test "overflow chain - minimum page size stress" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 512;
-    const test_path = "test_overflow_minpage.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_minpage.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 200);
     defer pool.deinit();
@@ -546,13 +578,17 @@ test "overflow chain - minimum page size stress" {
 test "free and rewrite overflow chain" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_rewrite.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_rewrite.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -578,13 +614,17 @@ test "free and rewrite overflow chain" {
 test "Overflow: CorruptOverflowChain error when page type is not overflow" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_corrupt_type.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_corrupt_type.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -613,13 +653,17 @@ test "Overflow: CorruptOverflowChain error when page type is not overflow" {
 test "Overflow: CorruptOverflowChain when chain is incomplete" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_incomplete_chain.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_incomplete_chain.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -637,13 +681,17 @@ test "Overflow: CorruptOverflowChain when chain is incomplete" {
 test "Overflow: CorruptOverflowChain when next pointer forms invalid chain" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_bad_next_ptr.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_bad_next_ptr.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
@@ -685,13 +733,17 @@ test "Overflow: CorruptOverflowChain when next pointer forms invalid chain" {
 test "Overflow: CorruptOverflowChain when freeOverflowChain encounters non-overflow page" {
     const allocator = std.testing.allocator;
     const page_size: u32 = 4096;
-    const test_path = "test_overflow_free_corrupt.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_free_corrupt.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
-    defer {
-        pager.deinit();
-        std.fs.cwd().deleteFile(test_path) catch {};
-    }
+    defer pager.deinit();
 
     var pool = try BufferPool.init(allocator, &pager, 100);
     defer pool.deinit();
