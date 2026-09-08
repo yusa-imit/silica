@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (19), `storage/overflow.zig` (13), and `storage/fuzz.zig` (12) now write into a
   `std.testing.tmpDir` instead of the repo root — 44 occurrences, 3 files. 12 files
   (~1,441 occurrences) remain.
+- **Repo hygiene** (plan 001 item 2, part 2, batch 4): test scratch DBs in
+  `storage/hash_index.zig` (26) and `sql/conformance_test.zig` (28) now write into a
+  `std.testing.tmpDir` instead of the repo root — 54 occurrences, 2 files. 10 files
+  (~1,359 occurrences) remain.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

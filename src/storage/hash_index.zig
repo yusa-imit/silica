@@ -179,7 +179,7 @@ fn initializeOverflowPage(pool: *BufferPool, page_id: u32) !void {
 
     // Initialize: next_page_id = 0, entry_count = 0
     std.mem.writeInt(u32, frame.data[PAGE_HEADER_SIZE..][0..4], 0, .little);
-    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], 0, .little);
+    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], 0, .little);
 
     frame.markDirty();
 }
@@ -277,7 +277,7 @@ fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value:
         defer pool.unpinPage(current_page_id, false);
 
         // Check if key already exists
-        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], .little);
+        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
         const entries_start = PAGE_HEADER_SIZE + 6;
         var offset: usize = entries_start;
 
@@ -335,7 +335,7 @@ fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value:
 
 fn tryInsertExternalValueEntry(frame: *BufferFrame, key: []const u8, value_len: usize, value_page_id: u32) bool {
     const page_size = 4096;
-    const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], .little);
+    const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
     const entries_start = PAGE_HEADER_SIZE + 6;
 
     // Calculate space needed
@@ -388,7 +388,7 @@ fn tryInsertExternalValueEntry(frame: *BufferFrame, key: []const u8, value_len: 
     write_offset += 4;
 
     // Update entry count
-    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], entry_count + 1, .little);
+    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], entry_count + 1, .little);
 
     return true;
 }
@@ -401,7 +401,7 @@ fn tryInsertEntry(frame: *BufferFrame, key: []const u8, value: []const u8) bool 
         return false; // Too large for single entry
     }
 
-    const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], .little);
+    const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
     const entries_start = PAGE_HEADER_SIZE + 6;
 
     // Calculate space needed
@@ -454,7 +454,7 @@ fn tryInsertEntry(frame: *BufferFrame, key: []const u8, value: []const u8) bool 
     write_offset += value.len;
 
     // Update entry count
-    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], entry_count + 1, .little);
+    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], entry_count + 1, .little);
 
     return true;
 }
@@ -466,7 +466,7 @@ fn searchChain(pool: *BufferPool, allocator: std.mem.Allocator, head_page_id: u3
         const frame = try pool.fetchPage(current_page_id);
         defer pool.unpinPage(current_page_id, false);
 
-        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], .little);
+        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
         const entries_start = PAGE_HEADER_SIZE + 6;
         var offset: usize = entries_start;
 
@@ -521,7 +521,7 @@ fn deleteFromChain(pool: *BufferPool, head_page_id: u32, key: []const u8) !void 
         const frame = try pool.fetchPage(current_page_id);
         defer pool.unpinPage(current_page_id, false);
 
-        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], .little);
+        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
         const entries_start = PAGE_HEADER_SIZE + 6;
         var offset: usize = entries_start;
 
@@ -567,7 +567,7 @@ fn deleteFromChain(pool: *BufferPool, head_page_id: u32, key: []const u8) !void 
                 }
 
                 // Update entry count
-                std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4..][0..2], entry_count - 1, .little);
+                std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], entry_count - 1, .little);
                 frame.markDirty();
                 return;
             }
@@ -585,10 +585,16 @@ fn deleteFromChain(pool: *BufferPool, head_page_id: u32, key: []const u8) !void 
 
 test "hash index init creates valid structure" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_init.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_init.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -604,10 +610,16 @@ test "hash index init creates valid structure" {
 
 test "hash index insert single key-value pair" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_insert_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_single.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -628,10 +640,16 @@ test "hash index insert single key-value pair" {
 
 test "hash index get inserted value" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_get_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_get_single.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -651,10 +669,16 @@ test "hash index get inserted value" {
 
 test "hash index get non-existent key returns null" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_get_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_get_missing.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -672,10 +696,16 @@ test "hash index get non-existent key returns null" {
 
 test "hash index insert multiple keys" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_insert_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_multi.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -710,10 +740,16 @@ test "hash index insert multiple keys" {
 
 test "hash index reject duplicate key on insert" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_dup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_dup.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -730,10 +766,16 @@ test "hash index reject duplicate key on insert" {
 
 test "hash index delete key" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -753,10 +795,16 @@ test "hash index delete key" {
 
 test "hash index delete non-existent key fails" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_delete_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete_missing.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -772,10 +820,16 @@ test "hash index delete non-existent key fails" {
 
 test "hash index collision handling with same hash bucket" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_collision.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_collision.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -822,10 +876,16 @@ test "hash index collision handling with same hash bucket" {
 
 test "hash index insert and retrieve large value" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_large_value.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_large_value.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -852,10 +912,16 @@ test "hash index insert and retrieve large value" {
 
 test "hash index insert and delete multiple keys" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_insert_delete_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_delete_multi.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -901,10 +967,16 @@ test "hash index insert and delete multiple keys" {
 
 test "hash index empty get returns null" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_empty_get.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_empty_get.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -921,10 +993,16 @@ test "hash index empty get returns null" {
 
 test "hash index binary key and value" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_binary.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_binary.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -947,10 +1025,16 @@ test "hash index binary key and value" {
 
 test "hash index value with embedded nulls" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_null_bytes.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_null_bytes.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -971,10 +1055,16 @@ test "hash index value with embedded nulls" {
 
 test "hash index many inserts with page overflow" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_many_inserts.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_many_inserts.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1010,10 +1100,16 @@ test "hash index many inserts with page overflow" {
 
 test "hash index delete and reinsert same key" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_reinsert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_reinsert.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1035,10 +1131,16 @@ test "hash index delete and reinsert same key" {
 
 test "hash index get after delete adjacent keys" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_delete_adjacent.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete_adjacent.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1082,10 +1184,16 @@ test "hash index get after delete adjacent keys" {
 
 test "hash index empty key insert and get" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_empty_key.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_empty_key.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1106,10 +1214,16 @@ test "hash index empty key insert and get" {
 
 test "hash index empty value insert and get" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_empty_value.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_empty_value.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1130,10 +1244,16 @@ test "hash index empty value insert and get" {
 
 test "hash index no memory leaks on insert and get" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_memory_leaks.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_memory_leaks.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1160,10 +1280,16 @@ test "hash index no memory leaks on insert and get" {
 
 test "hash index update value by delete and reinsert" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_update.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1185,10 +1311,16 @@ test "hash index update value by delete and reinsert" {
 
 test "hash index special characters in keys and values" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_special_chars.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_special_chars.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1215,10 +1347,16 @@ test "hash index special characters in keys and values" {
 
 test "hash index value larger than page size" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_overflow_value.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_overflow_value.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1245,10 +1383,16 @@ test "hash index value larger than page size" {
 
 test "hash index single key with multiple colliding keys nearby" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_collision_chain.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_collision_chain.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1277,10 +1421,16 @@ test "hash index single key with multiple colliding keys nearby" {
 
 test "hash index ValueTooLarge error on insert exceeding 100-page limit" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_value_too_large.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_value_too_large.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
@@ -1309,10 +1459,16 @@ test "hash index ValueTooLarge error on insert exceeding 100-page limit" {
 
 test "HashIndex: PageFull error when bucket page at capacity" {
     const allocator = std.testing.allocator;
-    const path = "test_hash_page_full.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var pager = try Pager.init(allocator, path, .{});
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_page_full.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
 
     const root_id = try pager.allocPage();
