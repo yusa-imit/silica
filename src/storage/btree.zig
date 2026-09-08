@@ -567,7 +567,7 @@ pub const BTree = struct {
                     child_page_id,
                     right_sibling_id,
                     child_index, // separator is at child_index
-                    true,        // child is left, sibling is right
+                    true, // child is left, sibling is right
                 );
                 if (merged) return;
             }
@@ -1051,6 +1051,7 @@ pub const BTree = struct {
         // Write left half into old page
         // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (0..split_point) |i| {
+            // SAFETY: see loop comment above.
             insertLeafCell(frame.data, page_size, @intCast(i), @intCast(i), cells[i].key, cells[i].value) catch unreachable;
         }
 
@@ -1058,6 +1059,7 @@ pub const BTree = struct {
         // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (split_point..total) |i| {
             const j: u16 = @intCast(i - split_point);
+            // SAFETY: see loop comment above.
             insertLeafCell(new_frame.data, page_size, j, j, cells[i].key, cells[i].value) catch unreachable;
         }
 
@@ -1134,6 +1136,7 @@ pub const BTree = struct {
         // Write left half
         // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (0..split_point) |i| {
+            // SAFETY: see loop comment above.
             insertInternalCell(frame.data, page_size, @intCast(i), @intCast(i), cells[i].left_child, cells[i].key) catch unreachable;
         }
         setRightChild(frame.data, old_right_child);
@@ -1142,6 +1145,7 @@ pub const BTree = struct {
         // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for ((split_point + 1)..total) |i| {
             const j: u16 = @intCast(i - split_point - 1);
+            // SAFETY: see loop comment above.
             insertInternalCell(new_frame.data, page_size, j, j, cells[i].left_child, cells[i].key) catch unreachable;
         }
         setRightChild(new_frame.data, original_right_child);
