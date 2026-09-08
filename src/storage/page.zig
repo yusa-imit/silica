@@ -530,7 +530,7 @@ test "isValidPageSize" {
     try std.testing.expect(isValidPageSize(65536));
 
     try std.testing.expect(!isValidPageSize(0));
-    try std.testing.expect(!isValidPageSize(256));  // too small
+    try std.testing.expect(!isValidPageSize(256)); // too small
     try std.testing.expect(!isValidPageSize(1000)); // not power of 2
     try std.testing.expect(!isValidPageSize(5000)); // not power of 2
     try std.testing.expect(!isValidPageSize(131072)); // too large
@@ -538,8 +538,14 @@ test "isValidPageSize" {
 
 test "Pager create new database" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_create.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_create.db", .{dir_path});
 
     {
         var pager = try Pager.init(allocator, path, .{});
@@ -562,8 +568,14 @@ test "Pager create new database" {
 
 test "Pager create with custom page size" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_custom_size.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_custom_size.db", .{dir_path});
 
     {
         var pager = try Pager.init(allocator, path, .{ .page_size = 8192 });
@@ -581,14 +593,29 @@ test "Pager create with custom page size" {
 
 test "Pager reject invalid page size" {
     const allocator = std.testing.allocator;
-    const result = Pager.init(allocator, "test_invalid.db", .{ .page_size = 1000 });
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_invalid.db", .{dir_path});
+
+    const result = Pager.init(allocator, path, .{ .page_size = 1000 });
     try std.testing.expectError(error.InvalidPageSize, result);
 }
 
 test "Pager allocPage extends file" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_alloc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_alloc.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -606,8 +633,14 @@ test "Pager allocPage extends file" {
 
 test "Pager write and read page with checksum" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_rw.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_rw.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -643,8 +676,14 @@ test "Pager write and read page with checksum" {
 
 test "Pager detects checksum corruption" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_corrupt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_corrupt.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -681,8 +720,14 @@ test "Pager detects checksum corruption" {
 
 test "Pager freelist: free and reuse pages" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_freelist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_freelist.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -717,8 +762,14 @@ test "Pager freelist: free and reuse pages" {
 
 test "Pager cannot free reserved pages" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_reserved.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_reserved.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -729,8 +780,14 @@ test "Pager cannot free reserved pages" {
 
 test "Pager readPage out of bounds" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_oob.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_oob.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -742,8 +799,14 @@ test "Pager readPage out of bounds" {
 
 test "Pager persistence across reopen" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_persist.db", .{dir_path});
 
     const payload = "persistent data test";
 
@@ -785,8 +848,14 @@ test "Pager persistence across reopen" {
 
 test "Pager freelist persists across reopen" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_freelist_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_freelist_persist.db", .{dir_path});
 
     // Create pages, free one, close
     {
@@ -814,8 +883,14 @@ test "Pager freelist persists across reopen" {
 
 test "Pager with 512 byte page size" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_512.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_512.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -842,8 +917,14 @@ test "Pager with 512 byte page size" {
 
 test "Pager freelist chain with 10 pages" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_freelist_chain_10.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_freelist_chain_10.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -874,8 +955,14 @@ test "Pager freelist chain with 10 pages" {
 
 test "Pager max page size 65536" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_max_page_size.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_max_page_size.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 65536 });
     defer pager.deinit();
@@ -910,8 +997,14 @@ test "Pager max page size 65536" {
 
 test "Pager min page size 512 data integrity" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_min_page_size_integrity.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_min_page_size_integrity.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -949,8 +1042,14 @@ test "Pager min page size 512 data integrity" {
 
 test "Pager multiple sequential allocations" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_sequential_alloc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_sequential_alloc.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -967,8 +1066,14 @@ test "Pager multiple sequential allocations" {
 
 test "Pager write and reopen preserves multiple pages" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_reopen_multiple.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_reopen_multiple.db", .{dir_path});
 
     var page_ids: [5]u32 = undefined;
     const test_patterns = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55 };
@@ -1016,8 +1121,14 @@ test "Pager write and reopen preserves multiple pages" {
 
 test "Pager checksum over all-zero content" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_zero_content_checksum.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_zero_content_checksum.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1050,8 +1161,14 @@ test "Pager checksum over all-zero content" {
 
 test "Pager freePage then allocPage reuses before extending" {
     const allocator = std.testing.allocator;
-    const path = "test_pager_reuse_before_extend.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_reuse_before_extend.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
