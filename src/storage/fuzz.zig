@@ -63,6 +63,7 @@ const TestTree = struct {
 
 /// Generate a key string from an integer. Zero-padded for lexicographic order.
 fn makeKey(buf: []u8, i: u32) []const u8 {
+    // SAFETY: "k" + 8 zero-padded digits is exactly 9 bytes; callers pass buf.len >= 9.
     return std.fmt.bufPrint(buf, "k{d:0>8}", .{i}) catch unreachable;
 }
 

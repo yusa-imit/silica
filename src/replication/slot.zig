@@ -95,7 +95,9 @@ pub const SlotManager = struct {
         // Cannot drop active slots
         if (slot.state == .active) {
             // Put back
-            self.slots.put(slot.name, slot) catch unreachable; // already had capacity
+            // SAFETY: capacity was reserved by the prior fetchRemove above; re-inserting
+            // the same key cannot exceed the map's existing capacity.
+            self.slots.put(slot.name, slot) catch unreachable;
             return SlotError.SlotInUse;
         }
 

@@ -142,8 +142,8 @@ fn parseTimeString(s: []const u8) ?i64 {
     if (hour > 23 or minute > 59 or second > 59) return null;
 
     return @as(i64, hour) * MICROS_PER_HOUR +
-           @as(i64, minute) * MICROS_PER_MINUTE +
-           @as(i64, second) * MICROS_PER_SECOND + micros;
+        @as(i64, minute) * MICROS_PER_MINUTE +
+        @as(i64, second) * MICROS_PER_SECOND + micros;
 }
 
 /// Parse 'YYYY-MM-DD HH:MM:SS' format into microseconds since epoch.
@@ -186,11 +186,9 @@ pub fn formatTimestamp(allocator: Allocator, micros: i64) ![]u8 {
     const second = @as(u32, @intCast(@mod(total_secs, 60)));
     // Handle year carefully - format as unsigned for positive years
     if (date.year < 0) {
-        return std.fmt.allocPrint(allocator, "{d:0>5}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
-            .{ date.year, @as(u32, date.month), @as(u32, date.day), hour, minute, second });
+        return std.fmt.allocPrint(allocator, "{d:0>5}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ date.year, @as(u32, date.month), @as(u32, date.day), hour, minute, second });
     } else {
-        return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
-            .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day), hour, minute, second });
+        return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day), hour, minute, second });
     }
 }
 
@@ -587,10 +585,10 @@ fn generateUuidV4() [16]u8 {
 /// English stop words - common words filtered from full-text search.
 /// Based on PostgreSQL's default English stop word list.
 const english_stop_words = [_][]const u8{
-    "a",     "an",    "and",   "are",  "as",    "at",    "be",    "but",
-    "by",    "for",   "if",    "in",   "into",  "is",    "it",    "no",
-    "not",   "of",    "on",    "or",   "such",  "that",  "the",   "their",
-    "then",  "there", "these", "they", "this",  "to",    "was",   "will",
+    "a",    "an",    "and",   "are",  "as",   "at",   "be",  "but",
+    "by",   "for",   "if",    "in",   "into", "is",   "it",  "no",
+    "not",  "of",    "on",    "or",   "such", "that", "the", "their",
+    "then", "there", "these", "they", "this", "to",   "was", "will",
     "with",
 };
 
@@ -1933,7 +1931,10 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
                 // Row constructor IN: use SQL NULL semantics (element-wise)
                 if (val == .array and item_val == .array) {
                     const cmp = evalRowComparison(.equal, val.array, item_val.array);
-                    if (cmp == .boolean and cmp.boolean) { found = true; break; }
+                    if (cmp == .boolean and cmp.boolean) {
+                        found = true;
+                        break;
+                    }
                     if (cmp == .null_value) has_unknown = true;
                 } else if (val.eql(item_val)) {
                     found = true;
@@ -2134,7 +2135,10 @@ fn evalRowComparison(op: ast.BinaryOp, left: []const Value, right: []const Value
             // TRUE iff all elements equal; UNKNOWN if any NULL pair; FALSE if any non-equal non-NULL
             var has_unknown = false;
             for (left, right) |lv, rv| {
-                if (lv == .null_value or rv == .null_value) { has_unknown = true; continue; }
+                if (lv == .null_value or rv == .null_value) {
+                    has_unknown = true;
+                    continue;
+                }
                 if (!lv.eql(rv)) return .{ .boolean = false };
             }
             return if (has_unknown) .null_value else .{ .boolean = true };
@@ -2143,7 +2147,10 @@ fn evalRowComparison(op: ast.BinaryOp, left: []const Value, right: []const Value
             // TRUE iff any element differs; UNKNOWN if any NULL pair; FALSE if all equal
             var has_unknown = false;
             for (left, right) |lv, rv| {
-                if (lv == .null_value or rv == .null_value) { has_unknown = true; continue; }
+                if (lv == .null_value or rv == .null_value) {
+                    has_unknown = true;
+                    continue;
+                }
                 if (!lv.eql(rv)) return .{ .boolean = true };
             }
             return if (has_unknown) .null_value else .{ .boolean = false };
@@ -3558,6 +3565,9 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
 }
 
 /// Format a timestamp (microseconds since epoch) using PostgreSQL-style format string.
+// SAFETY: every `std.fmt.bufPrint(...) catch unreachable` below writes a fixed-width
+// numeric field (2-4 digits) into a local `buf: [10]u8` or `[30]u8` — the field width is
+// bounded by the format specifier itself, so the buffer can never be too small.
 fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 {
     const month_short = [12][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     const month_full = [12][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
@@ -3600,155 +3610,214 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         // 5-char patterns
         if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "MONTH")) {
             for (month_full[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toUpper(c));
-            i += 5; continue;
+            i += 5;
+            continue;
         }
         if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "Month")) {
             try out.appendSlice(allocator, month_full[@as(usize, dt.month) - 1]);
-            i += 5; continue;
+            i += 5;
+            continue;
         }
         if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "month")) {
             for (month_full[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toLower(c));
-            i += 5; continue;
+            i += 5;
+            continue;
         }
         // 4-char patterns
         if (rest.len >= 4 and (std.mem.eql(u8, rest[0..4], "YYYY") or std.mem.eql(u8, rest[0..4], "IYYY"))) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>4}", .{@as(u32, @intCast(dt.year))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 4; continue;
+            i += 4;
+            continue;
         }
         if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH24")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour24))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 4; continue;
+            i += 4;
+            continue;
         }
         if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH12")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 4; continue;
+            i += 4;
+            continue;
         }
         // 3-char patterns
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "MON")) {
             for (month_short[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toUpper(c));
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "Mon")) {
             try out.appendSlice(allocator, month_short[@as(usize, dt.month) - 1]);
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "mon")) {
             for (month_short[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toLower(c));
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "DAY")) {
             for (day_full[dow]) |c| try out.append(allocator, std.ascii.toUpper(c));
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "Day")) {
             try out.appendSlice(allocator, day_full[dow]);
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "day")) {
             for (day_full[dow]) |c| try out.append(allocator, std.ascii.toLower(c));
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "YYY")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 1000)}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 3; continue;
+            i += 3;
+            continue;
         }
         // 2-char patterns
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MM")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.month}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DD")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.day}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DY")) {
             for (day_short[dow]) |c| try out.append(allocator, std.ascii.toUpper(c));
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "Dy")) {
             try out.appendSlice(allocator, day_short[dow]);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "dy")) {
             for (day_short[dow]) |c| try out.append(allocator, std.ascii.toLower(c));
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "HH")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MI")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(minute))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "SS")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(second))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MS")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@as(u64, @intCast(ms))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "US")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>6}", .{@as(u64, @intCast(us))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "AM") or std.mem.eql(u8, rest[0..2], "PM"))) {
             try out.appendSlice(allocator, if (hour24 >= 12) "PM" else "AM");
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "am") or std.mem.eql(u8, rest[0..2], "pm"))) {
             try out.appendSlice(allocator, if (hour24 >= 12) "pm" else "am");
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "YY")) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 100)}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "IW") or std.mem.eql(u8, rest[0..2], "WW"))) {
             var buf: [10]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u32, @intCast(woy))}) catch unreachable;
             try out.appendSlice(allocator, s);
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "TZ")) {
             try out.appendSlice(allocator, "UTC");
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "FM")) {
-            i += 2; continue;
+            i += 2;
+            continue;
         }
         // 1-char patterns
         switch (rest[0]) {
-            'Y' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 10)}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
-            'D' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(dow + 1))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
-            'Q' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(@divFloor(@as(i32, dt.month) - 1, 3) + 1))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
-            'W' => { var buf: [10]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(wom))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
-            'J' => { var buf: [30]u8 = undefined; const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u64, @intCast(ts_days + 2440588))}) catch unreachable; try out.appendSlice(allocator, s); i += 1; continue; },
+            'Y' => {
+                var buf: [10]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 10)}) catch unreachable;
+                try out.appendSlice(allocator, s);
+                i += 1;
+                continue;
+            },
+            'D' => {
+                var buf: [10]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(dow + 1))}) catch unreachable;
+                try out.appendSlice(allocator, s);
+                i += 1;
+                continue;
+            },
+            'Q' => {
+                var buf: [10]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(@divFloor(@as(i32, dt.month) - 1, 3) + 1))}) catch unreachable;
+                try out.appendSlice(allocator, s);
+                i += 1;
+                continue;
+            },
+            'W' => {
+                var buf: [10]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(wom))}) catch unreachable;
+                try out.appendSlice(allocator, s);
+                i += 1;
+                continue;
+            },
+            'J' => {
+                var buf: [30]u8 = undefined;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u64, @intCast(ts_days + 2440588))}) catch unreachable;
+                try out.appendSlice(allocator, s);
+                i += 1;
+                continue;
+            },
             else => {},
         }
         // Literal character
@@ -3771,7 +3840,10 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
     // Find decimal point
     var decimal_pos: ?usize = null;
     for (effective_fmt, 0..) |c, idx| {
-        if (c == '.') { decimal_pos = idx; break; }
+        if (c == '.') {
+            decimal_pos = idx;
+            break;
+        }
     }
 
     const int_fmt_part = if (decimal_pos) |dp| effective_fmt[0..dp] else effective_fmt;
@@ -3782,9 +3854,14 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
     var uses_zero = false;
     var has_comma = false;
     for (int_fmt_part) |c| {
-        if (c == '9') { int_digit_positions += 1; }
-        else if (c == '0') { int_digit_positions += 1; uses_zero = true; }
-        else if (c == ',') { has_comma = true; }
+        if (c == '9') {
+            int_digit_positions += 1;
+        } else if (c == '0') {
+            int_digit_positions += 1;
+            uses_zero = true;
+        } else if (c == ',') {
+            has_comma = true;
+        }
     }
 
     // Count fractional digit positions
@@ -3865,7 +3942,12 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
 /// Parse a date/datetime string using a format template.
 /// Returns a struct with year/month/day/hour/minute/second components.
 fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
-    year: i32, month: u8, day: u8, hour: i64, minute: i64, second: i64,
+    year: i32,
+    month: u8,
+    day: u8,
+    hour: i64,
+    minute: i64,
+    second: i64,
 } {
     const month_abbrevs = [12][]const u8{ "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec" };
     var ti: usize = 0;
@@ -3885,12 +3967,16 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
         if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "YYYY")) {
             if (ti + 4 > text.len) return null;
             year = std.fmt.parseInt(i32, text[ti .. ti + 4], 10) catch return null;
-            ti += 4; fi += 4; continue;
+            ti += 4;
+            fi += 4;
+            continue;
         }
         if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "HH24")) {
             if (ti + 2 > text.len) return null;
             hour = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
-            ti += 2; fi += 4; continue;
+            ti += 2;
+            fi += 4;
+            continue;
         }
         // 3-char patterns
         if (rf.len >= 3 and (std.mem.eql(u8, rf[0..3], "Mon") or std.mem.eql(u8, rf[0..3], "MON") or std.mem.eql(u8, rf[0..3], "mon"))) {
@@ -3906,32 +3992,44 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
                 }
             }
             if (!found) return null;
-            ti += 3; fi += 3; continue;
+            ti += 3;
+            fi += 3;
+            continue;
         }
         // 2-char patterns
         if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MM")) {
             if (ti + 2 > text.len) return null;
             month = std.fmt.parseInt(u8, text[ti .. ti + 2], 10) catch return null;
-            ti += 2; fi += 2; continue;
+            ti += 2;
+            fi += 2;
+            continue;
         }
         if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "DD")) {
             if (ti + 2 > text.len) return null;
             day = std.fmt.parseInt(u8, text[ti .. ti + 2], 10) catch return null;
-            ti += 2; fi += 2; continue;
+            ti += 2;
+            fi += 2;
+            continue;
         }
         if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MI")) {
             if (ti + 2 > text.len) return null;
             minute = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
-            ti += 2; fi += 2; continue;
+            ti += 2;
+            fi += 2;
+            continue;
         }
         if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "SS")) {
             if (ti + 2 > text.len) return null;
             second = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
-            ti += 2; fi += 2; continue;
+            ti += 2;
+            fi += 2;
+            continue;
         }
         // Literal character
         if (ti < text.len and fmt[fi] == text[ti]) {
-            ti += 1; fi += 1; continue;
+            ti += 1;
+            fi += 1;
+            continue;
         }
         // Skip non-matching (best-effort)
         fi += 1;
@@ -4564,38 +4662,38 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                 return EvalError.TypeError;
             }
 
-        // Evaluate arguments
-        const arg_values = allocator.alloc(Value, fc.args.len) catch return EvalError.OutOfMemory;
-        defer allocator.free(arg_values);
-        var inited_args: usize = 0;
-        defer {
-            for (arg_values[0..inited_args]) |*v| v.free(allocator);
-        }
-
-        for (fc.args, 0..) |arg_expr, i| {
-            arg_values[i] = try evalExpr(allocator, arg_expr, row, catalog);
-            inited_args += 1;
-        }
-
-        // Execute SQL-language scalar function
-        // The body is a SQL expression (e.g., "UPPER($1) || ' ' || LOWER($2)")
-        // We need to create a temporary row with parameter bindings
-        var param_row = blk: {
-            const param_columns = allocator.alloc([]const u8, func_info.parameters.len) catch return EvalError.OutOfMemory;
-            const param_values = allocator.alloc(Value, func_info.parameters.len) catch return EvalError.OutOfMemory;
-
-            for (func_info.parameters, 0..) |param, i| {
-                param_columns[i] = param.name;
-                param_values[i] = try arg_values[i].dupe(allocator);
+            // Evaluate arguments
+            const arg_values = allocator.alloc(Value, fc.args.len) catch return EvalError.OutOfMemory;
+            defer allocator.free(arg_values);
+            var inited_args: usize = 0;
+            defer {
+                for (arg_values[0..inited_args]) |*v| v.free(allocator);
             }
 
-            break :blk Row{
-                .columns = param_columns,
-                .values = param_values,
-                .allocator = allocator,
+            for (fc.args, 0..) |arg_expr, i| {
+                arg_values[i] = try evalExpr(allocator, arg_expr, row, catalog);
+                inited_args += 1;
+            }
+
+            // Execute SQL-language scalar function
+            // The body is a SQL expression (e.g., "UPPER($1) || ' ' || LOWER($2)")
+            // We need to create a temporary row with parameter bindings
+            var param_row = blk: {
+                const param_columns = allocator.alloc([]const u8, func_info.parameters.len) catch return EvalError.OutOfMemory;
+                const param_values = allocator.alloc(Value, func_info.parameters.len) catch return EvalError.OutOfMemory;
+
+                for (func_info.parameters, 0..) |param, i| {
+                    param_columns[i] = param.name;
+                    param_values[i] = try arg_values[i].dupe(allocator);
+                }
+
+                break :blk Row{
+                    .columns = param_columns,
+                    .values = param_values,
+                    .allocator = allocator,
+                };
             };
-        };
-        defer param_row.deinit();
+            defer param_row.deinit();
 
             // Parse and evaluate the function body
             const result = switch (func_info.return_type) {
@@ -5084,7 +5182,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                     try result.append(allocator, c);
                     try result.append(allocator, ' ');
                 },
-                ' ', '\t', '\n', '\r' => {},  // Skip whitespace
+                ' ', '\t', '\n', '\r' => {}, // Skip whitespace
                 else => try result.append(allocator, c),
             }
         }
@@ -5273,7 +5371,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         if (arg == .null_value) return Value.null_value;
-        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const s = switch (arg) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const trimmed = std.mem.trim(u8, s, &std.ascii.whitespace);
         return Value{ .text = try allocator.dupe(u8, trimmed) };
     }
@@ -5284,11 +5385,17 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         if (arg == .null_value) return Value.null_value;
-        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const s = switch (arg) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         if (fc.args.len >= 2) {
             const chars_val = try evalExpr(allocator, fc.args[1], row, catalog);
             defer chars_val.free(allocator);
-            const chars = switch (chars_val) { .text => |t| t, else => &std.ascii.whitespace };
+            const chars = switch (chars_val) {
+                .text => |t| t,
+                else => &std.ascii.whitespace,
+            };
             return Value{ .text = try allocator.dupe(u8, std.mem.trimLeft(u8, s, chars)) };
         }
         return Value{ .text = try allocator.dupe(u8, std.mem.trimLeft(u8, s, &std.ascii.whitespace)) };
@@ -5300,11 +5407,17 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         if (arg == .null_value) return Value.null_value;
-        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const s = switch (arg) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         if (fc.args.len >= 2) {
             const chars_val = try evalExpr(allocator, fc.args[1], row, catalog);
             defer chars_val.free(allocator);
-            const chars = switch (chars_val) { .text => |t| t, else => &std.ascii.whitespace };
+            const chars = switch (chars_val) {
+                .text => |t| t,
+                else => &std.ascii.whitespace,
+            };
             return Value{ .text = try allocator.dupe(u8, std.mem.trimRight(u8, s, chars)) };
         }
         return Value{ .text = try allocator.dupe(u8, std.mem.trimRight(u8, s, &std.ascii.whitespace)) };
@@ -5316,13 +5429,22 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const from_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer from_val.free(allocator);
-        const from_str = switch (from_val) { .text => |t| t, else => return Value.null_value };
+        const from_str = switch (from_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const to_val = try evalExpr(allocator, fc.args[2], row, catalog);
         defer to_val.free(allocator);
-        const to_str = switch (to_val) { .text => |t| t, else => return Value.null_value };
+        const to_str = switch (to_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         if (from_str.len == 0) return Value{ .text = try allocator.dupe(u8, s) };
         const result_str = try std.mem.replaceOwned(u8, allocator, s, from_str, to_str);
         return Value{ .text = result_str };
@@ -5334,10 +5456,16 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const sub_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer sub_val.free(allocator);
-        const sub = switch (sub_val) { .text => |t| t, else => return Value.null_value };
+        const sub = switch (sub_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         if (std.mem.indexOf(u8, s, sub)) |idx| {
             return Value{ .integer = @intCast(idx + 1) };
         }
@@ -5350,7 +5478,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const len_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer len_val.free(allocator);
         const total_len: usize = switch (len_val) {
@@ -5382,7 +5513,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const len_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer len_val.free(allocator);
         const total_len: usize = switch (len_val) {
@@ -5414,7 +5548,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const cnt_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer cnt_val.free(allocator);
         const n: usize = switch (cnt_val) {
@@ -5433,10 +5570,16 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const delim_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer delim_val.free(allocator);
-        const delim = switch (delim_val) { .text => |t| t, else => return Value.null_value };
+        const delim = switch (delim_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const field_val = try evalExpr(allocator, fc.args[2], row, catalog);
         defer field_val.free(allocator);
         const field: usize = switch (field_val) {
@@ -5459,7 +5602,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const n_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer n_val.free(allocator);
         const n: usize = switch (n_val) {
@@ -5476,7 +5622,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const str_val = try evalExpr(allocator, fc.args[0], row, catalog);
         defer str_val.free(allocator);
         if (str_val == .null_value) return Value.null_value;
-        const s = switch (str_val) { .text => |t| t, else => return Value.null_value };
+        const s = switch (str_val) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const n_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer n_val.free(allocator);
         const n: usize = switch (n_val) {
@@ -5493,7 +5642,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         if (arg == .null_value) return Value.null_value;
-        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const s = switch (arg) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const buf = try allocator.dupe(u8, s);
         std.mem.reverse(u8, buf);
         return Value{ .text = buf };
@@ -5531,7 +5683,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
         if (arg == .null_value) return Value.null_value;
-        const s = switch (arg) { .text => |t| t, else => return Value.null_value };
+        const s = switch (arg) {
+            .text => |t| t,
+            else => return Value.null_value,
+        };
         const buf = try allocator.dupe(u8, s);
         var new_word = true;
         for (buf, 0..) |c, i| {
@@ -5563,7 +5718,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         if (fc.args.len >= 2) {
             const scale_val = try evalExpr(allocator, fc.args[1], row, catalog);
             defer scale_val.free(allocator);
-            const scale: i64 = switch (scale_val) { .integer => |v| v, else => 0 };
+            const scale: i64 = switch (scale_val) {
+                .integer => |v| v,
+                else => 0,
+            };
             const factor = std.math.pow(f64, 10.0, @floatFromInt(scale));
             return Value{ .real = @round(f * factor) / factor };
         }
@@ -5855,9 +6013,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         // Reconstruct timestamp
         const truncated_days = dateToDays(truncated_year, truncated_month, truncated_day);
         const truncated_ts = @as(i64, truncated_days) * MICROS_PER_DAY +
-                            truncated_hour * MICROS_PER_HOUR +
-                            truncated_minute * MICROS_PER_MINUTE +
-                            truncated_second * MICROS_PER_SECOND;
+            truncated_hour * MICROS_PER_HOUR +
+            truncated_minute * MICROS_PER_MINUTE +
+            truncated_second * MICROS_PER_SECOND;
         return Value{ .timestamp = truncated_ts };
     }
 
@@ -5871,13 +6029,22 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const day_v = try evalExpr(allocator, fc.args[2], row, catalog);
         defer day_v.free(allocator);
         if (year_v == .null_value or month_v == .null_value or day_v == .null_value) return .null_value;
-        const year: i32 = switch (year_v) { .integer => |v| @intCast(v), else => return .null_value };
+        const year: i32 = switch (year_v) {
+            .integer => |v| @intCast(v),
+            else => return .null_value,
+        };
         const month: u8 = switch (month_v) {
-            .integer => |v| blk: { if (v < 1 or v > 12) return .null_value; break :blk @intCast(v); },
+            .integer => |v| blk: {
+                if (v < 1 or v > 12) return .null_value;
+                break :blk @intCast(v);
+            },
             else => return .null_value,
         };
         const day: u8 = switch (day_v) {
-            .integer => |v| blk: { if (v < 1 or v > daysInMonth(month, year)) return .null_value; break :blk @intCast(v); },
+            .integer => |v| blk: {
+                if (v < 1 or v > daysInMonth(month, year)) return .null_value;
+                break :blk @intCast(v);
+            },
             else => return .null_value,
         };
         const days = dateToDays(year, month, day);
@@ -5897,11 +6064,17 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         defer sec_v.free(allocator);
         if (hour_v == .null_value or min_v == .null_value or sec_v == .null_value) return .null_value;
         const hour: i64 = switch (hour_v) {
-            .integer => |v| blk: { if (v < 0 or v > 23) return .null_value; break :blk v; },
+            .integer => |v| blk: {
+                if (v < 0 or v > 23) return .null_value;
+                break :blk v;
+            },
             else => return .null_value,
         };
         const min: i64 = switch (min_v) {
-            .integer => |v| blk: { if (v < 0 or v > 59) return .null_value; break :blk v; },
+            .integer => |v| blk: {
+                if (v < 0 or v > 59) return .null_value;
+                break :blk v;
+            },
             else => return .null_value,
         };
         // sec can be real (fractional seconds)
@@ -5935,21 +6108,36 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         defer sec_v.free(allocator);
         if (year_v == .null_value or month_v == .null_value or day_v == .null_value or
             hour_v == .null_value or min_v == .null_value or sec_v == .null_value) return .null_value;
-        const year: i32 = switch (year_v) { .integer => |v| @intCast(v), else => return .null_value };
+        const year: i32 = switch (year_v) {
+            .integer => |v| @intCast(v),
+            else => return .null_value,
+        };
         const month: u8 = switch (month_v) {
-            .integer => |v| blk: { if (v < 1 or v > 12) return .null_value; break :blk @intCast(v); },
+            .integer => |v| blk: {
+                if (v < 1 or v > 12) return .null_value;
+                break :blk @intCast(v);
+            },
             else => return .null_value,
         };
         const day: u8 = switch (day_v) {
-            .integer => |v| blk: { if (v < 1 or v > daysInMonth(month, year)) return .null_value; break :blk @intCast(v); },
+            .integer => |v| blk: {
+                if (v < 1 or v > daysInMonth(month, year)) return .null_value;
+                break :blk @intCast(v);
+            },
             else => return .null_value,
         };
         const hour: i64 = switch (hour_v) {
-            .integer => |v| blk: { if (v < 0 or v > 23) return .null_value; break :blk v; },
+            .integer => |v| blk: {
+                if (v < 0 or v > 23) return .null_value;
+                break :blk v;
+            },
             else => return .null_value,
         };
         const min: i64 = switch (min_v) {
-            .integer => |v| blk: { if (v < 0 or v > 59) return .null_value; break :blk v; },
+            .integer => |v| blk: {
+                if (v < 0 or v > 59) return .null_value;
+                break :blk v;
+            },
             else => return .null_value,
         };
         const sec_f: f64 = switch (sec_v) {
@@ -6866,10 +7054,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             var i: usize = 0;
             while (i < text.len) {
                 const byte = text[i];
-                const char_len: usize = if (byte < 0x80) 1
-                    else if (byte & 0xE0 == 0xC0) 2
-                    else if (byte & 0xF0 == 0xE0) 3
-                    else 4;
+                const char_len: usize = if (byte < 0x80) 1 else if (byte & 0xE0 == 0xC0) 2 else if (byte & 0xF0 == 0xE0) 3 else 4;
                 const end = @min(i + char_len, text.len);
                 const ch = text[i..end];
                 if (null_str != null and std.mem.eql(u8, ch, null_str.?)) {
@@ -7340,8 +7525,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer pat_val.free(allocator);
 
-        const str = switch (str_val) { .text => |t| t, else => return .null_value };
-        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const pat = switch (pat_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
 
         var flags = regex_mod.Flags{};
         if (fc.args.len == 3) {
@@ -7371,8 +7562,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer pat_val.free(allocator);
 
-        const str = switch (str_val) { .text => |t| t, else => return .null_value };
-        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const pat = switch (pat_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
 
         var flags = regex_mod.Flags{};
         if (fc.args.len == 3) {
@@ -7429,9 +7626,18 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const repl_val = try evalExpr(allocator, fc.args[2], row, catalog);
         defer repl_val.free(allocator);
 
-        const str = switch (str_val) { .text => |t| t, else => return .null_value };
-        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
-        const repl = switch (repl_val) { .text => |t| t, else => return .null_value };
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const pat = switch (pat_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const repl = switch (repl_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
 
         var flags = regex_mod.Flags{};
         var global = false;
@@ -7463,8 +7669,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer pat_val.free(allocator);
 
-        const str = switch (str_val) { .text => |t| t, else => return .null_value };
-        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const pat = switch (pat_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
 
         var start_offset: usize = 0;
         if (fc.args.len >= 3) {
@@ -7511,8 +7723,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer pat_val.free(allocator);
 
-        const str = switch (str_val) { .text => |t| t, else => return .null_value };
-        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const pat = switch (pat_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
 
         var start_offset: usize = 0;
         if (fc.args.len >= 3) {
@@ -7566,8 +7784,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const pat_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer pat_val.free(allocator);
 
-        const str = switch (str_val) { .text => |t| t, else => return .null_value };
-        const pat = switch (pat_val) { .text => |t| t, else => return .null_value };
+        const str = switch (str_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
+        const pat = switch (pat_val) {
+            .text => |t| t,
+            else => return .null_value,
+        };
 
         var start_offset: usize = 0;
         if (fc.args.len >= 3) {
@@ -9536,8 +9760,8 @@ pub const SortOp = struct {
 
                     // Determine NULL ordering for this sort item
                     const nulls_first: bool = switch (ob.nulls orelse switch (ob.direction) {
-                        .asc => ast.NullsOrder.last,   // PostgreSQL default: ASC NULLS LAST
-                        .desc => ast.NullsOrder.first,  // PostgreSQL default: DESC NULLS FIRST
+                        .asc => ast.NullsOrder.last, // PostgreSQL default: ASC NULLS LAST
+                        .desc => ast.NullsOrder.first, // PostgreSQL default: DESC NULLS FIRST
                     }) {
                         .first => true,
                         .last => false,
@@ -9754,8 +9978,8 @@ pub const WindowOp = struct {
 
                     // Determine NULL ordering for this sort item
                     const nulls_first: bool = switch (ob.nulls orelse switch (ob.direction) {
-                        .asc => ast.NullsOrder.last,   // PostgreSQL default: ASC NULLS LAST
-                        .desc => ast.NullsOrder.first,  // PostgreSQL default: DESC NULLS FIRST
+                        .asc => ast.NullsOrder.last, // PostgreSQL default: ASC NULLS LAST
+                        .desc => ast.NullsOrder.first, // PostgreSQL default: DESC NULLS FIRST
                     }) {
                         .first => true,
                         .last => false,
@@ -10814,7 +11038,7 @@ pub const AggregateOp = struct {
         for (self.aggregates, 0..) |agg, i| {
             const idx = self.group_by.len + i;
             if (agg.func == .grouping) {
-                vals[idx] = .{ .integer = 0 };  // Regular GROUP BY: all columns are active
+                vals[idx] = .{ .integer = 0 }; // Regular GROUP BY: all columns are active
             } else {
                 vals[idx] = self.computeAggregate(agg, group);
             }
@@ -12391,7 +12615,7 @@ fn leftOuterRow(allocator: Allocator, left: *const Row, right_sample: []const Ro
 
 /// Join key information extracted from ON condition.
 const JoinKeys = struct {
-    left_indices: []usize,  // Column indices in left table
+    left_indices: []usize, // Column indices in left table
     right_indices: []usize, // Column indices in right table
 };
 
@@ -12741,7 +12965,7 @@ pub const MergeJoinOp = struct {
     left_row: ?Row = null,
     right_index: usize = 0,
     right_rows: std.ArrayListUnmanaged(Row) = .{},
-    right_duplicates: std.ArrayListUnmanaged(*Row) = .{},  // Pointers into right_rows
+    right_duplicates: std.ArrayListUnmanaged(*Row) = .{}, // Pointers into right_rows
     duplicate_index: usize = 0,
     left_matched: bool = false,
     materialized: bool = false,
@@ -14527,13 +14751,13 @@ test "HashJoinOp NULL join keys never match (SQL standard)" {
     const allocator = std.testing.allocator;
 
     // Left table with NULL key
-    var left = InMemorySource.init(allocator, &.{"id", "name"});
+    var left = InMemorySource.init(allocator, &.{ "id", "name" });
     try left.addRow(&.{ Value.null_value, Value{ .text = "Alice" } });
     try left.addRow(&.{ Value{ .integer = 1 }, Value{ .text = "Bob" } });
     defer left.deinit();
 
     // Right table with NULL key
-    var right = InMemorySource.init(allocator, &.{"id", "val"});
+    var right = InMemorySource.init(allocator, &.{ "id", "val" });
     try right.addRow(&.{ Value.null_value, Value{ .integer = 100 } });
     try right.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 200 } });
     defer right.deinit();
@@ -17578,7 +17802,6 @@ test "JSON extract missing key returns null" {
 }
 
 test "JSON contains @> operator" {
-
     const left_text = "{\"a\":1,\"b\":2,\"c\":3}";
     const right_text = "{\"a\":1,\"b\":2}";
     const left_val = Value{ .text = left_text };
@@ -17591,7 +17814,6 @@ test "JSON contains @> operator" {
 }
 
 test "JSON contains with non-matching object" {
-
     const left_text = "{\"a\":1,\"b\":2}";
     const right_text = "{\"a\":1,\"c\":3}";
     const left_val = Value{ .text = left_text };
@@ -17604,7 +17826,6 @@ test "JSON contains with non-matching object" {
 }
 
 test "JSON contains array" {
-
     const left_text = "[1,2,3,4]";
     const right_text = "[2,3]";
     const left_val = Value{ .text = left_text };
@@ -17677,7 +17898,7 @@ test "evalJsonContains Value.array — nested array containment succeeds" {
     const left_val = Value{ .array = &left_items };
 
     var inner_right_1 = [_]Value{ .{ .integer = 1 }, .{ .integer = 2 } };
-    var right_items = [_]Value{ .{ .array = &inner_right_1 } };
+    var right_items = [_]Value{.{ .array = &inner_right_1 }};
     const right_val = Value{ .array = &right_items };
 
     const result = try evalJsonContains(left_val, right_val);
@@ -17695,7 +17916,7 @@ test "evalJsonContains Value.array — nested array containment fails when not m
     const left_val = Value{ .array = &left_items };
 
     var inner_right_1 = [_]Value{ .{ .integer = 9 }, .{ .integer = 9 } };
-    var right_items = [_]Value{ .{ .array = &inner_right_1 } };
+    var right_items = [_]Value{.{ .array = &inner_right_1 }};
     const right_val = Value{ .array = &right_items };
 
     const result = try evalJsonContains(left_val, right_val);
@@ -17710,7 +17931,7 @@ test "evalJsonContains Value.array — nested arrays with null elements" {
     var left_items = [_]Value{ .{ .integer = 1 }, Value.null_value };
     const left_val = Value{ .array = &left_items };
 
-    var right_items = [_]Value{ Value.null_value };
+    var right_items = [_]Value{Value.null_value};
     const right_val = Value{ .array = &right_items };
 
     const result = try evalJsonContains(left_val, right_val);
@@ -17720,7 +17941,6 @@ test "evalJsonContains Value.array — nested arrays with null elements" {
 }
 
 test "JSON key exists ? operator" {
-
     const json_text = "{\"name\":\"John\",\"age\":30}";
     const json_val = Value{ .text = json_text };
     const key_val = Value{ .text = "name" };
@@ -17732,7 +17952,6 @@ test "JSON key exists ? operator" {
 }
 
 test "JSON key exists with missing key" {
-
     const json_text = "{\"name\":\"John\"}";
     const json_val = Value{ .text = json_text };
     const key_val = Value{ .text = "missing" };
@@ -19247,14 +19466,14 @@ test "extractJoinKeys handles multiple qualified columns in AND condition" {
 
 /// ActivityInfo stores runtime state for a single active connection.
 pub const ActivityInfo = struct {
-    pid: u32,                     // Backend process ID (connection ID)
-    usename: []const u8,          // User name
+    pid: u32, // Backend process ID (connection ID)
+    usename: []const u8, // User name
     application_name: []const u8, // Application name
-    client_addr: []const u8,      // Client IP address (or "local")
-    query: ?[]const u8,           // Current query text (NULL if idle)
-    state: []const u8,            // 'active' | 'idle' | 'idle in transaction'
-    query_start: ?i64,            // Microseconds since epoch (NULL if idle)
-    state_change: i64,            // Microseconds since epoch
+    client_addr: []const u8, // Client IP address (or "local")
+    query: ?[]const u8, // Current query text (NULL if idle)
+    state: []const u8, // 'active' | 'idle' | 'idle in transaction'
+    query_start: ?i64, // Microseconds since epoch (NULL if idle)
+    state_change: i64, // Microseconds since epoch
 };
 
 /// ActivityTracker collects connection activity information.
@@ -19459,12 +19678,12 @@ pub const StatActivityScanOp = struct {
 
 /// Lock information for pg_locks system view.
 pub const LockInfo = struct {
-    locktype: []const u8,  // 'relation' or 'tuple'
-    mode: []const u8,      // Lock mode text (e.g., 'AccessShareLock')
-    pid: u32,              // Transaction ID holding the lock
-    relation: u32,         // Table page ID (root_page_id)
-    tuple: ?u64,           // Row key (NULL for table locks)
-    granted: bool,         // Always true (we don't track waiting locks yet)
+    locktype: []const u8, // 'relation' or 'tuple'
+    mode: []const u8, // Lock mode text (e.g., 'AccessShareLock')
+    pid: u32, // Transaction ID holding the lock
+    relation: u32, // Table page ID (root_page_id)
+    tuple: ?u64, // Row key (NULL for table locks)
+    granted: bool, // Always true (we don't track waiting locks yet)
 };
 
 /// Operator for scanning pg_locks system view.
@@ -21021,7 +21240,7 @@ test "json_typeof function returns 'object' for JSON object" {
 
     // json_typeof('{"a": 1}') → 'object'
     const json_expr = ast.Expr{ .string_literal = "{\"a\": 1}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21036,7 +21255,7 @@ test "json_typeof function returns 'array' for JSON array" {
 
     // json_typeof('[1,2,3]') → 'array'
     const json_expr = ast.Expr{ .string_literal = "[1,2,3]" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21051,7 +21270,7 @@ test "json_typeof function returns 'string' for JSON string" {
 
     // json_typeof('"hello"') → 'string'
     const json_expr = ast.Expr{ .string_literal = "\"hello\"" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21066,7 +21285,7 @@ test "json_typeof function returns 'number' for JSON number" {
 
     // json_typeof('42') → 'number'
     const json_expr = ast.Expr{ .string_literal = "42" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21081,7 +21300,7 @@ test "json_typeof function returns 'boolean' for JSON true" {
 
     // json_typeof('true') → 'boolean'
     const json_expr = ast.Expr{ .string_literal = "true" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21096,7 +21315,7 @@ test "json_typeof function returns 'null' for JSON null" {
 
     // json_typeof('null') → 'null'
     const json_expr = ast.Expr{ .string_literal = "null" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21111,7 +21330,7 @@ test "json_typeof function returns NULL when input is NULL" {
 
     // json_typeof(NULL) → NULL
     const json_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21125,7 +21344,7 @@ test "json_object_keys function returns array of keys from object" {
 
     // json_object_keys('{"a": 1, "b": 2, "c": 3}') → array containing 'a', 'b', 'c'
     const json_expr = ast.Expr{ .string_literal = "{\"a\": 1, \"b\": 2, \"c\": 3}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_object_keys", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21144,7 +21363,7 @@ test "json_object_keys function returns empty array for empty object" {
 
     // json_object_keys('{}') → empty array
     const json_expr = ast.Expr{ .string_literal = "{}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_object_keys", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21159,7 +21378,7 @@ test "json_object_keys function returns NULL when input is NULL" {
 
     // json_object_keys(NULL) → NULL
     const json_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_object_keys", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21173,7 +21392,7 @@ test "jsonb_object_keys function (alias) returns array of keys" {
 
     // jsonb_object_keys('{"x": 1, "y": 2}') → array containing 'x', 'y'
     const json_expr = ast.Expr{ .string_literal = "{\"x\": 1, \"y\": 2}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "jsonb_object_keys", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21193,7 +21412,7 @@ test "json_array_length returns 3 for array with three elements" {
 
     // json_array_length('[1,2,3]') → 3
     const json_expr = ast.Expr{ .string_literal = "[1,2,3]" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_array_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21208,7 +21427,7 @@ test "json_array_length returns 0 for empty array" {
 
     // json_array_length('[]') → 0
     const json_expr = ast.Expr{ .string_literal = "[]" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_array_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21223,7 +21442,7 @@ test "json_array_length returns NULL for NULL input" {
 
     // json_array_length(NULL) → NULL
     const json_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_array_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21237,7 +21456,7 @@ test "json_array_length returns NULL for object input (not array)" {
 
     // json_array_length('{"a":1}') → NULL (not an array)
     const json_expr = ast.Expr{ .string_literal = "{\"a\":1}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_array_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21251,7 +21470,7 @@ test "jsonb_array_length alias works" {
 
     // jsonb_array_length('[1,2]') → 2
     const json_expr = ast.Expr{ .string_literal = "[1,2]" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "jsonb_array_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21371,7 +21590,7 @@ test "json_build_array with one integer arg builds single-element array" {
 
     // json_build_array(42) → [42]
     const elem_expr = ast.Expr{ .integer_literal = 42 };
-    const args = [_]*const ast.Expr{ &elem_expr };
+    const args = [_]*const ast.Expr{&elem_expr};
     const fc = .{ .name = "json_build_array", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21417,7 +21636,7 @@ test "json_strip_nulls removes object fields with null value" {
 
     // json_strip_nulls('{"a":1,"b":null}')
     const json_expr = ast.Expr{ .string_literal = "{\"a\":1,\"b\":null}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_strip_nulls", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21431,7 +21650,7 @@ test "json_strip_nulls leaves non-null object unchanged" {
 
     // json_strip_nulls('{"a":1,"b":2}')
     const json_expr = ast.Expr{ .string_literal = "{\"a\":1,\"b\":2}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_strip_nulls", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21445,7 +21664,7 @@ test "json_strip_nulls leaves null elements in array unchanged" {
 
     // json_strip_nulls('[1,null,2]') → [1,null,2] (array nulls kept)
     const json_expr = ast.Expr{ .string_literal = "[1,null,2]" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_strip_nulls", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21459,7 +21678,7 @@ test "json_strip_nulls returns NULL for NULL input" {
 
     // json_strip_nulls(NULL) → NULL
     const json_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_strip_nulls", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21473,7 +21692,7 @@ test "jsonb_strip_nulls alias works" {
 
     // jsonb_strip_nulls('{"x":1,"y":null}')
     const json_expr = ast.Expr{ .string_literal = "{\"x\":1,\"y\":null}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "jsonb_strip_nulls", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21580,7 +21799,7 @@ test "jsonb_insert alias accepts NULL json" {
 test "json_set sets value at single object key" {
     const allocator = std.testing.allocator;
     // json_set('{"a":1}', array_path_a, 2) → {"a":2}
-    var path_items = [_]Value{ Value{ .text = "a" } };
+    var path_items = [_]Value{Value{ .text = "a" }};
     const path_val = Value{ .array = &path_items };
     const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 });
     defer result.free(allocator);
@@ -21594,7 +21813,7 @@ test "json_set sets value at single object key" {
 test "json_set creates missing key" {
     const allocator = std.testing.allocator;
     // json_set('{"a":1}', '{b}', 99) → {"a":1,"b":99}
-    var path_items = [_]Value{ Value{ .text = "b" } };
+    var path_items = [_]Value{Value{ .text = "b" }};
     const path_val = Value{ .array = &path_items };
     const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 });
     defer result.free(allocator);
@@ -21635,7 +21854,7 @@ test "json_set with text array path syntax {x}" {
 test "json_insert inserts before index 1 in array" {
     const allocator = std.testing.allocator;
     // json_insert('[1,2,3]', idx=1, 99, insert_after=false) → [1,99,2,3]
-    var path_items = [_]Value{ Value{ .integer = 1 } };
+    var path_items = [_]Value{Value{ .integer = 1 }};
     const path_val = Value{ .array = &path_items };
     const result = try evalJsonInsert(allocator, Value{ .text = "[1,2,3]" }, path_val, Value{ .integer = 99 }, false);
     defer result.free(allocator);
@@ -21649,7 +21868,7 @@ test "json_insert inserts before index 1 in array" {
 test "json_insert inserts after index 1 in array" {
     const allocator = std.testing.allocator;
     // json_insert('[1,2,3]', idx=1, 99, insert_after=true) → [1,2,99,3]
-    var path_items = [_]Value{ Value{ .integer = 1 } };
+    var path_items = [_]Value{Value{ .integer = 1 }};
     const path_val = Value{ .array = &path_items };
     const result = try evalJsonInsert(allocator, Value{ .text = "[1,2,3]" }, path_val, Value{ .integer = 99 }, true);
     defer result.free(allocator);
@@ -21663,7 +21882,7 @@ test "json_insert inserts after index 1 in array" {
 test "json_insert adds missing key to object" {
     const allocator = std.testing.allocator;
     // json_insert('{"a":1}', '{b}', 2) → {"a":1,"b":2}
-    var path_items = [_]Value{ Value{ .text = "b" } };
+    var path_items = [_]Value{Value{ .text = "b" }};
     const path_val = Value{ .array = &path_items };
     const result = try evalJsonInsert(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 }, false);
     defer result.free(allocator);
@@ -21677,7 +21896,7 @@ test "json_insert adds missing key to object" {
 test "json_insert is no-op for object when key exists" {
     const allocator = std.testing.allocator;
     // json_insert('{"a":1}', '{a}', 99) → {"a":1} (key exists, no change)
-    var path_items = [_]Value{ Value{ .text = "a" } };
+    var path_items = [_]Value{Value{ .text = "a" }};
     const path_val = Value{ .array = &path_items };
     const result = try evalJsonInsert(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 }, false);
     defer result.free(allocator);
@@ -21834,7 +22053,7 @@ test "to_json integer" {
 
     // to_json(42) → "42"
     const arg_expr = ast.Expr{ .integer_literal = 42 };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_json", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21849,7 +22068,7 @@ test "to_json real" {
 
     // to_json(3.14) → "3.14"
     const arg_expr = ast.Expr{ .float_literal = 3.14 };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_json", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21863,7 +22082,7 @@ test "to_json boolean true" {
 
     // to_json(true) → "true"
     const arg_expr = ast.Expr{ .boolean_literal = true };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_json", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21878,7 +22097,7 @@ test "to_json boolean false" {
 
     // to_json(false) → "false"
     const arg_expr = ast.Expr{ .boolean_literal = false };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_json", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21893,7 +22112,7 @@ test "to_json text" {
 
     // to_json('hello') → "\"hello\""
     const arg_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_json", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21907,7 +22126,7 @@ test "to_json null" {
 
     // to_json(NULL) → "null"
     const arg_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_json", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21922,7 +22141,7 @@ test "to_jsonb alias works" {
 
     // to_jsonb(100) → "100"
     const arg_expr = ast.Expr{ .integer_literal = 100 };
-    const args = [_]*const ast.Expr{ &arg_expr };
+    const args = [_]*const ast.Expr{&arg_expr};
     const fc = .{ .name = "to_jsonb", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -21941,9 +22160,9 @@ test "json_agg basic aggregation collects integers" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 2 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 3 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .integer = 2 }};
+    var row_values_3 = [_]Value{Value{ .integer = 3 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -21986,11 +22205,11 @@ test "json_agg skips NULL values" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_3 = [_]Value{ Value{ .integer = 2 } };
-    var row_values_4 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_5 = [_]Value{ Value{ .integer = 3 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
+    var row_values_3 = [_]Value{Value{ .integer = 2 }};
+    var row_values_4 = [_]Value{Value{ .null_value = {} }};
+    var row_values_5 = [_]Value{Value{ .integer = 3 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -22044,8 +22263,8 @@ test "json_agg returns NULL when all values are NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -22080,8 +22299,8 @@ test "json_agg with text values" {
     const foo_text = "foo";
     const bar_text = "bar";
 
-    var row_values_1 = [_]Value{ Value{ .text = foo_text } };
-    var row_values_2 = [_]Value{ Value{ .text = bar_text } };
+    var row_values_1 = [_]Value{Value{ .text = foo_text }};
+    var row_values_2 = [_]Value{Value{ .text = bar_text }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -22118,9 +22337,9 @@ test "array_agg basic aggregation collects integers" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 2 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 3 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .integer = 2 }};
+    var row_values_3 = [_]Value{Value{ .integer = 3 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -22163,9 +22382,9 @@ test "array_agg skips NULL values" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_3 = [_]Value{ Value{ .integer = 2 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
+    var row_values_3 = [_]Value{Value{ .integer = 2 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -22208,7 +22427,7 @@ test "array_agg returns NULL when all values are NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -22216,7 +22435,7 @@ test "array_agg returns NULL when all values are NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -22235,7 +22454,7 @@ test "jsonb_pretty formats simple object with indentation" {
 
     // jsonb_pretty('{"a":1,"b":2}') → pretty-printed JSON with newlines and spaces
     const json_expr = ast.Expr{ .string_literal = "{\"a\":1,\"b\":2}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "jsonb_pretty", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22245,7 +22464,7 @@ test "jsonb_pretty formats simple object with indentation" {
     try std.testing.expect(std.mem.indexOf(u8, result.text, "\n") != null);
     // Should contain indentation (spaces)
     try std.testing.expect(std.mem.indexOf(u8, result.text, "  ") != null or
-                           std.mem.indexOf(u8, result.text, "    ") != null);
+        std.mem.indexOf(u8, result.text, "    ") != null);
 }
 
 test "json_pretty formats array with indentation" {
@@ -22254,7 +22473,7 @@ test "json_pretty formats array with indentation" {
 
     // json_pretty('[1,2,3]') → pretty-printed JSON array
     const json_expr = ast.Expr{ .string_literal = "[1,2,3]" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_pretty", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22270,7 +22489,7 @@ test "jsonb_pretty returns NULL for NULL input" {
 
     // jsonb_pretty(NULL) → NULL
     const json_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "jsonb_pretty", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22284,7 +22503,7 @@ test "json_pretty returns NULL for invalid JSON" {
 
     // json_pretty('not valid json') → NULL
     const json_expr = ast.Expr{ .string_literal = "not valid json" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_pretty", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22298,7 +22517,7 @@ test "json_pretty formats nested object" {
 
     // json_pretty('{"a":{"b":1}}') → pretty-printed with nested indentation
     const json_expr = ast.Expr{ .string_literal = "{\"a\":{\"b\":1}}" };
-    const args = [_]*const ast.Expr{ &json_expr };
+    const args = [_]*const ast.Expr{&json_expr};
     const fc = .{ .name = "json_pretty", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22313,7 +22532,7 @@ test "json_object with single array creates object from alternating keys/values"
 
     // json_object('["a","1","b","2"]') → {"a":"1","b":"2"}
     const arr_expr = ast.Expr{ .string_literal = "[\"a\",\"1\",\"b\",\"2\"]" };
-    const args = [_]*const ast.Expr{ &arr_expr };
+    const args = [_]*const ast.Expr{&arr_expr};
     const fc = .{ .name = "json_object", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22347,7 +22566,7 @@ test "json_object returns NULL when first argument is NULL" {
 
     // json_object(NULL) → NULL
     const arr_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &arr_expr };
+    const args = [_]*const ast.Expr{&arr_expr};
     const fc = .{ .name = "json_object", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22361,7 +22580,7 @@ test "json_object returns NULL for odd-length single array" {
 
     // json_object('["a","b","c"]') → NULL (odd number of elements)
     const arr_expr = ast.Expr{ .string_literal = "[\"a\",\"b\",\"c\"]" };
-    const args = [_]*const ast.Expr{ &arr_expr };
+    const args = [_]*const ast.Expr{&arr_expr};
     const fc = .{ .name = "json_object", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22375,7 +22594,7 @@ test "json_object with empty single array creates empty object" {
 
     // json_object('[]') → {}
     const arr_expr = ast.Expr{ .string_literal = "[]" };
-    const args = [_]*const ast.Expr{ &arr_expr };
+    const args = [_]*const ast.Expr{&arr_expr};
     const fc = .{ .name = "json_object", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22405,7 +22624,7 @@ test "json_object with invalid array JSON returns NULL" {
 
     // json_object('not an array') → NULL
     const arr_expr = ast.Expr{ .string_literal = "not an array" };
-    const args = [_]*const ast.Expr{ &arr_expr };
+    const args = [_]*const ast.Expr{&arr_expr};
     const fc = .{ .name = "json_object", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22489,7 +22708,7 @@ test "trim removes leading and trailing whitespace" {
 
     // trim('  hello  ') → 'hello'
     const str_expr = ast.Expr{ .string_literal = "  hello  " };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "trim", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22504,7 +22723,7 @@ test "trim with no whitespace returns original string" {
 
     // trim('hello') → 'hello'
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "trim", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22519,7 +22738,7 @@ test "ltrim removes leading whitespace" {
 
     // ltrim('  hello') → 'hello'
     const str_expr = ast.Expr{ .string_literal = "  hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "ltrim", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22550,7 +22769,7 @@ test "rtrim removes trailing whitespace" {
 
     // rtrim('hello  ') → 'hello'
     const str_expr = ast.Expr{ .string_literal = "hello  " };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "rtrim", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22843,7 +23062,7 @@ test "reverse reverses string characters" {
 
     // reverse('hello') → 'olleh'
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "reverse", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22858,7 +23077,7 @@ test "reverse on empty string returns empty string" {
 
     // reverse('') → ''
     const str_expr = ast.Expr{ .string_literal = "" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "reverse", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22907,7 +23126,7 @@ test "initcap capitalizes first letter of each word" {
 
     // initcap('hello world') → 'Hello World'
     const str_expr = ast.Expr{ .string_literal = "hello world" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "initcap", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22922,7 +23141,7 @@ test "initcap with single word capitalizes first letter only" {
 
     // initcap('hello') → 'Hello'
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "initcap", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22941,7 +23160,7 @@ test "round rounds to nearest integer by default" {
 
     // round(3.7) → 4
     const num_expr = ast.Expr{ .float_literal = 3.7 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "round", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -22988,7 +23207,7 @@ test "floor rounds down to nearest integer" {
 
     // floor(3.7) → 3
     const num_expr = ast.Expr{ .float_literal = 3.7 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "floor", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23003,7 +23222,7 @@ test "floor with negative number rounds down" {
 
     // floor(-3.2) → -4
     const num_expr = ast.Expr{ .float_literal = -3.2 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "floor", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23018,7 +23237,7 @@ test "ceil rounds up to nearest integer" {
 
     // ceil(3.2) → 4
     const num_expr = ast.Expr{ .float_literal = 3.2 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ceil", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23033,7 +23252,7 @@ test "ceiling is alias for ceil" {
 
     // ceiling(3.2) → 4
     const num_expr = ast.Expr{ .float_literal = 3.2 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ceiling", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23048,7 +23267,7 @@ test "sqrt computes square root" {
 
     // sqrt(16) → 4
     const num_expr = ast.Expr{ .integer_literal = 16 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sqrt", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23063,7 +23282,7 @@ test "sqrt of zero returns zero" {
 
     // sqrt(0) → 0
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sqrt", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23158,7 +23377,7 @@ test "sign returns -1 for negative numbers" {
 
     // sign(-42) → -1
     const num_expr = ast.Expr{ .integer_literal = -42 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sign", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23173,7 +23392,7 @@ test "sign returns 0 for zero" {
 
     // sign(0) → 0
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sign", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23188,7 +23407,7 @@ test "sign returns 1 for positive numbers" {
 
     // sign(42) → 1
     const num_expr = ast.Expr{ .integer_literal = 42 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sign", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23219,7 +23438,7 @@ test "floor with integer input returns integer unchanged" {
 
     // floor(5) → 5
     const num_expr = ast.Expr{ .integer_literal = 5 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "floor", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23234,7 +23453,7 @@ test "ceil with integer input returns integer unchanged" {
 
     // ceil(7) → 7
     const num_expr = ast.Expr{ .integer_literal = 7 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ceil", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23249,7 +23468,7 @@ test "sign with float input returns float" {
 
     // sign(-2.5) → -1.0
     const num_expr = ast.Expr{ .float_literal = -2.5 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sign", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23344,7 +23563,7 @@ test "initcap normalizes uppercase input to title case" {
 
     // initcap('HELLO WORLD') → 'Hello World'
     const str_expr = ast.Expr{ .string_literal = "HELLO WORLD" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "initcap", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23543,7 +23762,7 @@ test "chr returns character from ASCII code" {
 
     // chr(65) → 'A'
     const code_expr = ast.Expr{ .integer_literal = 65 };
-    const args = [_]*const ast.Expr{ &code_expr };
+    const args = [_]*const ast.Expr{&code_expr};
     const fc = .{ .name = "chr", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23558,7 +23777,7 @@ test "chr with code 0 returns NULL" {
 
     // chr(0) → NULL
     const code_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &code_expr };
+    const args = [_]*const ast.Expr{&code_expr};
     const fc = .{ .name = "chr", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23572,7 +23791,7 @@ test "chr with negative code returns NULL" {
 
     // chr(-1) → NULL
     const code_expr = ast.Expr{ .integer_literal = -1 };
-    const args = [_]*const ast.Expr{ &code_expr };
+    const args = [_]*const ast.Expr{&code_expr};
     const fc = .{ .name = "chr", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23586,7 +23805,7 @@ test "chr with NULL code returns NULL" {
 
     // chr(NULL) → NULL
     const code_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &code_expr };
+    const args = [_]*const ast.Expr{&code_expr};
     const fc = .{ .name = "chr", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23601,7 +23820,7 @@ test "ascii returns code of first character" {
 
     // ascii('A') → 65
     const str_expr = ast.Expr{ .string_literal = "A" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "ascii", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23616,7 +23835,7 @@ test "ascii with empty string returns NULL" {
 
     // ascii('') → NULL
     const str_expr = ast.Expr{ .string_literal = "" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "ascii", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23630,7 +23849,7 @@ test "ascii with NULL string returns NULL" {
 
     // ascii(NULL) → NULL
     const str_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "ascii", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23645,7 +23864,7 @@ test "octet_length returns byte count" {
 
     // octet_length('hello') → 5
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "octet_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23660,7 +23879,7 @@ test "octet_length with empty string returns 0" {
 
     // octet_length('') → 0
     const str_expr = ast.Expr{ .string_literal = "" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "octet_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23675,7 +23894,7 @@ test "octet_length with NULL returns NULL" {
 
     // octet_length(NULL) → NULL
     const str_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "octet_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23690,7 +23909,7 @@ test "char_length returns character count" {
 
     // char_length('hello') → 5
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "char_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23705,7 +23924,7 @@ test "character_length is alias for char_length" {
 
     // character_length('hello') → 5
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "character_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23720,7 +23939,7 @@ test "char_length with empty string returns 0" {
 
     // char_length('') → 0
     const str_expr = ast.Expr{ .string_literal = "" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "char_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23735,7 +23954,7 @@ test "char_length with NULL returns NULL" {
 
     // char_length(NULL) → NULL
     const str_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "char_length", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23833,7 +24052,7 @@ test "md5 empty string" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "md5", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23847,7 +24066,7 @@ test "md5 basic hash" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "hello world" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "md5", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23861,7 +24080,7 @@ test "md5 NULL input returns NULL" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "md5", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23980,7 +24199,7 @@ test "quote_ident simple identifier" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -23994,7 +24213,7 @@ test "quote_ident with space" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "hello world" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24008,7 +24227,7 @@ test "quote_ident with internal quotes" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "say \"hi\"" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24022,7 +24241,7 @@ test "quote_ident NULL returns NULL" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_ident", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24036,7 +24255,7 @@ test "quote_literal simple string" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_literal", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24050,7 +24269,7 @@ test "quote_literal with apostrophe" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "it's" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_literal", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24064,7 +24283,7 @@ test "quote_literal NULL returns NULL" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "quote_literal", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24235,7 +24454,7 @@ test "concat_ws with no value arguments returns empty string" {
 
     // concat_ws('-') → ''
     const sep_expr = ast.Expr{ .string_literal = "-" };
-    const args = [_]*const ast.Expr{ &sep_expr };
+    const args = [_]*const ast.Expr{&sep_expr};
     const fc = .{ .name = "concat_ws", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24287,7 +24506,7 @@ test "format with %% escapes to single percent" {
 
     // format('100%%') → '100%'
     const fmt_expr = ast.Expr{ .string_literal = "100%%" };
-    const args = [_]*const ast.Expr{ &fmt_expr };
+    const args = [_]*const ast.Expr{&fmt_expr};
     const fc = .{ .name = "format", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24344,9 +24563,9 @@ test "string_agg basic concatenation with delimiter" {
         .separator = &sep_expr,
     };
 
-    var row_values_1 = [_]Value{ Value{ .text = "a" } };
-    var row_values_2 = [_]Value{ Value{ .text = "b" } };
-    var row_values_3 = [_]Value{ Value{ .text = "c" } };
+    var row_values_1 = [_]Value{Value{ .text = "a" }};
+    var row_values_2 = [_]Value{Value{ .text = "b" }};
+    var row_values_3 = [_]Value{Value{ .text = "c" }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -24387,9 +24606,9 @@ test "string_agg skips NULL values" {
         .separator = &sep_expr,
     };
 
-    var row_values_1 = [_]Value{ Value{ .text = "foo" } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_3 = [_]Value{ Value{ .text = "bar" } };
+    var row_values_1 = [_]Value{Value{ .text = "foo" }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
+    var row_values_3 = [_]Value{Value{ .text = "bar" }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -24430,8 +24649,8 @@ test "string_agg returns NULL when all values are NULL" {
         .separator = &sep_expr,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -24486,7 +24705,7 @@ test "exp(1) computes e to the power of 1" {
 
     // exp(1) ≈ 2.718...
     const num_expr = ast.Expr{ .integer_literal = 1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "exp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24501,7 +24720,7 @@ test "exp(0) returns 1" {
 
     // exp(0) = 1
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "exp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24516,7 +24735,7 @@ test "ln(1) computes natural logarithm" {
 
     // ln(1) = 0
     const num_expr = ast.Expr{ .integer_literal = 1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ln", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24531,7 +24750,7 @@ test "ln(e) returns approximately 1" {
 
     // ln(e) ≈ 1 (where e ≈ 2.71828)
     const num_expr = ast.Expr{ .float_literal = 2.718281828 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ln", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24546,7 +24765,7 @@ test "log(1) computes base-10 logarithm" {
 
     // log(1) = 0
     const num_expr = ast.Expr{ .integer_literal = 1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "log", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24561,7 +24780,7 @@ test "log(100) returns 2" {
 
     // log(100) = 2 (base 10)
     const num_expr = ast.Expr{ .integer_literal = 100 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "log", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24592,7 +24811,7 @@ test "trunc truncates toward zero" {
 
     // trunc(3.7) = 3
     const num_expr = ast.Expr{ .float_literal = 3.7 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "trunc", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24607,7 +24826,7 @@ test "trunc with negative number truncates toward zero" {
 
     // trunc(-3.7) = -3
     const num_expr = ast.Expr{ .float_literal = -3.7 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "trunc", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24652,7 +24871,7 @@ test "sin(0) returns 0" {
 
     // sin(0) = 0
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sin", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24668,7 +24887,7 @@ test "sin(π/2) returns approximately 1" {
     // sin(π/2) ≈ 1
     const pi_over_2 = std.math.pi / 2.0;
     const num_expr = ast.Expr{ .float_literal = pi_over_2 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "sin", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24683,7 +24902,7 @@ test "cos(0) returns 1" {
 
     // cos(0) = 1
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "cos", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24698,7 +24917,7 @@ test "cos(π) returns approximately -1" {
 
     // cos(π) ≈ -1
     const num_expr = ast.Expr{ .float_literal = std.math.pi };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "cos", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24713,7 +24932,7 @@ test "tan(0) returns 0" {
 
     // tan(0) = 0
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "tan", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24728,7 +24947,7 @@ test "asin(0) returns 0" {
 
     // asin(0) = 0
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "asin", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24743,7 +24962,7 @@ test "asin(1) returns approximately π/2" {
 
     // asin(1) ≈ π/2
     const num_expr = ast.Expr{ .integer_literal = 1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "asin", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24758,7 +24977,7 @@ test "acos(1) returns 0" {
 
     // acos(1) = 0
     const num_expr = ast.Expr{ .integer_literal = 1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "acos", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24773,7 +24992,7 @@ test "atan(0) returns 0" {
 
     // atan(0) = 0
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "atan", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24804,7 +25023,7 @@ test "degrees(π) returns approximately 180" {
 
     // degrees(π) ≈ 180
     const num_expr = ast.Expr{ .float_literal = std.math.pi };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "degrees", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24819,7 +25038,7 @@ test "radians(180) returns approximately π" {
 
     // radians(180) ≈ π
     const num_expr = ast.Expr{ .integer_literal = 180 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "radians", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24835,7 +25054,7 @@ test "cot(π/4) returns approximately 1" {
     // cot(π/4) ≈ 1
     const pi_over_4 = std.math.pi / 4.0;
     const num_expr = ast.Expr{ .float_literal = pi_over_4 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "cot", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -24858,9 +25077,9 @@ test "bool_and all true rows returns true" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .integer = 1 }};
+    var row_values_3 = [_]Value{Value{ .integer = 1 }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -24899,9 +25118,9 @@ test "bool_and one false row returns false" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 0 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .integer = 0 }};
+    var row_values_3 = [_]Value{Value{ .integer = 1 }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -24940,8 +25159,8 @@ test "bool_and all null returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -24974,9 +25193,9 @@ test "bool_or any true row returns true" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 0 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_1 = [_]Value{Value{ .integer = 0 }};
+    var row_values_2 = [_]Value{Value{ .integer = 1 }};
+    var row_values_3 = [_]Value{Value{ .integer = 0 }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -25015,9 +25234,9 @@ test "bool_or all false rows returns false" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 0 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 0 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 0 } };
+    var row_values_1 = [_]Value{Value{ .integer = 0 }};
+    var row_values_2 = [_]Value{Value{ .integer = 0 }};
+    var row_values_3 = [_]Value{Value{ .integer = 0 }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -25056,8 +25275,8 @@ test "bool_or all null returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -25090,9 +25309,9 @@ test "bit_and performs bitwise AND of integers" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 15 } }; // 0b1111
-    var row_values_2 = [_]Value{ Value{ .integer = 14 } }; // 0b1110
-    var row_values_3 = [_]Value{ Value{ .integer = 6 } };  // 0b0110
+    var row_values_1 = [_]Value{Value{ .integer = 15 }}; // 0b1111
+    var row_values_2 = [_]Value{Value{ .integer = 14 }}; // 0b1110
+    var row_values_3 = [_]Value{Value{ .integer = 6 }}; // 0b0110
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25131,9 +25350,9 @@ test "bit_or performs bitwise OR of integers" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } }; // 0b0001
-    var row_values_2 = [_]Value{ Value{ .integer = 2 } }; // 0b0010
-    var row_values_3 = [_]Value{ Value{ .integer = 4 } }; // 0b0100
+    var row_values_1 = [_]Value{Value{ .integer = 1 }}; // 0b0001
+    var row_values_2 = [_]Value{Value{ .integer = 2 }}; // 0b0010
+    var row_values_3 = [_]Value{Value{ .integer = 4 }}; // 0b0100
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25169,7 +25388,7 @@ test "ln(0) returns NULL (domain error)" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ln", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25182,7 +25401,7 @@ test "ln(-5) returns NULL (domain error)" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .float_literal = -5.0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "ln", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25195,7 +25414,7 @@ test "log(0) returns NULL (domain error, base-10)" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "log", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25208,7 +25427,7 @@ test "log(-1) returns NULL (domain error, base-10)" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .float_literal = -1.0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "log", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25263,7 +25482,7 @@ test "asin(2.0) returns NULL (out of domain [-1, 1])" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .float_literal = 2.0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "asin", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25276,7 +25495,7 @@ test "acos(-2.0) returns NULL (out of domain [-1, 1])" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .float_literal = -2.0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "acos", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25289,7 +25508,7 @@ test "cot(0) returns NULL (tan(0)=0)" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "cot", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25319,7 +25538,7 @@ test "exp(-1) returns approximately 0.3679" {
 
     // exp(-1) ≈ 0.36788 (valid, just testing negative exponent)
     const num_expr = ast.Expr{ .integer_literal = -1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "exp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -25338,10 +25557,10 @@ test "bool_and with mixed NULLs and all-true non-NULLs returns true" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .integer = 1 } }; // true
-    var row_values_3 = [_]Value{ Value{ .integer = 1 } }; // true
-    var row_values_4 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .integer = 1 }}; // true
+    var row_values_3 = [_]Value{Value{ .integer = 1 }}; // true
+    var row_values_4 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25385,10 +25604,10 @@ test "bool_or with mixed NULLs and all-false non-NULLs returns false" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .integer = 0 } }; // false
-    var row_values_3 = [_]Value{ Value{ .integer = 0 } }; // false
-    var row_values_4 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .integer = 0 }}; // false
+    var row_values_3 = [_]Value{Value{ .integer = 0 }}; // false
+    var row_values_4 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25432,9 +25651,9 @@ test "bit_and with NULL values skips NULLs" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 7 } };  // 0b0111
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_3 = [_]Value{ Value{ .integer = 3 } };  // 0b0011
+    var row_values_1 = [_]Value{Value{ .integer = 7 }}; // 0b0111
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
+    var row_values_3 = [_]Value{Value{ .integer = 3 }}; // 0b0011
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25473,9 +25692,9 @@ test "bit_or with NULL values skips NULLs" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };  // 0b0001
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_3 = [_]Value{ Value{ .integer = 2 } };  // 0b0010
+    var row_values_1 = [_]Value{Value{ .integer = 1 }}; // 0b0001
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
+    var row_values_3 = [_]Value{Value{ .integer = 2 }}; // 0b0010
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25514,7 +25733,7 @@ test "bit_and single row returns that row's value" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 42 } };
+    var row_values_1 = [_]Value{Value{ .integer = 42 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -25543,8 +25762,8 @@ test "bit_or all null returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -26244,7 +26463,7 @@ test "to_hex of zero" {
 
     // to_hex(0) → '0'
     const num_expr = ast.Expr{ .integer_literal = 0 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -26259,7 +26478,7 @@ test "to_hex of 255" {
 
     // to_hex(255) → 'ff'
     const num_expr = ast.Expr{ .integer_literal = 255 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -26274,7 +26493,7 @@ test "to_hex of 256" {
 
     // to_hex(256) → '100'
     const num_expr = ast.Expr{ .integer_literal = 256 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -26289,7 +26508,7 @@ test "to_hex with NULL returns NULL" {
 
     // to_hex(NULL) → NULL
     const num_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -27191,7 +27410,7 @@ test "to_hex with negative number" {
 
     // to_hex(-1) → 'ffffffffffffffff' (two's complement for 64-bit signed)
     const num_expr = ast.Expr{ .integer_literal = -1 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -27207,7 +27426,7 @@ test "to_hex with large positive number" {
 
     // to_hex(1000000) → 'f4240'
     const num_expr = ast.Expr{ .integer_literal = 1000000 };
-    const args = [_]*const ast.Expr{ &num_expr };
+    const args = [_]*const ast.Expr{&num_expr};
     const fc = .{ .name = "to_hex", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -28821,9 +29040,9 @@ test "var_pop calculates population variance for numeric values" {
     };
 
     // For [1, 2, 3]: mean=2, var_pop = ((1-2)^2 + (2-2)^2 + (3-2)^2) / 3 = 2/3 ≈ 0.6667
-    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 1.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_3 = [_]Value{Value{ .real = 3.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -28861,7 +29080,7 @@ test "var_pop with single row returns 0.0" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 5.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -28869,7 +29088,7 @@ test "var_pop with single row returns 0.0" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -28890,8 +29109,8 @@ test "var_pop with all NULL values returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
+    var row_values_1 = [_]Value{Value{ .null_value = {} }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -28924,9 +29143,9 @@ test "var_pop with mixed NULL and numeric values skips NULLs" {
     };
 
     // [2, NULL, 4] -> variance computed on [2, 4] only
-    var row_values_1 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_2 = [_]Value{ Value{ .null_value = {} } };
-    var row_values_3 = [_]Value{ Value{ .real = 4.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_2 = [_]Value{Value{ .null_value = {} }};
+    var row_values_3 = [_]Value{Value{ .real = 4.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -28966,9 +29185,9 @@ test "var_samp calculates sample variance" {
     };
 
     // For [1, 2, 3]: mean=2, var_samp = 2/2 = 1.0
-    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 1.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_3 = [_]Value{Value{ .real = 3.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29006,7 +29225,7 @@ test "var_samp with single row returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 5.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29014,7 +29233,7 @@ test "var_samp with single row returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -29034,8 +29253,8 @@ test "var_samp with two rows calculates correctly" {
     };
 
     // For [1, 3]: mean=2, var_samp = ((1-2)^2 + (3-2)^2) / 1 = 2/1 = 2.0
-    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 3.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 1.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 3.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29068,8 +29287,8 @@ test "variance is alias for var_samp" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 4.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 4.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29103,9 +29322,9 @@ test "stddev_pop calculates population standard deviation" {
     };
 
     // For [1, 2, 3]: var_pop = 2/3, stddev_pop = sqrt(2/3) ≈ 0.8165
-    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 1.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_3 = [_]Value{Value{ .real = 3.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29143,7 +29362,7 @@ test "stddev_pop with single row returns 0.0" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 5.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29151,7 +29370,7 @@ test "stddev_pop with single row returns 0.0" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -29173,9 +29392,9 @@ test "stddev_samp calculates sample standard deviation" {
     };
 
     // For [1, 2, 3]: var_samp = 1.0, stddev_samp = sqrt(1.0) = 1.0
-    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 1.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_3 = [_]Value{Value{ .real = 3.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29213,7 +29432,7 @@ test "stddev_samp with single row returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 5.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29221,7 +29440,7 @@ test "stddev_samp with single row returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -29240,9 +29459,9 @@ test "stddev is alias for stddev_samp" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 1.0 } };
-    var row_values_2 = [_]Value{ Value{ .real = 2.0 } };
-    var row_values_3 = [_]Value{ Value{ .real = 3.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 1.0 }};
+    var row_values_2 = [_]Value{Value{ .real = 2.0 }};
+    var row_values_3 = [_]Value{Value{ .real = 3.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29280,9 +29499,9 @@ test "every is alias for bool_and" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .integer = 1 }};
+    var row_values_3 = [_]Value{Value{ .integer = 1 }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -29320,9 +29539,9 @@ test "every returns false when one flag is false" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .integer = 1 } };
-    var row_values_2 = [_]Value{ Value{ .integer = 0 } };
-    var row_values_3 = [_]Value{ Value{ .integer = 1 } };
+    var row_values_1 = [_]Value{Value{ .integer = 1 }};
+    var row_values_2 = [_]Value{Value{ .integer = 0 }};
+    var row_values_3 = [_]Value{Value{ .integer = 1 }};
 
     const row1 = Row{
         .columns = &.{"flag"},
@@ -29599,7 +29818,7 @@ test "age(timestamp) calculates interval from timestamp to now" {
 
     // age('2023-06-15 14:30:45') → interval from that time to now
     const ts_expr = ast.Expr{ .string_literal = "2023-06-15 14:30:45" };
-    const args = [_]*const ast.Expr{ &ts_expr };
+    const args = [_]*const ast.Expr{&ts_expr};
     const fc = .{ .name = "age", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29614,7 +29833,7 @@ test "age with NULL timestamp returns NULL" {
 
     // age(NULL) → NULL
     const ts_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &ts_expr };
+    const args = [_]*const ast.Expr{&ts_expr};
     const fc = .{ .name = "age", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29736,7 +29955,7 @@ test "variance with single row returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 5.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29744,7 +29963,7 @@ test "variance with single row returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -29763,7 +29982,7 @@ test "stddev with single row returns NULL" {
         .alias = null,
     };
 
-    var row_values_1 = [_]Value{ Value{ .real = 5.0 } };
+    var row_values_1 = [_]Value{Value{ .real = 5.0 }};
 
     const row1 = Row{
         .columns = &.{"val"},
@@ -29771,7 +29990,7 @@ test "stddev with single row returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -29951,7 +30170,7 @@ test "least with all NULL values returns NULL" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const n = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &n };
+    const args = [_]*const ast.Expr{&n};
     const fc = .{ .name = "least", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29964,7 +30183,7 @@ test "typeof returns 'integer' for integer value" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const int_expr = ast.Expr{ .integer_literal = 42 };
-    const args = [_]*const ast.Expr{ &int_expr };
+    const args = [_]*const ast.Expr{&int_expr};
     const fc = .{ .name = "typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29978,7 +30197,7 @@ test "typeof returns 'text' for string value" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const str_expr = ast.Expr{ .string_literal = "hello" };
-    const args = [_]*const ast.Expr{ &str_expr };
+    const args = [_]*const ast.Expr{&str_expr};
     const fc = .{ .name = "typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29992,7 +30211,7 @@ test "typeof returns 'null' for NULL value" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const null_expr = ast.Expr{ .null_literal = {} };
-    const args = [_]*const ast.Expr{ &null_expr };
+    const args = [_]*const ast.Expr{&null_expr};
     const fc = .{ .name = "typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -30006,7 +30225,7 @@ test "typeof returns 'real' for float value" {
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
     const float_expr = ast.Expr{ .float_literal = 3.14 };
-    const args = [_]*const ast.Expr{ &float_expr };
+    const args = [_]*const ast.Expr{&float_expr};
     const fc = .{ .name = "typeof", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -30084,7 +30303,7 @@ test "corr with less than 2 rows returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30280,7 +30499,7 @@ test "covar_samp with single row returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30353,7 +30572,7 @@ test "regr_slope with less than 2 rows returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30469,7 +30688,7 @@ test "regr_intercept with less than 2 rows returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30542,7 +30761,7 @@ test "regr_r2 when corr is NULL returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30721,7 +30940,7 @@ test "regr_avgx with no valid pairs returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30806,7 +31025,7 @@ test "regr_avgy with no valid pairs returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30879,7 +31098,7 @@ test "regr_sxx with no valid pairs returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -30952,7 +31171,7 @@ test "regr_syy with no valid pairs returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -31026,7 +31245,7 @@ test "regr_sxy with no valid pairs returns NULL" {
         .allocator = allocator,
     };
 
-    var rows = [_]Row{ row1 };
+    var rows = [_]Row{row1};
 
     var agg_op = AggregateOp.init(allocator, undefined, &.{}, &.{agg_expr});
     const result = agg_op.computeAggregate(agg_expr, &rows);
@@ -31098,8 +31317,8 @@ test "row_to_json with no matching prefix returns NULL" {
     const allocator = std.testing.allocator;
 
     // Row has columns with prefix "other.id", but we ask for prefix "t"
-    var col_values = [_]Value{ .{ .integer = 1 } };
-    const cols = [_][]const u8{ "other.id" };
+    var col_values = [_]Value{.{ .integer = 1 }};
+    const cols = [_][]const u8{"other.id"};
     const row = Row{
         .columns = &cols,
         .values = &col_values,
@@ -31122,8 +31341,8 @@ test "row_to_json with single real-valued column" {
     const allocator = std.testing.allocator;
 
     // Row with single real column
-    var col_values = [_]Value{ .{ .real = 3.14159 } };
-    const cols = [_][]const u8{ "t.score" };
+    var col_values = [_]Value{.{ .real = 3.14159 }};
+    const cols = [_][]const u8{"t.score"};
     const row = Row{
         .columns = &cols,
         .values = &col_values,
@@ -31993,7 +32212,7 @@ test "step 5: IndexScanOp.covering fast path decodes covering entry and returns 
     var index_scan = IndexScanOp.init(
         allocator,
         &pool,
-        0,  // data_root_page_id (unused in covering fast path)
+        0, // data_root_page_id (unused in covering fast path)
         index_root,
         .btree,
         index_key,
@@ -32117,7 +32336,7 @@ test "step 5: IndexScanOp.covering MVCC filters invisible tuples" {
 
     const deleted_header = TupleHeader{
         .xmin = 10,
-        .xmax = 20,  // Tuple is deleted
+        .xmax = 20, // Tuple is deleted
         .cid = 0,
         .flags = .{},
     };
@@ -32361,7 +32580,7 @@ test "step 5: IndexOnlyScanOp MVCC filters invisible rows" {
         var row_key_buf: [8]u8 = undefined;
         std.mem.writeInt(u64, &row_key_buf, 2, .big);
         const header = TupleHeader{
-            .xmin = 50,  // Future transaction
+            .xmin = 50, // Future transaction
             .xmax = mvcc_mod.INVALID_XID,
             .cid = 0,
             .flags = .{},
@@ -32378,7 +32597,7 @@ test "step 5: IndexOnlyScanOp MVCC filters invisible rows" {
         std.mem.writeInt(u64, &row_key_buf, 3, .big);
         const header = TupleHeader{
             .xmin = 6,
-            .xmax = 20,  // Deleted before current snapshot
+            .xmax = 20, // Deleted before current snapshot
             .cid = 0,
             .flags = .{},
         };
@@ -34227,17 +34446,17 @@ test "BitmapHeapScanOp with BitmapAndOp intersection input" {
 
     // Insert 3 data rows
     var data_tree = BTree.init(&data_pool, data_root);
-    const vals1 = [_]Value{ .{ .text = "Alice" } };
+    const vals1 = [_]Value{.{ .text = "Alice" }};
     const data1 = try serializeRow(allocator, &vals1);
     defer allocator.free(data1);
     try data_tree.insert("row_1", data1);
 
-    const vals2 = [_]Value{ .{ .text = "Bob" } };
+    const vals2 = [_]Value{.{ .text = "Bob" }};
     const data2 = try serializeRow(allocator, &vals2);
     defer allocator.free(data2);
     try data_tree.insert("row_2", data2);
 
-    const vals3 = [_]Value{ .{ .text = "Charlie" } };
+    const vals3 = [_]Value{.{ .text = "Charlie" }};
     const data3 = try serializeRow(allocator, &vals3);
     defer allocator.free(data3);
     try data_tree.insert("row_3", data3);
@@ -34335,12 +34554,12 @@ test "BitmapHeapScanOp with BitmapOrOp union input" {
 
     // Insert 2 data rows
     var data_tree = BTree.init(&data_pool, data_root);
-    const vals1 = [_]Value{ .{ .text = "Alice" } };
+    const vals1 = [_]Value{.{ .text = "Alice" }};
     const data1 = try serializeRow(allocator, &vals1);
     defer allocator.free(data1);
     try data_tree.insert("row_1", data1);
 
-    const vals2 = [_]Value{ .{ .text = "Bob" } };
+    const vals2 = [_]Value{.{ .text = "Bob" }};
     const data2 = try serializeRow(allocator, &vals2);
     defer allocator.free(data2);
     try data_tree.insert("row_2", data2);
@@ -34422,11 +34641,11 @@ test "BitmapHeapScanOp MVCC visibility filters invisible tuple" {
     var data_tree = BTree.init(&data_pool, data_root);
     const deleted_header = TupleHeader{
         .xmin = 5,
-        .xmax = 20,  // Tuple is deleted
+        .xmax = 20, // Tuple is deleted
         .cid = 0,
         .flags = .{},
     };
-    const vals = [_]Value{ .{ .text = "Deleted" } };
+    const vals = [_]Value{.{ .text = "Deleted" }};
     const versioned_data = try mvcc_mod.serializeVersionedRow(allocator, deleted_header, &vals);
     defer allocator.free(versioned_data);
     try data_tree.insert("row_1", versioned_data);
@@ -34504,7 +34723,7 @@ test "BitmapHeapScanOp MVCC visibility includes visible tuple" {
         .cid = 0,
         .flags = .{},
     };
-    const vals = [_]Value{ .{ .text = "Visible" } };
+    const vals = [_]Value{.{ .text = "Visible" }};
     const versioned_data = try mvcc_mod.serializeVersionedRow(allocator, visible_header, &vals);
     defer allocator.free(versioned_data);
     try data_tree.insert("row_1", versioned_data);
@@ -34583,12 +34802,12 @@ test "BitmapHeapScanOp skips orphaned index entries without stopping" {
 
     // Insert 2 data rows
     var data_tree = BTree.init(&data_pool, data_root);
-    const vals1 = [_]Value{ .{ .text = "First" } };
+    const vals1 = [_]Value{.{ .text = "First" }};
     const data1 = try serializeRow(allocator, &vals1);
     defer allocator.free(data1);
     try data_tree.insert("row_1", data1);
 
-    const vals2 = [_]Value{ .{ .text = "Third" } };
+    const vals2 = [_]Value{.{ .text = "Third" }};
     const data2 = try serializeRow(allocator, &vals2);
     defer allocator.free(data2);
     try data_tree.insert("row_3", data2);
@@ -34596,7 +34815,7 @@ test "BitmapHeapScanOp skips orphaned index entries without stopping" {
     // Insert index entries: key_1 -> row_1 (exists), key_2 -> row_2 (orphaned), key_3 -> row_3 (exists)
     var index_tree = BTree.init(&index_pool, index_root);
     try index_tree.insert("key_1", "row_1");
-    try index_tree.insert("key_2", "row_2");  // No corresponding data row
+    try index_tree.insert("key_2", "row_2"); // No corresponding data row
     try index_tree.insert("key_3", "row_3");
 
     // Scan key_1, key_2, key_3 via separate BitmapIndexScanOp and combine with OR to get all three row_key candidates
@@ -34724,7 +34943,7 @@ test "BitmapHeapScanOp memory cleanup with close()" {
 
     // Insert a data row
     var data_tree = BTree.init(&data_pool, data_root);
-    const vals = [_]Value{ .{ .text = "Test" } };
+    const vals = [_]Value{.{ .text = "Test" }};
     const data = try serializeRow(allocator, &vals);
     defer allocator.free(data);
     try data_tree.insert("row_1", data);
@@ -34791,7 +35010,7 @@ test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (
 
     // Insert a row with only 1 value (simulating a row inserted before ALTER TABLE ADD COLUMN)
     var data_tree = BTree.init(&data_pool, data_root);
-    const row_values = [_]Value{ .{ .text = "Alice" } };
+    const row_values = [_]Value{.{ .text = "Alice" }};
     const row_data = try serializeRow(allocator, &row_values);
     defer allocator.free(row_data);
     try data_tree.insert("row_1", row_data);
@@ -34840,12 +35059,12 @@ test "MatchRecognizeOp ONE ROW PER MATCH basic case: V-shape pattern" {
     // Create synthetic input rows: a "V-shape" price sequence
     // Prices: 10, 9, 8, 9, 10
     // Pattern A B+ C+ matches rows 0-4 as A=10, B=9,8, C=9,10
-    var data = InMemorySource.init(allocator, &.{ "price" });
-    try data.addRow(&.{ Value{ .integer = 10 } });
-    try data.addRow(&.{ Value{ .integer = 9 } });
-    try data.addRow(&.{ Value{ .integer = 8 } });
-    try data.addRow(&.{ Value{ .integer = 9 } });
-    try data.addRow(&.{ Value{ .integer = 10 } });
+    var data = InMemorySource.init(allocator, &.{"price"});
+    try data.addRow(&.{Value{ .integer = 10 }});
+    try data.addRow(&.{Value{ .integer = 9 }});
+    try data.addRow(&.{Value{ .integer = 8 }});
+    try data.addRow(&.{Value{ .integer = 9 }});
+    try data.addRow(&.{Value{ .integer = 10 }});
     defer data.deinit();
 
     // Build pattern: A B+ C+
@@ -34935,12 +35154,12 @@ test "MatchRecognizeOp ALL ROWS PER MATCH basic case: each matched row becomes o
     const allocator = std.testing.allocator;
 
     // Same pattern as before but with ALL ROWS PER MATCH
-    var data = InMemorySource.init(allocator, &.{ "price" });
-    try data.addRow(&.{ Value{ .integer = 10 } });
-    try data.addRow(&.{ Value{ .integer = 9 } });
-    try data.addRow(&.{ Value{ .integer = 8 } });
-    try data.addRow(&.{ Value{ .integer = 9 } });
-    try data.addRow(&.{ Value{ .integer = 10 } });
+    var data = InMemorySource.init(allocator, &.{"price"});
+    try data.addRow(&.{Value{ .integer = 10 }});
+    try data.addRow(&.{Value{ .integer = 9 }});
+    try data.addRow(&.{Value{ .integer = 8 }});
+    try data.addRow(&.{Value{ .integer = 9 }});
+    try data.addRow(&.{Value{ .integer = 10 }});
     defer data.deinit();
 
     const var_a = ast.PatternNode{ .variable = "A" };
@@ -35007,7 +35226,7 @@ test "MatchRecognizeOp multi-partition correctness: matches don't cross partitio
 
     // PARTITION BY symbol
     const symbol_ref = ast.Expr{ .column_ref = .{ .name = "symbol" } };
-    const partition_exprs = [_]*const ast.Expr{ &symbol_ref };
+    const partition_exprs = [_]*const ast.Expr{&symbol_ref};
 
     const spec = ast.MatchRecognizeSpec{
         .partition_by = &partition_exprs,
@@ -35038,12 +35257,12 @@ test "MatchRecognizeOp AFTER MATCH SKIP TO NEXT ROW: overlapping matches" {
     // Rows: A, B, A, B, A (indices 0-4)
     // With SKIP TO NEXT ROW, should find matches at (0,1), (1,2)?, (2,3), (3,4)
     // With SKIP PAST LAST ROW, should find non-overlapping matches at (0,1), (2,3)
-    var data = InMemorySource.init(allocator, &.{ "val" });
-    try data.addRow(&.{ Value{ .text = "A" } });
-    try data.addRow(&.{ Value{ .text = "B" } });
-    try data.addRow(&.{ Value{ .text = "A" } });
-    try data.addRow(&.{ Value{ .text = "B" } });
-    try data.addRow(&.{ Value{ .text = "A" } });
+    var data = InMemorySource.init(allocator, &.{"val"});
+    try data.addRow(&.{Value{ .text = "A" }});
+    try data.addRow(&.{Value{ .text = "B" }});
+    try data.addRow(&.{Value{ .text = "A" }});
+    try data.addRow(&.{Value{ .text = "B" }});
+    try data.addRow(&.{Value{ .text = "A" }});
     defer data.deinit();
 
     const var_a = ast.PatternNode{ .variable = "A" };
@@ -35082,12 +35301,12 @@ test "MatchRecognizeOp AFTER MATCH SKIP PAST LAST ROW: non-overlapping matches" 
     const allocator = std.testing.allocator;
 
     // Same data as previous test
-    var data = InMemorySource.init(allocator, &.{ "val" });
-    try data.addRow(&.{ Value{ .text = "A" } });
-    try data.addRow(&.{ Value{ .text = "B" } });
-    try data.addRow(&.{ Value{ .text = "A" } });
-    try data.addRow(&.{ Value{ .text = "B" } });
-    try data.addRow(&.{ Value{ .text = "A" } });
+    var data = InMemorySource.init(allocator, &.{"val"});
+    try data.addRow(&.{Value{ .text = "A" }});
+    try data.addRow(&.{Value{ .text = "B" }});
+    try data.addRow(&.{Value{ .text = "A" }});
+    try data.addRow(&.{Value{ .text = "B" }});
+    try data.addRow(&.{Value{ .text = "A" }});
     defer data.deinit();
 
     const var_a = ast.PatternNode{ .variable = "A" };
@@ -35181,10 +35400,10 @@ test "MatchRecognizeOp no match found: pattern never matches input" {
     const allocator = std.testing.allocator;
 
     // Create rows that don't match the pattern
-    var data = InMemorySource.init(allocator, &.{ "val" });
-    try data.addRow(&.{ Value{ .text = "X" } });
-    try data.addRow(&.{ Value{ .text = "Y" } });
-    try data.addRow(&.{ Value{ .text = "Z" } });
+    var data = InMemorySource.init(allocator, &.{"val"});
+    try data.addRow(&.{Value{ .text = "X" }});
+    try data.addRow(&.{Value{ .text = "Y" }});
+    try data.addRow(&.{Value{ .text = "Z" }});
     defer data.deinit();
 
     // Pattern A B C, where B requires a value that never appears in the input — with no
@@ -35226,7 +35445,7 @@ test "MatchRecognizeOp empty input: zero input rows produces zero output rows" {
     const allocator = std.testing.allocator;
 
     // Create empty input
-    var data = InMemorySource.init(allocator, &.{ "val" });
+    var data = InMemorySource.init(allocator, &.{"val"});
     defer data.deinit();
 
     const pattern = ast.PatternNode{ .variable = "A" };
