@@ -83,11 +83,16 @@ fn expectRowCount(db: *Database, sql: []const u8, expected: usize) !void {
 
 test "conformance: E021-01 INTEGER data type" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_01.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_01.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -100,11 +105,16 @@ test "conformance: E021-01 INTEGER data type" {
 
 test "conformance: E021-02 TEXT data type" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_02.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_02.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, name TEXT)");
@@ -116,11 +126,16 @@ test "conformance: E021-02 TEXT data type" {
 
 test "conformance: E021-03 NULL values" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_03.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_03.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -136,11 +151,16 @@ test "conformance: E021-03 NULL values" {
 
 test "conformance: E021-04 SELECT with WHERE" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_04.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_04.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -156,11 +176,16 @@ test "conformance: E021-04 SELECT with WHERE" {
 
 test "conformance: E021-05 UPDATE statement" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_05.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_05.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -173,11 +198,16 @@ test "conformance: E021-05 UPDATE statement" {
 
 test "conformance: E021-06 DELETE statement" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_06.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_06.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -194,11 +224,16 @@ test "conformance: E021-06 DELETE statement" {
 
 test "conformance: E021-07 AND operator" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_07.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_07.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -210,11 +245,16 @@ test "conformance: E021-07 AND operator" {
 
 test "conformance: E021-08 OR operator" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_08.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_08.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -226,11 +266,16 @@ test "conformance: E021-08 OR operator" {
 
 test "conformance: E021-09 NOT operator" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_09.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_09.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -246,11 +291,16 @@ test "conformance: E021-09 NOT operator" {
 
 test "conformance: F850-01 ORDER BY ASC" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_10.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_10.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -279,11 +329,16 @@ test "conformance: F850-01 ORDER BY ASC" {
 
 test "conformance: F850-02 ORDER BY DESC" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_11.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_11.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -312,11 +367,16 @@ test "conformance: F850-02 ORDER BY DESC" {
 
 test "conformance: F850-03 ORDER BY multiple columns" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_12.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_12.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (a INTEGER, b INTEGER)");
@@ -354,11 +414,16 @@ test "conformance: F850-03 ORDER BY multiple columns" {
 
 test "conformance: F851-01 LIMIT clause" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_13.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_13.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
@@ -371,11 +436,16 @@ test "conformance: F851-01 LIMIT clause" {
 
 test "conformance: F851-02 LIMIT with OFFSET" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_14.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_14.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
@@ -407,11 +477,16 @@ test "conformance: F851-02 LIMIT with OFFSET" {
 
 test "conformance: F401 INNER JOIN" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_15.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_15.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, name TEXT)");
@@ -424,11 +499,16 @@ test "conformance: F401 INNER JOIN" {
 
 test "conformance: F403 LEFT JOIN" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_16.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_16.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, name TEXT)");
@@ -445,11 +525,16 @@ test "conformance: F403 LEFT JOIN" {
 
 test "conformance: T611-01 COUNT aggregate" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_17.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_17.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER, val INTEGER)");
@@ -494,11 +579,16 @@ test "conformance: T611-01 COUNT aggregate" {
 
 test "conformance: T611-02 SUM aggregate" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_18.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_18.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (val INTEGER)");
@@ -523,11 +613,16 @@ test "conformance: T611-02 SUM aggregate" {
 
 test "conformance: T611-03 AVG aggregate" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_19.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_19.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (val INTEGER)");
@@ -553,11 +648,16 @@ test "conformance: T611-03 AVG aggregate" {
 
 test "conformance: T611-04 MIN/MAX aggregates" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_20.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_20.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (val INTEGER)");
@@ -602,11 +702,16 @@ test "conformance: T611-04 MIN/MAX aggregates" {
 
 test "conformance: T611-05 GROUP BY clause" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_21.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_21.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (category TEXT, val INTEGER)");
@@ -717,11 +822,16 @@ test "conformance: E061-03 EXISTS subquery" {
 
 test "conformance: T121-01 Simple CTE" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_26.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_26.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
@@ -732,11 +842,16 @@ test "conformance: T121-01 Simple CTE" {
 
 test "conformance: T121-02 Multiple CTEs" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_27.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_27.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
@@ -756,11 +871,16 @@ test "conformance: T121-02 Multiple CTEs" {
 
 test "conformance: T611-07 ROW_NUMBER window function" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_28.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_28.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (category TEXT, val INTEGER)");
@@ -785,11 +905,16 @@ test "conformance: T611-07 ROW_NUMBER window function" {
 
 test "conformance: T611-08 RANK window function" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_29.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_29.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (val INTEGER)");
@@ -821,11 +946,16 @@ test "conformance: T611-08 RANK window function" {
 
 test "conformance: T211-01 COMMIT transaction" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_30.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_30.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
@@ -838,11 +968,16 @@ test "conformance: T211-01 COMMIT transaction" {
 
 test "conformance: T211-02 ROLLBACK transaction" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_31.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_31.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
@@ -855,11 +990,16 @@ test "conformance: T211-02 ROLLBACK transaction" {
 
 test "conformance: T211-03 Isolation: READ COMMITTED" {
     const allocator = std.testing.allocator;
-    const path = "test_conformance_32.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    defer std.fs.cwd().deleteFile(path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    var db = try createTestDb(allocator, path);
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_conformance_32.db", .{dir_path});
+
+    var db = try createTestDb(allocator, test_path);
     defer db.close();
 
     try execSql(&db, "CREATE TABLE t1 (id INTEGER)");
