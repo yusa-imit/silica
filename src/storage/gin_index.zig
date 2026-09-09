@@ -1550,7 +1550,7 @@ pub const GIN = struct {
         const header_offset = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE);
         std.mem.writeInt(u16, page[header_offset..][0..2], @intCast(key.len), .little);
         const posting_info: u32 = 1; // inline list with 1 item
-        std.mem.writeInt(u32, page[header_offset + 2..][0..4], posting_info, .little);
+        std.mem.writeInt(u32, page[header_offset + 2 ..][0..4], posting_info, .little);
 
         // Step 4: Write new offset pointer
         const offset_ptrs_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE);
@@ -2956,8 +2956,14 @@ test "TsvectorOpsOpClass getOpClass returns valid opclass" {
 
 test "GIN init creates valid tree" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_init.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_init.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2986,8 +2992,14 @@ test "GIN calculateMaxEntries scales with page size" {
 
 test "GIN posting list encode/decode round-trip" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_posting_roundtrip.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_posting_roundtrip.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3131,8 +3143,14 @@ test "ItemPointer toU64 handles zero values" {
 
 test "appendToPostingList enforces sortedness" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_sortedness.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_sortedness.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3172,8 +3190,14 @@ test "appendToPostingList enforces sortedness" {
 
 test "appendToPostingList converts to posting tree at MAX_INLINE_TUPLES capacity" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_capacity.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_capacity.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3215,8 +3239,14 @@ test "appendToPostingList converts to posting tree at MAX_INLINE_TUPLES capacity
 
 test "readInlinePostingList handles empty posting list" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_empty_read.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_empty_read.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3245,8 +3275,14 @@ test "readInlinePostingList handles empty posting list" {
 
 test "readInlinePostingList rejects corrupted tuple count" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_corrupted_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_corrupted_count.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3274,8 +3310,14 @@ test "readInlinePostingList rejects corrupted tuple count" {
 
 test "insertNewEntry creates valid posting list structure" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_insert_structure.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_insert_structure.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3324,8 +3366,14 @@ test "insertNewEntry creates valid posting list structure" {
 
 test "GIN insert single value with single key" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_insert_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_insert_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3362,8 +3410,14 @@ test "GIN insert single value with single key" {
 
 test "GIN insert single value with multiple keys" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_insert_multi_key.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_insert_multi_key.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3401,8 +3455,14 @@ test "GIN insert single value with multiple keys" {
 
 test "GIN delete removes tuple from posting list" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3426,8 +3486,14 @@ test "GIN delete removes tuple from posting list" {
 
 test "GIN search returns matching tuple ids" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_search.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_search.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3452,8 +3518,14 @@ test "GIN search returns matching tuple ids" {
 
 test "GIN insert common key in multiple rows" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_common_key.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_common_key.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3503,8 +3575,14 @@ test "GIN insert common key in multiple rows" {
 
 test "GIN posting list compaction after deletes" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_compaction.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_compaction.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3529,8 +3607,14 @@ test "GIN posting list compaction after deletes" {
 
 test "GIN search handles empty result set" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_empty_search.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_empty_search.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3558,8 +3642,14 @@ test "GIN search handles empty result set" {
 
 test "GIN handles array with many elements" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_many_elements.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_many_elements.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3598,8 +3688,14 @@ test "GIN handles array with many elements" {
 
 test "GIN posting tree split when exceeding inline threshold" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_posting_tree_split.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_posting_tree_split.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3642,8 +3738,14 @@ test "GIN posting tree split when exceeding inline threshold" {
 
 test "GIN search with contains strategy checks all keys" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_contains_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_contains_all.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3691,8 +3793,14 @@ test "GIN search with contains strategy checks all keys" {
 
 test "GIN search with overlaps strategy checks any key" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_overlaps.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_overlaps.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3742,8 +3850,14 @@ test "GIN search with overlaps strategy checks any key" {
 
 test "GIN search with overlaps strategy (OR) returns union of posting lists" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_overlaps_union.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_overlaps_union.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3808,8 +3922,14 @@ test "GIN search with overlaps strategy (OR) returns union of posting lists" {
 
 test "GIN search with contains strategy (AND) returns intersection (regression guard)" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_contains_regression.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_contains_regression.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3873,8 +3993,14 @@ test "GIN search with contains strategy (AND) returns intersection (regression g
 
 test "GIN search with overlaps strategy deduplicates results" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_overlaps_dedup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_overlaps_dedup.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3927,8 +4053,14 @@ test "GIN ItemPointer encoding round-trip" {
 
 test "GIN readPostingList reads from posting tree" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_tree_read.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_tree_read.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3954,7 +4086,7 @@ test "GIN readPostingList reads from posting tree" {
 
     // Write tuple 1: page_id=20, tuple_offset=2
     const tuple1 = ItemPointer{ .page_id = 20, .tuple_offset = 2 };
-    std.mem.writeInt(u64, tree_frame.data[POSTING_TREE_HEADER_SIZE + 8..][0..8], tuple1.toU64(), .little);
+    std.mem.writeInt(u64, tree_frame.data[POSTING_TREE_HEADER_SIZE + 8 ..][0..8], tuple1.toU64(), .little);
 
     tree_frame.markDirty();
     pool.unpinPage(tree_page_id, true);
@@ -3993,8 +4125,14 @@ test "GIN readPostingList reads from posting tree" {
 
 test "GIN appendToPostingList converts to posting tree when inline list is full" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_convert_to_tree.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_convert_to_tree.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4044,8 +4182,14 @@ test "GIN appendToPostingList converts to posting tree when inline list is full"
 
 test "GIN appendToPostingList returns InvalidPostingList for empty list" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_invalid_posting.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_invalid_posting.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4076,8 +4220,14 @@ test "GIN appendToPostingList returns InvalidPostingList for empty list" {
 
 test "GIN appendToPostingList returns PostingListNotSorted when new_tid <= last_tid" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_not_sorted.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_not_sorted.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4125,8 +4275,14 @@ test "GIN appendToPostingList returns PostingListNotSorted when new_tid <= last_
 
 test "GIN readInlinePostingList handles corrupted tuple_count gracefully" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_corrupt_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_corrupt_count.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4156,8 +4312,14 @@ test "GIN readInlinePostingList handles corrupted tuple_count gracefully" {
 
 test "GIN posting tree chains multiple pages for very high-cardinality keys" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_multi_page_posting.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_multi_page_posting.db", .{dir_path});
 
     // Use 512-byte pages to keep posting tree page capacity small
     // With new 24-byte header: (512 - 24) / 8 = 61 tuples per page
@@ -4228,8 +4390,14 @@ test "GIN posting tree chains multiple pages for very high-cardinality keys" {
 
 test "GIN delete one tuple from inline posting list with multiple tuples" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_delete_inline_one.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete_inline_one.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4290,8 +4458,14 @@ test "GIN delete one tuple from inline posting list with multiple tuples" {
 
 test "GIN delete then re-insert tuple in inline posting list maintains consistency" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_delete_reinsert_inline.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete_reinsert_inline.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4362,8 +4536,14 @@ test "GIN delete then re-insert tuple in inline posting list maintains consisten
 
 test "GIN delete one tuple from posting tree maintains sortedness" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_delete_tree_one.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete_tree_one.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4430,8 +4610,14 @@ test "GIN delete one tuple from posting tree maintains sortedness" {
 
 test "GIN delete non-existent tuple_id within existing key's posting list should error" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_delete_nonexistent_tuple.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete_nonexistent_tuple.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4521,8 +4707,14 @@ test "TsvectorOpsOpClass extractQuery allocation failure on lexeme dupe" {
 
 test "GIN search with zero extracted query keys edge case" {
     const test_allocator = std.testing.allocator;
-    const path = "test_gin_zero_query_keys.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(test_allocator, ".");
+    defer test_allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_zero_query_keys.db", .{dir_path});
 
     var pager = try Pager.init(test_allocator, path, .{});
     defer pager.deinit();
@@ -4591,8 +4783,14 @@ test "ArrayOpsOpClass extractValue deeply nested array with truncated inner arra
 
 test "GIN search with all empty posting lists for strategy 0" {
     const allocator = std.testing.allocator;
-    const path = "test_gin_all_empty_postings.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_all_empty_postings.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();

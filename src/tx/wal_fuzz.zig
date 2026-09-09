@@ -78,10 +78,16 @@ fn computeFrameChecksum(page_id: u32, salt_1: u32, salt_2: u32, page_data: []con
 
 test "fuzz: WAL header with random magic bytes rejects invalid magic" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_magic.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_magic.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xDEAD_BEEF);
     const random = rng.random();
@@ -121,10 +127,16 @@ test "fuzz: WAL header with random magic bytes rejects invalid magic" {
 
 test "fuzz: WAL header with random version numbers rejects unsupported versions" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_version.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_version.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xCAFE_BABE);
     const random = rng.random();
@@ -166,10 +178,16 @@ test "fuzz: WAL header with random version numbers rejects unsupported versions"
 
 test "fuzz: WAL header with corrupted checksum is rejected" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_hdr_cksum.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_hdr_cksum.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xF00D_FACE);
     const random = rng.random();
@@ -206,10 +224,16 @@ test "fuzz: WAL header with corrupted checksum is rejected" {
 
 test "fuzz: WAL header with mismatched page sizes is rejected" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_pagesize.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_pagesize.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     const mismatched_sizes = [_]u32{ 256, 1024, 2048, 4096, 8192, 16384 };
 
@@ -238,10 +262,16 @@ test "fuzz: WAL header with mismatched page sizes is rejected" {
 
 test "fuzz: WAL header with random salts is accepted (salts are opaque)" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_salts.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_salts.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xBAAD_F00D);
     const random = rng.random();
@@ -281,10 +311,16 @@ test "fuzz: WAL header with random salts is accepted (salts are opaque)" {
 
 test "fuzz: WAL frames with random checksums are detected as corrupt" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_frame_cksum.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_frame_cksum.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0x1234_5678);
     const random = rng.random();
@@ -333,10 +369,16 @@ test "fuzz: WAL frames with random checksums are detected as corrupt" {
 
 test "fuzz: WAL frames with mismatched salts stop recovery" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_salt_mismatch.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_salt_mismatch.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0x9999_AAAA);
     const random = rng.random();
@@ -402,10 +444,16 @@ test "fuzz: WAL frames with mismatched salts stop recovery" {
 
 test "fuzz: WAL with partial frames at end is truncated gracefully" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_partial.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_partial.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xAAAA_BBBB);
     const random = rng.random();
@@ -469,10 +517,14 @@ test "fuzz: WAL with partial frames at end is truncated gracefully" {
 
 test "fuzz: WAL with very large frame sequences handles correctly" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_large.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_large.db", .{dir_path});
 
     const page_size: u32 = 512;
 
@@ -511,10 +563,14 @@ test "fuzz: WAL with very large frame sequences handles correctly" {
 
 test "fuzz: WAL with interleaved commit and non-commit frames" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_interleave.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_interleave.db", .{dir_path});
 
     var rng = std.Random.DefaultPrng.init(0xFACE_1234);
     const random = rng.random();
@@ -556,10 +612,16 @@ test "fuzz: WAL with interleaved commit and non-commit frames" {
 
 test "fuzz: WAL recovery with interrupted writes (partial frame at end)" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_interrupt.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_interrupt.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     const page_size: u32 = 512;
 
@@ -603,10 +665,16 @@ test "fuzz: WAL recovery with interrupted writes (partial frame at end)" {
 
 test "fuzz: WAL recovery discards uncommitted trailing frames" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_uncommit.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_uncommit.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0x4444_5555);
     const random = rng.random();
@@ -654,10 +722,16 @@ test "fuzz: WAL recovery discards uncommitted trailing frames" {
 
 test "fuzz: WAL recovery with multiple committed transactions replays all" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_multitx.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_multitx.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0x6666_7777);
     const random = rng.random();
@@ -703,10 +777,16 @@ test "fuzz: WAL recovery with multiple committed transactions replays all" {
 
 test "fuzz: WAL recovery with mixed valid and corrupt frames" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_mixed.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_mixed.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0x8888_9999);
     const random = rng.random();
@@ -778,10 +858,16 @@ test "fuzz: WAL recovery with mixed valid and corrupt frames" {
 
 test "fuzz: WAL recovery handles empty WAL file gracefully" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_empty.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_empty.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     // Create empty WAL file
     {
@@ -803,10 +889,14 @@ test "fuzz: WAL recovery handles empty WAL file gracefully" {
 
 test "fuzz: checkpoint with large WAL files (1000+ frames)" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_ckpt_large.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_ckpt_large.db", .{dir_path});
 
     const page_size: u32 = 512;
 
@@ -845,10 +935,14 @@ test "fuzz: checkpoint with large WAL files (1000+ frames)" {
 test "fuzz: checkpoint does not corrupt with concurrent operations" {
     // This test verifies checkpoint isolation — pending transaction should survive
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_ckpt_concurrent.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_ckpt_concurrent.db", .{dir_path});
 
     const page_size: u32 = 512;
 
@@ -884,10 +978,16 @@ test "fuzz: checkpoint does not corrupt with concurrent operations" {
 
 test "fuzz: checkpoint with pending transaction preserves uncommitted" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_ckpt_pending.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_ckpt_pending.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xAAAA_BBBB);
     const random = rng.random();
@@ -944,10 +1044,14 @@ test "fuzz: WAL rejects zero-length page data" {
 
 test "fuzz: WAL handles maximum page_id (u32::MAX)" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_maxpid.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_maxpid.db", .{dir_path});
 
     const page_size: u32 = 512;
 
@@ -970,10 +1074,14 @@ test "fuzz: WAL handles maximum page_id (u32::MAX)" {
 
 test "fuzz: WAL with random page IDs (out-of-order) tracks correctly" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_randpid.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_randpid.db", .{dir_path});
 
     var rng = std.Random.DefaultPrng.init(0xCCCC_DDDD);
     const random = rng.random();
@@ -1013,10 +1121,16 @@ test "fuzz: WAL with random page IDs (out-of-order) tracks correctly" {
 
 test "fuzz: WAL repeated page_id in same transaction (later frame wins)" {
     const allocator = std.testing.allocator;
-    const path = "test_fuzz_wal_repeat.db";
-    const wal_path = path ++ "-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_repeat.db", .{dir_path});
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
 
     var rng = std.Random.DefaultPrng.init(0xEEEE_FFFF);
     const random = rng.random();
