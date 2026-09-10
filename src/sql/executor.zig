@@ -3883,7 +3883,7 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
 
     // Format integer digits
     var int_buf: [32]u8 = undefined;
-    const int_str = std.fmt.bufPrint(&int_buf, "{d}", .{int_val}) catch unreachable;
+    const int_str = std.fmt.bufPrint(&int_buf, "{d}", .{int_val}) catch unreachable; // SAFETY: i64 decimal (max 20 chars incl. sign) fits in 32-byte int_buf
 
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);
@@ -3925,7 +3925,7 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
     if (decimal_pos != null and frac_digit_positions > 0) {
         try out.append(allocator, '.');
         var frac_buf: [32]u8 = undefined;
-        const frac_raw = std.fmt.bufPrint(&frac_buf, "{d}", .{frac_val}) catch unreachable;
+        const frac_raw = std.fmt.bufPrint(&frac_buf, "{d}", .{frac_val}) catch unreachable; // SAFETY: frac_val is bounded by `scale` (10^frac_digit_positions), decimal fits in 32-byte frac_buf
         const frac_pad = if (frac_raw.len < frac_digit_positions) frac_digit_positions - frac_raw.len else 0;
         for (0..frac_pad) |_| try out.append(allocator, '0');
         try out.appendSlice(allocator, frac_raw[0..@min(frac_raw.len, frac_digit_positions)]);
