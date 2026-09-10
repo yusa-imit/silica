@@ -32158,8 +32158,14 @@ test "step 5: IndexScanOp.covering fast path decodes covering entry and returns 
     const allocator = std.testing.allocator;
 
     // Create a temporary database file
-    const path = "test_step5_index_scan_covering.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_covering.db", .{dir_path});
 
     // Create a test pager and buffer pool
     var pager = try Pager.init(allocator, path, .{});
@@ -32237,8 +32243,14 @@ test "step 5: IndexScanOp.covering fast path decodes covering entry and returns 
 test "step 5: IndexScanOp.covering with column reordering/subset returns correct order" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5_index_scan_reorder.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_reorder.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32313,8 +32325,14 @@ test "step 5: IndexScanOp.covering with column reordering/subset returns correct
 test "step 5: IndexScanOp.covering MVCC filters invisible tuples" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5_index_scan_mvcc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_mvcc.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32383,8 +32401,14 @@ test "step 5: IndexScanOp.covering MVCC filters invisible tuples" {
 test "step 5: IndexScanOp.covering with missing index entry returns null" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5_index_scan_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_missing.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32423,8 +32447,14 @@ test "step 5: IndexScanOp.covering with missing index entry returns null" {
 test "step 5: IndexOnlyScanOp iterates covering index B+Tree returning all rows" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5_index_only_scan_iterate.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_only_scan_iterate.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32540,8 +32570,14 @@ test "step 5: IndexOnlyScanOp iterates covering index B+Tree returning all rows"
 test "step 5: IndexOnlyScanOp MVCC filters invisible rows" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5_index_only_mvcc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_only_mvcc.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32652,8 +32688,14 @@ test "step 5: IndexOnlyScanOp MVCC filters invisible rows" {
 test "step 5: IndexOnlyScanOp returns empty result on empty index" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5_index_only_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_only_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32700,8 +32742,14 @@ test "step 5: IndexOnlyScanOp returns empty result on empty index" {
 test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correctly" {
     const allocator = std.testing.allocator;
 
-    const path = "test_step5b_index_only_composite.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5b_index_only_composite.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32851,8 +32899,14 @@ test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correct
 test "phase 0c: IndexScanOp.composite_key multi-row returns all rows under same indexed value" {
     const allocator = std.testing.allocator;
 
-    const path = "test_phase0c_composite_multi_row.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_multi_row.db", .{dir_path});
 
     // Setup: create index and data B+Trees
     var pager = try Pager.init(allocator, path, .{});
@@ -32943,8 +32997,14 @@ test "phase 0c: IndexScanOp.composite_key multi-row returns all rows under same 
 test "phase 0c: IndexScanOp.composite_key MVCC filters but continues to next row" {
     const allocator = std.testing.allocator;
 
-    const path = "test_phase0c_composite_mvcc_filter.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_mvcc_filter.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33036,8 +33096,14 @@ test "phase 0c: IndexScanOp.composite_key MVCC filters but continues to next row
 test "phase 0c: IndexScanOp.composite_key orphaned entry doesn't terminate scan" {
     const allocator = std.testing.allocator;
 
-    const path = "test_phase0c_composite_orphan.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_orphan.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33110,8 +33176,14 @@ test "phase 0c: IndexScanOp.composite_key orphaned entry doesn't terminate scan"
 test "phase 0c: IndexScanOp.composite_key=false (legacy) single-row point lookup unchanged" {
     const allocator = std.testing.allocator;
 
-    const path = "test_phase0c_legacy_single_row.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_legacy_single_row.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33177,8 +33249,14 @@ test "phase 0c: IndexScanOp.composite_key=false (legacy) single-row point lookup
 test "phase 0c: IndexScanOp.composite_key empty match returns null immediately" {
     const allocator = std.testing.allocator;
 
-    const path = "test_phase0c_composite_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33229,8 +33307,14 @@ test "phase 0c: IndexScanOp.composite_key empty match returns null immediately" 
 
 test "BitmapIndexScanOp point lookup single match (composite_key=false)" {
     const allocator = std.testing.allocator;
-    const path = "test_bitmap_index_scan_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33268,8 +33352,14 @@ test "BitmapIndexScanOp point lookup single match (composite_key=false)" {
 
 test "BitmapIndexScanOp point lookup no match (composite_key=false)" {
     const allocator = std.testing.allocator;
-    const path = "test_bitmap_index_scan_no_match.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_no_match.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33304,8 +33394,14 @@ test "BitmapIndexScanOp point lookup no match (composite_key=false)" {
 
 test "BitmapIndexScanOp composite-key lookup multiple matches" {
     const allocator = std.testing.allocator;
-    const path = "test_bitmap_index_scan_composite.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_composite.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33361,8 +33457,14 @@ test "BitmapIndexScanOp composite-key lookup multiple matches" {
 
 test "BitmapIndexScanOp composite-key lookup no match" {
     const allocator = std.testing.allocator;
-    const path = "test_bitmap_index_scan_composite_no_match.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_composite_no_match.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33400,8 +33502,14 @@ test "BitmapIndexScanOp composite-key lookup no match" {
 
 test "BitmapIndexScanOp memory cleanup" {
     const allocator = std.testing.allocator;
-    const path = "test_bitmap_index_scan_memory.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_memory.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33441,8 +33549,14 @@ test "BitmapAndOp with two inputs partial overlap" {
     const allocator = std.testing.allocator;
 
     // Create first index with keys: [alice, bob, charlie, david]
-    const path1 = "test_bitmap_and_overlap_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_overlap_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33465,8 +33579,8 @@ test "BitmapAndOp with two inputs partial overlap" {
     try tree1.insert("david", "row_4");
 
     // Create second index with keys: [bob, charlie, eve, frank]
-    const path2 = "test_bitmap_and_overlap_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_overlap_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -33514,8 +33628,14 @@ test "BitmapOrOp with two inputs partial overlap" {
     const allocator = std.testing.allocator;
 
     // Create first index with keys: [alice, bob, charlie]
-    const path1 = "test_bitmap_or_overlap_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_overlap_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33537,8 +33657,8 @@ test "BitmapOrOp with two inputs partial overlap" {
     try tree1.insert("charlie", "row_3");
 
     // Create second index with keys: [bob, charlie, david, eve]
-    const path2 = "test_bitmap_or_overlap_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_overlap_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -33586,8 +33706,14 @@ test "BitmapAndOp with three inputs all common" {
 
     // Create three indices, each with one common row_key inserted at different keys
     // Index 1: key "a" -> row_key "common_1"
-    const path1 = "test_bitmap_and_three_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_three_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33608,8 +33734,8 @@ test "BitmapAndOp with three inputs all common" {
     try tree1.insert("other_a", "other_1");
 
     // Index 2: key "b" -> row_key "common_1"
-    const path2 = "test_bitmap_and_three_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_three_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -33630,8 +33756,8 @@ test "BitmapAndOp with three inputs all common" {
     try tree2.insert("other_b", "other_2");
 
     // Index 3: key "c" -> row_key "common_1"
-    const path3 = "test_bitmap_and_three_3.db";
-    defer std.fs.cwd().deleteFile(path3) catch {};
+    var path3_buf: [512]u8 = undefined;
+    const path3 = try std.fmt.bufPrint(&path3_buf, "{s}/test_bitmap_and_three_3.db", .{dir_path});
 
     var pager3 = try Pager.init(allocator, path3, .{});
     defer pager3.deinit();
@@ -33677,8 +33803,14 @@ test "BitmapOrOp with three disjoint sets" {
     const allocator = std.testing.allocator;
 
     // Index 1: key "a" -> row_key "row_1"
-    const path1 = "test_bitmap_or_disjoint_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_disjoint_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33698,8 +33830,8 @@ test "BitmapOrOp with three disjoint sets" {
     try tree1.insert("a", "row_1");
 
     // Index 2: key "b" -> row_key "row_2"
-    const path2 = "test_bitmap_or_disjoint_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_disjoint_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -33719,8 +33851,8 @@ test "BitmapOrOp with three disjoint sets" {
     try tree2.insert("b", "row_2");
 
     // Index 3: key "c" -> row_key "row_3"
-    const path3 = "test_bitmap_or_disjoint_3.db";
-    defer std.fs.cwd().deleteFile(path3) catch {};
+    var path3_buf: [512]u8 = undefined;
+    const path3 = try std.fmt.bufPrint(&path3_buf, "{s}/test_bitmap_or_disjoint_3.db", .{dir_path});
 
     var pager3 = try Pager.init(allocator, path3, .{});
     defer pager3.deinit();
@@ -33764,8 +33896,14 @@ test "BitmapOrOp with three disjoint sets" {
 test "BitmapAndOp with single input returns input unchanged" {
     const allocator = std.testing.allocator;
 
-    const path = "test_bitmap_and_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_and_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33802,8 +33940,14 @@ test "BitmapAndOp with single input returns input unchanged" {
 test "BitmapOrOp with single input returns input unchanged" {
     const allocator = std.testing.allocator;
 
-    const path = "test_bitmap_or_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_or_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33840,8 +33984,14 @@ test "BitmapOrOp with single input returns input unchanged" {
 test "BitmapAndOp with disjoint sets returns empty" {
     const allocator = std.testing.allocator;
 
-    const path1 = "test_bitmap_and_disjoint_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_disjoint_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33861,8 +34011,8 @@ test "BitmapAndOp with disjoint sets returns empty" {
     try tree1.insert("key1", "row_1");
     try tree1.insert("key2", "row_2");
 
-    const path2 = "test_bitmap_and_disjoint_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_disjoint_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -33901,8 +34051,14 @@ test "BitmapAndOp with disjoint sets returns empty" {
 test "BitmapOrOp with disjoint sets returns union of both" {
     const allocator = std.testing.allocator;
 
-    const path1 = "test_bitmap_or_disjoint_pair_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_disjoint_pair_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33922,8 +34078,8 @@ test "BitmapOrOp with disjoint sets returns union of both" {
     try tree1.insert("key1", "row_1");
     try tree1.insert("key2", "row_2");
 
-    const path2 = "test_bitmap_or_disjoint_pair_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_disjoint_pair_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -33964,8 +34120,14 @@ test "BitmapOrOp with disjoint sets returns union of both" {
 test "BitmapAndOp with one empty input returns empty" {
     const allocator = std.testing.allocator;
 
-    const path1 = "test_bitmap_and_empty_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_empty_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -33984,8 +34146,8 @@ test "BitmapAndOp with one empty input returns empty" {
     var tree1 = BTree.init(&pool1, index_root1);
     try tree1.insert("key1", "row_1");
 
-    const path2 = "test_bitmap_and_empty_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_empty_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34023,8 +34185,14 @@ test "BitmapAndOp with one empty input returns empty" {
 test "BitmapOrOp with one empty input returns non-empty" {
     const allocator = std.testing.allocator;
 
-    const path1 = "test_bitmap_or_empty_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_empty_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34043,8 +34211,8 @@ test "BitmapOrOp with one empty input returns non-empty" {
     var tree1 = BTree.init(&pool1, index_root1);
     try tree1.insert("key1", "row_1");
 
-    const path2 = "test_bitmap_or_empty_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_empty_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34084,8 +34252,14 @@ test "BitmapOrOp can nest BitmapAndOp as input via vtable" {
     const allocator = std.testing.allocator;
 
     // Create index 1: key "a" -> row_key "row_1"
-    const path1 = "test_bitmap_nest_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_nest_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34105,8 +34279,8 @@ test "BitmapOrOp can nest BitmapAndOp as input via vtable" {
     try tree1.insert("a", "row_1");
 
     // Create index 2: key "b" -> row_key "row_1"
-    const path2 = "test_bitmap_nest_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_nest_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34126,8 +34300,8 @@ test "BitmapOrOp can nest BitmapAndOp as input via vtable" {
     try tree2.insert("b", "row_1");
 
     // Create index 3: key "c" -> row_key "row_2"
-    const path3 = "test_bitmap_nest_3.db";
-    defer std.fs.cwd().deleteFile(path3) catch {};
+    var path3_buf: [512]u8 = undefined;
+    const path3 = try std.fmt.bufPrint(&path3_buf, "{s}/test_bitmap_nest_3.db", .{dir_path});
 
     var pager3 = try Pager.init(allocator, path3, .{});
     defer pager3.deinit();
@@ -34178,8 +34352,14 @@ test "BitmapOrOp can nest BitmapAndOp as input via vtable" {
 test "BitmapAndOp.scan() can be called multiple times without mutation" {
     const allocator = std.testing.allocator;
 
-    const path1 = "test_bitmap_and_reusable_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_reusable_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34198,8 +34378,8 @@ test "BitmapAndOp.scan() can be called multiple times without mutation" {
     var tree1 = BTree.init(&pool1, index_root1);
     try tree1.insert("key1", "row_1");
 
-    const path2 = "test_bitmap_and_reusable_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_reusable_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34245,8 +34425,14 @@ test "BitmapAndOp.scan() can be called multiple times without mutation" {
 test "BitmapOrOp.scan() can be called multiple times without mutation" {
     const allocator = std.testing.allocator;
 
-    const path1 = "test_bitmap_or_reusable_1.db";
-    defer std.fs.cwd().deleteFile(path1) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path1_buf: [512]u8 = undefined;
+    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_reusable_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34265,8 +34451,8 @@ test "BitmapOrOp.scan() can be called multiple times without mutation" {
     var tree1 = BTree.init(&pool1, index_root1);
     try tree1.insert("key1", "row_1");
 
-    const path2 = "test_bitmap_or_reusable_2.db";
-    defer std.fs.cwd().deleteFile(path2) catch {};
+    var path2_buf: [512]u8 = undefined;
+    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_reusable_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34314,11 +34500,17 @@ test "BitmapOrOp.scan() can be called multiple times without mutation" {
 test "BitmapHeapScanOp basic scan with single BitmapIndexScanOp input" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_basic_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_basic_index.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_basic_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_basic_index.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34393,14 +34585,20 @@ test "BitmapHeapScanOp basic scan with single BitmapIndexScanOp input" {
 test "BitmapHeapScanOp with BitmapAndOp intersection input" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_and_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index1_path = "test_bitmap_heap_and_idx1.db";
-    defer std.fs.cwd().deleteFile(index1_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    const index2_path = "test_bitmap_heap_and_idx2.db";
-    defer std.fs.cwd().deleteFile(index2_path) catch {};
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_and_data.db", .{dir_path});
+
+    var index1_path_buf: [512]u8 = undefined;
+    const index1_path = try std.fmt.bufPrint(&index1_path_buf, "{s}/test_bitmap_heap_and_idx1.db", .{dir_path});
+
+    var index2_path_buf: [512]u8 = undefined;
+    const index2_path = try std.fmt.bufPrint(&index2_path_buf, "{s}/test_bitmap_heap_and_idx2.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34501,14 +34699,20 @@ test "BitmapHeapScanOp with BitmapAndOp intersection input" {
 test "BitmapHeapScanOp with BitmapOrOp union input" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_or_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index1_path = "test_bitmap_heap_or_idx1.db";
-    defer std.fs.cwd().deleteFile(index1_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
 
-    const index2_path = "test_bitmap_heap_or_idx2.db";
-    defer std.fs.cwd().deleteFile(index2_path) catch {};
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_or_data.db", .{dir_path});
+
+    var index1_path_buf: [512]u8 = undefined;
+    const index1_path = try std.fmt.bufPrint(&index1_path_buf, "{s}/test_bitmap_heap_or_idx1.db", .{dir_path});
+
+    var index2_path_buf: [512]u8 = undefined;
+    const index2_path = try std.fmt.bufPrint(&index2_path_buf, "{s}/test_bitmap_heap_or_idx2.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34603,11 +34807,17 @@ test "BitmapHeapScanOp with BitmapOrOp union input" {
 test "BitmapHeapScanOp MVCC visibility filters invisible tuple" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_mvcc_invisible_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_mvcc_invisible_idx.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_mvcc_invisible_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_mvcc_invisible_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34681,11 +34891,17 @@ test "BitmapHeapScanOp MVCC visibility filters invisible tuple" {
 test "BitmapHeapScanOp MVCC visibility includes visible tuple" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_mvcc_visible_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_mvcc_visible_idx.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_mvcc_visible_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_mvcc_visible_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34766,11 +34982,17 @@ test "BitmapHeapScanOp MVCC visibility includes visible tuple" {
 test "BitmapHeapScanOp skips orphaned index entries without stopping" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_orphan_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_orphan_idx.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_orphan_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_orphan_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34856,11 +35078,17 @@ test "BitmapHeapScanOp skips orphaned index entries without stopping" {
 test "BitmapHeapScanOp with empty RowKeySet returns null immediately" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_empty_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_empty_idx.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_empty_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_empty_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34907,11 +35135,17 @@ test "BitmapHeapScanOp with empty RowKeySet returns null immediately" {
 test "BitmapHeapScanOp memory cleanup with close()" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_cleanup_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_cleanup_idx.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_cleanup_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_cleanup_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34974,11 +35208,17 @@ test "BitmapHeapScanOp memory cleanup with close()" {
 test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (ALTER TABLE ADD COLUMN)" {
     const allocator = std.testing.allocator;
 
-    const data_path = "test_bitmap_heap_padrow_data.db";
-    defer std.fs.cwd().deleteFile(data_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const index_path = "test_bitmap_heap_padrow_idx.db";
-    defer std.fs.cwd().deleteFile(index_path) catch {};
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var data_path_buf: [512]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_padrow_data.db", .{dir_path});
+
+    var index_path_buf: [512]u8 = undefined;
+    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_padrow_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();

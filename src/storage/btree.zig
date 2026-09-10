@@ -2041,8 +2041,14 @@ test "leaf free space calculation" {
 
 test "BTree insert and get single key" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2074,8 +2080,14 @@ test "BTree insert and get single key" {
 
 test "BTree insert multiple keys and get" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_multi.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2119,8 +2131,14 @@ test "BTree insert multiple keys and get" {
 
 test "BTree duplicate key rejected" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_dup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_dup.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2145,8 +2163,14 @@ test "BTree duplicate key rejected" {
 
 test "BTree delete key" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2189,8 +2213,14 @@ test "BTree delete key" {
 
 test "BTree delete non-existent key" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_del_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_del_missing.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2215,8 +2245,14 @@ test "BTree delete non-existent key" {
 
 test "BTree leaf split creates valid tree" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_split.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_split.db", .{dir_path});
 
     // Use small page size to force splits quickly
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
@@ -2262,8 +2298,14 @@ test "BTree leaf split creates valid tree" {
 
 test "BTree many inserts with splits then deletes" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_many.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_many.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2324,8 +2366,14 @@ test "BTree many inserts with splits then deletes" {
 
 test "BTree internal node split with many keys" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_deep.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_deep.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2368,8 +2416,14 @@ test "BTree internal node split with many keys" {
 
 test "BTree leaf sibling chain after splits" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_chain.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_chain.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2462,8 +2516,14 @@ test "BTree leaf sibling chain after splits" {
 
 test "BTree insert and delete all keys" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_delete_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete_all.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2509,8 +2569,14 @@ test "BTree insert and delete all keys" {
 
 test "BTree reverse order inserts" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_reverse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_reverse.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2555,8 +2621,14 @@ test "BTree reverse order inserts" {
 
 test "BTree empty key and value" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2594,8 +2666,14 @@ test "BTree empty key and value" {
 
 test "BTree single byte keys" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_single_byte.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_single_byte.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2635,8 +2713,14 @@ test "BTree single byte keys" {
 
 test "BTree delete first and last keys" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_delete_edges.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete_edges.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2686,8 +2770,14 @@ test "BTree delete first and last keys" {
 
 test "BTree insert after deletes reuses correct positions" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_reuse_positions.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_reuse_positions.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -2752,8 +2842,14 @@ test "BTree insert after deletes reuses correct positions" {
 
 test "BTree leaf merge on heavy deletion with small pages" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_merge_heavy.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_merge_heavy.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2806,8 +2902,14 @@ test "BTree leaf merge on heavy deletion with small pages" {
 
 test "BTree delete all keys from split tree triggers full merge" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_merge_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_merge_all.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2866,8 +2968,14 @@ test "BTree delete all keys from split tree triggers full merge" {
 
 test "BTree interleaved insert and delete" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_interleaved.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_interleaved.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2930,8 +3038,14 @@ test "BTree interleaved insert and delete" {
 
 test "BTree delete reverse order with merges" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_merge_reverse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_merge_reverse.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -2979,8 +3093,14 @@ test "BTree delete reverse order with merges" {
 
 test "BTree leaf sibling chain intact after merges" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_chain_merge.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_chain_merge.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3070,8 +3190,14 @@ test "BTree leaf sibling chain intact after merges" {
 
 test "BTree insert-delete-reinsert cycle" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_cycle.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_cycle.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3128,8 +3254,14 @@ test "BTree insert-delete-reinsert cycle" {
 
 test "BTree delete from middle of leaf chain" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_merge_middle.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_merge_middle.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3181,8 +3313,14 @@ test "BTree delete from middle of leaf chain" {
 
 test "Cursor forward scan all keys" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_forward.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_forward.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3237,8 +3375,14 @@ test "Cursor forward scan all keys" {
 
 test "Cursor backward scan all keys" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_backward.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_backward.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3293,8 +3437,14 @@ test "Cursor backward scan all keys" {
 
 test "Cursor seek to specific key" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_seek.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_seek.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3370,8 +3520,14 @@ test "Cursor seek to specific key" {
 
 test "Cursor range scan with seek" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_range.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_range.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -3419,8 +3575,14 @@ test "Cursor range scan with seek" {
 
 test "Cursor on empty tree" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3453,8 +3615,14 @@ test "Cursor on empty tree" {
 
 test "Cursor current without advancing" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_current.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_current.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3511,8 +3679,14 @@ test "Cursor current without advancing" {
 
 test "Cursor single key tree" {
     const allocator = std.testing.allocator;
-    const path = "test_cursor_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cursor_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3563,8 +3737,14 @@ test "Cursor single key tree" {
 
 test "BTree insert and get large value (overflow)" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_basic.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3601,8 +3781,14 @@ test "BTree insert and get large value (overflow)" {
 
 test "BTree insert and get very large value (multi-page overflow)" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_multi.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3637,8 +3823,14 @@ test "BTree insert and get very large value (multi-page overflow)" {
 
 test "BTree mix of small and large values" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_mixed.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_mixed.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3705,8 +3897,14 @@ test "BTree mix of small and large values" {
 
 test "BTree delete large value frees overflow pages" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_delete.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3756,8 +3954,14 @@ test "BTree delete large value frees overflow pages" {
 
 test "BTree cursor with overflow values" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_cursor.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_cursor.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3825,8 +4029,14 @@ test "BTree cursor with overflow values" {
 
 test "BTree multiple large values with splits" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_splits.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_splits.db", .{dir_path});
 
     // Use smaller page size to trigger more splits
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
@@ -3880,8 +4090,14 @@ test "BTree overflow value encoding roundtrip" {
 
 test "BTree empty value with overflow encoding" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_overflow_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_overflow_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3912,8 +4128,14 @@ test "BTree empty value with overflow encoding" {
 
 test "BTree delete single key from root leaf" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_delete_root_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete_root_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -3954,8 +4176,14 @@ test "BTree delete single key from root leaf" {
 
 test "BTree cursor forward scan after partial deletion" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_cursor_after_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_cursor_after_delete.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4021,8 +4249,14 @@ test "BTree cursor forward scan after partial deletion" {
 
 test "BTree persistence across reopen with splits" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_persist_splits.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_persist_splits.db", .{dir_path});
 
     const N: u32 = 80;
     var key_buf: [10]u8 = undefined;
@@ -4094,8 +4328,14 @@ test "BTree persistence across reopen with splits" {
 
 test "BTree delete all then reinsert larger dataset" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_delete_reinsert_larger.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete_reinsert_larger.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4156,8 +4396,14 @@ test "BTree delete all then reinsert larger dataset" {
 
 test "BTree cursor backward scan after heavy deletion" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_cursor_backward_del.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_cursor_backward_del.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4219,8 +4465,14 @@ test "BTree cursor backward scan after heavy deletion" {
 
 test "BTree alternating insert-delete stress" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_alt_stress.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_alt_stress.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4276,8 +4528,14 @@ test "BTree alternating insert-delete stress" {
 
 test "BTree get on non-existent key in multi-level tree" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_get_missing_deep.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_get_missing_deep.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4323,8 +4581,14 @@ test "BTree get on non-existent key in multi-level tree" {
 
 test "BTree InvalidNodeType error on get from non-leaf/internal page" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_invalid_type.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_invalid_type.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4366,8 +4630,14 @@ test "BTree InvalidNodeType error on get from non-leaf/internal page" {
 
 test "BTree depth invariant: all leaves at same depth after heavy insert+delete cycle" {
     const allocator = std.testing.allocator;
-    const path = "test_btree_depth_invariant.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_depth_invariant.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
