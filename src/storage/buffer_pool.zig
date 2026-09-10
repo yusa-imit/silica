@@ -272,8 +272,14 @@ pub const BufferPool = struct {
 
 test "BufferPool basic fetch and unpin" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_basic.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -307,8 +313,14 @@ test "BufferPool basic fetch and unpin" {
 
 test "BufferPool cache hit increments stats" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_hits.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_hits.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -342,8 +354,14 @@ test "BufferPool cache hit increments stats" {
 
 test "BufferPool dirty page flush" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_dirty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_dirty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -377,8 +395,14 @@ test "BufferPool dirty page flush" {
 
 test "BufferPool LRU eviction" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_eviction.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_eviction.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -429,8 +453,14 @@ test "BufferPool LRU eviction" {
 
 test "BufferPool pinned pages not evicted" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_pin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_pin.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -468,8 +498,14 @@ test "BufferPool pinned pages not evicted" {
 
 test "BufferPool multiple pin/unpin" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_multipin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_multipin.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -503,8 +539,14 @@ test "BufferPool multiple pin/unpin" {
 
 test "BufferPool fetchNewPage" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_newpage.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_newpage.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -537,8 +579,14 @@ test "BufferPool fetchNewPage" {
 
 test "BufferPool flushAll writes all dirty pages" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_flushall.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_flushall.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -553,7 +601,7 @@ test "BufferPool flushAll writes all dirty pages" {
         const frame = try pool.fetchNewPage(pid.*);
         const hdr = PageHeader{ .page_type = .leaf, .page_id = pid.* };
         hdr.serialize(frame.data[0..PAGE_HEADER_SIZE]);
-        const tag = [_]u8{ @as(u8, @truncate(pid.*)) + 'A' };
+        const tag = [_]u8{@as(u8, @truncate(pid.*)) + 'A'};
         @memcpy(frame.data[PAGE_HEADER_SIZE..][0..1], &tag);
         pool.unpinPage(pid.*, true);
     }
@@ -565,15 +613,21 @@ test "BufferPool flushAll writes all dirty pages" {
     defer pager.freePageBuf(raw);
     for (pids) |pid| {
         try pager.readPage(pid, raw);
-        const expected = [_]u8{ @as(u8, @truncate(pid)) + 'A' };
+        const expected = [_]u8{@as(u8, @truncate(pid)) + 'A'};
         try std.testing.expectEqual(expected[0], raw[PAGE_HEADER_SIZE]);
     }
 }
 
 test "BufferPool eviction flushes dirty pages" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_evict_dirty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_evict_dirty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -616,8 +670,14 @@ test "BufferPool eviction flushes dirty pages" {
 
 test "BufferPool pool size 1" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_size1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_size1.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -667,8 +727,14 @@ test "BufferPool pool size 1" {
 
 test "BufferPool LRU order with 5 pages" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_lru5.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_lru5.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -719,8 +785,14 @@ test "BufferPool LRU order with 5 pages" {
 
 test "BufferPool dirty flag cycles" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_dirty_cycles.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_dirty_cycles.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -760,8 +832,14 @@ test "BufferPool dirty flag cycles" {
 
 test "BufferPool re-fetch after eviction preserves data" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_refetch.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_refetch.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -806,8 +884,14 @@ test "BufferPool re-fetch after eviction preserves data" {
 
 test "BufferPool stress rapid pin unpin" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_stress_pin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_stress_pin.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -845,8 +929,14 @@ test "BufferPool stress rapid pin unpin" {
 
 test "BufferPool large page ids" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_large_ids.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_large_ids.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -891,8 +981,14 @@ test "BufferPool large page ids" {
 
 test "BufferPool setWal routes dirty flushes through WAL" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_wal_route.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_wal_route.db", .{dir_path});
     defer std.fs.cwd().deleteFile("test_bp_wal_route.db-wal") catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -932,8 +1028,14 @@ test "BufferPool setWal routes dirty flushes through WAL" {
 
 test "BufferPool WAL fetch reads from WAL before disk" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_wal_fetch.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_wal_fetch.db", .{dir_path});
     defer std.fs.cwd().deleteFile("test_bp_wal_fetch.db-wal") catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -976,8 +1078,14 @@ test "BufferPool WAL fetch reads from WAL before disk" {
 
 test "BufferPool flushAll with WAL routes all dirty pages" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_wal_flushall.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_wal_flushall.db", .{dir_path});
     defer std.fs.cwd().deleteFile("test_bp_wal_flushall.db-wal") catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -1014,8 +1122,14 @@ test "BufferPool flushAll with WAL routes all dirty pages" {
 
 test "BufferPool eviction with WAL flushes dirty to WAL" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_wal_evict.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_wal_evict.db", .{dir_path});
     defer std.fs.cwd().deleteFile("test_bp_wal_evict.db-wal") catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -1066,8 +1180,14 @@ test "BufferPool eviction with WAL flushes dirty to WAL" {
 
 test "BufferPool all pinned returns BufferPoolFull" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_all_pinned.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_all_pinned.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1097,8 +1217,14 @@ test "BufferPool all pinned returns BufferPoolFull" {
 
 test "BufferPool cache hit avoids disk read" {
     const allocator = std.testing.allocator;
-    const path = "test_bp_cache_hit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_cache_hit.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1130,8 +1256,14 @@ test "BufferPool WAL eviction then commit preserves data" {
     // Verifies end-to-end: dirty page evicted through WAL,
     // WAL committed, then checkpoint to pager preserves data.
     const allocator = std.testing.allocator;
-    const path = "test_bp_wal_commit_ckpt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_wal_commit_ckpt.db", .{dir_path});
     defer std.fs.cwd().deleteFile("test_bp_wal_commit_ckpt.db-wal") catch {};
 
     var pager = try Pager.init(allocator, path, .{});
@@ -1191,8 +1323,14 @@ test "BufferPool WAL eviction then commit preserves data" {
 test "BufferPool multiple pin of same page" {
     // Verifies pin_count correctly tracks multiple pins of the same page.
     const allocator = std.testing.allocator;
-    const path = "test_bp_multi_pin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_multi_pin.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1228,8 +1366,14 @@ test "BufferPool sequential operations with page reuse" {
     // Verifies that reusing the same small set of pages works correctly
     // (simulates high locality workload without actual concurrency)
     const allocator = std.testing.allocator;
-    const path = "test_bp_page_reuse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_page_reuse.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1270,8 +1414,14 @@ test "BufferPool with zuda LRU: evicts oldest unpinned page on capacity overflow
     // Verifies basic LRU eviction: fetch 3 pages, unpin all, fetch 4th page,
     // verify 1st page evicted (oldest/LRU).
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_lru_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_lru_basic.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1318,8 +1468,14 @@ test "BufferPool with zuda LRU: moves accessed page to MRU end" {
     // Verifies that accessing an unpinned page (re-fetching it) moves it to MRU end.
     // Fetch pages 0, 1, 2 → access page 0 (MRU) → fetch page 3 → verify page 1 evicted, not 0.
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_lru_mru.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_lru_mru.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1364,8 +1520,14 @@ test "BufferPool with zuda LRU: pinned pages never evicted" {
     // Verifies that pinned pages are not in LRU list and cannot be evicted,
     // even if they're the "oldest" in terms of access order.
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_pin_protect.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_pin_protect.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1410,8 +1572,14 @@ test "BufferPool with zuda LRU: multiple pin count prevents eviction" {
     // Verifies that multiple pins on the same page keep it pinned.
     // Fetch page twice (pin_count=2), unpin once (pin_count=1), verify it's not evictable.
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_multipin_protect.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_multipin_protect.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1465,8 +1633,14 @@ test "BufferPool with zuda LRU: multiple pin count prevents eviction" {
 test "BufferPool with zuda LRU: dirty page flushed before eviction" {
     // Verifies that when an unpinned dirty page is evicted, it's written to disk first.
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_dirty_flush.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_dirty_flush.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1516,8 +1690,14 @@ test "BufferPool with zuda LRU: page reuse after eviction and re-fetch" {
     // Verifies that when a page is evicted, its frame can be reused for a new page,
     // and re-fetching the old page loads it from disk into a different frame.
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_page_reuse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_page_reuse.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1566,8 +1746,14 @@ test "BufferPool with zuda LRU: unpin already unpinned page is idempotent" {
     // Verifies that unpinning a page that's already unpinned doesn't cause issues
     // (should be a no-op or safe).
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_double_unpin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_double_unpin.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1603,8 +1789,14 @@ test "BufferPool with zuda LRU: eviction from empty pool returns error" {
     // Verifies that fetching a page when the pool is empty and has 0 capacity fails gracefully.
     // (This is an edge case; normally capacity >= 1, but robustness test.)
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_empty_pool.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_empty_pool.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1629,8 +1821,14 @@ test "BufferPool with zuda LRU: eviction from empty pool returns error" {
 test "BufferPool with zuda LRU: capacity full with all pinned pages" {
     // Verifies that when all frames are pinned, further fetches fail with BufferPoolFull.
     const allocator = std.testing.allocator;
-    const path = "test_bp_zuda_all_pinned.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_all_pinned.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();

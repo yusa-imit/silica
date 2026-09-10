@@ -800,9 +800,14 @@ test "WalFrameHeader isCommit" {
 }
 
 test "Wal init with no existing WAL file" {
-    const path = "test_wal_init.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_init.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_init.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 4096);
     defer wal.deinit();
@@ -813,9 +818,14 @@ test "Wal init with no existing WAL file" {
 }
 
 test "Wal write frame and commit" {
-    const path = "test_wal_write.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_write.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_write.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -839,9 +849,14 @@ test "Wal write frame and commit" {
 }
 
 test "Wal read page from committed index" {
-    const path = "test_wal_read.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_read.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_read.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -866,9 +881,14 @@ test "Wal read page from committed index" {
 }
 
 test "Wal same-transaction visibility via pending index" {
-    const path = "test_wal_pending.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_pending.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_pending.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -887,9 +907,14 @@ test "Wal same-transaction visibility via pending index" {
 }
 
 test "Wal rollback discards pending frames" {
-    const path = "test_wal_rollback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_rollback.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_rollback.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -919,9 +944,14 @@ test "Wal rollback discards pending frames" {
 }
 
 test "Wal multiple transactions" {
-    const path = "test_wal_multitx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_multitx.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_multitx.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -955,9 +985,14 @@ test "Wal multiple transactions" {
 }
 
 test "Wal checkpoint writes to main DB" {
-    const path = "test_wal_ckpt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_ckpt.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_ckpt.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -1001,9 +1036,14 @@ test "Wal checkpoint writes to main DB" {
 }
 
 test "Wal recovery replays committed frames" {
-    const path = "test_wal_recover.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_recover.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_recover.db", .{dir_path});
 
     // First session: write and commit
     {
@@ -1033,9 +1073,14 @@ test "Wal recovery replays committed frames" {
 }
 
 test "Wal recovery discards uncommitted frames" {
-    const path = "test_wal_recover_uncommit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_recover_uncommit.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_recover_uncommit.db", .{dir_path});
 
     // First session: commit tx1, then write tx2 without commit
     {
@@ -1090,9 +1135,14 @@ test "Wal computeFrameChecksum sensitivity" {
 test "Wal recovery stops at corrupt frame" {
     // Simulates a crash that leaves a partial/corrupt frame in the WAL.
     // Recovery should discard the corrupt frame and only replay committed ones.
-    const path = "test_wal_corrupt_frame.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_corrupt_frame.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_corrupt_frame.db", .{dir_path});
 
     // Session 1: commit tx1, then write corrupt trailing data
     {
@@ -1131,9 +1181,14 @@ test "Wal recovery stops at corrupt frame" {
 test "Wal multiple checkpoint cycles" {
     // Verifies that checkpoint_seq increments, salts rotate, and
     // the WAL can be reused across multiple checkpoint cycles.
-    const path = "test_wal_multi_ckpt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_multi_ckpt.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_multi_ckpt.db", .{dir_path});
 
     var pager = try Pager.init(testing.allocator, path, .{ .page_size = 512 });
 
@@ -1189,9 +1244,14 @@ test "Wal multiple checkpoint cycles" {
 }
 
 test "Wal overwrite same page across multiple transactions" {
-    const path = "test_wal_overwrite.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_overwrite.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_overwrite.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1223,9 +1283,14 @@ test "Wal overwrite same page across multiple transactions" {
 }
 
 test "Wal commit with no pending frames is no-op" {
-    const path = "test_wal_empty_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_empty_commit.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_empty_commit.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1238,9 +1303,14 @@ test "Wal commit with no pending frames is no-op" {
 }
 
 test "Wal rollback with no pending frames is no-op" {
-    const path = "test_wal_empty_rollback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_empty_rollback.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_empty_rollback.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1251,9 +1321,14 @@ test "Wal rollback with no pending frames is no-op" {
 }
 
 test "Wal recovery after clean checkpoint has no frames" {
-    const path = "test_wal_recover_after_ckpt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_recover_after_ckpt.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_recover_after_ckpt.db", .{dir_path});
 
     // Session 1: write, commit, checkpoint
     {
@@ -1289,9 +1364,14 @@ test "Wal recovery after clean checkpoint has no frames" {
 test "Wal multi-page transaction atomicity" {
     // Verifies that a transaction writing multiple pages is all-or-nothing.
     // If we commit, all pages should be visible. If we don't, none should.
-    const path = "test_wal_multi_page_tx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_multi_page_tx.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_multi_page_tx.db", .{dir_path});
 
     // Session 1: write 5 pages in one transaction, commit, then
     // write 3 more in another transaction without commit (simulate crash)
@@ -1346,9 +1426,14 @@ test "Wal multi-page transaction atomicity" {
 test "Wal pending overrides committed for same page" {
     // When a page is committed in one tx and then written again in a
     // pending (uncommitted) tx, readPage should return the pending version.
-    const path = "test_wal_pending_override.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_pending_override.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_pending_override.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1394,9 +1479,14 @@ test "Wal UnsupportedWalVersion error on invalid version" {
 }
 
 test "Wal WalPageSizeMismatch detected during recovery" {
-    const path = "test_wal_pagemismatch.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_pagemismatch.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_pagemismatch.db", .{dir_path});
 
     // Create WAL with page_size=512
     var wal = try Wal.init(testing.allocator, path, 512);
@@ -1407,7 +1497,8 @@ test "Wal WalPageSizeMismatch detected during recovery" {
     wal.deinit();
 
     // Manually corrupt the WAL header to have wrong page_size
-    const wal_path = path ++ "-wal";
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
     {
         const file = try std.fs.cwd().openFile(wal_path, .{ .mode = .read_write });
         defer file.close();
@@ -1441,12 +1532,18 @@ test "Wal WalPageSizeMismatch detected during recovery" {
 }
 
 test "Wal WalCorrupt error on truncated header" {
-    const path = "test_wal_corrupt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_corrupt.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_corrupt.db", .{dir_path});
 
     // Create a WAL file with a truncated header (only 10 bytes)
-    const wal_path = path ++ "-wal";
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}-wal", .{path});
     {
         const file = try std.fs.cwd().createFile(wal_path, .{});
         defer file.close();
@@ -1471,10 +1568,14 @@ test "Wal WalCorrupt error on truncated header" {
 
 test "Wal many frame writes in single commit" {
     // Verifies that writing many frames works correctly
-    const path = "test_wal_many_frames.db";
-    const wal_path = "test_wal_many_frames.db-wal";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(wal_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_many_frames.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1538,9 +1639,14 @@ test "Lsn ordering: higher epoch always orders after lower epoch, regardless of 
 }
 
 test "currentLsn reflects committed frontier, ignores pending frames" {
-    const path = "test_lsn_current.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_lsn_current.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lsn_current.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1567,9 +1673,14 @@ test "currentLsn reflects committed frontier, ignores pending frames" {
 }
 
 test "lsnAtFrame returns LSN for given frame index in current epoch" {
-    const path = "test_lsn_at_frame.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_lsn_at_frame.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lsn_at_frame.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1600,9 +1711,14 @@ test "lsnAtFrame returns LSN for given frame index in current epoch" {
 }
 
 test "readRawFrames round-trip: read all committed frames with recognizable content" {
-    const path = "test_read_raw_frames_roundtrip.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_roundtrip.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_roundtrip.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1663,9 +1779,14 @@ test "readRawFrames round-trip: read all committed frames with recognizable cont
 }
 
 test "readRawFrames never splits frame across multiple calls" {
-    const path = "test_read_raw_frames_no_split.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_no_split.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_no_split.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1696,9 +1817,14 @@ test "readRawFrames never splits frame across multiple calls" {
 }
 
 test "readRawFrames returns error.BufferTooSmall if buffer smaller than one frame" {
-    const path = "test_read_raw_frames_small_buf.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_small_buf.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_small_buf.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1717,9 +1843,14 @@ test "readRawFrames returns error.BufferTooSmall if buffer smaller than one fram
 }
 
 test "readRawFrames returns zero bytes when already caught up (no new data)" {
-    const path = "test_read_raw_frames_caught_up.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_caught_up.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_caught_up.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1749,9 +1880,14 @@ test "readRawFrames returns zero bytes when already caught up (no new data)" {
 }
 
 test "readRawFrames excludes pending (uncommitted) frames" {
-    const path = "test_read_raw_frames_no_pending.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_no_pending.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_no_pending.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1777,9 +1913,14 @@ test "readRawFrames excludes pending (uncommitted) frames" {
 }
 
 test "readRawFrames rejects LSN from earlier epoch after checkpoint" {
-    const path = "test_read_raw_frames_old_epoch.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_old_epoch.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_old_epoch.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -1821,9 +1962,14 @@ test "readRawFrames rejects LSN from earlier epoch after checkpoint" {
 }
 
 test "readRawFrames multi-call resumption: chain LSNs to stream all frames" {
-    const path = "test_read_raw_frames_resume.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_read_raw_frames_resume.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_resume.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1906,13 +2052,17 @@ test "readRawFrames multi-call resumption: chain LSNs to stream all frames" {
 }
 
 test "Phase 4: appendRawFrame verbatim round-trip with commit promotion" {
-    const path_src = "test_wal_phase4_src.db";
-    defer std.fs.cwd().deleteFile(path_src) catch {};
-    defer std.fs.cwd().deleteFile(path_src ++ "-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const path_dst = "test_wal_phase4_dst.db";
-    defer std.fs.cwd().deleteFile(path_dst) catch {};
-    defer std.fs.cwd().deleteFile(path_dst ++ "-wal") catch {};
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_src_buf: [512]u8 = undefined;
+    const path_src = try std.fmt.bufPrint(&path_src_buf, "{s}/test_wal_phase4_src.db", .{dir_path});
+
+    var path_dst_buf: [512]u8 = undefined;
+    const path_dst = try std.fmt.bufPrint(&path_dst_buf, "{s}/test_wal_phase4_dst.db", .{dir_path});
 
     // Create source WAL and write 2 frames
     var src_wal = try Wal.init(testing.allocator, path_src, 512);
@@ -1976,9 +2126,14 @@ test "Phase 4: appendRawFrame verbatim round-trip with commit promotion" {
 }
 
 test "Phase 4: appendRawFrame is purely additive — normal writeFrame/commit unchanged" {
-    const path = "test_wal_phase4_regression.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path ++ "-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_phase4_regression.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -2092,9 +2247,14 @@ const RetentionCallbackContext = struct {
 };
 
 test "Phase 6: checkpoint with retention callback reporting behind LSN — flushes not truncates" {
-    const path = "test_phase6_retention_behind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_phase6_retention_behind.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_behind.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2151,9 +2311,14 @@ test "Phase 6: checkpoint with retention callback reporting behind LSN — flush
 }
 
 test "Phase 6: checkpoint with retention callback catching up — truncation now happens" {
-    const path = "test_phase6_retention_catchup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_phase6_retention_catchup.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_catchup.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2203,9 +2368,14 @@ test "Phase 6: checkpoint with retention callback catching up — truncation now
 }
 
 test "Phase 6: multiple write/commit rounds with retention deferred, one catch-up reclaims all" {
-    const path = "test_phase6_retention_multiple_rounds.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_phase6_retention_multiple_rounds.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_multiple_rounds.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2279,9 +2449,14 @@ test "Phase 6: multiple write/commit rounds with retention deferred, one catch-u
 }
 
 test "Phase 6: regression proof — readRawFrames works on not-yet-truncated epoch while deferred" {
-    const path = "test_phase6_readrawframes_deferred.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_phase6_readrawframes_deferred.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_readrawframes_deferred.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2349,9 +2524,14 @@ test "Phase 6: regression proof — readRawFrames works on not-yet-truncated epo
 }
 
 test "Phase 6: checkpoint with no retention callback registered behaves like today (no change)" {
-    const path = "test_phase6_no_callback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_phase6_no_callback.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_no_callback.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2384,9 +2564,14 @@ test "Phase 6: checkpoint with no retention callback registered behaves like tod
 }
 
 test "Phase 6: checkpoint with retention callback reporting nothing to retain (null) truncates" {
-    const path = "test_phase6_callback_returns_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_phase6_callback_returns_null.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_callback_returns_null.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
