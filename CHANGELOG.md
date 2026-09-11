@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `server/connection.zig` (72, uniform single-path pattern) now write into a
   `std.testing.tmpDir` instead of the repo root — 72 occurrences, 1 file. 3 files
   (~1,076 occurrences) remain, largest `sql/engine.zig` (819).
+- **Repo hygiene** (plan 001 item 2, part 2, batch 9): test scratch DBs in `sql/catalog.zig`
+  (152, uniform single-path pattern via the shared `TestCatalog` helper) now write into a
+  `std.testing.tmpDir` instead of the repo root — 152 occurrences, 1 file. 2 files
+  (~924 occurrences) remain, largest `sql/engine.zig` (819).
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,
