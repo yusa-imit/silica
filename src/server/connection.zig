@@ -696,8 +696,8 @@ pub const Connection = struct {
             .uuid => |u| {
                 // Format: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
                 try std.fmt.format(writer, "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
-                    u[0],  u[1],  u[2],  u[3],  u[4],  u[5],  u[6],  u[7],
-                    u[8],  u[9],  u[10], u[11], u[12], u[13], u[14], u[15],
+                    u[0], u[1], u[2],  u[3],  u[4],  u[5],  u[6],  u[7],
+                    u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15],
                 });
             },
             .tsvector, .tsquery => |t| return try self.allocator.dupe(u8, t),
@@ -771,8 +771,14 @@ test "Connection init/deinit" {
     const allocator = std.testing.allocator;
 
     // Create temporary database
-    const db_path = "test_connection.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_connection.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -789,8 +795,14 @@ test "Connection init/deinit" {
 test "valueToText - integer" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_int.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_int.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -808,8 +820,14 @@ test "valueToText - integer" {
 test "valueToText - text" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_text.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_text.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -827,8 +845,14 @@ test "valueToText - text" {
 test "valueToText - null" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_null.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_null.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -846,8 +870,14 @@ test "valueToText - null" {
 test "getSQLState - error mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_sqlstate.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sqlstate.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -862,8 +892,14 @@ test "getSQLState - error mapping" {
 test "getCommandTag - OK" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_cmdtag.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_cmdtag.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -881,8 +917,14 @@ test "getCommandTag - OK" {
 test "handleParse - store prepared statement" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_parse.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_parse.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -916,8 +958,14 @@ test "handleParse - store prepared statement" {
 test "handleBind - create portal" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_bind.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -967,8 +1015,14 @@ test "handleBind - create portal" {
 test "handleClose - statement" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_close_stmt.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_close_stmt.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1006,8 +1060,14 @@ test "handleClose - statement" {
 test "handleSync - send ReadyForQuery" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_sync.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1027,8 +1087,14 @@ test "handleSync - send ReadyForQuery" {
 test "valueToText - real" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_real.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_real.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1046,8 +1112,14 @@ test "valueToText - real" {
 test "valueToText - boolean true" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_bool_true.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_bool_true.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1065,8 +1137,14 @@ test "valueToText - boolean true" {
 test "valueToText - boolean false" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_bool_false.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_bool_false.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1084,8 +1162,14 @@ test "valueToText - boolean false" {
 test "valueToText - blob hex encoding" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_blob.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_blob.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1104,8 +1188,14 @@ test "valueToText - blob hex encoding" {
 test "valueToText - uuid formatting" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_uuid.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_uuid.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1124,8 +1214,14 @@ test "valueToText - uuid formatting" {
 test "valueToText - json passthrough" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_json.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_json.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1143,8 +1239,14 @@ test "valueToText - json passthrough" {
 test "handleParse - replace existing statement" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_parse_replace.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_parse_replace.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1185,8 +1287,14 @@ test "handleParse - replace existing statement" {
 test "handleParse - unnamed statement" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_parse_unnamed.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_parse_unnamed.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1214,8 +1322,14 @@ test "handleParse - unnamed statement" {
 test "handleBind - parameter count mismatch" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_bind_mismatch.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind_mismatch.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1259,8 +1373,14 @@ test "handleBind - parameter count mismatch" {
 test "handleBind - statement not found" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_bind_notfound.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind_notfound.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1292,8 +1412,14 @@ test "handleBind - statement not found" {
 test "handleBind - unnamed portal" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_bind_unnamed.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind_unnamed.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1338,8 +1464,14 @@ test "handleBind - unnamed portal" {
 test "handleClose - portal" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_close_portal.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_close_portal.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1392,8 +1524,14 @@ test "handleClose - portal" {
 test "handleClose - nonexistent statement (no error)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_close_noexist.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_close_noexist.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1413,8 +1551,14 @@ test "handleClose - nonexistent statement (no error)" {
 test "getSQLState - various errors" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_sqlstate_all.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sqlstate_all.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1535,8 +1679,14 @@ test "SessionState - invalid statement_timeout value" {
 test "valueToText - very long text (>1MB)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_long.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_long.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1560,8 +1710,14 @@ test "valueToText - very long text (>1MB)" {
 test "valueToText - empty text" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_empty.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_empty.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1579,8 +1735,14 @@ test "valueToText - empty text" {
 test "valueToText - text with null bytes" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_nullbytes.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_nullbytes.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1599,8 +1761,14 @@ test "valueToText - text with null bytes" {
 test "valueToText - integer min/max values" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_minmax.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_minmax.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1624,8 +1792,14 @@ test "valueToText - integer min/max values" {
 test "valueToText - real edge values" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_real_edge.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_real_edge.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1655,8 +1829,14 @@ test "valueToText - real edge values" {
 test "valueToText - blob empty" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_blob_empty.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_blob_empty.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1676,8 +1856,14 @@ test "valueToText - blob empty" {
 test "valueToText - blob with all byte values" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_blob_all.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_blob_all.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1702,8 +1888,14 @@ test "valueToText - blob with all byte values" {
 test "getSQLState - comprehensive error mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_sqlstate_comprehensive.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sqlstate_comprehensive.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1722,8 +1914,14 @@ test "getSQLState - comprehensive error mapping" {
 test "handleParse - very long statement name (255 chars)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_parse_long.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_parse_long.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1754,8 +1952,14 @@ test "handleParse - very long statement name (255 chars)" {
 test "handleParse - statement name with special characters" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_parse_special.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_parse_special.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1781,8 +1985,14 @@ test "handleParse - statement name with special characters" {
 test "handleBind - very long portal name" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_bind_long.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind_long.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1828,8 +2038,14 @@ test "handleBind - very long portal name" {
 test "handleClose - close same statement twice (idempotent)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_close_twice.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_close_twice.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1896,8 +2112,14 @@ test "SessionState - parameter case sensitivity" {
 test "handleParse - many statements stress" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_parse_many.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_parse_many.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1928,8 +2150,14 @@ test "handleParse - many statements stress" {
 test "valueToText - all Value type variants coverage" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_value_variants.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_value_variants.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -1985,8 +2213,14 @@ test "valueToText - all Value type variants coverage" {
 test "handleExecute - max_rows limit" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_execute_maxrows.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_execute_maxrows.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2090,8 +2324,14 @@ test "handleExecute - max_rows limit" {
 test "handleExecute - max_rows with negative value" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_execute_negative.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_execute_negative.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2147,8 +2387,14 @@ test "handleExecute - max_rows with negative value" {
 test "handleExecute - with parameter binding" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_execute_params.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_execute_params.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2208,8 +2454,14 @@ test "handleExecute - with parameter binding" {
 test "typeOidForValue - integer type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_integer.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_integer.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2225,8 +2477,14 @@ test "typeOidForValue - integer type mapping" {
 test "typeOidForValue - text type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_text.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_text.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2242,8 +2500,14 @@ test "typeOidForValue - text type mapping" {
 test "typeOidForValue - boolean type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_boolean.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_boolean.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2259,8 +2523,14 @@ test "typeOidForValue - boolean type mapping" {
 test "typeOidForValue - real type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_real.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_real.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2276,8 +2546,14 @@ test "typeOidForValue - real type mapping" {
 test "typeOidForValue - date type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_date.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_date.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2293,8 +2569,14 @@ test "typeOidForValue - date type mapping" {
 test "typeOidForValue - timestamp type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_timestamp.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_timestamp.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2310,8 +2592,14 @@ test "typeOidForValue - timestamp type mapping" {
 test "typeOidForValue - numeric type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_numeric.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_numeric.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2327,8 +2615,14 @@ test "typeOidForValue - numeric type mapping" {
 test "typeOidForValue - uuid type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_uuid.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_uuid.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2348,8 +2642,14 @@ test "typeOidForValue - uuid type mapping" {
 test "typeOidForValue - null type mapping" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_oid_null.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_oid_null.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2365,8 +2665,14 @@ test "typeOidForValue - null type mapping" {
 test "typeSizeForValue - integer type size" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_integer.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_integer.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2382,8 +2688,14 @@ test "typeSizeForValue - integer type size" {
 test "typeSizeForValue - boolean type size" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_boolean.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_boolean.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2399,8 +2711,14 @@ test "typeSizeForValue - boolean type size" {
 test "typeSizeForValue - text type size (variable length)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_text.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_text.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2416,8 +2734,14 @@ test "typeSizeForValue - text type size (variable length)" {
 test "typeSizeForValue - real type size" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_real.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_real.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2433,8 +2757,14 @@ test "typeSizeForValue - real type size" {
 test "typeSizeForValue - date type size" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_date.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_date.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2450,8 +2780,14 @@ test "typeSizeForValue - date type size" {
 test "typeSizeForValue - uuid type size" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_uuid.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_uuid.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2471,8 +2807,14 @@ test "typeSizeForValue - uuid type size" {
 test "typeSizeForValue - null type size" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_type_size_null.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_type_size_null.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2488,8 +2830,14 @@ test "typeSizeForValue - null type size" {
 test "sendRowDescription with mixed types produces correct OIDs" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_row_desc_mixed.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_desc_mixed.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2573,8 +2921,14 @@ test "sendRowDescription with mixed types produces correct OIDs" {
 test "sendRowDescription with NULL values defaults to TEXT OID" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_row_desc_null.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_desc_null.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2628,8 +2982,14 @@ test "sendRowDescription with NULL values defaults to TEXT OID" {
 test "handleDescribe - unknown statement (returns error)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_unknown_stmt.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_unknown_stmt.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2650,8 +3010,14 @@ test "handleDescribe - unknown statement (returns error)" {
 test "handleDescribe - unknown portal (returns error)" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_unknown_portal.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_unknown_portal.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2672,8 +3038,14 @@ test "handleDescribe - unknown portal (returns error)" {
 test "handleDescribe - statement with parameters" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_stmt_params.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_stmt_params.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2712,8 +3084,14 @@ test "handleDescribe - statement with parameters" {
 test "handleDescribe - statement with zero parameters" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_stmt_no_params.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_stmt_no_params.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2750,8 +3128,14 @@ test "handleDescribe - statement with zero parameters" {
 test "handleDescribe - portal with bound parameters" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_portal_bound.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_portal_bound.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2802,8 +3186,14 @@ test "handleDescribe - portal with bound parameters" {
 test "handleDescribe - INSERT without RETURNING returns NoData" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_insert_nodata.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_insert_nodata.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2848,8 +3238,14 @@ test "handleDescribe - INSERT without RETURNING returns NoData" {
 test "handleDescribe - SELECT with columns returns RowDescription" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_select_rowdesc.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_select_rowdesc.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2887,8 +3283,14 @@ test "handleDescribe - SELECT with columns returns RowDescription" {
 test "handleDescribe - SELECT with zero rows still sends RowDescription" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_empty_select.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_empty_select.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2935,8 +3337,14 @@ test "handleDescribe - SELECT with zero rows still sends RowDescription" {
 test "handleBind - error sets awaiting_sync true and does not send ReadyForQuery" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_bind_error_awaiting_sync.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind_error_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2968,8 +3376,14 @@ test "handleBind - error sets awaiting_sync true and does not send ReadyForQuery
 test "handleExecute - error sets awaiting_sync true and does not send ReadyForQuery" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_execute_error_awaiting_sync.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_execute_error_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2990,8 +3404,14 @@ test "handleExecute - error sets awaiting_sync true and does not send ReadyForQu
 test "handleDescribe - error sets awaiting_sync true and does not send ReadyForQuery" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_describe_error_awaiting_sync.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_error_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3012,8 +3432,14 @@ test "handleDescribe - error sets awaiting_sync true and does not send ReadyForQ
 test "handleSync - resets awaiting_sync and sends ReadyForQuery" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_sync_reset_awaiting_sync.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sync_reset_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3035,8 +3461,14 @@ test "handleSync - resets awaiting_sync and sends ReadyForQuery" {
 test "handleSimpleQuery - error does not set awaiting_sync and sends ReadyForQuery" {
     const allocator = std.testing.allocator;
 
-    const db_path = "test_simple_query_error.db";
-    defer std.fs.cwd().deleteFile(db_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_simple_query_error.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
