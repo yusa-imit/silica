@@ -2990,7 +2990,7 @@ pub const Catalog = struct {
     }
 
     /// Enable RLS for a specific table.
-    pub fn enableRLS(self: *Catalog, table_name: []const u8) error{OutOfMemory,StorageError}!void {
+    pub fn enableRLS(self: *Catalog, table_name: []const u8) error{ OutOfMemory, StorageError }!void {
         const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
         defer self.allocator.free(key);
 
@@ -3006,7 +3006,7 @@ pub const Catalog = struct {
     }
 
     /// Disable RLS for a specific table.
-    pub fn disableRLS(self: *Catalog, table_name: []const u8) error{OutOfMemory,StorageError}!void {
+    pub fn disableRLS(self: *Catalog, table_name: []const u8) error{ OutOfMemory, StorageError }!void {
         const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
         defer self.allocator.free(key);
 
@@ -3018,7 +3018,7 @@ pub const Catalog = struct {
     }
 
     /// Check if RLS is enabled for a specific table.
-    pub fn isRLSEnabled(self: *Catalog, table_name: []const u8) error{OutOfMemory,StorageError}!bool {
+    pub fn isRLSEnabled(self: *Catalog, table_name: []const u8) error{ OutOfMemory, StorageError }!bool {
         const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
         defer self.allocator.free(key);
 
@@ -4276,12 +4276,21 @@ test "edge case: empty index name" {
 
 // Helper: create a test Catalog backed by a temp file.
 const TestCatalog = struct {
+    tmp: std.testing.TmpDir,
     pager: *Pager,
     pool: *BufferPool,
     catalog: Catalog,
-    path: []const u8,
 
-    fn setup(allocator: Allocator, path: []const u8) !TestCatalog {
+    fn setup(allocator: Allocator, name: []const u8) !TestCatalog {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+
+        const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+        defer allocator.free(dir_path);
+
+        var path_buf: [512]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, name });
+
         const pager = try allocator.create(Pager);
         pager.* = try Pager.init(allocator, path, .{});
 
@@ -4291,10 +4300,10 @@ const TestCatalog = struct {
         const catalog = try Catalog.init(allocator, pool, true);
 
         return .{
+            .tmp = tmp,
             .pager = pager,
             .pool = pool,
             .catalog = catalog,
-            .path = path,
         };
     }
 
@@ -4303,15 +4312,13 @@ const TestCatalog = struct {
         self.pager.deinit();
         allocator.destroy(self.pool);
         allocator.destroy(self.pager);
-        std.fs.cwd().deleteFile(self.path) catch {};
+        self.tmp.cleanup();
     }
 };
 
 test "Catalog create and get table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_create.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_create.db");
     defer tc.teardown(allocator);
 
     const columns = [_]ColumnInfo{
@@ -4333,9 +4340,7 @@ test "Catalog create and get table" {
 
 test "Catalog tableExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_exists.db");
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.tableExists("users"));
@@ -4350,9 +4355,7 @@ test "Catalog tableExists" {
 
 test "Catalog duplicate table error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_dup.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_dup.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("t1", &.{
@@ -4366,9 +4369,7 @@ test "Catalog duplicate table error" {
 
 test "Catalog drop table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_drop.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("t1", &.{
@@ -4384,9 +4385,7 @@ test "Catalog drop table" {
 
 test "Catalog drop nonexistent table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_drop_ne.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_drop_ne.db");
     defer tc.teardown(allocator);
 
     // Without IF EXISTS — should error
@@ -4398,9 +4397,7 @@ test "Catalog drop nonexistent table" {
 
 test "Catalog listTables" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_list.db");
     defer tc.teardown(allocator);
 
     // Empty catalog
@@ -4434,9 +4431,7 @@ test "Catalog listTables" {
 
 test "Catalog createTableFromAst" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_ast.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_ast.db");
     defer tc.teardown(allocator);
 
     const create_stmt = ast.CreateTableStmt{
@@ -4487,9 +4482,7 @@ test "Catalog createTableFromAst" {
 
 test "Catalog createTableFromAst with IF NOT EXISTS" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_ast_ine.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_ast_ine.db");
     defer tc.teardown(allocator);
 
     const create_stmt = ast.CreateTableStmt{
@@ -4509,9 +4502,7 @@ test "Catalog createTableFromAst with IF NOT EXISTS" {
 
 test "Catalog findColumn" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_findcol.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_findcol.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("users", &.{
@@ -4537,9 +4528,7 @@ test "Catalog findColumn" {
 
 test "Catalog multiple tables with constraints" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_multi.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_multi.db");
     defer tc.teardown(allocator);
 
     // Table with composite primary key
@@ -4589,9 +4578,7 @@ test "Catalog multiple tables with constraints" {
 
 test "Catalog drop and recreate table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_recreate.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_recreate.db");
     defer tc.teardown(allocator);
 
     // Create, drop, recreate with different schema
@@ -4620,9 +4607,7 @@ test "Catalog drop and recreate table" {
 
 test "Catalog createView and getView" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_create.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_create.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT * FROM t1", false, false, &.{ "a", "b" }, 0);
@@ -4639,9 +4624,7 @@ test "Catalog createView and getView" {
 
 test "Catalog createView with no column names" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_nocols.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_nocols.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
@@ -4655,9 +4638,7 @@ test "Catalog createView with no column names" {
 
 test "Catalog createView duplicate error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_dup.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_dup.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
@@ -4666,9 +4647,7 @@ test "Catalog createView duplicate error" {
 
 test "Catalog createView OR REPLACE overwrites" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_replace.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_replace.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
@@ -4681,9 +4660,7 @@ test "Catalog createView OR REPLACE overwrites" {
 
 test "Catalog createView IF NOT EXISTS skips existing" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_ifne.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_ifne.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
@@ -4696,9 +4673,7 @@ test "Catalog createView IF NOT EXISTS skips existing" {
 
 test "Catalog createView name collision with table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_collision.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_collision.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("t1", &.{
@@ -4710,9 +4685,7 @@ test "Catalog createView name collision with table" {
 
 test "Catalog dropView" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_drop.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
@@ -4724,9 +4697,7 @@ test "Catalog dropView" {
 
 test "Catalog dropView nonexistent error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_drop_ne.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_drop_ne.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.ViewNotFound, tc.catalog.dropView("ghost", false));
@@ -4735,9 +4706,7 @@ test "Catalog dropView nonexistent error" {
 
 test "Catalog viewExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_exists.db");
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.viewExists("v1"));
@@ -4747,9 +4716,7 @@ test "Catalog viewExists" {
 
 test "Catalog getView not found" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_get_nf.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_get_nf.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.ViewNotFound, tc.catalog.getView("ghost"));
@@ -4757,9 +4724,7 @@ test "Catalog getView not found" {
 
 test "Catalog listViews" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_list.db");
     defer tc.teardown(allocator);
 
     // No views initially
@@ -4782,9 +4747,7 @@ test "Catalog listViews" {
 
 test "Catalog listViews does not include tables" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_list_notbl.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_list_notbl.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("t1", &.{
@@ -4814,9 +4777,7 @@ test "Catalog listViews does not include tables" {
 
 test "Catalog view serialization roundtrip with many columns" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_view_serial.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_view_serial.db");
     defer tc.teardown(allocator);
 
     const col_names = [_][]const u8{ "col_a", "col_b", "col_c", "col_d", "col_e" };
@@ -4837,9 +4798,7 @@ test "Catalog view serialization roundtrip with many columns" {
 
 test "Catalog createEnumType and getEnumType" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_create.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_create.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{ "'happy'", "'sad'", "'neutral'" };
@@ -4857,9 +4816,7 @@ test "Catalog createEnumType and getEnumType" {
 
 test "Catalog createEnumType duplicate error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_dup.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_dup.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{"'active'"};
@@ -4869,9 +4826,7 @@ test "Catalog createEnumType duplicate error" {
 
 test "Catalog dropEnumType" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_drop.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{"'active'"};
@@ -4884,9 +4839,7 @@ test "Catalog dropEnumType" {
 
 test "Catalog dropEnumType nonexistent error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_drop_ne.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_drop_ne.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropEnumType("ghost", false));
@@ -4895,9 +4848,7 @@ test "Catalog dropEnumType nonexistent error" {
 
 test "Catalog enumTypeExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_exists.db");
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.enumTypeExists("mood"));
@@ -4909,9 +4860,7 @@ test "Catalog enumTypeExists" {
 
 test "Catalog listEnumTypes" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_list.db");
     defer tc.teardown(allocator);
 
     // No types initially
@@ -4936,9 +4885,7 @@ test "Catalog listEnumTypes" {
 
 test "Catalog createEnumType name collision with table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_collision.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_collision.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("t1", &.{
@@ -4951,9 +4898,7 @@ test "Catalog createEnumType name collision with table" {
 
 test "Catalog createEnumType with empty values array" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_empty.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_empty.db");
     defer tc.teardown(allocator);
 
     const empty_values: []const []const u8 = &.{};
@@ -4967,9 +4912,7 @@ test "Catalog createEnumType with empty values array" {
 
 test "Catalog createEnumType with single value" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_single.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_single.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{"only"};
@@ -4984,9 +4927,7 @@ test "Catalog createEnumType with single value" {
 
 test "Catalog createEnumType with many values" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_many.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_many.db");
     defer tc.teardown(allocator);
 
     // Create 100 enum values
@@ -5015,9 +4956,7 @@ test "Catalog createEnumType with many values" {
 
 test "Catalog createEnumType with long value names" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_long.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_long.db");
     defer tc.teardown(allocator);
 
     // Create a value that's 1000 characters long
@@ -5038,9 +4977,7 @@ test "Catalog createEnumType with long value names" {
 
 test "Catalog createEnumType with duplicate values" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_dup_vals.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_dup_vals.db");
     defer tc.teardown(allocator);
 
     // Duplicate values should be allowed (validation is semantic, not at storage level)
@@ -5058,9 +4995,7 @@ test "Catalog createEnumType with duplicate values" {
 
 test "Catalog createEnumType with empty string value" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_empty_str.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_empty_str.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{ "", "active", "" };
@@ -5077,9 +5012,7 @@ test "Catalog createEnumType with empty string value" {
 
 test "Catalog createEnumType with special characters" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_special.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_special.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{ "hello\nworld", "tab\there", "emoji😀", "quote\"here", "null\x00byte" };
@@ -5098,9 +5031,7 @@ test "Catalog createEnumType with special characters" {
 
 test "Catalog getEnumType with corrupted data - truncated count" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_corrupt1.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_corrupt1.db");
     defer tc.teardown(allocator);
 
     // Manually insert corrupted data with only 1 byte (should be at least 2)
@@ -5115,9 +5046,7 @@ test "Catalog getEnumType with corrupted data - truncated count" {
 
 test "Catalog getEnumType with corrupted data - truncated value length" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_corrupt2.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_corrupt2.db");
     defer tc.teardown(allocator);
 
     // Create data with value_count=1 but no value length field
@@ -5132,9 +5061,7 @@ test "Catalog getEnumType with corrupted data - truncated value length" {
 
 test "Catalog getEnumType with corrupted data - truncated value data" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_corrupt3.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_corrupt3.db");
     defer tc.teardown(allocator);
 
     // Create data with value_count=1, length=10, but only 5 bytes of data
@@ -5149,9 +5076,7 @@ test "Catalog getEnumType with corrupted data - truncated value data" {
 
 test "Catalog listEnumTypes excludes tables and views" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_enum_list_filter.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_enum_list_filter.db");
     defer tc.teardown(allocator);
 
     // Create table and view
@@ -5187,9 +5112,7 @@ test "Catalog listEnumTypes excludes tables and views" {
 
 test "Catalog createDomain basic" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_basic.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_basic.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createDomain("pos_int", .type_integer, "VALUE > 0");
@@ -5205,9 +5128,7 @@ test "Catalog createDomain basic" {
 
 test "Catalog createDomain without constraint" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_no_constraint.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_no_constraint.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createDomain("email", .type_text, null);
@@ -5222,9 +5143,7 @@ test "Catalog createDomain without constraint" {
 
 test "Catalog createDomain duplicate error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_duplicate.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_duplicate.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createDomain("my_domain", .type_integer, null);
@@ -5233,9 +5152,7 @@ test "Catalog createDomain duplicate error" {
 
 test "Catalog createDomain conflicts with table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_table_conflict.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_table_conflict.db");
     defer tc.teardown(allocator);
 
     const cols = [_]ColumnInfo{.{ .name = "id", .column_type = .integer, .flags = .{} }};
@@ -5246,9 +5163,7 @@ test "Catalog createDomain conflicts with table" {
 
 test "Catalog createDomain conflicts with enum" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_enum_conflict.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_enum_conflict.db");
     defer tc.teardown(allocator);
 
     const values = [_][]const u8{ "a", "b" };
@@ -5259,9 +5174,7 @@ test "Catalog createDomain conflicts with enum" {
 
 test "Catalog dropDomain basic" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_drop.db");
     defer tc.teardown(allocator);
 
     try tc.catalog.createDomain("temp_domain", .type_integer, null);
@@ -5273,9 +5186,7 @@ test "Catalog dropDomain basic" {
 
 test "Catalog dropDomain if_exists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_drop_if_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_drop_if_exists.db");
     defer tc.teardown(allocator);
 
     // Should not error when if_exists=true and domain doesn't exist
@@ -5287,9 +5198,7 @@ test "Catalog dropDomain if_exists" {
 
 test "Catalog domainExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_exists.db");
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.domainExists("my_domain"));
@@ -5303,9 +5212,7 @@ test "Catalog domainExists" {
 
 test "Catalog getDomain not found" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_not_found.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_not_found.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getDomain("nonexistent"));
@@ -5313,9 +5220,7 @@ test "Catalog getDomain not found" {
 
 test "Catalog getDomain with corrupted data" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_corrupt.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_corrupt.db");
     defer tc.teardown(allocator);
 
     // Manually insert corrupted data with only 3 bytes (should be at least 4)
@@ -5330,9 +5235,7 @@ test "Catalog getDomain with corrupted data" {
 
 test "Catalog getDomain with constraint length overflow" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_domain_corrupt_len.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_domain_corrupt_len.db");
     defer tc.teardown(allocator);
 
     const key = try tc.catalog.makeDomainKey("corrupt_len");
@@ -5349,9 +5252,7 @@ test "Catalog getDomain with constraint length overflow" {
 
 test "Catalog createFunction and getFunction — scalar return" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_scalar.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_scalar.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateFunctionStmt{
@@ -5387,9 +5288,7 @@ test "Catalog createFunction and getFunction — scalar return" {
 
 test "Catalog createFunction — RETURNS TABLE" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_table.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_table.db");
     defer tc.teardown(allocator);
 
     const cols = [_]ast.ColumnDef{
@@ -5430,9 +5329,7 @@ test "Catalog createFunction — RETURNS TABLE" {
 
 test "Catalog createFunction — RETURNS SETOF" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_setof.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_setof.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateFunctionStmt{
@@ -5463,11 +5360,8 @@ test "Catalog createFunction — RETURNS SETOF" {
 }
 
 test "Catalog createFunction — OR REPLACE" {
-
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_replace.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_replace.db");
     defer tc.teardown(allocator);
 
     const stmt1 = ast.CreateFunctionStmt{
@@ -5507,9 +5401,7 @@ test "Catalog createFunction — OR REPLACE" {
 
 test "Catalog dropFunction basic" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_drop.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateFunctionStmt{
@@ -5531,9 +5423,7 @@ test "Catalog dropFunction basic" {
 
 test "Catalog dropFunction — not exists error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_drop_notfound.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_drop_notfound.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropFunction("nonexistent", false));
@@ -5541,9 +5431,7 @@ test "Catalog dropFunction — not exists error" {
 
 test "Catalog dropFunction IF EXISTS" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_drop_ifexists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_drop_ifexists.db");
     defer tc.teardown(allocator);
 
     // Should not error when IF EXISTS is true
@@ -5552,9 +5440,7 @@ test "Catalog dropFunction IF EXISTS" {
 
 test "Catalog functionExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_exists.db");
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.functionExists("my_func"));
@@ -5575,9 +5461,7 @@ test "Catalog functionExists" {
 
 test "Catalog listFunctions" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_list.db");
     defer tc.teardown(allocator);
 
     const stmt1 = ast.CreateFunctionStmt{
@@ -5623,9 +5507,7 @@ test "Catalog listFunctions" {
 
 test "Catalog createFunction — multiple parameters" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_multi_param.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_multi_param.db");
     defer tc.teardown(allocator);
 
     const params = [_]ast.FunctionParam{
@@ -5660,9 +5542,7 @@ test "Catalog createFunction — multiple parameters" {
 
 test "Catalog createFunction — empty parameter list" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_no_param.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_no_param.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateFunctionStmt{
@@ -5686,9 +5566,7 @@ test "Catalog createFunction — empty parameter list" {
 
 test "Catalog getFunction — not found" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_notfound.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_notfound.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getFunction("nonexistent"));
@@ -5696,9 +5574,7 @@ test "Catalog getFunction — not found" {
 
 test "Catalog createFunction — large body text" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_large_body.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_large_body.db");
     defer tc.teardown(allocator);
 
     var body_buf: [1000]u8 = undefined;
@@ -5726,9 +5602,7 @@ test "Catalog createFunction — large body text" {
 
 test "Catalog createFunction — all volatility types" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_func_volatility.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_func_volatility.db");
     defer tc.teardown(allocator);
 
     const stmt_immutable = ast.CreateFunctionStmt{
@@ -5780,9 +5654,7 @@ test "Catalog createFunction — all volatility types" {
 
 test "Catalog createTrigger — basic AFTER INSERT trigger" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_basic.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_basic.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateTriggerStmt{
@@ -5815,9 +5687,7 @@ test "Catalog createTrigger — basic AFTER INSERT trigger" {
 
 test "Catalog createTrigger — with UPDATE OF columns" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_update_of.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_update_of.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateTriggerStmt{
@@ -5847,9 +5717,7 @@ test "Catalog createTrigger — with UPDATE OF columns" {
 
 test "Catalog triggerExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_exists.db");
     defer tc.teardown(allocator);
 
     try std.testing.expect(!try tc.catalog.triggerExists("nonexistent"));
@@ -5872,9 +5740,7 @@ test "Catalog triggerExists" {
 
 test "Catalog dropTrigger" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_drop.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateTriggerStmt{
@@ -5898,9 +5764,7 @@ test "Catalog dropTrigger" {
 
 test "Catalog dropTrigger IF EXISTS" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_drop_if_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_drop_if_exists.db");
     defer tc.teardown(allocator);
 
     // Should not error when trigger doesn't exist
@@ -5912,9 +5776,7 @@ test "Catalog dropTrigger IF EXISTS" {
 
 test "Catalog alterTrigger — ENABLE" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_alter_enable.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_alter_enable.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateTriggerStmt{
@@ -5957,9 +5819,7 @@ test "Catalog alterTrigger — ENABLE" {
 
 test "Catalog listTriggers" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_list.db");
     defer tc.teardown(allocator);
 
     const stmt1 = ast.CreateTriggerStmt{
@@ -6001,9 +5861,7 @@ test "Catalog listTriggers" {
 
 test "Catalog createTrigger — with WHEN condition" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_when.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_when.db");
     defer tc.teardown(allocator);
 
     // Create a simple literal expression for WHEN condition
@@ -6036,9 +5894,7 @@ test "Catalog createTrigger — with WHEN condition" {
 
 test "Catalog createTrigger — empty body edge case" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_empty_body.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_empty_body.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateTriggerStmt{
@@ -6063,9 +5919,7 @@ test "Catalog createTrigger — empty body edge case" {
 
 test "Catalog createTrigger — large body stress test" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_large_body.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_large_body.db");
     defer tc.teardown(allocator);
 
     // Create a large SQL body (4KB of text)
@@ -6096,9 +5950,7 @@ test "Catalog createTrigger — large body stress test" {
 
 test "Catalog createTrigger — multiple triggers on same table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_multiple_same_table.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_multiple_same_table.db");
     defer tc.teardown(allocator);
 
     const stmt1 = ast.CreateTriggerStmt{
@@ -6157,9 +6009,7 @@ test "Catalog createTrigger — multiple triggers on same table" {
 
 test "Catalog getTrigger — nonexistent trigger" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_get_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_get_nonexistent.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getTrigger("does_not_exist"));
@@ -6167,9 +6017,7 @@ test "Catalog getTrigger — nonexistent trigger" {
 
 test "Catalog listTriggersForTable — filter by table/event/timing" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_trig_list_for_table.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_trig_list_for_table.db");
     defer tc.teardown(allocator);
 
     // Create multiple triggers
@@ -6251,9 +6099,7 @@ test "Catalog listTriggersForTable — filter by table/event/timing" {
 
 test "Catalog createPolicy — basic SELECT policy" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_basic.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_basic.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreatePolicyStmt{
@@ -6280,9 +6126,7 @@ test "Catalog createPolicy — basic SELECT policy" {
 
 test "Catalog createPolicy — restrictive INSERT policy with WITH CHECK" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_restrictive.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_restrictive.db");
     defer tc.teardown(allocator);
 
     const with_check_expr = ast.Expr{
@@ -6314,9 +6158,7 @@ test "Catalog createPolicy — restrictive INSERT policy with WITH CHECK" {
 
 test "Catalog createPolicy — UPDATE policy with USING and WITH CHECK" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_update.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_update.db");
     defer tc.teardown(allocator);
 
     const using_expr = ast.Expr{
@@ -6352,9 +6194,7 @@ test "Catalog createPolicy — UPDATE policy with USING and WITH CHECK" {
 
 test "Catalog createPolicy — all commands policy" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_all.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_all.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreatePolicyStmt{
@@ -6376,9 +6216,7 @@ test "Catalog createPolicy — all commands policy" {
 
 test "Catalog dropPolicy — existing policy" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_drop.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreatePolicyStmt{
@@ -6404,9 +6242,7 @@ test "Catalog dropPolicy — existing policy" {
 
 test "Catalog dropPolicy — IF EXISTS with nonexistent policy" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_drop_if_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_drop_if_exists.db");
     defer tc.teardown(allocator);
 
     // Should not error with IF EXISTS
@@ -6415,9 +6251,7 @@ test "Catalog dropPolicy — IF EXISTS with nonexistent policy" {
 
 test "Catalog dropPolicy — nonexistent without IF EXISTS" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_drop_error.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_drop_error.db");
     defer tc.teardown(allocator);
 
     // Should error without IF EXISTS
@@ -6426,9 +6260,7 @@ test "Catalog dropPolicy — nonexistent without IF EXISTS" {
 
 test "Catalog policyExists — existing and nonexistent" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_exists.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreatePolicyStmt{
@@ -6449,9 +6281,7 @@ test "Catalog policyExists — existing and nonexistent" {
 
 test "Catalog listPoliciesForTable — multiple policies" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_list.db");
     defer tc.teardown(allocator);
 
     const stmt1 = ast.CreatePolicyStmt{
@@ -6503,9 +6333,7 @@ test "Catalog listPoliciesForTable — multiple policies" {
 
 test "Catalog listPoliciesForTable — no policies" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_list_empty.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_list_empty.db");
     defer tc.teardown(allocator);
 
     const policies = try tc.catalog.listPoliciesForTable(allocator, "nonexistent_table");
@@ -6519,9 +6347,7 @@ test "Catalog listPoliciesForTable — no policies" {
 
 test "Catalog createPolicy — duplicate policy error" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_duplicate.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_duplicate.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreatePolicyStmt{
@@ -6541,9 +6367,7 @@ test "Catalog createPolicy — duplicate policy error" {
 
 test "Catalog getPolicy — nonexistent policy" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_get_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_get_nonexistent.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getPolicy("users", "nonexistent"));
@@ -6551,9 +6375,7 @@ test "Catalog getPolicy — nonexistent policy" {
 
 test "Catalog createPolicy — DELETE policy" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_delete.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_delete.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreatePolicyStmt{
@@ -6575,9 +6397,7 @@ test "Catalog createPolicy — DELETE policy" {
 
 test "Catalog createPolicy — USING expression is stored and retrieved" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_using_expr.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_using_expr.db");
     defer tc.teardown(allocator);
 
     // Create a policy with a USING expression SQL string
@@ -6615,9 +6435,7 @@ test "Catalog createPolicy — USING expression is stored and retrieved" {
 
 test "Catalog createPolicy — WITH CHECK expression is stored and retrieved" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_with_check_expr.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_with_check_expr.db");
     defer tc.teardown(allocator);
 
     const with_check_expr = ast.Expr{
@@ -6653,9 +6471,7 @@ test "Catalog createPolicy — WITH CHECK expression is stored and retrieved" {
 
 test "Catalog createPolicy — both USING and WITH CHECK expressions stored" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_policy_both_expr.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_policy_both_expr.db");
     defer tc.teardown(allocator);
 
     const using_expr = ast.Expr{ .boolean_literal = true };
@@ -6693,9 +6509,7 @@ test "Catalog createPolicy — both USING and WITH CHECK expressions stored" {
 
 test "Catalog createRole — basic role with defaults" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_basic.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_basic.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateRoleStmt{
@@ -6721,9 +6535,7 @@ test "Catalog createRole — basic role with defaults" {
 
 test "Catalog createRole — all options" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_all_options.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_all_options.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateRoleStmt{
@@ -6759,9 +6571,7 @@ test "Catalog createRole — all options" {
 
 test "Catalog createRole — NOLOGIN role" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_nologin.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_nologin.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateRoleStmt{
@@ -6783,9 +6593,7 @@ test "Catalog createRole — NOLOGIN role" {
 
 test "Catalog createRole — OR REPLACE existing role" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_or_replace.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_or_replace.db");
     defer tc.teardown(allocator);
 
     // Create initial role
@@ -6812,9 +6620,7 @@ test "Catalog createRole — OR REPLACE existing role" {
 
 test "Catalog createRole — duplicate role without OR REPLACE" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_duplicate.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_duplicate.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateRoleStmt{
@@ -6830,9 +6636,7 @@ test "Catalog createRole — duplicate role without OR REPLACE" {
 
 test "Catalog dropRole — existing role" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_drop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_drop.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateRoleStmt{
@@ -6850,9 +6654,7 @@ test "Catalog dropRole — existing role" {
 
 test "Catalog dropRole — IF EXISTS on nonexistent role" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_drop_if_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_drop_if_exists.db");
     defer tc.teardown(allocator);
 
     // Should succeed with IF EXISTS
@@ -6864,9 +6666,7 @@ test "Catalog dropRole — IF EXISTS on nonexistent role" {
 
 test "Catalog roleExists" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_exists.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_exists.db");
     defer tc.teardown(allocator);
 
     const stmt = ast.CreateRoleStmt{
@@ -6882,9 +6682,7 @@ test "Catalog roleExists" {
 
 test "Catalog alterRole — change options" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_alter.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_alter.db");
     defer tc.teardown(allocator);
 
     // Create initial role
@@ -6918,9 +6716,7 @@ test "Catalog alterRole — change options" {
 
 test "Catalog alterRole — partial update" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_alter_partial.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_alter_partial.db");
     defer tc.teardown(allocator);
 
     // Create initial role with all options
@@ -6954,9 +6750,7 @@ test "Catalog alterRole — partial update" {
 
 test "Catalog alterRole — nonexistent role" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_alter_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_alter_nonexistent.db");
     defer tc.teardown(allocator);
 
     const alter_opts = ast.RoleOptions{ .superuser = true };
@@ -6965,9 +6759,7 @@ test "Catalog alterRole — nonexistent role" {
 
 test "Catalog listRoles" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_list.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_list.db");
     defer tc.teardown(allocator);
 
     // Create multiple roles
@@ -7004,9 +6796,7 @@ test "Catalog listRoles" {
 
 test "Catalog getRole — nonexistent role" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_get_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_get_nonexistent.db");
     defer tc.teardown(allocator);
 
     try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getRole("does_not_exist"));
@@ -7014,9 +6804,7 @@ test "Catalog getRole — nonexistent role" {
 
 test "Catalog grantRole — basic membership" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_role_basic.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_role_basic.db");
     defer tc.teardown(allocator);
 
     // Create two roles
@@ -7044,9 +6832,7 @@ test "Catalog grantRole — basic membership" {
 
 test "Catalog grantRole — with admin option" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_role_admin_option.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_role_admin_option.db");
     defer tc.teardown(allocator);
 
     const role1_stmt = ast.CreateRoleStmt{
@@ -7072,9 +6858,7 @@ test "Catalog grantRole — with admin option" {
 
 test "Catalog grantRole — role does not exist" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_role_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_role_nonexistent.db");
     defer tc.teardown(allocator);
 
     const user_stmt = ast.CreateRoleStmt{
@@ -7093,9 +6877,7 @@ test "Catalog grantRole — role does not exist" {
 
 test "Catalog revokeRole — existing membership" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_revoke_role_existing.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_revoke_role_existing.db");
     defer tc.teardown(allocator);
 
     const admin_stmt = ast.CreateRoleStmt{
@@ -7123,9 +6905,7 @@ test "Catalog revokeRole — existing membership" {
 
 test "Catalog revokeRole — nonexistent membership (no error)" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_revoke_role_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_revoke_role_nonexistent.db");
     defer tc.teardown(allocator);
 
     const role1_stmt = ast.CreateRoleStmt{
@@ -7148,9 +6928,7 @@ test "Catalog revokeRole — nonexistent membership (no error)" {
 
 test "Catalog getRoleMembers — multiple members" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_get_role_members.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_get_role_members.db");
     defer tc.teardown(allocator);
 
     const admin_stmt = ast.CreateRoleStmt{ .name = "admin", .or_replace = false, .options = .{} };
@@ -7193,9 +6971,7 @@ test "Catalog getRoleMembers — multiple members" {
 
 test "Catalog getRoleMembers — no members" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_get_role_members_empty.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_get_role_members_empty.db");
     defer tc.teardown(allocator);
 
     const role_stmt = ast.CreateRoleStmt{ .name = "lonely", .or_replace = false, .options = .{} };
@@ -7209,9 +6985,7 @@ test "Catalog getRoleMembers — no members" {
 
 test "Catalog getMemberRoles — multiple roles" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_get_member_roles.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_get_member_roles.db");
     defer tc.teardown(allocator);
 
     const admin_stmt = ast.CreateRoleStmt{ .name = "admin", .or_replace = false, .options = .{} };
@@ -7254,9 +7028,7 @@ test "Catalog getMemberRoles — multiple roles" {
 
 test "Catalog getMemberRoles — no roles" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_get_member_roles_empty.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_get_member_roles_empty.db");
     defer tc.teardown(allocator);
 
     const user_stmt = ast.CreateRoleStmt{ .name = "bob", .or_replace = false, .options = .{} };
@@ -7270,9 +7042,7 @@ test "Catalog getMemberRoles — no roles" {
 
 test "Catalog role membership — grant overwrite" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_role_membership_overwrite.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_role_membership_overwrite.db");
     defer tc.teardown(allocator);
 
     const role1_stmt = ast.CreateRoleStmt{ .name = "role1", .or_replace = false, .options = .{} };
@@ -7294,9 +7064,7 @@ test "Catalog role membership — grant overwrite" {
 
 test "Catalog grantPermission — basic grant" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_basic.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_basic.db");
     defer tc.teardown(allocator);
 
     const privileges = [_]ast.Privilege{.select};
@@ -7321,9 +7089,7 @@ test "Catalog grantPermission — basic grant" {
 
 test "Catalog grantPermission — multiple privileges" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_multiple.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_multiple.db");
     defer tc.teardown(allocator);
 
     const privileges = [_]ast.Privilege{ .select, .insert, .update };
@@ -7345,9 +7111,7 @@ test "Catalog grantPermission — multiple privileges" {
 
 test "Catalog revokePermission — removes permission" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_revoke.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_revoke.db");
     defer tc.teardown(allocator);
 
     // First, grant permission
@@ -7380,9 +7144,7 @@ test "Catalog revokePermission — removes permission" {
 
 test "Catalog hasPermission — nonexistent permission" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_has_perm_nonexistent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_has_perm_nonexistent.db");
     defer tc.teardown(allocator);
 
     const has_perm = try tc.catalog.hasPermission(.table, "nonexistent", "nobody", .select);
@@ -7391,9 +7153,7 @@ test "Catalog hasPermission — nonexistent permission" {
 
 test "Catalog grantPermission — ALL privilege" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_all.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_all.db");
     defer tc.teardown(allocator);
 
     const privileges = [_]ast.Privilege{.all};
@@ -7416,9 +7176,7 @@ test "Catalog grantPermission — ALL privilege" {
 
 test "Catalog grantPermission — with_grant_option true" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_option.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_option.db");
     defer tc.teardown(allocator);
 
     const privileges = [_]ast.Privilege{.select};
@@ -7448,9 +7206,7 @@ test "Catalog grantPermission — with_grant_option true" {
 
 test "Catalog grantPermission — overwrites existing grant" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_grant_overwrite.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_grant_overwrite.db");
     defer tc.teardown(allocator);
 
     // First grant: SELECT only
@@ -7485,9 +7241,7 @@ test "Catalog grantPermission — overwrites existing grant" {
 
 test "Catalog revokePermission — nonexistent permission no-op" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_revoke_noop.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_revoke_noop.db");
     defer tc.teardown(allocator);
 
     // Revoke permission that was never granted (should not error)
@@ -7508,9 +7262,7 @@ test "Catalog revokePermission — nonexistent permission no-op" {
 
 test "Catalog hasPermission — different grantees isolated" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_perm_isolation.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_perm_isolation.db");
     defer tc.teardown(allocator);
 
     // Grant to alice
@@ -7547,9 +7299,7 @@ test "Catalog hasPermission — different grantees isolated" {
 
 test "Catalog createTableStats and getTableStats" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_table_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_table_stats.db");
     defer tc.teardown(allocator);
 
     // Create table stats
@@ -7569,9 +7319,7 @@ test "Catalog createTableStats and getTableStats" {
 
 test "Catalog createColumnStats and getColumnStats" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_column_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_column_stats.db");
     defer tc.teardown(allocator);
 
     // Create column stats
@@ -7602,9 +7350,7 @@ test "Catalog createColumnStats and getColumnStats" {
 
 test "Catalog dropTableStats" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_drop_table_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_drop_table_stats.db");
     defer tc.teardown(allocator);
 
     const stats = TableStats.init(1000);
@@ -7627,9 +7373,7 @@ test "Catalog dropTableStats" {
 
 test "Catalog dropColumnStats" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_drop_column_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_drop_column_stats.db");
     defer tc.teardown(allocator);
 
     const stats = ColumnStats{
@@ -7660,9 +7404,7 @@ test "Catalog dropColumnStats" {
 
 test "Catalog tableStatsExist" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_table_stats_exist.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_table_stats_exist.db");
     defer tc.teardown(allocator);
 
     // Initially no stats
@@ -7678,9 +7420,7 @@ test "Catalog tableStatsExist" {
 
 test "Catalog column stats with MCVs and histogram" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_full_column_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_full_column_stats.db");
     defer tc.teardown(allocator);
 
     // Create MCVs (serialization will copy the data, so these are temporary)
@@ -7725,9 +7465,7 @@ test "Catalog update existing table stats" {
     // if (true) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
-    const path = "test_catalog_update_table_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_update_table_stats.db");
     defer tc.teardown(allocator);
 
     // Create initial stats
@@ -7749,9 +7487,7 @@ test "Catalog update existing column stats" {
     // if (true) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
-    const path = "test_catalog_update_column_stats.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_update_column_stats.db");
     defer tc.teardown(allocator);
 
     // Create initial stats
@@ -7787,9 +7523,7 @@ test "Catalog update existing column stats" {
 
 test "Catalog stats with empty table name" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_empty_table_name.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_empty_table_name.db");
     defer tc.teardown(allocator);
 
     // Empty table name should work (edge case for temporary tables)
@@ -7803,9 +7537,7 @@ test "Catalog stats with empty table name" {
 
 test "Catalog stats with very long table and column names" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_long_names.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_long_names.db");
     defer tc.teardown(allocator);
 
     // 255-character names (common database limit)
@@ -7832,9 +7564,7 @@ test "Catalog stats with very long table and column names" {
 
 test "Catalog column stats for multiple columns on same table" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_multiple_columns.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_multiple_columns.db");
     defer tc.teardown(allocator);
 
     const stats1 = ColumnStats{
@@ -7888,9 +7618,7 @@ test "Catalog column stats for multiple columns on same table" {
 
 test "Catalog drop column stats preserves table stats" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_drop_column_preserves_table.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_drop_column_preserves_table.db");
     defer tc.teardown(allocator);
 
     // Create table and column stats
@@ -7922,9 +7650,7 @@ test "Catalog drop column stats preserves table stats" {
 
 test "Catalog zero distinct count edge case" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_zero_distinct.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_zero_distinct.db");
     defer tc.teardown(allocator);
 
     // Column with all NULLs has zero distinct values
@@ -7967,9 +7693,7 @@ test "IndexInfo with included columns" {
 
 test "Catalog serialize and deserialize index with INCLUDE columns" {
     const allocator = std.testing.allocator;
-    const path = "test_catalog_index_include.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_catalog_index_include.db");
     defer tc.teardown(allocator);
 
     // Create table with some columns
@@ -8039,9 +7763,7 @@ test "IndexInfo can be created with invalid state" {
 
 test "Create index concurrently on empty table succeeds" {
     const allocator = std.testing.allocator;
-    const path = "test_create_index_concurrent_empty.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_create_index_concurrent_empty.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8074,9 +7796,7 @@ test "Create index concurrently on empty table succeeds" {
 
 test "Create unique index concurrently detects duplicates on transition to valid" {
     const allocator = std.testing.allocator;
-    const path = "test_create_unique_index_concurrent.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_create_unique_index_concurrent.db");
     defer tc.teardown(allocator);
 
     // Create table with data
@@ -8111,9 +7831,7 @@ test "Create unique index concurrently detects duplicates on transition to valid
 
 test "Index state transitions from building to valid" {
     const allocator = std.testing.allocator;
-    const path = "test_index_state_transition.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_index_state_transition.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8149,9 +7867,7 @@ test "Index state transitions from building to valid" {
 
 test "Index state transitions from building to invalid on failure" {
     const allocator = std.testing.allocator;
-    const path = "test_index_state_invalid.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_index_state_invalid.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8188,9 +7904,7 @@ test "Index state transitions from building to invalid on failure" {
 
 test "Query planner ignores building state indexes" {
     const allocator = std.testing.allocator;
-    const path = "test_planner_ignores_building.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_planner_ignores_building.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8223,9 +7937,7 @@ test "Query planner ignores building state indexes" {
 
 test "Query planner ignores invalid state indexes" {
     const allocator = std.testing.allocator;
-    const path = "test_planner_ignores_invalid.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_planner_ignores_invalid.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8258,9 +7970,7 @@ test "Query planner ignores invalid state indexes" {
 
 test "Drop index on invalid index succeeds" {
     const allocator = std.testing.allocator;
-    const path = "test_drop_invalid_index.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_drop_invalid_index.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8293,9 +8003,7 @@ test "Drop index on invalid index succeeds" {
 
 test "Index build failure leaves index in invalid state" {
     const allocator = std.testing.allocator;
-    const path = "test_index_build_failure.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_index_build_failure.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8332,9 +8040,7 @@ test "Index build failure leaves index in invalid state" {
 
 test "Concurrent writes allowed while index is building" {
     const allocator = std.testing.allocator;
-    const path = "test_concurrent_writes_during_build.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_concurrent_writes_during_build.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8367,9 +8073,7 @@ test "Concurrent writes allowed while index is building" {
 
 test "Second CREATE INDEX CONCURRENTLY on same name fails" {
     const allocator = std.testing.allocator;
-    const path = "test_duplicate_concurrent_index.db";
-
-    var tc = try TestCatalog.setup(allocator, path);
+    var tc = try TestCatalog.setup(allocator, "test_duplicate_concurrent_index.db");
     defer tc.teardown(allocator);
 
     // Create table
@@ -8620,7 +8324,7 @@ test "serialize and deserialize IndexInfo with covering_storage = true" {
         .{ .name = "data", .column_type = .jsonb, .flags = .{} },
     };
 
-    const included_cols = [_][]const u8{ "data" };
+    const included_cols = [_][]const u8{"data"};
 
     const indexes = [_]IndexInfo{
         .{
