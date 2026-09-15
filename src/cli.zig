@@ -2804,40 +2804,40 @@ fn printError(writer: anytype, message: []const u8) void {
 
 /// SQL keywords for tab completion.
 const sql_keywords = [_][]const u8{
-    "SELECT",     "FROM",       "WHERE",       "INSERT",       "INTO",
-    "VALUES",     "UPDATE",     "SET",         "DELETE",       "CREATE",
-    "TABLE",      "DROP",       "INDEX",       "ALTER",        "ADD",
-    "COLUMN",     "RENAME",     "PRIMARY",     "KEY",          "UNIQUE",
-    "NOT",        "NULL",       "DEFAULT",     "CHECK",        "FOREIGN",
-    "REFERENCES", "BEGIN",      "COMMIT",      "ROLLBACK",     "SAVEPOINT",
-    "RELEASE",    "EXPLAIN",    "ORDER",       "BY",           "ASC",
-    "DESC",       "LIMIT",      "OFFSET",      "GROUP",        "HAVING",
-    "DISTINCT",   "ALL",        "UNION",       "EXCEPT",       "INTERSECT",
-    "JOIN",       "INNER",      "LEFT",        "RIGHT",        "FULL",
-    "OUTER",      "CROSS",      "NATURAL",     "ON",           "AS",
-    "AND",        "OR",         "IN",          "BETWEEN",      "IS",
-    "LIKE",       "CASE",       "WHEN",        "THEN",         "ELSE",
-    "END",        "CAST",       "COUNT",       "SUM",          "AVG",
-    "MIN",        "MAX",        "INTEGER",     "INT",          "REAL",
-    "TEXT",       "BLOB",       "BOOLEAN",     "VARCHAR",      "TRUE",
-    "FALSE",      "IF",         "EXISTS",      "AUTOINCREMENT", "TRANSACTION",
-    "VACUUM",     "ANALYZE",    "REINDEX",     "VIEW",         "TRIGGER",
-    "FUNCTION",   "WITH",       "RECURSIVE",   "WINDOW",       "PARTITION",
-    "OVER",       "ROW_NUMBER", "RANK",        "DENSE_RANK",   "LAG",
-    "LEAD",       "FIRST_VALUE", "LAST_VALUE", "ROWS",         "RANGE",
-    "UNBOUNDED",  "PRECEDING",  "FOLLOWING",   "CURRENT",      "GRANT",
-    "REVOKE",     "ROLE",       "POLICY",      "CONCURRENTLY", "MATERIALIZED",
-    "TO",         "WITHOUT",    "ROWID",       "STRICT",       "TEMP",
-    "TEMPORARY",  "REPLACE",    "CONSTRAINT",  "CASCADE",      "RESTRICT",
-    "ACTION",     "NO",         "OF",          "ENUM",         "DOMAIN",
-    "RETURNS",    "LANGUAGE",   "IMMUTABLE",   "STABLE",       "VOLATILE",
-    "BEFORE",     "AFTER",      "INSTEAD",     "EACH",         "STATEMENT",
-    "OLD",        "NEW",        "ENABLE",      "DISABLE",      "TRUNCATE",
-    "GLOB",       "ANY",        "ROW",         "ISOLATION",    "READ",
-    "COMMITTED",  "REPEATABLE", "SERIALIZABLE", "PRAGMA",      "SHOW",
-    "RESET",      "DATE",       "TIME",        "TIMESTAMP",    "INTERVAL",
-    "NUMERIC",    "DECIMAL",    "UUID",        "SERIAL",       "BIGSERIAL",
-    "ARRAY",      "JSON",       "JSONB",       "TSVECTOR",     "TSQUERY",
+    "SELECT",     "FROM",        "WHERE",        "INSERT",        "INTO",
+    "VALUES",     "UPDATE",      "SET",          "DELETE",        "CREATE",
+    "TABLE",      "DROP",        "INDEX",        "ALTER",         "ADD",
+    "COLUMN",     "RENAME",      "PRIMARY",      "KEY",           "UNIQUE",
+    "NOT",        "NULL",        "DEFAULT",      "CHECK",         "FOREIGN",
+    "REFERENCES", "BEGIN",       "COMMIT",       "ROLLBACK",      "SAVEPOINT",
+    "RELEASE",    "EXPLAIN",     "ORDER",        "BY",            "ASC",
+    "DESC",       "LIMIT",       "OFFSET",       "GROUP",         "HAVING",
+    "DISTINCT",   "ALL",         "UNION",        "EXCEPT",        "INTERSECT",
+    "JOIN",       "INNER",       "LEFT",         "RIGHT",         "FULL",
+    "OUTER",      "CROSS",       "NATURAL",      "ON",            "AS",
+    "AND",        "OR",          "IN",           "BETWEEN",       "IS",
+    "LIKE",       "CASE",        "WHEN",         "THEN",          "ELSE",
+    "END",        "CAST",        "COUNT",        "SUM",           "AVG",
+    "MIN",        "MAX",         "INTEGER",      "INT",           "REAL",
+    "TEXT",       "BLOB",        "BOOLEAN",      "VARCHAR",       "TRUE",
+    "FALSE",      "IF",          "EXISTS",       "AUTOINCREMENT", "TRANSACTION",
+    "VACUUM",     "ANALYZE",     "REINDEX",      "VIEW",          "TRIGGER",
+    "FUNCTION",   "WITH",        "RECURSIVE",    "WINDOW",        "PARTITION",
+    "OVER",       "ROW_NUMBER",  "RANK",         "DENSE_RANK",    "LAG",
+    "LEAD",       "FIRST_VALUE", "LAST_VALUE",   "ROWS",          "RANGE",
+    "UNBOUNDED",  "PRECEDING",   "FOLLOWING",    "CURRENT",       "GRANT",
+    "REVOKE",     "ROLE",        "POLICY",       "CONCURRENTLY",  "MATERIALIZED",
+    "TO",         "WITHOUT",     "ROWID",        "STRICT",        "TEMP",
+    "TEMPORARY",  "REPLACE",     "CONSTRAINT",   "CASCADE",       "RESTRICT",
+    "ACTION",     "NO",          "OF",           "ENUM",          "DOMAIN",
+    "RETURNS",    "LANGUAGE",    "IMMUTABLE",    "STABLE",        "VOLATILE",
+    "BEFORE",     "AFTER",       "INSTEAD",      "EACH",          "STATEMENT",
+    "OLD",        "NEW",         "ENABLE",       "DISABLE",       "TRUNCATE",
+    "GLOB",       "ANY",         "ROW",          "ISOLATION",     "READ",
+    "COMMITTED",  "REPEATABLE",  "SERIALIZABLE", "PRAGMA",        "SHOW",
+    "RESET",      "DATE",        "TIME",         "TIMESTAMP",     "INTERVAL",
+    "NUMERIC",    "DECIMAL",     "UUID",         "SERIAL",        "BIGSERIAL",
+    "ARRAY",      "JSON",        "JSONB",        "TSVECTOR",      "TSQUERY",
 };
 
 // ── Tests ────────────────────────────────────────────────────
@@ -2970,10 +2970,16 @@ test "handleDotCommand help" {
 
 test "handleDotCommand databases" {
     const allocator = std.testing.allocator;
-    const path = "test_databases.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_databases.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -3047,10 +3053,16 @@ test "handleDotCommand databases - memory database" {
 
 test "handleDotCommand dbinfo" {
     const allocator = std.testing.allocator;
-    const path = "test_dbinfo.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_dbinfo.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -3517,8 +3529,14 @@ test "handleDotCommand schema - table not found" {
 
 test "handleDotCommand schema - no tables" {
     const allocator = std.testing.allocator;
-    const path = "test_schema_no_tables.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_schema_no_tables.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3551,8 +3569,14 @@ test "handleDotCommand schema - no tables" {
 
 test "handleDotCommand indexes - named index" {
     const allocator = std.testing.allocator;
-    const path = "test_indexes_named.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_indexes_named.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3590,8 +3614,14 @@ test "handleDotCommand indexes - named index" {
 
 test "handleDotCommand indexes - all tables" {
     const allocator = std.testing.allocator;
-    const path = "test_indexes_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_indexes_all.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3633,8 +3663,14 @@ test "handleDotCommand indexes - all tables" {
 
 test "handleDotCommand indexes - no indexes" {
     const allocator = std.testing.allocator;
-    const path = "test_indexes_none.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_indexes_none.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3670,8 +3706,14 @@ test "handleDotCommand indexes - no indexes" {
 
 test "handleDotCommand indexes - table not found" {
     const allocator = std.testing.allocator;
-    const path = "test_indexes_notfound.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_indexes_notfound.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3704,8 +3746,14 @@ test "handleDotCommand indexes - table not found" {
 
 test "handleDotCommand indexes - no tables" {
     const allocator = std.testing.allocator;
-    const path = "test_indexes_no_tables.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_indexes_no_tables.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3738,8 +3786,14 @@ test "handleDotCommand indexes - no tables" {
 
 test "handleDotCommand dump - basic table" {
     const allocator = std.testing.allocator;
-    const path = "test_dump_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_dump_basic.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3787,8 +3841,14 @@ test "handleDotCommand dump - basic table" {
 
 test "handleDotCommand dump - empty database" {
     const allocator = std.testing.allocator;
-    const path = "test_dump_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_dump_empty.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -3821,8 +3881,14 @@ test "handleDotCommand dump - empty database" {
 
 test "handleDotCommand dump - with indexes" {
     const allocator = std.testing.allocator;
-    const path = "test_dump_indexes.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_dump_indexes.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -4153,8 +4219,14 @@ test "handleDotCommand .read executes SQL from file" {
     const allocator = std.testing.allocator;
 
     // Create test database
-    const path = "test_read_command.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_command.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4221,8 +4293,14 @@ test "handleDotCommand .read executes SQL from file" {
 test "handleDotCommand .read handles file not found" {
     const allocator = std.testing.allocator;
 
-    const path = "test_read_not_found.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_not_found.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4258,8 +4336,14 @@ test "handleDotCommand .read handles file not found" {
 test "handleDotCommand .read skips SQL comments" {
     const allocator = std.testing.allocator;
 
-    const path = "test_read_comments.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_comments.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4310,8 +4394,14 @@ test "handleDotCommand .read skips SQL comments" {
 test "handleDotCommand .read requires filename" {
     const allocator = std.testing.allocator;
 
-    const path = "test_read_no_arg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_no_arg.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4347,8 +4437,14 @@ test "handleDotCommand .read requires filename" {
 test "handleDotCommand .output to file" {
     const allocator = std.testing.allocator;
 
-    const path = "test_output_file.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_output_file.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4392,8 +4488,14 @@ test "handleDotCommand .output to file" {
 test "handleDotCommand .output reset to stdout" {
     const allocator = std.testing.allocator;
 
-    const path = "test_output_reset.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_output_reset.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4443,8 +4545,14 @@ test "handleDotCommand .output reset to stdout" {
 test "handleDotCommand .output already stdout" {
     const allocator = std.testing.allocator;
 
-    const path = "test_output_already_stdout.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_output_already_stdout.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4482,8 +4590,14 @@ test "handleDotCommand .output already stdout" {
 test "handleDotCommand .output file creation error" {
     const allocator = std.testing.allocator;
 
-    const path = "test_output_error.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_output_error.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4555,8 +4669,14 @@ test "handleDotCommand .output in help text" {
 test "handleDotCommand .timer on" {
     const allocator = std.testing.allocator;
 
-    const path = "test_timer_on.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_timer_on.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4594,8 +4714,14 @@ test "handleDotCommand .timer on" {
 test "handleDotCommand .timer off" {
     const allocator = std.testing.allocator;
 
-    const path = "test_timer_off.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_timer_off.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4633,8 +4759,14 @@ test "handleDotCommand .timer off" {
 test "handleDotCommand .timer shows current setting" {
     const allocator = std.testing.allocator;
 
-    const path = "test_timer_show.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_timer_show.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4671,8 +4803,14 @@ test "handleDotCommand .timer shows current setting" {
 test "handleDotCommand .timer invalid argument" {
     const allocator = std.testing.allocator;
 
-    const path = "test_timer_invalid.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_timer_invalid.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4710,8 +4848,14 @@ test "handleDotCommand .timer invalid argument" {
 test "handleDotCommand .help includes .timer" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_timer.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_timer.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4747,8 +4891,14 @@ test "handleDotCommand .help includes .timer" {
 test "handleDotCommand .headers on" {
     const allocator = std.testing.allocator;
 
-    const path = "test_headers_on.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_headers_on.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4786,8 +4936,14 @@ test "handleDotCommand .headers on" {
 test "handleDotCommand .headers off" {
     const allocator = std.testing.allocator;
 
-    const path = "test_headers_off.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_headers_off.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4825,8 +4981,14 @@ test "handleDotCommand .headers off" {
 test "handleDotCommand .headers shows current setting" {
     const allocator = std.testing.allocator;
 
-    const path = "test_headers_show.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_headers_show.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4863,8 +5025,14 @@ test "handleDotCommand .headers shows current setting" {
 test "handleDotCommand .headers invalid argument" {
     const allocator = std.testing.allocator;
 
-    const path = "test_headers_invalid.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_headers_invalid.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4902,8 +5070,14 @@ test "handleDotCommand .headers invalid argument" {
 test "handleDotCommand .help includes .headers" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_headers.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_headers.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4939,8 +5113,14 @@ test "handleDotCommand .help includes .headers" {
 test "handleDotCommand .separator set custom separator" {
     const allocator = std.testing.allocator;
 
-    const path = "test_separator_custom.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_separator_custom.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -4978,8 +5158,14 @@ test "handleDotCommand .separator set custom separator" {
 test "handleDotCommand .separator show current separator" {
     const allocator = std.testing.allocator;
 
-    const path = "test_separator_show.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_separator_show.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5016,8 +5202,14 @@ test "handleDotCommand .separator show current separator" {
 test "handleDotCommand .separator pipe then query with CSV output" {
     const allocator = std.testing.allocator;
 
-    const path = "test_separator_csv_output.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_separator_csv_output.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5065,8 +5257,14 @@ test "handleDotCommand .separator pipe then query with CSV output" {
 test "handleDotCommand .help includes .separator" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_separator.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_separator.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5103,8 +5301,14 @@ test "handleDotCommand .help includes .separator" {
 test "handleDotCommand .nullvalue set custom string" {
     const allocator = std.testing.allocator;
 
-    const path = "test_nullvalue_set.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_nullvalue_set.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5143,8 +5347,14 @@ test "handleDotCommand .nullvalue set custom string" {
 test "handleDotCommand .nullvalue show current string" {
     const allocator = std.testing.allocator;
 
-    const path = "test_nullvalue_show.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_nullvalue_show.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5182,8 +5392,14 @@ test "handleDotCommand .nullvalue show current string" {
 test "handleDotCommand .nullvalue with NULL values in query" {
     const allocator = std.testing.allocator;
 
-    const path = "test_nullvalue_query.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_nullvalue_query.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5230,8 +5446,14 @@ test "handleDotCommand .nullvalue with NULL values in query" {
 test "handleDotCommand .help includes .nullvalue" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_nullvalue.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_nullvalue.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5268,8 +5490,14 @@ test "handleDotCommand .help includes .nullvalue" {
 test "handleDotCommand .echo prints literal text" {
     const allocator = std.testing.allocator;
 
-    const path = "test_echo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_echo.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5306,8 +5534,14 @@ test "handleDotCommand .echo prints literal text" {
 test "handleDotCommand .echo with no text" {
     const allocator = std.testing.allocator;
 
-    const path = "test_echo_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_echo_empty.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5345,8 +5579,14 @@ test "handleDotCommand .echo with no text" {
 test "handleDotCommand .help includes .echo" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_echo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_echo.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5383,8 +5623,14 @@ test "handleDotCommand .help includes .echo" {
 test "handleDotCommand .help includes .clear" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_clear.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_clear.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5421,8 +5667,14 @@ test "handleDotCommand .help includes .clear" {
 test "handleDotCommand .print prints literal text" {
     const allocator = std.testing.allocator;
 
-    const path = "test_print.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_print.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5459,8 +5711,14 @@ test "handleDotCommand .print prints literal text" {
 test "handleDotCommand .print with no text" {
     const allocator = std.testing.allocator;
 
-    const path = "test_print_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_print_empty.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5498,8 +5756,14 @@ test "handleDotCommand .print with no text" {
 test "handleDotCommand .help includes .print" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_print.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_print.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5536,8 +5800,14 @@ test "handleDotCommand .help includes .print" {
 test "handleDotCommand .show displays all settings" {
     const allocator = std.testing.allocator;
 
-    const path = "test_show.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5580,8 +5850,14 @@ test "handleDotCommand .show displays all settings" {
 test "handleDotCommand .show with defaults" {
     const allocator = std.testing.allocator;
 
-    const path = "test_show_defaults.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show_defaults.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5625,8 +5901,14 @@ test "handleDotCommand .show with defaults" {
 test "handleDotCommand .help includes .show" {
     const allocator = std.testing.allocator;
 
-    const path = "test_help_show.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_show.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -5662,16 +5944,18 @@ test "handleDotCommand .help includes .show" {
 
 test "handleDotCommand .backup creates backup file" {
     const allocator = std.testing.allocator;
-    const path = "test_backup_source.db";
-    const backup_path = "test_backup_dest.db";
 
-    // Clean up any existing files
-    std.fs.cwd().deleteFile(path) catch {};
-    std.fs.cwd().deleteFile(backup_path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-        std.fs.cwd().deleteFile(backup_path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_backup_source.db", .{dir_path});
+
+    var backup_path_buf: [512]u8 = undefined;
+    const backup_path = try std.fmt.bufPrint(&backup_path_buf, "{s}/test_backup_dest.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -5701,12 +5985,15 @@ test "handleDotCommand .backup creates backup file" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const cmd = ".backup test_backup_dest.db";
+    var cmd_buf: [600]u8 = undefined;
+    const cmd = try std.fmt.bufPrint(&cmd_buf, ".backup {s}", .{backup_path});
     const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Database backed up to: test_backup_dest.db") != null);
+    var expect_buf: [600]u8 = undefined;
+    const expect_msg = try std.fmt.bufPrint(&expect_buf, "Database backed up to: {s}", .{backup_path});
+    try std.testing.expect(std.mem.indexOf(u8, output, expect_msg) != null);
 
     // Verify backup file exists
     const backup_file = std.fs.cwd().openFile(backup_path, .{}) catch return error.SkipZigTest;
@@ -5727,9 +6014,14 @@ test "handleDotCommand .backup creates backup file" {
 
 test "handleDotCommand .backup requires filename" {
     const allocator = std.testing.allocator;
-    const path = "test_backup_noarg.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_backup_noarg.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -5764,9 +6056,15 @@ test "handleDotCommand .backup requires filename" {
 
 test "handleDotCommand .backup prevents same file backup" {
     const allocator = std.testing.allocator;
-    const path = "test_backup_same.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_backup_same.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -5792,7 +6090,8 @@ test "handleDotCommand .backup prevents same file backup" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const cmd = ".backup test_backup_same.db";
+    var cmd_buf: [600]u8 = undefined;
+    const cmd = try std.fmt.bufPrint(&cmd_buf, ".backup {s}", .{path});
     const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
@@ -5802,15 +6101,18 @@ test "handleDotCommand .backup prevents same file backup" {
 
 test "handleDotCommand .backup handles existing file error" {
     const allocator = std.testing.allocator;
-    const path = "test_backup_exists_src.db";
-    const backup_path = "test_backup_exists_dest.db";
 
-    std.fs.cwd().deleteFile(path) catch {};
-    std.fs.cwd().deleteFile(backup_path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-        std.fs.cwd().deleteFile(backup_path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_backup_exists_src.db", .{dir_path});
+
+    var backup_path_buf: [512]u8 = undefined;
+    const backup_path = try std.fmt.bufPrint(&backup_path_buf, "{s}/test_backup_exists_dest.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -5840,7 +6142,8 @@ test "handleDotCommand .backup handles existing file error" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const cmd = ".backup test_backup_exists_dest.db";
+    var cmd_buf: [600]u8 = undefined;
+    const cmd = try std.fmt.bufPrint(&cmd_buf, ".backup {s}", .{backup_path});
     const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
@@ -5896,8 +6199,14 @@ test "handleDotCommand .save creates file from :memory: database" {
     var result2 = db.exec("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
     defer result2.close(allocator);
 
-    const save_path = "test_save_memory.db";
-    defer std.fs.cwd().deleteFile(save_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var save_path_buf: [512]u8 = undefined;
+    const save_path = try std.fmt.bufPrint(&save_path_buf, "{s}/test_save_memory.db", .{dir_path});
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -5920,7 +6229,7 @@ test "handleDotCommand .save creates file from :memory: database" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    var cmd_buf: [128]u8 = undefined;
+    var cmd_buf: [600]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
 
     const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
@@ -5985,10 +6294,16 @@ test "handleDotCommand .save prevents overwriting existing file" {
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
-    const save_path = "test_save_exists.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var save_path_buf: [512]u8 = undefined;
+    const save_path = try std.fmt.bufPrint(&save_path_buf, "{s}/test_save_exists.db", .{dir_path});
     // Create a dummy file
     std.fs.cwd().writeFile(.{ .sub_path = save_path, .data = "dummy" }) catch return error.SkipZigTest;
-    defer std.fs.cwd().deleteFile(save_path) catch {};
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -6011,7 +6326,7 @@ test "handleDotCommand .save prevents overwriting existing file" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    var cmd_buf: [128]u8 = undefined;
+    var cmd_buf: [600]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
 
     const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
@@ -6023,8 +6338,15 @@ test "handleDotCommand .save prevents overwriting existing file" {
 
 test "handleDotCommand .save works with file-based databases (uses backup)" {
     const allocator = std.testing.allocator;
-    const source_path = "test_save_source.db";
-    defer std.fs.cwd().deleteFile(source_path) catch {};
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var source_path_buf: [512]u8 = undefined;
+    const source_path = try std.fmt.bufPrint(&source_path_buf, "{s}/test_save_source.db", .{dir_path});
     var db = Database.open(allocator, source_path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -6034,8 +6356,8 @@ test "handleDotCommand .save works with file-based databases (uses backup)" {
     var result2 = db.exec("INSERT INTO products VALUES (1, 'Widget');") catch return error.SkipZigTest;
     defer result2.close(allocator);
 
-    const save_path = "test_save_dest.db";
-    defer std.fs.cwd().deleteFile(save_path) catch {};
+    var save_path_buf: [512]u8 = undefined;
+    const save_path = try std.fmt.bufPrint(&save_path_buf, "{s}/test_save_dest.db", .{dir_path});
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -6058,7 +6380,7 @@ test "handleDotCommand .save works with file-based databases (uses backup)" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    var cmd_buf: [128]u8 = undefined;
+    var cmd_buf: [600]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
 
     const result = handleDotCommand(allocator, &db, source_path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
@@ -6106,8 +6428,14 @@ test "handleDotCommand .help includes .save" {
 
 test "handleDotCommand .import imports CSV data" {
     const allocator = std.testing.allocator;
-    const path = "test_import.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_import.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -6163,8 +6491,14 @@ test "handleDotCommand .import imports CSV data" {
 
 test "handleDotCommand .import with custom separator" {
     const allocator = std.testing.allocator;
-    const path = "test_import_pipe.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_import_pipe.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
@@ -6311,8 +6645,14 @@ test "handleDotCommand .help includes .import" {
 
 test "handleDotCommand .changes shows rows affected by INSERT" {
     const allocator = std.testing.allocator;
-    const path = "test_changes_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_changes_insert.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -6356,8 +6696,14 @@ test "handleDotCommand .changes shows rows affected by INSERT" {
 
 test "handleDotCommand .changes shows rows affected by UPDATE" {
     const allocator = std.testing.allocator;
-    const path = "test_changes_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_changes_update.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -6402,8 +6748,14 @@ test "handleDotCommand .changes shows rows affected by UPDATE" {
 
 test "handleDotCommand .changes shows rows affected by DELETE" {
     const allocator = std.testing.allocator;
-    const path = "test_changes_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_changes_delete.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -6448,8 +6800,14 @@ test "handleDotCommand .changes shows rows affected by DELETE" {
 
 test "handleDotCommand .changes shows 0 for SELECT" {
     const allocator = std.testing.allocator;
-    const path = "test_changes_select.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_changes_select.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch unreachable;
     defer db.close();
@@ -6736,10 +7094,16 @@ test "handleDotCommand .help includes .bail" {
 
 test "readAndExecuteFile with bail_on_error off - continues on error" {
     const allocator = std.testing.allocator;
-    const path = "test_bail_off.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bail_off.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     // Create a test SQL file with one valid statement and one error
     const filename = "test_bail_off.sql";
@@ -6775,10 +7139,16 @@ test "readAndExecuteFile with bail_on_error off - continues on error" {
 
 test "readAndExecuteFile with bail_on_error on - stops on error" {
     const allocator = std.testing.allocator;
-    const path = "test_bail_on.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bail_on.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     // Create a test SQL file with one valid statement and one error
     const filename = "test_bail_on.sql";
@@ -6814,10 +7184,16 @@ test "readAndExecuteFile with bail_on_error on - stops on error" {
 
 test "handleDotCommand .log FILENAME - enable logging" {
     const allocator = std.testing.allocator;
-    const path = "test_log_enable.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_log_enable.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     const log_path = "test_query.log";
     defer std.fs.cwd().deleteFile(log_path) catch {};
@@ -6855,10 +7231,16 @@ test "handleDotCommand .log FILENAME - enable logging" {
 
 test "handleDotCommand .log off - disable logging" {
     const allocator = std.testing.allocator;
-    const path = "test_log_off.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_log_off.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -6891,10 +7273,16 @@ test "handleDotCommand .log off - disable logging" {
 
 test "handleDotCommand .log - show current status (off)" {
     const allocator = std.testing.allocator;
-    const path = "test_log_status.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_log_status.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -6926,10 +7314,16 @@ test "handleDotCommand .log - show current status (off)" {
 
 test "handleDotCommand .log - show current status (on)" {
     const allocator = std.testing.allocator;
-    const path = "test_log_status_on.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_log_status_on.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     const log_path = "test_status_on.log";
     defer std.fs.cwd().deleteFile(log_path) catch {};
@@ -6971,10 +7365,16 @@ test "handleDotCommand .log - show current status (on)" {
 
 test "handleDotCommand .show - includes log setting" {
     const allocator = std.testing.allocator;
-    const path = "test_show_log.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show_log.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7007,10 +7407,16 @@ test "handleDotCommand .show - includes log setting" {
 
 test "handleDotCommand .help - includes .log" {
     const allocator = std.testing.allocator;
-    const path = "test_help_log.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_log.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7042,10 +7448,16 @@ test "handleDotCommand .help - includes .log" {
 
 test "handleDotCommand .cd - show current directory" {
     const allocator = std.testing.allocator;
-    const path = "test_cd_show.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cd_show.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7077,10 +7489,16 @@ test "handleDotCommand .cd - show current directory" {
 
 test "handleDotCommand .cd DIRECTORY - change directory" {
     const allocator = std.testing.allocator;
-    const path = "test_cd_change.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cd_change.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     // Create a temp directory for testing
     const temp_dir = "test_cd_temp_dir";
@@ -7129,10 +7547,16 @@ test "handleDotCommand .cd DIRECTORY - change directory" {
 
 test "handleDotCommand .open - show current database" {
     const allocator = std.testing.allocator;
-    const path = "test_open_show.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_open_show.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7165,10 +7589,17 @@ test "handleDotCommand .open - show current database" {
 
 test "handleDotCommand .open FILENAME - return reopen result" {
     const allocator = std.testing.allocator;
-    const path = "test_open_original.db";
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_open_original.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7191,10 +7622,11 @@ test "handleDotCommand .open FILENAME - return reopen result" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const new_db_path = "test_open_new.db";
-    defer std.fs.cwd().deleteFile(new_db_path) catch {};
+    var new_db_path_buf: [512]u8 = undefined;
+    const new_db_path = try std.fmt.bufPrint(&new_db_path_buf, "{s}/test_open_new.db", .{dir_path});
 
-    const cmd = ".open " ++ new_db_path;
+    var cmd_buf: [600]u8 = undefined;
+    const cmd = try std.fmt.bufPrint(&cmd_buf, ".open {s}", .{new_db_path});
     const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
 
     // Verify we got a reopen result
@@ -7212,10 +7644,16 @@ test "handleDotCommand .open FILENAME - return reopen result" {
 
 test "handleDotCommand .help includes .open" {
     const allocator = std.testing.allocator;
-    const path = "test_help_open.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_open.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [8192]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7247,10 +7685,16 @@ test "handleDotCommand .help includes .open" {
 
 test "handleDotCommand .help includes .cd" {
     const allocator = std.testing.allocator;
-    const path = "test_help_cd.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_cd.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7282,10 +7726,16 @@ test "handleDotCommand .help includes .cd" {
 
 test "handleDotCommand .version shows version info" {
     const allocator = std.testing.allocator;
-    const path = "test_version.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_version.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7321,10 +7771,16 @@ test "handleDotCommand .version shows version info" {
 
 test "handleDotCommand .help includes .version" {
     const allocator = std.testing.allocator;
-    const path = "test_help_version.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_version.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7356,10 +7812,16 @@ test "handleDotCommand .help includes .version" {
 
 test "handleDotCommand .stats on - enable stats" {
     const allocator = std.testing.allocator;
-    const path = "test_stats_on.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_stats_on.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7392,10 +7854,16 @@ test "handleDotCommand .stats on - enable stats" {
 
 test "handleDotCommand .stats off - disable stats" {
     const allocator = std.testing.allocator;
-    const path = "test_stats_off.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_stats_off.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7428,10 +7896,16 @@ test "handleDotCommand .stats off - disable stats" {
 
 test "handleDotCommand .stats - show current stats setting" {
     const allocator = std.testing.allocator;
-    const path = "test_stats_show.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_stats_show.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7463,10 +7937,16 @@ test "handleDotCommand .stats - show current stats setting" {
 
 test "handleDotCommand .show - includes stats setting" {
     const allocator = std.testing.allocator;
-    const path = "test_show_stats.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show_stats.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [1024]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7498,10 +7978,16 @@ test "handleDotCommand .show - includes stats setting" {
 
 test "handleDotCommand .help - includes .stats command" {
     const allocator = std.testing.allocator;
-    const path = "test_help_stats.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_stats.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7534,10 +8020,16 @@ test "handleDotCommand .help - includes .stats command" {
 
 test "handleDotCommand .eqp on - enable automatic explain" {
     const allocator = std.testing.allocator;
-    const path = "test_eqp_on.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eqp_on.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7570,10 +8062,16 @@ test "handleDotCommand .eqp on - enable automatic explain" {
 
 test "handleDotCommand .eqp off - disable automatic explain" {
     const allocator = std.testing.allocator;
-    const path = "test_eqp_off.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eqp_off.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7606,10 +8104,16 @@ test "handleDotCommand .eqp off - disable automatic explain" {
 
 test "handleDotCommand .eqp - show current eqp setting" {
     const allocator = std.testing.allocator;
-    const path = "test_eqp_show.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eqp_show.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7641,10 +8145,16 @@ test "handleDotCommand .eqp - show current eqp setting" {
 
 test "handleDotCommand .show - includes eqp setting" {
     const allocator = std.testing.allocator;
-    const path = "test_show_eqp.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show_eqp.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7676,10 +8186,16 @@ test "handleDotCommand .show - includes eqp setting" {
 
 test "handleDotCommand .prompt MAIN CONTINUE - set custom prompts" {
     const allocator = std.testing.allocator;
-    const path = "test_prompt_set.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prompt_set.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7713,10 +8229,16 @@ test "handleDotCommand .prompt MAIN CONTINUE - set custom prompts" {
 
 test "handleDotCommand .prompt - show current prompts" {
     const allocator = std.testing.allocator;
-    const path = "test_prompt_show.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prompt_show.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7749,10 +8271,16 @@ test "handleDotCommand .prompt - show current prompts" {
 
 test "handleDotCommand .prompt - error on missing argument" {
     const allocator = std.testing.allocator;
-    const path = "test_prompt_error.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prompt_error.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7784,10 +8312,16 @@ test "handleDotCommand .prompt - error on missing argument" {
 
 test "handleDotCommand .show - includes prompt setting" {
     const allocator = std.testing.allocator;
-    const path = "test_show_prompt.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show_prompt.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7819,10 +8353,16 @@ test "handleDotCommand .show - includes prompt setting" {
 
 test "handleDotCommand .help - includes .prompt command" {
     const allocator = std.testing.allocator;
-    const path = "test_help_prompt.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_prompt.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7854,10 +8394,16 @@ test "handleDotCommand .help - includes .prompt command" {
 
 test "handleDotCommand .help - includes .eqp command" {
     const allocator = std.testing.allocator;
-    const path = "test_help_eqp.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_eqp.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -7890,16 +8436,20 @@ test "handleDotCommand .help - includes .eqp command" {
 
 test "handleDotCommand .once - write next query to file" {
     const allocator = std.testing.allocator;
-    const path = "test_once_source.db";
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_once_source.db", .{dir_path});
     const once_path = "test_once_output.txt";
 
     // Clean up any existing files
-    std.fs.cwd().deleteFile(path) catch {};
     std.fs.cwd().deleteFile(once_path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-        std.fs.cwd().deleteFile(once_path) catch {};
-    }
+    defer std.fs.cwd().deleteFile(once_path) catch {};
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -7955,7 +8505,7 @@ test "handleDotCommand .once - write next query to file" {
         while (try rows.next()) |r| {
             var row = r;
             defer row.deinit();
-            once_out.print("{d},{s}\n", .{row.values[0].integer, row.values[1].text}) catch {};
+            once_out.print("{d},{s}\n", .{ row.values[0].integer, row.values[1].text }) catch {};
         }
     }
     once_out.flush() catch {};
@@ -7975,9 +8525,14 @@ test "handleDotCommand .once - write next query to file" {
 
 test "handleDotCommand .once - requires filename" {
     const allocator = std.testing.allocator;
-    const path = "test_once_noarg.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_once_noarg.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -8012,9 +8567,14 @@ test "handleDotCommand .once - requires filename" {
 
 test "handleDotCommand .show - includes once setting" {
     const allocator = std.testing.allocator;
-    const path = "test_show_once.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_show_once.db", .{dir_path});
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -8050,10 +8610,16 @@ test "handleDotCommand .show - includes once setting" {
 
 test "handleDotCommand .help - includes .once command" {
     const allocator = std.testing.allocator;
-    const path = "test_help_once.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_once.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [8192]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8086,10 +8652,16 @@ test "handleDotCommand .help - includes .once command" {
 
 test "handleDotCommand .system - executes shell command" {
     const allocator = std.testing.allocator;
-    const path = "test_system_cmd.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_system_cmd.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8121,10 +8693,16 @@ test "handleDotCommand .system - executes shell command" {
 
 test "handleDotCommand .system - missing command shows error" {
     const allocator = std.testing.allocator;
-    const path = "test_system_missing.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_system_missing.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8156,10 +8734,16 @@ test "handleDotCommand .system - missing command shows error" {
 
 test "handleDotCommand .help - includes .system command" {
     const allocator = std.testing.allocator;
-    const path = "test_help_system.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_system.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [8192]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8191,10 +8775,16 @@ test "handleDotCommand .help - includes .system command" {
 
 test "handleDotCommand .shell - executes shell command (SQLite alias)" {
     const allocator = std.testing.allocator;
-    const path = "test_shell_cmd.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_shell_cmd.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8226,10 +8816,16 @@ test "handleDotCommand .shell - executes shell command (SQLite alias)" {
 
 test "handleDotCommand .shell - missing command shows error" {
     const allocator = std.testing.allocator;
-    const path = "test_shell_missing.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_shell_missing.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8261,10 +8857,16 @@ test "handleDotCommand .shell - missing command shows error" {
 
 test "handleDotCommand .help - includes .shell command" {
     const allocator = std.testing.allocator;
-    const path = "test_help_shell.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_help_shell.db", .{dir_path});
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
-    defer std.fs.cwd().deleteFile(path) catch {};
 
     var buf: [8192]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
