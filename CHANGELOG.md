@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uniform single-path occurrences plus 7 multi-path variants: backup source/dest, save-memory/
   exists, save source/dest, open original/new) now write into a `std.testing.tmpDir` instead of
   the repo root — 105 occurrences, 1 file. 1 file (~819 occurrences) remains: `sql/engine.zig`.
+- **Repo hygiene** (plan 001 item 2, part 2, batch 11 — final batch): test scratch DBs in
+  `sql/engine.zig` (819 occurrences across 6 variant shapes, including WAL-mode companion
+  `-wal` paths and CSV import/export `COPY` literals) now write into a `std.testing.tmpDir`
+  instead of the repo root. This completes the scratch-DB-to-tmp-dir sub-item — 0 files remain.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

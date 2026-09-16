@@ -1723,16 +1723,20 @@ pub const Database = struct {
                 .on_condition = if (j.on_condition) |cond| try substituteExpr(template_arena, execution_arena, cond, params) else null,
                 .algorithm = j.algorithm,
             } },
-            .sort => |s| .{ .sort = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, s.input, params),
-                .order_by = s.order_by, // OrderByItem contains expressions but they're rarely bind parameters
-            } },
-            .aggregate => |a| .{ .aggregate = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, a.input, params),
-                .group_by = a.group_by, // Could have bind parameters, but rare
-                .aggregates = a.aggregates, // Aggregate args could have bind parameters, but rare
-                .grouping_sets = a.grouping_sets,
-            } },
+            .sort => |s| .{
+                .sort = .{
+                    .input = try substituteParamsInNode(template_arena, execution_arena, s.input, params),
+                    .order_by = s.order_by, // OrderByItem contains expressions but they're rarely bind parameters
+                },
+            },
+            .aggregate => |a| .{
+                .aggregate = .{
+                    .input = try substituteParamsInNode(template_arena, execution_arena, a.input, params),
+                    .group_by = a.group_by, // Could have bind parameters, but rare
+                    .aggregates = a.aggregates, // Aggregate args could have bind parameters, but rare
+                    .grouping_sets = a.grouping_sets,
+                },
+            },
             .limit => |l| .{ .limit = .{
                 .input = try substituteParamsInNode(template_arena, execution_arena, l.input, params),
                 .limit_expr = if (l.limit_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
@@ -1749,16 +1753,20 @@ pub const Database = struct {
                 .left = try substituteParamsInNode(template_arena, execution_arena, s.left, params),
                 .right = try substituteParamsInNode(template_arena, execution_arena, s.right, params),
             } },
-            .window => |w| .{ .window = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, w.input, params),
-                .funcs = w.funcs, // Window function exprs could have bind parameters, but rare
-                .aliases = w.aliases,
-            } },
-            .match_recognize => |mr| .{ .match_recognize = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, mr.input, params),
-                .spec = mr.spec, // PARTITION BY/ORDER BY/MEASURES/DEFINE exprs could have bind parameters, but rare
-                .alias = mr.alias,
-            } },
+            .window => |w| .{
+                .window = .{
+                    .input = try substituteParamsInNode(template_arena, execution_arena, w.input, params),
+                    .funcs = w.funcs, // Window function exprs could have bind parameters, but rare
+                    .aliases = w.aliases,
+                },
+            },
+            .match_recognize => |mr| .{
+                .match_recognize = .{
+                    .input = try substituteParamsInNode(template_arena, execution_arena, mr.input, params),
+                    .spec = mr.spec, // PARTITION BY/ORDER BY/MEASURES/DEFINE exprs could have bind parameters, but rare
+                    .alias = mr.alias,
+                },
+            },
         };
         return new_node;
     }
@@ -2898,7 +2906,10 @@ pub const Database = struct {
                         if (count >= max_rows) break;
                         const vals = try self.allocator.alloc(executor_mod.Value, gs_ctx_n_cols);
                         vals[0] = .{ .real = v };
-                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
+                        if (tfs.with_ordinality) {
+                            vals[1] = .{ .integer = ord };
+                            ord += 1;
+                        }
                         try rows.append(self.allocator, vals);
                         v += step;
                     }
@@ -2933,7 +2944,10 @@ pub const Database = struct {
                         if (count >= max_rows) break;
                         const vals = try self.allocator.alloc(executor_mod.Value, gs_ctx_n_cols);
                         vals[0] = .{ .integer = v };
-                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
+                        if (tfs.with_ordinality) {
+                            vals[1] = .{ .integer = ord };
+                            ord += 1;
+                        }
                         try rows.append(self.allocator, vals);
                         if (step > 0) {
                             v +|= @as(i64, @intCast(step));
@@ -3036,7 +3050,10 @@ pub const Database = struct {
                                     break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                 }
                             };
-                            if (tfs.with_ordinality) { vals[2] = .{ .integer = ord }; ord += 1; }
+                            if (tfs.with_ordinality) {
+                                vals[2] = .{ .integer = ord };
+                                ord += 1;
+                            }
                             try rows.append(self.allocator, vals);
                         }
                     },
@@ -3129,7 +3146,10 @@ pub const Database = struct {
                                     break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                 }
                             };
-                            if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
+                            if (tfs.with_ordinality) {
+                                vals[1] = .{ .integer = ord };
+                                ord += 1;
+                            }
                             try rows.append(self.allocator, vals);
                         }
                     },
@@ -3287,7 +3307,10 @@ pub const Database = struct {
                         if (count >= max_rows) break;
                         const vals = try self.allocator.alloc(Value, gs_n_cols);
                         vals[0] = .{ .real = v };
-                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
+                        if (tfs.with_ordinality) {
+                            vals[1] = .{ .integer = ord };
+                            ord += 1;
+                        }
                         try rows.append(self.allocator, vals);
                         v += step;
                     }
@@ -3323,7 +3346,10 @@ pub const Database = struct {
                         if (count >= max_rows) break;
                         const vals = try self.allocator.alloc(Value, gs_n_cols);
                         vals[0] = .{ .integer = v };
-                        if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
+                        if (tfs.with_ordinality) {
+                            vals[1] = .{ .integer = ord };
+                            ord += 1;
+                        }
                         try rows.append(self.allocator, vals);
                         v += step;
                     }
@@ -3421,7 +3447,10 @@ pub const Database = struct {
                                     break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                 }
                             };
-                            if (tfs.with_ordinality) { vals[2] = .{ .integer = ord }; ord += 1; }
+                            if (tfs.with_ordinality) {
+                                vals[2] = .{ .integer = ord };
+                                ord += 1;
+                            }
                             try rows.append(self.allocator, vals);
                         }
                     },
@@ -3506,7 +3535,10 @@ pub const Database = struct {
                                         break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
                                     }
                                 };
-                                if (tfs.with_ordinality) { vals[1] = .{ .integer = ord }; ord += 1; }
+                                if (tfs.with_ordinality) {
+                                    vals[1] = .{ .integer = ord };
+                                    ord += 1;
+                                }
                                 try rows.append(self.allocator, vals);
                             }
                         },
@@ -10510,10 +10542,15 @@ fn cleanupTestDb(db: *Database, path: []const u8) void {
 }
 
 test "Database open and close" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_engine_open.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_engine_open.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     {
@@ -10530,10 +10567,15 @@ test "Database open and close" {
 }
 
 test "CREATE TABLE via execSQL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10547,10 +10589,15 @@ test "CREATE TABLE via execSQL" {
 }
 
 test "CREATE TABLE IF NOT EXISTS" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_ine.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_ine.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10568,10 +10615,15 @@ test "CREATE TABLE IF NOT EXISTS" {
 }
 
 test "DROP TABLE via execSQL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_drop.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_drop.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10586,10 +10638,15 @@ test "DROP TABLE via execSQL" {
 }
 
 test "INSERT and SELECT round-trip" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_insert_sel.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_sel.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10620,10 +10677,15 @@ test "INSERT and SELECT round-trip" {
 }
 
 test "INSERT multiple rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_insert_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10648,10 +10710,15 @@ test "INSERT multiple rows" {
 }
 
 test "SELECT with WHERE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_sel_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_sel_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10677,10 +10744,15 @@ test "SELECT with WHERE clause" {
 }
 
 test "SELECT with ORDER BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_sel_order.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_sel_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10706,10 +10778,15 @@ test "SELECT with ORDER BY" {
 }
 
 test "ORDER BY on non-selected column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_order_noselect.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_noselect.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10752,10 +10829,15 @@ test "ORDER BY on non-selected column" {
 }
 
 test "SELECT with LIMIT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_sel_limit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_sel_limit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10778,10 +10860,15 @@ test "SELECT with LIMIT" {
 }
 
 test "SELECT COUNT(*) aggregate" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_count.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10811,10 +10898,15 @@ test "SELECT COUNT(*) aggregate" {
 }
 
 test "DELETE with WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10842,10 +10934,15 @@ test "DELETE with WHERE" {
 }
 
 test "UPDATE with WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10873,10 +10970,15 @@ test "UPDATE with WHERE" {
 }
 
 test "SELECT * (all columns)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_sel_star.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_sel_star.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10899,10 +11001,15 @@ test "SELECT * (all columns)" {
 }
 
 test "table not found error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_notfound.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_notfound.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10911,10 +11018,15 @@ test "table not found error" {
 }
 
 test "duplicate CREATE TABLE error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_dup_create.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_dup_create.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10926,10 +11038,15 @@ test "duplicate CREATE TABLE error" {
 }
 
 test "DROP TABLE IF EXISTS on nonexistent" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_drop_ine.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_drop_ine.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10939,10 +11056,15 @@ test "DROP TABLE IF EXISTS on nonexistent" {
 }
 
 test "empty SELECT result" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_empty_sel.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_empty_sel.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10958,10 +11080,15 @@ test "empty SELECT result" {
 }
 
 test "SELECT with expression" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_sel_expr.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_sel_expr.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -10984,10 +11111,15 @@ test "SELECT with expression" {
 }
 
 test "SELECT with LIMIT and OFFSET" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_limit_off.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_limit_off.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11020,10 +11152,15 @@ test "SELECT with LIMIT and OFFSET" {
 }
 
 test "DELETE all rows (no WHERE)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_del_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_del_all.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11050,10 +11187,15 @@ test "DELETE all rows (no WHERE)" {
 }
 
 test "UPDATE all rows (no WHERE)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_upd_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_upd_all.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11085,10 +11227,15 @@ test "UPDATE all rows (no WHERE)" {
 }
 
 test "SUM aggregate" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_sum.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_sum.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11114,10 +11261,15 @@ test "SUM aggregate" {
 }
 
 test "MIN and MAX aggregates" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_minmax.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_minmax.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11147,10 +11299,15 @@ test "MIN and MAX aggregates" {
 }
 
 test "SELECT with compound WHERE (AND)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_and.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_and.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11178,10 +11335,15 @@ test "SELECT with compound WHERE (AND)" {
 }
 
 test "SELECT with OR in WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_or.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_or.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11208,10 +11370,15 @@ test "SELECT with OR in WHERE" {
 }
 
 test "NULL value insertion and retrieval" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11235,10 +11402,15 @@ test "NULL value insertion and retrieval" {
 }
 
 test "data persistence across close and reopen" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_persist.db", .{dir_path});
 
     // Write data and close
     {
@@ -11275,10 +11447,15 @@ test "data persistence across close and reopen" {
 }
 
 test "multiple tables in same database" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_multi_tbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multi_tbl.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11317,10 +11494,15 @@ test "multiple tables in same database" {
 }
 
 test "parse error returns ParseError" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_parse_err.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_parse_err.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11329,10 +11511,15 @@ test "parse error returns ParseError" {
 }
 
 test "DROP nonexistent table without IF EXISTS" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_drop_noex.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_drop_noex.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11341,10 +11528,15 @@ test "DROP nonexistent table without IF EXISTS" {
 }
 
 test "INNER JOIN two tables" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_join_inner.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_join_inner.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11380,10 +11572,15 @@ test "INNER JOIN two tables" {
 }
 
 test "LEFT JOIN with unmatched rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_join_left.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_join_left.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11418,10 +11615,15 @@ test "LEFT JOIN with unmatched rows" {
 }
 
 test "GROUP BY with COUNT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_group_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_group_count.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11451,10 +11653,15 @@ test "GROUP BY with COUNT" {
 }
 
 test "GROUP BY with SUM" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_group_sum.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_group_sum.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11481,10 +11688,15 @@ test "GROUP BY with SUM" {
 }
 
 test "AVG aggregate" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_avg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_avg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11517,10 +11729,15 @@ test "AVG aggregate" {
 }
 
 test "multiple aggregates in one query" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_multi_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multi_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11548,10 +11765,15 @@ test "multiple aggregates in one query" {
 }
 
 test "ORDER BY DESC" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_order_desc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_desc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11582,10 +11804,15 @@ test "ORDER BY DESC" {
 }
 
 test "SELECT with LIKE in WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_like.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_like.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11612,10 +11839,15 @@ test "SELECT with LIKE in WHERE" {
 }
 
 test "SELECT with BETWEEN in WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_between.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_between.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11645,10 +11877,15 @@ test "SELECT with BETWEEN in WHERE" {
 }
 
 test "SELECT with IN list" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_in_list.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_in_list.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11675,10 +11912,15 @@ test "SELECT with IN list" {
 }
 
 test "UPDATE with expression" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_upd_expr.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_upd_expr.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11709,10 +11951,15 @@ test "UPDATE with expression" {
 }
 
 test "INSERT and DELETE then re-insert" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reinsert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reinsert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11751,10 +11998,15 @@ test "INSERT and DELETE then re-insert" {
 }
 
 test "large INSERT batch" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_large_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_large_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11782,10 +12034,15 @@ test "large INSERT batch" {
 }
 
 test "SELECT with negative value in WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_neg_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_neg_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11812,10 +12069,15 @@ test "SELECT with negative value in WHERE" {
 }
 
 test "empty table aggregate returns zero" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_empty_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_empty_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11835,10 +12097,15 @@ test "empty table aggregate returns zero" {
 }
 
 test "INSERT with NULL explicit and column types" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_null_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_null_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11863,10 +12130,15 @@ test "INSERT with NULL explicit and column types" {
 }
 
 test "SELECT with IS NULL filter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_is_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_is_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11893,10 +12165,15 @@ test "SELECT with IS NULL filter" {
 }
 
 test "transaction statements return OK" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_txn.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_txn.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11912,10 +12189,15 @@ test "transaction statements return OK" {
 // ── Index Selection Tests ────────────────────────────────────────────
 
 test "index scan: WHERE on PRIMARY KEY integer column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11954,10 +12236,15 @@ test "index scan: WHERE on PRIMARY KEY integer column" {
 }
 
 test "index scan: WHERE PK not found returns empty" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan2.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan2.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -11981,10 +12268,15 @@ test "index scan: WHERE PK not found returns empty" {
 }
 
 test "index scan: multiple inserts then PK lookup" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan3.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan3.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12023,10 +12315,15 @@ test "index scan: multiple inserts then PK lookup" {
 }
 
 test "index scan: DELETE then index lookup returns empty" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan4.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan4.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12060,10 +12357,15 @@ test "index scan: DELETE then index lookup returns empty" {
 }
 
 test "index scan: UPDATE then index lookup returns updated value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan5.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan5.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12095,10 +12397,15 @@ test "index scan: UPDATE then index lookup returns updated value" {
 }
 
 test "index scan: text PRIMARY KEY lookup" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan6.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan6.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12127,10 +12434,15 @@ test "index scan: text PRIMARY KEY lookup" {
 }
 
 test "index scan: non-PK column falls back to full scan" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan7.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan7.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12155,10 +12467,15 @@ test "index scan: non-PK column falls back to full scan" {
 }
 
 test "index scan: persistence across close/reopen" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_idxscan8.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_idxscan8.db", .{dir_path});
 
     // Create and populate
     {
@@ -12193,7 +12510,6 @@ test "index scan: persistence across close/reopen" {
 }
 
 test "extractEqualityPredicate: column = integer" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const left = ast_mod.Expr{ .column_ref = .{ .name = "id" } };
     const right = ast_mod.Expr{ .integer_literal = 42 };
@@ -12205,7 +12521,6 @@ test "extractEqualityPredicate: column = integer" {
 }
 
 test "extractEqualityPredicate: integer = column (reversed)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const left = ast_mod.Expr{ .integer_literal = 7 };
     const right = ast_mod.Expr{ .column_ref = .{ .name = "age" } };
@@ -12217,7 +12532,6 @@ test "extractEqualityPredicate: integer = column (reversed)" {
 }
 
 test "extractEqualityPredicate: column = string" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const left = ast_mod.Expr{ .column_ref = .{ .name = "name" } };
     const right = ast_mod.Expr{ .string_literal = "Alice" };
@@ -12229,7 +12543,6 @@ test "extractEqualityPredicate: column = string" {
 }
 
 test "extractEqualityPredicate: returns null for non-equality" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const left = ast_mod.Expr{ .column_ref = .{ .name = "id" } };
     const right = ast_mod.Expr{ .integer_literal = 5 };
@@ -12239,7 +12552,6 @@ test "extractEqualityPredicate: returns null for non-equality" {
 }
 
 test "extractEqualityPredicate: returns null for qualified column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const left = ast_mod.Expr{ .column_ref = .{ .name = "id", .prefix = "t" } };
     const right = ast_mod.Expr{ .integer_literal = 5 };
@@ -12249,7 +12561,6 @@ test "extractEqualityPredicate: returns null for qualified column" {
 }
 
 test "valueToIndexKey: integer ordering" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Verify that encoding preserves lexicographic order for integers
     const k1 = try integerToIndexKey(testing.allocator, -10);
@@ -12265,7 +12576,6 @@ test "valueToIndexKey: integer ordering" {
 }
 
 test "catalog index serialization roundtrip" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const columns = [_]catalog_mod.ColumnInfo{
         .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
@@ -12290,7 +12600,6 @@ test "catalog index serialization roundtrip" {
 }
 
 test "catalog index backward compatibility (no indexes)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Serialize without indexes (old format)
     const columns = [_]catalog_mod.ColumnInfo{
@@ -12311,11 +12620,19 @@ test "catalog index backward compatibility (no indexes)" {
 // ── WAL Mode Integration Tests ─────────────────────────────────────────
 
 test "WAL mode: open and close" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_open.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_open.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_open.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_open.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     try testing.expect(db.wal != null);
@@ -12323,11 +12640,19 @@ test "WAL mode: open and close" {
 }
 
 test "WAL mode: CREATE TABLE and INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_insert.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_insert.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_insert.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     defer db.close();
@@ -12356,11 +12681,19 @@ test "WAL mode: CREATE TABLE and INSERT" {
 }
 
 test "WAL mode: data persistence across close and reopen" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_persist.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_persist.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_persist.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     // Session 1: create table and insert data
     {
@@ -12392,11 +12725,19 @@ test "WAL mode: data persistence across close and reopen" {
 }
 
 test "WAL mode: UPDATE and DELETE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_upd_del.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_upd_del.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_upd_del.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_upd_del.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     defer db.close();
@@ -12433,11 +12774,19 @@ test "WAL mode: UPDATE and DELETE" {
 }
 
 test "WAL mode: aggregates" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_agg.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_agg.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_agg.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     defer db.close();
@@ -12467,11 +12816,19 @@ test "WAL mode: aggregates" {
 }
 
 test "WAL mode: multiple tables" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_multi.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_multi.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_multi.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     defer db.close();
@@ -12511,11 +12868,19 @@ test "WAL mode: multiple tables" {
 }
 
 test "WAL mode: DROP TABLE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_drop.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_drop.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_drop.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_drop.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     defer db.close();
@@ -12533,11 +12898,19 @@ test "WAL mode: DROP TABLE" {
 }
 
 test "WAL mode: large batch insert" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_wal_batch.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_eng_wal_batch.db-wal") catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_batch.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_batch.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
     defer db.close();
@@ -12566,10 +12939,15 @@ test "WAL mode: large batch insert" {
 // ── Error Handling Tests ──────────────────────────────────────────────
 
 test "error: parse invalid SQL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_parse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_parse.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12580,10 +12958,15 @@ test "error: parse invalid SQL" {
 }
 
 test "error: empty and whitespace SQL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_empty.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12594,10 +12977,15 @@ test "error: empty and whitespace SQL" {
 }
 
 test "error: SELECT from non-existent table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_no_table.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_no_table.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12606,10 +12994,15 @@ test "error: SELECT from non-existent table" {
 }
 
 test "error: INSERT into non-existent table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_ins_notbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_ins_notbl.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12618,10 +13011,15 @@ test "error: INSERT into non-existent table" {
 }
 
 test "error: UPDATE non-existent table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_upd_notbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_upd_notbl.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12630,10 +13028,15 @@ test "error: UPDATE non-existent table" {
 }
 
 test "error: DELETE from non-existent table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_del_notbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_del_notbl.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12642,10 +13045,15 @@ test "error: DELETE from non-existent table" {
 }
 
 test "error: CREATE TABLE that already exists" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_dup_tbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_dup_tbl.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12657,10 +13065,15 @@ test "error: CREATE TABLE that already exists" {
 }
 
 test "error: DROP TABLE that does not exist" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_drop_notbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_drop_notbl.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12669,10 +13082,15 @@ test "error: DROP TABLE that does not exist" {
 }
 
 test "DROP TABLE IF EXISTS on non-existent table succeeds" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_drop_ifex.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_drop_ifex.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12683,10 +13101,15 @@ test "DROP TABLE IF EXISTS on non-existent table succeeds" {
 }
 
 test "error: SELECT with non-existent column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_nocol.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_nocol.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12698,10 +13121,15 @@ test "error: SELECT with non-existent column" {
 }
 
 test "error: INSERT column count mismatch" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_colmis.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_colmis.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12714,10 +13142,15 @@ test "error: INSERT column count mismatch" {
 }
 
 test "successive exec calls on same database" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_multi_exec.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multi_exec.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12757,10 +13190,15 @@ test "successive exec calls on same database" {
 }
 
 test "transaction statement returns OK" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_txn_ok.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_txn_ok.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12775,10 +13213,15 @@ test "transaction statement returns OK" {
 }
 
 test "error: exec after error recovers" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_err_recover.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_err_recover.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -12806,10 +13249,15 @@ test "error: exec after error recovers" {
 // ── MVCC Integration Tests ──────────────────────────────────────────
 
 test "MVCC: BEGIN starts a transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_begin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_begin.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12827,10 +13275,15 @@ test "MVCC: BEGIN starts a transaction" {
 }
 
 test "MVCC: ROLLBACK aborts a transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_rollback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_rollback.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12845,10 +13298,15 @@ test "MVCC: ROLLBACK aborts a transaction" {
 }
 
 test "MVCC: double BEGIN returns error message" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_dbl_begin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_dbl_begin.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12866,10 +13324,15 @@ test "MVCC: double BEGIN returns error message" {
 }
 
 test "MVCC: COMMIT without BEGIN returns warning" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_no_begin_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_no_begin_commit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12879,10 +13342,15 @@ test "MVCC: COMMIT without BEGIN returns warning" {
 }
 
 test "MVCC: INSERT in transaction writes versioned rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_insert_ver.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_insert_ver.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12915,10 +13383,15 @@ test "MVCC: INSERT in transaction writes versioned rows" {
 }
 
 test "MVCC: multiple inserts in transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_multi_ins.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_multi_ins.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -12962,10 +13435,15 @@ test "MVCC: multiple inserts in transaction" {
 }
 
 test "MVCC: UPDATE in transaction writes versioned rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_update_ver.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_update_ver.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13001,10 +13479,15 @@ test "MVCC: UPDATE in transaction writes versioned rows" {
 }
 
 test "MVCC: DELETE in transaction writes versioned rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_delete_ver.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_delete_ver.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13028,10 +13511,15 @@ test "MVCC: DELETE in transaction writes versioned rows" {
 }
 
 test "MVCC: auto-commit mode still works" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_autocommit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_autocommit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13056,10 +13544,15 @@ test "MVCC: auto-commit mode still works" {
 }
 
 test "MVCC: transaction manager XID assignment" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_xid.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_xid.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13075,10 +13568,15 @@ test "MVCC: transaction manager XID assignment" {
 }
 
 test "MVCC: transaction context cleanup on close" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_cleanup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_cleanup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
 
     // Start transaction but don't commit — close should abort it
@@ -13091,10 +13589,15 @@ test "MVCC: transaction context cleanup on close" {
 }
 
 test "MVCC: mixed auto-commit and explicit transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_mixed.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_mixed.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13127,10 +13630,15 @@ test "MVCC: mixed auto-commit and explicit transaction" {
 }
 
 test "MVCC: ROLLBACK with no BEGIN returns warning" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_rollback_warn.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_rollback_warn.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13140,10 +13648,15 @@ test "MVCC: ROLLBACK with no BEGIN returns warning" {
 }
 
 test "MVCC: ROLLBACK undoes inserted rows visibility" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_rollback_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_rollback_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13201,10 +13714,15 @@ test "MVCC: ROLLBACK undoes inserted rows visibility" {
 }
 
 test "MVCC: committed rows visible in subsequent transactions" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_committed_vis.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_committed_vis.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13234,10 +13752,15 @@ test "MVCC: committed rows visible in subsequent transactions" {
 }
 
 test "MVCC: empty transaction (BEGIN then COMMIT with no DML)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_empty_txn.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_empty_txn.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13255,10 +13778,15 @@ test "MVCC: empty transaction (BEGIN then COMMIT with no DML)" {
 }
 
 test "MVCC: empty transaction (BEGIN then ROLLBACK with no DML)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_empty_rb.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_empty_rb.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13276,10 +13804,15 @@ test "MVCC: empty transaction (BEGIN then ROLLBACK with no DML)" {
 }
 
 test "MVCC: DELETE then commit makes row invisible in next txn" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_del_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_del_commit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13324,10 +13857,15 @@ test "MVCC: DELETE then commit makes row invisible in next txn" {
 }
 
 test "MVCC: UPDATE then SELECT in same transaction sees updated value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_update_sel.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_update_sel.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13363,10 +13901,15 @@ test "MVCC: UPDATE then SELECT in same transaction sees updated value" {
 }
 
 test "MVCC: multiple statements with CID progression" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_cid_prog.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_cid_prog.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13403,10 +13946,15 @@ test "MVCC: multiple statements with CID progression" {
 }
 
 test "MVCC: NULL values in versioned rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_null_ver.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_null_ver.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13443,10 +13991,15 @@ test "MVCC: NULL values in versioned rows" {
 }
 
 test "MVCC: REPEATABLE READ uses same snapshot across statements" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_rr_snap.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_rr_snap.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13491,10 +14044,15 @@ test "MVCC: REPEATABLE READ uses same snapshot across statements" {
 }
 
 test "MVCC: sequential transactions with increasing XIDs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_seq_xids.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_seq_xids.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13529,10 +14087,15 @@ test "MVCC: sequential transactions with increasing XIDs" {
 }
 
 test "MVCC: committed INSERT visible after auto-commit SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_commit_auto.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_commit_auto.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13561,10 +14124,15 @@ test "MVCC: committed INSERT visible after auto-commit SELECT" {
 }
 
 test "MVCC: mixed legacy and versioned rows backward compatibility" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_legacy_mix.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_legacy_mix.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13611,10 +14179,15 @@ test "MVCC: mixed legacy and versioned rows backward compatibility" {
 }
 
 test "MVCC: INSERT then DELETE in same transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_ins_del_same.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_ins_del_same.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13645,10 +14218,15 @@ test "MVCC: INSERT then DELETE in same transaction" {
 }
 
 test "MVCC: multiple tables in single transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_multi_tbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_multi_tbl.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13690,10 +14268,15 @@ test "MVCC: multiple tables in single transaction" {
 }
 
 test "MVCC: ROLLBACK multi-table transaction leaves all tables unchanged" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_rb_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_rb_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13743,10 +14326,15 @@ test "MVCC: ROLLBACK multi-table transaction leaves all tables unchanged" {
 }
 
 test "MVCC: beginTransaction error when already in transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_dbl_begin_api.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_dbl_begin_api.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13756,10 +14344,15 @@ test "MVCC: beginTransaction error when already in transaction" {
 }
 
 test "MVCC: commitTransaction error when no active transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_no_txn_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_no_txn_commit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13767,10 +14360,15 @@ test "MVCC: commitTransaction error when no active transaction" {
 }
 
 test "MVCC: rollbackTransaction error when no active transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mvcc_no_txn_rb.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mvcc_no_txn_rb.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13780,10 +14378,15 @@ test "MVCC: rollbackTransaction error when no active transaction" {
 // ── Lock Manager Integration Tests ────────────────────────────────────
 
 test "Lock: INSERT acquires row locks in transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13813,10 +14416,15 @@ test "Lock: INSERT acquires row locks in transaction" {
 }
 
 test "Lock: locks released on rollback" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_rollback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_rollback.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13837,10 +14445,15 @@ test "Lock: locks released on rollback" {
 }
 
 test "Lock: UPDATE acquires row locks" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13867,10 +14480,15 @@ test "Lock: UPDATE acquires row locks" {
 }
 
 test "Lock: DELETE acquires row locks" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13896,10 +14514,15 @@ test "Lock: DELETE acquires row locks" {
 }
 
 test "Lock: no locks in auto-commit mode" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_autocommit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_autocommit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13917,10 +14540,15 @@ test "Lock: no locks in auto-commit mode" {
 }
 
 test "Lock: multiple rows same transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_multi_row.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_multi_row.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -13951,10 +14579,15 @@ test "Lock: multiple rows same transaction" {
 }
 
 test "Lock: Database.close releases locks from active transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lock_close.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lock_close.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
 
     {
@@ -13979,10 +14612,15 @@ test "Lock: Database.close releases locks from active transaction" {
 }
 
 test "error recovery: exec succeeds after previous exec error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_err_recovery_exec.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_err_recovery_exec.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14017,12 +14655,17 @@ test "error recovery: exec succeeds after previous exec error" {
 }
 
 test "MVCC: transaction commit after successful DML is atomic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Verifies that committed DML in a transaction persists,
     // and can be read in a subsequent auto-commit query.
-    const path = "test_txn_commit_atomic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_txn_commit_atomic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14056,10 +14699,15 @@ test "MVCC: transaction commit after successful DML is atomic" {
 }
 
 test "MVCC: transaction rollback makes DML invisible" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_txn_rollback_invisible.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_txn_rollback_invisible.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14098,14 +14746,19 @@ test "MVCC: transaction rollback makes DML invisible" {
 }
 
 test "MVCC: UPDATE within transaction is visible" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Note: UPDATE/DELETE rollback is a known limitation — they physically modify
     // the B+Tree (delete + re-insert) so rollback doesn't undo the data change.
     // This will be fixed in Milestone 7 (VACUUM & SSI) with proper MVCC versioning.
     // For now, we test that UPDATE is visible within the transaction.
-    const path = "test_txn_update_visible.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_txn_update_visible.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14139,12 +14792,17 @@ test "MVCC: UPDATE within transaction is visible" {
 }
 
 test "MVCC: DELETE within transaction removes row" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Tests that DELETE within a transaction correctly removes the row
     // from visibility within the same transaction.
-    const path = "test_txn_delete_visible.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_txn_delete_visible.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14183,10 +14841,15 @@ test "MVCC: DELETE within transaction removes row" {
 }
 
 test "MVCC: ROLLBACK undoes UPDATE to original value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_rollback_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rollback_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14256,10 +14919,15 @@ test "MVCC: ROLLBACK undoes UPDATE to original value" {
 }
 
 test "MVCC: ROLLBACK undoes DELETE — row returns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_rollback_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rollback_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14339,18 +15007,22 @@ test "MVCC: ROLLBACK undoes DELETE — row returns" {
 }
 
 test "WAL mode: transaction rollback preserves committed data" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wal_txn_rollback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile("test_wal_txn_rollback.db-wal") catch {};
-    std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_txn_rollback.db", .{dir_path});
+
+    var wal_path_buf: [512]u8 = undefined;
+    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_wal_txn_rollback.db-wal", .{dir_path});
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     {
         var r = try db.exec("CREATE TABLE wal_test (id INTEGER, data TEXT)");
@@ -14386,10 +15058,15 @@ test "WAL mode: transaction rollback preserves committed data" {
 }
 
 test "MVCC: sequential transactions see each other's committed results" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_txn_sequential.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_txn_sequential.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14441,10 +15118,15 @@ test "MVCC: sequential transactions see each other's committed results" {
 }
 
 test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_txn_idu_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_txn_idu_single.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14512,10 +15194,15 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
 // ── VACUUM Integration Tests ──────────────────────────────────────────
 
 test "VACUUM: basic VACUUM command" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_vacuum_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14552,10 +15239,15 @@ test "VACUUM: basic VACUUM command" {
 }
 
 test "VACUUM: VACUUM specific table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_vacuum_table.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_table.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14588,10 +15280,15 @@ test "VACUUM: VACUUM specific table" {
 }
 
 test "VACUUM: error when inside transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_vacuum_txn_err.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_txn_err.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14607,10 +15304,15 @@ test "VACUUM: error when inside transaction" {
 }
 
 test "VACUUM: error for nonexistent table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_vacuum_no_tbl.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_no_tbl.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14618,10 +15320,15 @@ test "VACUUM: error for nonexistent table" {
 }
 
 test "VACUUM: cleans aborted transaction rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_vacuum_aborted.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_aborted.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14671,10 +15378,15 @@ test "VACUUM: cleans aborted transaction rows" {
 }
 
 test "VACUUM: freezes old committed tuples" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_vacuum_freeze_eng.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_freeze_eng.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14712,10 +15424,15 @@ test "VACUUM: freezes old committed tuples" {
 // ── Savepoint Tests ─────────────────────────────────────────────────
 
 test "SAVEPOINT: basic savepoint creation via SQL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14734,10 +15451,15 @@ test "SAVEPOINT: basic savepoint creation via SQL" {
 }
 
 test "SAVEPOINT: release savepoint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_release.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_release.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14760,10 +15482,15 @@ test "SAVEPOINT: release savepoint" {
 }
 
 test "SAVEPOINT: rollback to savepoint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_rollback_to.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_rollback_to.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14803,10 +15530,15 @@ test "SAVEPOINT: rollback to savepoint" {
 }
 
 test "SAVEPOINT: error outside transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_no_txn.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_no_txn.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14819,10 +15551,15 @@ test "SAVEPOINT: error outside transaction" {
 }
 
 test "SAVEPOINT: release nonexistent savepoint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_rel_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_rel_missing.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14836,10 +15573,15 @@ test "SAVEPOINT: release nonexistent savepoint" {
 }
 
 test "SAVEPOINT: rollback to nonexistent savepoint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_rb_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_rb_missing.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14853,10 +15595,15 @@ test "SAVEPOINT: rollback to nonexistent savepoint" {
 }
 
 test "SAVEPOINT: nested savepoints" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_nested.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_nested.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14905,10 +15652,15 @@ test "SAVEPOINT: nested savepoints" {
 }
 
 test "SAVEPOINT: replace same-name savepoint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_replace.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_replace.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -14977,10 +15729,15 @@ test "SAVEPOINT: replace same-name savepoint" {
 }
 
 test "SAVEPOINT: transaction commit cleans up savepoints" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_commit_cleanup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_commit_cleanup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15011,10 +15768,15 @@ test "SAVEPOINT: transaction commit cleans up savepoints" {
 }
 
 test "SAVEPOINT: transaction rollback cleans up savepoints" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_rollback_cleanup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_rollback_cleanup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15040,10 +15802,15 @@ test "SAVEPOINT: transaction rollback cleans up savepoints" {
 }
 
 test "MVCC isolation: aborted INSERT invisible after rollback via new transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_iso_aborted_invisible.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_iso_aborted_invisible.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15077,10 +15844,15 @@ test "MVCC isolation: aborted INSERT invisible after rollback via new transactio
 }
 
 test "MVCC isolation: committed INSERT visible to subsequent transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_iso_committed_visible.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_iso_committed_visible.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15116,10 +15888,15 @@ test "MVCC isolation: committed INSERT visible to subsequent transaction" {
 }
 
 test "MVCC isolation: INSERT then commit then DELETE then commit makes row invisible" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_iso_delete_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_iso_delete_commit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15162,10 +15939,15 @@ test "MVCC isolation: INSERT then commit then DELETE then commit makes row invis
 }
 
 test "MVCC isolation: UPDATE then commit reflects new value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_iso_update_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_iso_update_commit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15208,10 +15990,15 @@ test "MVCC isolation: UPDATE then commit reflects new value" {
 }
 
 test "MVCC: double commit returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_double_commit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_double_commit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15223,10 +16010,15 @@ test "MVCC: double commit returns error" {
 }
 
 test "MVCC: double rollback returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_double_rollback.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_double_rollback.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15238,10 +16030,15 @@ test "MVCC: double rollback returns error" {
 }
 
 test "MVCC: nested BEGIN returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_nested_begin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_nested_begin.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15258,10 +16055,15 @@ test "MVCC: nested BEGIN returns error" {
 }
 
 test "SAVEPOINT: create and release within transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_create_release.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_create_release.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15320,10 +16122,15 @@ test "SAVEPOINT: create and release within transaction" {
 }
 
 test "SAVEPOINT: outside transaction returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_savepoint_no_txn.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_no_txn.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15343,10 +16150,15 @@ test "SAVEPOINT: outside transaction returns error" {
 // Design" step 1 for the full spec these tests pin.
 
 test "undo log: recordUndo is a no-op with no active transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_noop.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_noop.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15361,10 +16173,15 @@ test "undo log: recordUndo is a no-op with no active transaction" {
 }
 
 test "undo log: recordUndo duplicates buffers rather than aliasing them" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_dupe.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_dupe.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15411,10 +16228,15 @@ test "undo log: recordUndo duplicates buffers rather than aliasing them" {
 }
 
 test "undo log: Savepoint.undo_len captures the watermark, not the current length" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_watermark_capture.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_watermark_capture.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15438,10 +16260,15 @@ test "undo log: Savepoint.undo_len captures the watermark, not the current lengt
 }
 
 test "undo log: replayUndoTo reverts an insert (before=null)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_replay_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_replay_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15489,10 +16316,15 @@ test "undo log: replayUndoTo reverts an insert (before=null)" {
 }
 
 test "undo log: replayUndoTo reverts a delete (after=null)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_replay_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_replay_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15539,10 +16371,15 @@ test "undo log: replayUndoTo reverts a delete (after=null)" {
 }
 
 test "undo log: replayUndoTo reverts an update (before and after both set)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_replay_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_replay_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15589,10 +16426,15 @@ test "undo log: replayUndoTo reverts an update (before and after both set)" {
 }
 
 test "undo log: replayUndoTo respects the watermark and only unwinds newer records" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_undo_log_watermark_replay.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_watermark_replay.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15667,10 +16509,15 @@ test "undo log: replayUndoTo respects the watermark and only unwinds newer recor
 // After step 2 implementation, these tests should PASS.
 
 test "step 2: INSERT records an undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step2_insert_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step2_insert_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15701,10 +16548,15 @@ test "step 2: INSERT records an undo entry" {
 }
 
 test "step 2: ON CONFLICT DO NOTHING does not add undo entry for retracted insert" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step2_conflict_no_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step2_conflict_no_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15752,10 +16604,15 @@ test "step 2: ON CONFLICT DO NOTHING does not add undo entry for retracted inser
 // After step 3 implementation, these tests should PASS.
 
 test "step 3: DELETE records an undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step3_delete_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step3_delete_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15793,10 +16650,15 @@ test "step 3: DELETE records an undo entry" {
 }
 
 test "step 3: DELETE with no matching rows adds no undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step3_delete_no_match.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step3_delete_no_match.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15827,10 +16689,15 @@ test "step 3: DELETE with no matching rows adds no undo entry" {
 }
 
 test "step 3: multi-row DELETE records one undo entry per deleted row" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step3_delete_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step3_delete_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15884,10 +16751,15 @@ test "step 3: multi-row DELETE records one undo entry per deleted row" {
 // After step 4 implementation, these tests should PASS.
 
 test "step 4: UPDATE records an undo entry with before and after data" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step4_update_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step4_update_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15929,10 +16801,15 @@ test "step 4: UPDATE records an undo entry with before and after data" {
 }
 
 test "step 4: UPDATE with no matching rows adds no undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step4_update_no_match.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step4_update_no_match.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15963,10 +16840,15 @@ test "step 4: UPDATE with no matching rows adds no undo entry" {
 }
 
 test "step 4: multi-row UPDATE records one undo entry per updated row" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step4_update_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step4_update_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16023,10 +16905,15 @@ test "step 4: multi-row UPDATE records one undo entry per updated row" {
 // After step 5 implementation, these tests should PASS.
 
 test "step 5: ON CONFLICT DO UPDATE records an undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step5_on_conflict_update_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_on_conflict_update_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16074,10 +16961,15 @@ test "step 5: ON CONFLICT DO UPDATE records an undo entry" {
 }
 
 test "step 5: ON CONFLICT DO UPDATE with no prior undo entries from the plain insert path" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step5_on_conflict_update_no_plain_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_on_conflict_update_no_plain_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16116,10 +17008,15 @@ test "step 5: ON CONFLICT DO UPDATE with no prior undo entries from the plain in
 }
 
 test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step5_on_conflict_update_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_on_conflict_update_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16175,10 +17072,15 @@ test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
 }
 
 test "step 6: MERGE WHEN NOT MATCHED THEN INSERT records undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step6_merge_insert_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_insert_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16225,10 +17127,15 @@ test "step 6: MERGE WHEN NOT MATCHED THEN INSERT records undo entry" {
 }
 
 test "step 6: MERGE WHEN MATCHED THEN UPDATE records undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step6_merge_update_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_update_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16282,10 +17189,15 @@ test "step 6: MERGE WHEN MATCHED THEN UPDATE records undo entry" {
 }
 
 test "step 6: MERGE WHEN MATCHED THEN DELETE records undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step6_merge_delete_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_delete_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16337,10 +17249,15 @@ test "step 6: MERGE WHEN MATCHED THEN DELETE records undo entry" {
 }
 
 test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN UPDATE records undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step6_merge_not_matched_src_update_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_not_matched_src_update_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16394,10 +17311,15 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN UPDATE records undo entry" {
 }
 
 test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN DELETE records undo entry" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step6_merge_not_matched_src_delete_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_not_matched_src_delete_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16449,10 +17371,15 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN DELETE records undo entry" {
 }
 
 test "step 6: MERGE with multiple mutations records one undo entry per mutation" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_step6_merge_multi_mutations_undo.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_multi_mutations_undo.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16513,10 +17440,15 @@ test "step 6: MERGE with multiple mutations records one undo entry per mutation"
 }
 
 test "MVCC isolation: multiple sequential transactions accumulate data" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_iso_sequential_accumulate.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_iso_sequential_accumulate.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16568,10 +17500,15 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
 // ── SSI (Serializable Snapshot Isolation) Tests ──────────────────────
 
 test "SSI: single serializable transaction commits successfully" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_single.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16600,10 +17537,15 @@ test "SSI: single serializable transaction commits successfully" {
 }
 
 test "SSI: non-conflicting serializable transactions both commit" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_noconflict.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_noconflict.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16639,10 +17581,15 @@ test "SSI: non-conflicting serializable transactions both commit" {
 }
 
 test "SSI: write skew detection (classic)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_write_skew.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_write_skew.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16711,10 +17658,15 @@ test "SSI: write skew detection (classic)" {
 }
 
 test "SSI: one-way dependency allows both commits" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_oneway.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_oneway.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16754,10 +17706,15 @@ test "SSI: one-way dependency allows both commits" {
 }
 
 test "SSI: serialization failure auto-aborts transaction" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_autoabort.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_autoabort.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16824,10 +17781,15 @@ test "SSI: serialization failure auto-aborts transaction" {
 }
 
 test "SSI: read-committed transactions are not tracked by SSI" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_rc_ignored.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_rc_ignored.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16860,10 +17822,15 @@ test "SSI: read-committed transactions are not tracked by SSI" {
 }
 
 test "SSI: DELETE creates write dependency" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16928,10 +17895,15 @@ test "SSI: DELETE creates write dependency" {
 }
 
 test "SSI: UPDATE creates rw-antidependency (read + write)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16986,10 +17958,15 @@ test "SSI: UPDATE creates rw-antidependency (read + write)" {
 }
 
 test "SSI: repeatable-read transactions are not tracked by SSI" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_rr_ignored.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_rr_ignored.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17022,10 +17999,15 @@ test "SSI: repeatable-read transactions are not tracked by SSI" {
 }
 
 test "SSI: sequential serializable transactions succeed" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_sequential.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_sequential.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17068,10 +18050,15 @@ test "SSI: sequential serializable transactions succeed" {
 }
 
 test "SSI: savepoint rollback preserves SSI tracking" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_savepoint.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_savepoint.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17153,10 +18140,15 @@ test "SSI: savepoint rollback preserves SSI tracking" {
 }
 
 test "SSI: abort cleans up SSI state" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ssi_abort_cleanup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ssi_abort_cleanup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17191,10 +18183,15 @@ test "SSI: abort cleans up SSI state" {
 // ── Auto-Vacuum Engine Integration Tests ──────────────────────────────
 
 test "auto-vacuum: tracks DML modifications" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_track.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_track.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17210,10 +18207,15 @@ test "auto-vacuum: tracks DML modifications" {
 }
 
 test "auto-vacuum: UPDATE increments dead tuples" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_update.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17230,10 +18232,15 @@ test "auto-vacuum: UPDATE increments dead tuples" {
 }
 
 test "auto-vacuum: DELETE increments dead tuples" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_delete.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17251,10 +18258,15 @@ test "auto-vacuum: DELETE increments dead tuples" {
 }
 
 test "auto-vacuum: triggers vacuum when threshold exceeded" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_trigger.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_trigger.db", .{dir_path});
     // Low threshold: vacuum after 2 dead tuples, no min commit interval
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 2, .scale_factor = 0.0, .min_commit_interval = 1 },
@@ -17285,10 +18297,15 @@ test "auto-vacuum: triggers vacuum when threshold exceeded" {
 }
 
 test "auto-vacuum: disabled config prevents vacuum" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_disabled.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_disabled.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = false, .threshold = 0, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17304,10 +18321,15 @@ test "auto-vacuum: disabled config prevents vacuum" {
 }
 
 test "auto-vacuum: DROP TABLE removes tracking" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_drop.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_drop.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17322,10 +18344,15 @@ test "auto-vacuum: DROP TABLE removes tracking" {
 }
 
 test "auto-vacuum: default config has auto-vacuum enabled" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_default.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
     defer cleanupTestDb(&db, path);
 
@@ -17334,10 +18361,15 @@ test "auto-vacuum: default config has auto-vacuum enabled" {
 }
 
 test "auto-vacuum: multiple tables tracked independently" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_multi.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17357,10 +18389,15 @@ test "auto-vacuum: multiple tables tracked independently" {
 }
 
 test "auto-vacuum: auto-commit DML triggers vacuum" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_autocommit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_autocommit.db", .{dir_path});
     // Very low threshold — should trigger on single delete
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1, .scale_factor = 0.0, .min_commit_interval = 1 },
@@ -17382,10 +18419,15 @@ test "auto-vacuum: auto-commit DML triggers vacuum" {
 }
 
 test "auto-vacuum: commit count tracked across tables" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_autovac_commits.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_commits.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
         .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
     });
@@ -17412,10 +18454,15 @@ test "auto-vacuum: commit count tracked across tables" {
 // ── View integration tests ──────────────────────────────────────────────
 
 test "CREATE VIEW and SELECT from view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17445,10 +18492,15 @@ test "CREATE VIEW and SELECT from view" {
 }
 
 test "DROP VIEW removes view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_drop.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_drop.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17468,10 +18520,15 @@ test "DROP VIEW removes view" {
 }
 
 test "DROP VIEW IF EXISTS on non-existent view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_drop_ine.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_drop_ine.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17481,10 +18538,15 @@ test "DROP VIEW IF EXISTS on non-existent view" {
 }
 
 test "CREATE OR REPLACE VIEW updates definition" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_replace.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_replace.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17517,10 +18579,15 @@ test "CREATE OR REPLACE VIEW updates definition" {
 }
 
 test "CREATE VIEW IF NOT EXISTS does not overwrite" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_ine.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_ine.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17548,10 +18615,15 @@ test "CREATE VIEW IF NOT EXISTS does not overwrite" {
 }
 
 test "view with column aliases" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_aliases.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_aliases.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17578,10 +18650,15 @@ test "view with column aliases" {
 }
 
 test "view on empty table returns no rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17604,10 +18681,15 @@ test "view on empty table returns no rows" {
 }
 
 test "view reflects underlying table changes" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_live.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_live.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17648,10 +18730,15 @@ test "view reflects underlying table changes" {
 }
 
 test "view with WHERE clause filters correctly" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17677,10 +18764,15 @@ test "view with WHERE clause filters correctly" {
 }
 
 test "duplicate CREATE VIEW returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_dup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_dup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17695,10 +18787,15 @@ test "duplicate CREATE VIEW returns error" {
 }
 
 test "view does not appear in table list" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_list.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_list.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17725,10 +18822,15 @@ test "view does not appear in table list" {
 }
 
 test "view appears in view list" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_vlist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_vlist.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17751,10 +18853,15 @@ test "view appears in view list" {
 // ── CTE (WITH ... AS) Integration Tests ──────────────────────────────
 
 test "CTE: simple CTE from table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_simple.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_simple.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17780,10 +18887,15 @@ test "CTE: simple CTE from table" {
 }
 
 test "CTE: CTE referencing real table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_table.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_table.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17806,10 +18918,15 @@ test "CTE: CTE referencing real table" {
 }
 
 test "CTE: CTE with column aliases" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_colalias.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_colalias.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17833,10 +18950,15 @@ test "CTE: CTE with column aliases" {
 }
 
 test "CTE: multiple CTEs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17863,10 +18985,15 @@ test "CTE: multiple CTEs" {
 }
 
 test "CTE: CTE with aggregate" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17895,10 +19022,15 @@ test "CTE: CTE with aggregate" {
 }
 
 test "CTE: CTE with WHERE in main query" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17925,10 +19057,15 @@ test "CTE: CTE with WHERE in main query" {
 }
 
 test "CTE: empty CTE result" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17948,10 +19085,15 @@ test "CTE: empty CTE result" {
 // ── Set Operation Tests ──────────────────────────────────────────────
 
 test "UNION ALL returns all rows from both queries" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_all.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17978,10 +19120,15 @@ test "UNION ALL returns all rows from both queries" {
 }
 
 test "UNION removes duplicate rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18008,10 +19155,15 @@ test "UNION removes duplicate rows" {
 }
 
 test "INTERSECT returns only common rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_intersect.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_intersect.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18038,10 +19190,15 @@ test "INTERSECT returns only common rows" {
 }
 
 test "EXCEPT removes rows present in second query" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_except.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_except.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18071,10 +19228,15 @@ test "EXCEPT removes rows present in second query" {
 }
 
 test "UNION ALL with ORDER BY and LIMIT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_setop_ordlim.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_setop_ordlim.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18113,10 +19275,15 @@ test "UNION ALL with ORDER BY and LIMIT" {
 }
 
 test "UNION with empty table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18140,10 +19307,15 @@ test "UNION with empty table" {
 }
 
 test "INTERSECT with no common rows returns empty" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_intersect_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_intersect_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18164,10 +19336,15 @@ test "INTERSECT with no common rows returns empty" {
 }
 
 test "UNION with CTE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_cte.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_cte.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18192,10 +19369,15 @@ test "UNION with CTE" {
 }
 
 test "EXCEPT with identical tables returns empty" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_except_identical.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_except_identical.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18212,10 +19394,15 @@ test "EXCEPT with identical tables returns empty" {
 }
 
 test "UNION deduplicates within same table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_self.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_self.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18238,10 +19425,15 @@ test "UNION deduplicates within same table" {
 }
 
 test "SELECT DISTINCT removes duplicate rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18264,10 +19456,15 @@ test "SELECT DISTINCT removes duplicate rows" {
 }
 
 test "SELECT DISTINCT single column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_single.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18289,10 +19486,15 @@ test "SELECT DISTINCT single column" {
 }
 
 test "SELECT DISTINCT with ORDER BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_order.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18318,10 +19520,15 @@ test "SELECT DISTINCT with ORDER BY" {
 }
 
 test "SELECT DISTINCT with LIMIT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_limit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_limit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18343,10 +19550,15 @@ test "SELECT DISTINCT with LIMIT" {
 }
 
 test "SELECT DISTINCT with NULLs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18369,10 +19581,15 @@ test "SELECT DISTINCT with NULLs" {
 }
 
 test "SELECT DISTINCT ON returns first row per group" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_on.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_on.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18403,10 +19620,15 @@ test "SELECT DISTINCT ON returns first row per group" {
 }
 
 test "SELECT DISTINCT ON multiple columns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_on_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_on_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18429,10 +19651,15 @@ test "SELECT DISTINCT ON multiple columns" {
 }
 
 test "SELECT DISTINCT all same rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_all_same.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_all_same.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18454,10 +19681,15 @@ test "SELECT DISTINCT all same rows" {
 }
 
 test "SELECT DISTINCT empty table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18471,10 +19703,15 @@ test "SELECT DISTINCT empty table" {
 }
 
 test "SELECT DISTINCT with WHERE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_distinct_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_distinct_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18499,10 +19736,15 @@ test "SELECT DISTINCT with WHERE clause" {
 // ── CTE advanced scenarios ───────────────────────────────────
 
 test "CTE: CTE referencing another CTE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_chain.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_chain.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18526,10 +19768,15 @@ test "CTE: CTE referencing another CTE" {
 }
 
 test "CTE: CTE with JOIN to real table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_join.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_join.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18561,10 +19808,15 @@ test "CTE: CTE with JOIN to real table" {
 }
 
 test "CTE: CTE with GROUP BY and aggregate" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18593,10 +19845,15 @@ test "CTE: CTE with GROUP BY and aggregate" {
 }
 
 test "CTE: CTE with LIMIT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_limit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_limit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18624,10 +19881,15 @@ test "CTE: CTE with LIMIT" {
 // ── Recursive CTE tests ─────────────────────────────────────
 
 test "recursive CTE: counting sequence" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_count.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18652,10 +19914,15 @@ test "recursive CTE: counting sequence" {
 }
 
 test "recursive CTE: fibonacci sequence" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_fib.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_fib.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18682,10 +19949,15 @@ test "recursive CTE: fibonacci sequence" {
 }
 
 test "recursive CTE: tree traversal" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_tree.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_tree.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18717,10 +19989,15 @@ test "recursive CTE: tree traversal" {
 }
 
 test "recursive CTE: single anchor row, no recursion" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_single.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18742,10 +20019,15 @@ test "recursive CTE: single anchor row, no recursion" {
 }
 
 test "recursive CTE: powers of 2" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_pow2.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_pow2.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18771,10 +20053,15 @@ test "recursive CTE: powers of 2" {
 }
 
 test "recursive CTE: with main query filter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_filter.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_filter.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18800,10 +20087,15 @@ test "recursive CTE: with main query filter" {
 }
 
 test "recursive CTE: with aggregate on result" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18823,10 +20115,15 @@ test "recursive CTE: with aggregate on result" {
 }
 
 test "recursive CTE: count result" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_cnt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_cnt.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18848,10 +20145,15 @@ test "recursive CTE: count result" {
 // ── VIEW advanced scenarios ──────────────────────────────────
 
 test "view with JOIN query" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_join.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_join.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18885,10 +20187,15 @@ test "view with JOIN query" {
 }
 
 test "view with aggregate query" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18918,10 +20225,15 @@ test "view with aggregate query" {
 }
 
 test "view with ORDER BY and LIMIT in definition" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_order.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18951,10 +20263,15 @@ test "view with ORDER BY and LIMIT in definition" {
 }
 
 test "view queried with additional WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -18983,10 +20300,15 @@ test "view queried with additional WHERE" {
 }
 
 test "view with NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19013,10 +20335,15 @@ test "view with NULL values" {
 // ── Set operations advanced scenarios ────────────────────────
 
 test "UNION ALL with NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19046,10 +20373,15 @@ test "UNION ALL with NULL values" {
 }
 
 test "UNION deduplicates NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_null_dedup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_null_dedup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19080,10 +20412,15 @@ test "UNION deduplicates NULL values" {
 }
 
 test "INTERSECT with NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_intersect_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_intersect_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19117,10 +20454,15 @@ test "INTERSECT with NULL values" {
 }
 
 test "EXCEPT with NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_except_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_except_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19149,10 +20491,15 @@ test "EXCEPT with NULL values" {
 }
 
 test "UNION with aggregate queries" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_union_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_union_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19185,10 +20532,15 @@ test "UNION with aggregate queries" {
 }
 
 test "set operation with DISTINCT on left side" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_setop_distinct.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_setop_distinct.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19218,10 +20570,15 @@ test "set operation with DISTINCT on left side" {
 }
 
 test "CTE with set operation" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_cte_setop.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_cte_setop.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19258,10 +20615,15 @@ test "CTE with set operation" {
 }
 
 test "view with multiple columns and WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_multi_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_multi_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19296,10 +20658,15 @@ test "view with multiple columns and WHERE" {
 }
 
 test "view persistence across close and reopen" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_view_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_view_persist.db", .{dir_path});
 
     // Create table and view, then close
     {
@@ -19340,10 +20707,15 @@ test "view persistence across close and reopen" {
 // ── Recursive CTE depth limit test ──────────────────────────
 
 test "recursive CTE: depth limit caps at 1000 iterations" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_depth.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_depth.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19366,10 +20738,15 @@ test "recursive CTE: depth limit caps at 1000 iterations" {
 }
 
 test "recursive CTE: single anchor row with immediate termination" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_immediate.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_immediate.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19390,10 +20767,15 @@ test "recursive CTE: single anchor row with immediate termination" {
 }
 
 test "recursive CTE: with ORDER BY on result" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_rcte_order.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_rcte_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19423,8 +20805,14 @@ test "recursive CTE: with ORDER BY on result" {
 
 test "CYCLE: basic cycle detection in recursive CTE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cycle_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cycle_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19464,8 +20852,14 @@ test "CYCLE: basic cycle detection in recursive CTE" {
 
 test "CYCLE: cycle column defaults to 0 for non-cycle rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cycle_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cycle_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19501,8 +20895,14 @@ test "CYCLE: cycle column defaults to 0 for non-cycle rows" {
 
 test "CYCLE: cycle terminates recursion" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cycle_terminates.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cycle_terminates.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19541,8 +20941,14 @@ test "CYCLE: cycle terminates recursion" {
 
 test "CYCLE: filter on is_cycle excludes cycle rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cycle_filter.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cycle_filter.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19579,8 +20985,14 @@ test "CYCLE: filter on is_cycle excludes cycle rows" {
 
 test "CYCLE: custom TO/DEFAULT values" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cycle_custom.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cycle_custom.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19606,8 +21018,14 @@ test "CYCLE: custom TO/DEFAULT values" {
 
 test "CYCLE: without CYCLE clause still works (no regression)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cycle_nocycle.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cycle_nocycle.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19631,9 +21049,15 @@ test "CYCLE: without CYCLE clause still works (no regression)" {
 // ── Updatable View Tests ──────────────────────────────────────────
 
 test "INSERT through updatable view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_insert.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19661,9 +21085,15 @@ test "INSERT through updatable view" {
 }
 
 test "UPDATE through updatable view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_update.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19688,9 +21118,15 @@ test "UPDATE through updatable view" {
 }
 
 test "DELETE through updatable view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_delete.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19719,9 +21155,15 @@ test "DELETE through updatable view" {
 }
 
 test "DELETE through updatable view with WHERE merging" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_del_where.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_del_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19751,9 +21193,15 @@ test "DELETE through updatable view with WHERE merging" {
 }
 
 test "UPDATE through updatable view with WHERE merging" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_upd_where.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_upd_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19785,9 +21233,15 @@ test "UPDATE through updatable view with WHERE merging" {
 }
 
 test "WITH CHECK OPTION blocks INSERT violating view condition" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_check_insert.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_check_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19811,9 +21265,15 @@ test "WITH CHECK OPTION blocks INSERT violating view condition" {
 }
 
 test "WITH CHECK OPTION blocks UPDATE violating view condition" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_check_update.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_check_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19838,9 +21298,15 @@ test "WITH CHECK OPTION blocks UPDATE violating view condition" {
 }
 
 test "WITH LOCAL CHECK OPTION stored and enforced" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_check_local.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_check_local.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19853,9 +21319,15 @@ test "WITH LOCAL CHECK OPTION stored and enforced" {
 }
 
 test "view without CHECK OPTION allows any INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_no_check.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_no_check.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19873,9 +21345,15 @@ test "view without CHECK OPTION allows any INSERT" {
 }
 
 test "non-updatable view rejects INSERT (aggregates)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_nonagg.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_nonagg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19888,9 +21366,15 @@ test "non-updatable view rejects INSERT (aggregates)" {
 }
 
 test "non-updatable view rejects INSERT (DISTINCT)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_nondist.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_nondist.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19902,9 +21386,15 @@ test "non-updatable view rejects INSERT (DISTINCT)" {
 }
 
 test "non-updatable view rejects INSERT (GROUP BY)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_nongroup.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_nongroup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19916,9 +21406,15 @@ test "non-updatable view rejects INSERT (GROUP BY)" {
 }
 
 test "INSERT through updatable view with star columns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_star.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_star.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19936,9 +21432,15 @@ test "INSERT through updatable view with star columns" {
 }
 
 test "DELETE all rows through updatable view" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_updatable_view_del_all.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_del_all.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19957,9 +21459,15 @@ test "DELETE all rows through updatable view" {
 }
 
 test "WITH CHECK OPTION catalog roundtrip" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_check_catalog.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_check_catalog.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -19975,9 +21483,15 @@ test "WITH CHECK OPTION catalog roundtrip" {
 // ── Stabilization: LIKE edge case tests ─────────────────────────────────
 
 test "LIKE with underscore wildcard" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_like_underscore.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_like_underscore.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20003,9 +21517,15 @@ test "LIKE with underscore wildcard" {
 }
 
 test "LIKE with percent in middle" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_like_mid_pct.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_like_mid_pct.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20035,9 +21555,15 @@ test "LIKE with percent in middle" {
 }
 
 test "NOT LIKE filters matching rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_not_like.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_not_like.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20058,9 +21584,15 @@ test "NOT LIKE filters matching rows" {
 }
 
 test "LIKE with no wildcard is case-sensitive exact match" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_like_exact.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_like_exact.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20086,9 +21618,15 @@ test "LIKE with no wildcard is case-sensitive exact match" {
 // ── Stabilization: NULL three-valued logic tests ────────────────────────
 
 test "NULL AND FALSE yields FALSE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_null_and_false.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_null_and_false.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20102,9 +21640,15 @@ test "NULL AND FALSE yields FALSE" {
 }
 
 test "NULL OR TRUE yields TRUE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_null_or_true.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_null_or_true.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20122,9 +21666,15 @@ test "NULL OR TRUE yields TRUE" {
 }
 
 test "NULL AND TRUE yields NULL (row excluded)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_null_and_true.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_null_and_true.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20139,9 +21689,15 @@ test "NULL AND TRUE yields NULL (row excluded)" {
 }
 
 test "NULL OR FALSE yields NULL (row excluded)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_null_or_false.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_null_or_false.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20157,9 +21713,15 @@ test "NULL OR FALSE yields NULL (row excluded)" {
 // ── Stabilization: non-updatable view rejection tests ───────────────────
 
 test "non-updatable view rejects INSERT (set operation / UNION)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_nonunion.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_nonunion.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20173,9 +21735,15 @@ test "non-updatable view rejects INSERT (set operation / UNION)" {
 }
 
 test "non-updatable view rejects UPDATE (JOIN)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_nonjoin.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_nonjoin.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20190,9 +21758,15 @@ test "non-updatable view rejects UPDATE (JOIN)" {
 }
 
 test "non-updatable view rejects DELETE (HAVING clause)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_nonhaving.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_nonhaving.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20205,9 +21779,15 @@ test "non-updatable view rejects DELETE (HAVING clause)" {
 }
 
 test "non-updatable view rejects INSERT (CTE)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_view_noncte.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_view_noncte.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20222,9 +21802,15 @@ test "non-updatable view rejects INSERT (CTE)" {
 // ── Stabilization: set operation edge case tests ────────────────────────
 
 test "UNION ALL with both sides empty" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_union_empty.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_union_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20239,9 +21825,15 @@ test "UNION ALL with both sides empty" {
 }
 
 test "INTERSECT with one side empty returns empty" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_intersect_one_empty.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_intersect_one_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20258,9 +21850,15 @@ test "INTERSECT with one side empty returns empty" {
 }
 
 test "EXCEPT with empty right side returns all left rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_except_empty_right.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_except_empty_right.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20286,9 +21884,15 @@ test "EXCEPT with empty right side returns all left rows" {
 // ── Stabilization: EXPLAIN returns OK ───────────────────────────────────
 
 test "EXPLAIN SELECT returns plan text" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_explain.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_explain.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20306,9 +21910,15 @@ test "EXPLAIN SELECT returns plan text" {
 // ── Stabilization: arithmetic edge case ─────────────────────────────────
 
 test "integer arithmetic in SELECT expressions" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_arith.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_arith.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20329,9 +21939,15 @@ test "integer arithmetic in SELECT expressions" {
 // ── Stabilization: IS NULL / IS NOT NULL edge cases ─────────────────────
 
 test "IS NULL and IS NOT NULL with mixed values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_is_null_mixed.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_is_null_mixed.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20363,9 +21979,15 @@ test "IS NULL and IS NOT NULL with mixed values" {
 // ── Stabilization: CASE expression tests ────────────────────────────────
 
 test "CASE WHEN with NULL comparison" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_case_null.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_case_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20391,9 +22013,15 @@ test "CASE WHEN with NULL comparison" {
 // ── Stabilization: IN list test ─────────────────────────────────────────
 
 test "IN list with multiple matches" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_in_list_multi.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_in_list_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20420,9 +22048,15 @@ test "IN list with multiple matches" {
 // ── Stabilization: BETWEEN test ─────────────────────────────────────────
 
 test "NOT BETWEEN excludes range" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_not_between.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_not_between.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20448,9 +22082,15 @@ test "NOT BETWEEN excludes range" {
 // ── Window Functions: Milestone 9 ────────────────────────────────────
 
 test "ROW_NUMBER() OVER (ORDER BY ...)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_row_number.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_row_number.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20483,9 +22123,15 @@ test "ROW_NUMBER() OVER (ORDER BY ...)" {
 }
 
 test "RANK() with ties" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_rank.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_rank.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20515,9 +22161,15 @@ test "RANK() with ties" {
 }
 
 test "DENSE_RANK() with ties" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_dense_rank.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_dense_rank.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20547,9 +22199,15 @@ test "DENSE_RANK() with ties" {
 }
 
 test "ROW_NUMBER() with PARTITION BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_partition.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_partition.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20591,9 +22249,15 @@ test "ROW_NUMBER() with PARTITION BY" {
 }
 
 test "SUM() OVER (aggregate as window function)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_sum.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_sum.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20625,9 +22289,15 @@ test "SUM() OVER (aggregate as window function)" {
 }
 
 test "COUNT(*) OVER (PARTITION BY ...)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_count_part.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_count_part.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20659,9 +22329,15 @@ test "COUNT(*) OVER (PARTITION BY ...)" {
 }
 
 test "LAG() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_lag.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_lag.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20693,9 +22369,15 @@ test "LAG() window function" {
 }
 
 test "LEAD() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_lead.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_lead.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20726,9 +22408,15 @@ test "LEAD() window function" {
 }
 
 test "FIRST_VALUE() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_first_val.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_first_val.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20757,9 +22445,15 @@ test "FIRST_VALUE() window function" {
 }
 
 test "NTILE() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_ntile.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_ntile.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20797,9 +22491,15 @@ test "NTILE() window function" {
 }
 
 test "Multiple window functions in single SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_multi.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20833,9 +22533,15 @@ test "Multiple window functions in single SELECT" {
 }
 
 test "Window function with empty OVER()" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_empty_over.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_empty_over.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20860,9 +22566,15 @@ test "Window function with empty OVER()" {
 }
 
 test "Window function with alias" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_alias.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_alias.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20887,9 +22599,15 @@ test "Window function with alias" {
 }
 
 test "LAST_VALUE() window function with default frame" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_last_val.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_last_val.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20922,9 +22640,15 @@ test "LAST_VALUE() window function with default frame" {
 }
 
 test "LAST_VALUE() with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_last_val_full.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_last_val_full.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20953,9 +22677,15 @@ test "LAST_VALUE() with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
 }
 
 test "NTH_VALUE() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_nth_val.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_nth_val.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -20987,9 +22717,15 @@ test "NTH_VALUE() window function" {
 }
 
 test "NTH_VALUE() with n > partition size returns NULL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_nth_val_oob.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_nth_val_oob.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21013,9 +22749,15 @@ test "NTH_VALUE() with n > partition size returns NULL" {
 }
 
 test "PERCENT_RANK() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_pct_rank.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_pct_rank.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21057,9 +22799,15 @@ test "PERCENT_RANK() window function" {
 }
 
 test "PERCENT_RANK() single row returns 0.0" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_pct_rank1.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_pct_rank1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21077,9 +22825,15 @@ test "PERCENT_RANK() single row returns 0.0" {
 }
 
 test "CUME_DIST() window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_cume_dist.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_cume_dist.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21121,9 +22875,15 @@ test "CUME_DIST() window function" {
 }
 
 test "CUME_DIST() single row returns 1.0" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_cume_dist1.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_cume_dist1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21141,9 +22901,15 @@ test "CUME_DIST() single row returns 1.0" {
 }
 
 test "Window function with NULL in PARTITION BY column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_null_part.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_null_part.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21189,9 +22955,15 @@ test "Window function with NULL in PARTITION BY column" {
 }
 
 test "Window aggregate SUM with NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_sum_null.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_sum_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21226,9 +22998,15 @@ test "Window aggregate SUM with NULL values" {
 }
 
 test "Window aggregate AVG with NULLs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_avg_null.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_avg_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21260,9 +23038,15 @@ test "Window aggregate AVG with NULLs" {
 }
 
 test "LAG() with offset > 1" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_lag_offset.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_lag_offset.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21300,9 +23084,15 @@ test "LAG() with offset > 1" {
 }
 
 test "LEAD() with offset > 1" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_lead_offset.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_lead_offset.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21340,9 +23130,15 @@ test "LEAD() with offset > 1" {
 }
 
 test "LAG() with default value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_lag_default.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_lag_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21374,9 +23170,15 @@ test "LAG() with default value" {
 }
 
 test "Window function on empty table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_empty_tbl.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_empty_tbl.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21390,9 +23192,15 @@ test "Window function on empty table" {
 }
 
 test "Window function with PARTITION BY and ORDER BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_part_ord.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_part_ord.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21439,9 +23247,15 @@ test "Window function with PARTITION BY and ORDER BY" {
 }
 
 test "Window MIN/MAX aggregate functions" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_min_max.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_min_max.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21473,9 +23287,15 @@ test "Window MIN/MAX aggregate functions" {
 }
 
 test "Window function with self-join" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_selfjoin.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_selfjoin.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21499,9 +23319,15 @@ test "Window function with self-join" {
 }
 
 test "Window function with CTE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_cte.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_cte.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21533,9 +23359,15 @@ test "Window function with CTE" {
 }
 
 test "Window function LAST_VALUE with empty OVER" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_last_empty.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_last_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21566,9 +23398,15 @@ test "Window function LAST_VALUE with empty OVER" {
 }
 
 test "DENSE_RANK with multiple partitions" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_drank_part.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_drank_part.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21606,9 +23444,15 @@ test "DENSE_RANK with multiple partitions" {
 }
 
 test "Window function COUNT(column) skips NULLs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_cnt_null.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_cnt_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21640,9 +23484,15 @@ test "Window function COUNT(column) skips NULLs" {
 }
 
 test "SUM OVER with ORDER BY (running sum)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_running_sum.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_running_sum.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21675,9 +23525,15 @@ test "SUM OVER with ORDER BY (running sum)" {
 }
 
 test "WINDOW clause: named window with ROW_NUMBER and RANK" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_window_clause.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_window_clause.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21702,9 +23558,15 @@ test "WINDOW clause: named window with ROW_NUMBER and RANK" {
 }
 
 test "WINDOW clause: named window with aggregate-as-window SUM" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_window_clause_sum.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_window_clause_sum.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21736,9 +23598,15 @@ test "WINDOW clause: named window with aggregate-as-window SUM" {
 }
 
 test "WINDOW clause: multiple named windows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_multi_window.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_multi_window.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21761,9 +23629,15 @@ test "WINDOW clause: multiple named windows" {
 }
 
 test "DATE type: CREATE TABLE, INSERT, SELECT with CAST" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_date_type.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_date_type.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21788,9 +23662,15 @@ test "DATE type: CREATE TABLE, INSERT, SELECT with CAST" {
 }
 
 test "TIMESTAMP type: CREATE TABLE, INSERT, SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_timestamp_type.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_timestamp_type.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21815,9 +23695,15 @@ test "TIMESTAMP type: CREATE TABLE, INSERT, SELECT" {
 }
 
 test "DATE arithmetic: date + integer, date - date" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_date_arith.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_date_arith.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21836,9 +23722,15 @@ test "DATE arithmetic: date + integer, date - date" {
 }
 
 test "NOW() and CURRENT_DATE() functions" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_now_func.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_now_func.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21860,10 +23752,15 @@ test "NOW() and CURRENT_DATE() functions" {
 }
 
 test "multi-table INSERT does not produce DuplicateKey" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_multi_table_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multi_table_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21910,10 +23807,15 @@ test "multi-table INSERT does not produce DuplicateKey" {
 }
 
 test "multi-table INSERT with constrained cache forces evictions" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_multi_insert_small_cache.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multi_insert_small_cache.db", .{dir_path});
     std.fs.cwd().deleteFile(path) catch {};
     // Use constrained cache (16 frames) and small page size to force splits and evictions.
     // B+Tree splits need 3+ simultaneous pins, so cache_size must be >= 8 for safe operation.
@@ -21971,10 +23873,15 @@ test "multi-table INSERT with constrained cache forces evictions" {
 }
 
 test "INTERVAL type: CAST from text" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_cast.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_cast.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22003,10 +23910,15 @@ test "INTERVAL type: CAST from text" {
 }
 
 test "INTERVAL type: CAST to text" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_text.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_text.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22019,10 +23931,15 @@ test "INTERVAL type: CAST to text" {
 }
 
 test "INTERVAL type: store and retrieve" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_store.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_store.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22049,10 +23966,15 @@ test "INTERVAL type: store and retrieve" {
 }
 
 test "INTERVAL type: arithmetic with dates" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_arith.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_arith.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22079,10 +24001,15 @@ test "INTERVAL type: arithmetic with dates" {
 }
 
 test "INTERVAL type: arithmetic between intervals" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_add.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_add.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22113,10 +24040,15 @@ test "INTERVAL type: arithmetic between intervals" {
 }
 
 test "INTERVAL type: timestamp arithmetic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_ts.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_ts.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22129,10 +24061,15 @@ test "INTERVAL type: timestamp arithmetic" {
 }
 
 test "INTERVAL type: typeof function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_typeof.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_typeof.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22144,10 +24081,15 @@ test "INTERVAL type: typeof function" {
 }
 
 test "INTERVAL type: comparison and ordering" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_cmp.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_cmp.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22178,10 +24120,15 @@ test "INTERVAL type: comparison and ordering" {
 }
 
 test "INTERVAL type: HH:MM:SS format parsing" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_hms.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_hms.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22194,10 +24141,15 @@ test "INTERVAL type: HH:MM:SS format parsing" {
 }
 
 test "INTERVAL type: zero interval" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_zero.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_zero.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22212,10 +24164,15 @@ test "INTERVAL type: zero interval" {
 }
 
 test "INTERVAL type: multiplication and division" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_muldiv.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_muldiv.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22237,10 +24194,15 @@ test "INTERVAL type: multiplication and division" {
 }
 
 test "INTERVAL type: date plus interval with time component" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_date_time.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_date_time.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22260,10 +24222,15 @@ test "INTERVAL type: date plus interval with time component" {
 }
 
 test "INTERVAL type: ORDER BY on non-selected column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_order_noselect.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_order_noselect.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22294,10 +24261,15 @@ test "INTERVAL type: ORDER BY on non-selected column" {
 }
 
 test "INTERVAL type: negative interval formatting" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_interval_negative.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_negative.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22327,9 +24299,15 @@ test "INTERVAL type: negative interval formatting" {
 }
 
 test "NUMERIC type: CREATE TABLE, INSERT, SELECT with CAST" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_type.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_type.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22361,9 +24339,15 @@ test "NUMERIC type: CREATE TABLE, INSERT, SELECT with CAST" {
 }
 
 test "NUMERIC type: arithmetic in SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_arith.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_arith.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22395,9 +24379,15 @@ test "NUMERIC type: arithmetic in SELECT" {
 }
 
 test "NUMERIC type: comparison in WHERE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_where.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22422,9 +24412,15 @@ test "NUMERIC type: comparison in WHERE clause" {
 }
 
 test "NUMERIC type: CAST roundtrip text→numeric→text" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_cast.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_cast.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22443,9 +24439,15 @@ test "NUMERIC type: CAST roundtrip text→numeric→text" {
 }
 
 test "NUMERIC type: CAST integer to numeric" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_int_cast.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_int_cast.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22459,9 +24461,15 @@ test "NUMERIC type: CAST integer to numeric" {
 }
 
 test "NUMERIC type: CAST numeric to integer (truncation)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_to_int.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_to_int.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22474,9 +24482,15 @@ test "NUMERIC type: CAST numeric to integer (truncation)" {
 }
 
 test "DECIMAL type: alias for NUMERIC" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_decimal_type.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_decimal_type.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22492,9 +24506,15 @@ test "DECIMAL type: alias for NUMERIC" {
 }
 
 test "NUMERIC type: typeof function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_typeof.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_typeof.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22506,9 +24526,15 @@ test "NUMERIC type: typeof function" {
 }
 
 test "NUMERIC type: mixed scale arithmetic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_mixed_scale.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_mixed_scale.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22521,9 +24547,15 @@ test "NUMERIC type: mixed scale arithmetic" {
 }
 
 test "NUMERIC type: negative arithmetic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_negative.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_negative.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22537,9 +24569,15 @@ test "NUMERIC type: negative arithmetic" {
 // ── UUID Integration Tests ──────────────────────────────────────────────
 
 test "UUID type: CREATE TABLE, INSERT, SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22564,9 +24602,15 @@ test "UUID type: CREATE TABLE, INSERT, SELECT" {
 }
 
 test "UUID type: gen_random_uuid() function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_gen.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_gen.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22588,9 +24632,15 @@ test "UUID type: gen_random_uuid() function" {
 }
 
 test "UUID type: CAST roundtrip text→uuid→text" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_cast.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_cast.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22603,9 +24653,15 @@ test "UUID type: CAST roundtrip text→uuid→text" {
 }
 
 test "UUID type: typeof function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_typeof.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_typeof.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22618,9 +24674,15 @@ test "UUID type: typeof function" {
 }
 
 test "UUID type: comparison in WHERE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_where.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22640,9 +24702,15 @@ test "UUID type: comparison in WHERE clause" {
 }
 
 test "UUID type: ORDER BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_order.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22668,9 +24736,15 @@ test "UUID type: ORDER BY" {
 }
 
 test "UUID type: gen_random_uuid uniqueness" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_unique.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_unique.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22691,9 +24765,15 @@ test "UUID type: gen_random_uuid uniqueness" {
 }
 
 test "UUID type: INSERT with gen_random_uuid" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_insert_gen.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_insert_gen.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22718,9 +24798,15 @@ test "UUID type: INSERT with gen_random_uuid" {
 }
 
 test "SERIAL type: CREATE TABLE and INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22746,9 +24832,15 @@ test "SERIAL type: CREATE TABLE and INSERT" {
 }
 
 test "BIGSERIAL type: CREATE TABLE and INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_bigserial_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bigserial_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22765,9 +24857,15 @@ test "BIGSERIAL type: CREATE TABLE and INSERT" {
 }
 
 test "SERIAL type: CAST to SERIAL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_cast.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_cast.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22780,9 +24878,15 @@ test "SERIAL type: CAST to SERIAL" {
 }
 
 test "NUMERIC type: negative values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_negative.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_negative.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22810,9 +24914,15 @@ test "NUMERIC type: negative values" {
 }
 
 test "NUMERIC type: arithmetic operations" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_numeric_arith.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numeric_arith.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22825,9 +24935,15 @@ test "NUMERIC type: arithmetic operations" {
 }
 
 test "UUID type: case-insensitive parsing" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_uuid_case.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_uuid_case.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22844,9 +24960,15 @@ test "UUID type: case-insensitive parsing" {
 }
 
 test "JSON type: CREATE TABLE, INSERT, SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_json_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_json_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22871,9 +24993,15 @@ test "JSON type: CREATE TABLE, INSERT, SELECT" {
 }
 
 test "JSONB type: CREATE TABLE, INSERT, SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_jsonb_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_jsonb_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22898,9 +25026,15 @@ test "JSONB type: CREATE TABLE, INSERT, SELECT" {
 }
 
 test "JSON type: CAST from various types" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_json_cast.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_json_cast.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22927,9 +25061,15 @@ test "JSON type: CAST from various types" {
 }
 
 test "JSON/JSONB type: NULL handling" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_json_null.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_json_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22954,9 +25094,15 @@ test "JSON/JSONB type: NULL handling" {
 }
 
 test "TIMESTAMP type: microsecond precision" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ts_precision.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ts_precision.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -22979,9 +25125,15 @@ test "TIMESTAMP type: microsecond precision" {
 }
 
 test "DATE type: comparison operators" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_date_compare.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_date_compare.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23006,9 +25158,15 @@ test "DATE type: comparison operators" {
 }
 
 test "TIME type: basic operations" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_time_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_time_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23031,9 +25189,15 @@ test "TIME type: basic operations" {
 }
 
 test "INTERVAL type: negative days formatting" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_interval_neg_fmt2.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_interval_neg_fmt2.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23046,9 +25210,15 @@ test "INTERVAL type: negative days formatting" {
 }
 
 test "INTERVAL type: date plus interval in table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_interval_date_add.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_interval_date_add.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23066,9 +25236,15 @@ test "INTERVAL type: date plus interval in table" {
 // ── ENUM Type Tests ─────────────────────────────────────────────────────
 
 test "CREATE TYPE AS ENUM basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_enum_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_enum_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23078,9 +25254,15 @@ test "CREATE TYPE AS ENUM basic" {
 }
 
 test "DROP TYPE basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_enum_drop.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_enum_drop.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23091,9 +25273,15 @@ test "DROP TYPE basic" {
 }
 
 test "DROP TYPE IF EXISTS no error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_enum_drop_ifexists.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_enum_drop_ifexists.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23103,9 +25291,15 @@ test "DROP TYPE IF EXISTS no error" {
 }
 
 test "CREATE TYPE duplicate name error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_enum_duplicate.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_enum_duplicate.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23115,9 +25309,15 @@ test "CREATE TYPE duplicate name error" {
 }
 
 test "DROP TYPE nonexistent error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_enum_drop_nonexistent.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_enum_drop_nonexistent.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23126,9 +25326,15 @@ test "DROP TYPE nonexistent error" {
 }
 
 test "CREATE DOMAIN basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_basic.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23141,9 +25347,15 @@ test "CREATE DOMAIN basic" {
 }
 
 test "CREATE DOMAIN without constraint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_no_constraint.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_no_constraint.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23158,9 +25370,15 @@ test "CREATE DOMAIN without constraint" {
 }
 
 test "DROP DOMAIN basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_drop.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_drop.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23171,9 +25389,15 @@ test "DROP DOMAIN basic" {
 }
 
 test "DROP DOMAIN IF EXISTS no error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_drop_ifexists.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_drop_ifexists.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23183,9 +25407,15 @@ test "DROP DOMAIN IF EXISTS no error" {
 }
 
 test "CREATE DOMAIN duplicate name error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_duplicate.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_duplicate.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23195,9 +25425,15 @@ test "CREATE DOMAIN duplicate name error" {
 }
 
 test "DROP DOMAIN nonexistent error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_drop_nonexistent.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_drop_nonexistent.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23206,9 +25442,15 @@ test "DROP DOMAIN nonexistent error" {
 }
 
 test "CREATE DOMAIN conflicts with table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_table_conflict.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_table_conflict.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23218,9 +25460,15 @@ test "CREATE DOMAIN conflicts with table" {
 }
 
 test "CREATE DOMAIN conflicts with enum" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_domain_enum_conflict.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_enum_conflict.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23230,9 +25478,15 @@ test "CREATE DOMAIN conflicts with enum" {
 }
 
 test "ANY operator with array literal" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_any_array.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_any_array.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23251,9 +25505,15 @@ test "ANY operator with array literal" {
 }
 
 test "ALL operator with array literal" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_all_array.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_all_array.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23272,9 +25532,15 @@ test "ALL operator with array literal" {
 }
 
 test "ANY with array column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_any_column.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_any_column.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23289,9 +25555,15 @@ test "ANY with array column" {
 }
 
 test "ALL with comparison operators" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_all_ops.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_all_ops.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -23311,7 +25583,6 @@ test "ALL with comparison operators" {
 // ── unnest() Table Function Tests ──────────────────────────────────
 
 test "unnest() with integer array" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23336,7 +25607,6 @@ test "unnest() with integer array" {
 }
 
 test "unnest() with text array" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23356,7 +25626,6 @@ test "unnest() with text array" {
 }
 
 test "unnest() with single-element array" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23372,7 +25641,6 @@ test "unnest() with single-element array" {
 }
 
 test "unnest() column name default" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23387,7 +25655,6 @@ test "unnest() column name default" {
 }
 
 test "unnest() with alias" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23402,7 +25669,6 @@ test "unnest() with alias" {
 }
 
 test "unnest() with array of booleans" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23426,7 +25692,6 @@ test "unnest() with array of booleans" {
 }
 
 test "unnest() with WHERE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23447,7 +25712,6 @@ test "unnest() with WHERE clause" {
 }
 
 test "unnest() with ORDER BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23474,7 +25738,6 @@ test "unnest() with ORDER BY" {
 // ── WITH ORDINALITY Table Function Tests ──────────────────────────────────────
 
 test "unnest() WITH ORDINALITY — integer array, default column names" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23503,7 +25766,6 @@ test "unnest() WITH ORDINALITY — integer array, default column names" {
 }
 
 test "unnest() WITH ORDINALITY AS t(val, ord) — column aliases" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23525,7 +25787,6 @@ test "unnest() WITH ORDINALITY AS t(val, ord) — column aliases" {
 }
 
 test "unnest() WITH ORDINALITY — text array" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23552,7 +25813,6 @@ test "unnest() WITH ORDINALITY — text array" {
 }
 
 test "unnest() WITH ORDINALITY — single element" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23569,7 +25829,6 @@ test "unnest() WITH ORDINALITY — single element" {
 }
 
 test "unnest() WITH ORDINALITY — column name 'ordinality' accessible" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23592,7 +25851,6 @@ test "unnest() WITH ORDINALITY — column name 'ordinality' accessible" {
 }
 
 test "unnest() WITH ORDINALITY — WHERE filter on ordinality column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23619,7 +25877,6 @@ test "unnest() WITH ORDINALITY — WHERE filter on ordinality column" {
 }
 
 test "unnest() WITH ORDINALITY — ORDER BY ordinality DESC reverses output" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23643,7 +25900,6 @@ test "unnest() WITH ORDINALITY — ORDER BY ordinality DESC reverses output" {
 }
 
 test "generate_series() WITH ORDINALITY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23675,7 +25931,6 @@ test "generate_series() WITH ORDINALITY" {
 }
 
 test "generate_series() WITH ORDINALITY — step 2" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23703,7 +25958,6 @@ test "generate_series() WITH ORDINALITY — step 2" {
 }
 
 test "json_array_elements() WITH ORDINALITY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23728,7 +25982,6 @@ test "json_array_elements() WITH ORDINALITY" {
 }
 
 test "unnest() without ORDINALITY still works (no regression)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23749,7 +26002,6 @@ test "unnest() without ORDINALITY still works (no regression)" {
 }
 
 test "ts_rank: basic usage" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23770,7 +26022,6 @@ test "ts_rank: basic usage" {
 }
 
 test "ts_rank: with normalization" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23792,7 +26043,6 @@ test "ts_rank: with normalization" {
 }
 
 test "ts_rank: no match returns zero" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23813,7 +26063,6 @@ test "ts_rank: no match returns zero" {
 }
 
 test "ts_rank: NULL propagation" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23828,7 +26077,6 @@ test "ts_rank: NULL propagation" {
 }
 
 test "ts_rank_cd: basic usage" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23849,7 +26097,6 @@ test "ts_rank_cd: basic usage" {
 }
 
 test "ts_rank_cd: with normalization" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23871,7 +26118,6 @@ test "ts_rank_cd: with normalization" {
 }
 
 test "ts_rank_cd: no match returns zero" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23892,7 +26138,6 @@ test "ts_rank_cd: no match returns zero" {
 }
 
 test "ts_rank comparison: multiple terms" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23925,7 +26170,6 @@ test "ts_rank comparison: multiple terms" {
 }
 
 test "ts_headline: basic usage" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23943,7 +26187,6 @@ test "ts_headline: basic usage" {
 }
 
 test "ts_headline: multiple query terms" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -23961,7 +26204,6 @@ test "ts_headline: multiple query terms" {
 }
 
 test "ts_headline: no match" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -24005,7 +26247,6 @@ test "ts_headline: no match" {
 // }
 
 test "SELECT division by zero: proper cleanup with defer" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
@@ -24024,15 +26265,18 @@ test "SELECT division by zero: proper cleanup with defer" {
 // ── Stabilization: Additional Edge Case Tests ───────────────────────────
 
 test "edge case: multiple ORDER BY columns with mixed ASC/DESC" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Verify complex ORDER BY sorting is stable and correct
-    const path = "test_order_mixed.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_order_mixed.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     _ = try db.exec("CREATE TABLE scores (name TEXT, score INTEGER, time INTEGER)");
     _ = try db.exec("INSERT INTO scores VALUES ('Alice', 100, 10)");
@@ -24064,15 +26308,18 @@ test "edge case: multiple ORDER BY columns with mixed ASC/DESC" {
 }
 
 test "edge case: WHERE with complex boolean expression" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // Verify AND/OR precedence and short-circuit evaluation
-    const path = "test_where_complex.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_where_complex.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     _ = try db.exec("CREATE TABLE flags (a INTEGER, b INTEGER, c INTEGER)");
     _ = try db.exec("INSERT INTO flags VALUES (1, 0, 1)");
@@ -24094,14 +26341,17 @@ test "edge case: WHERE with complex boolean expression" {
 }
 
 test "CREATE FUNCTION and DROP FUNCTION integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_create_drop_function.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_create_drop_function.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a simple SQL function that returns a constant
     var result1 = try db.exec(
@@ -24143,12 +26393,16 @@ test "CREATE FUNCTION and DROP FUNCTION integration" {
 
 test "SQL function with expression body evaluates correctly (named parameter)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_sql_function_expression.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_sql_function_expression.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a function that takes a parameter and adds 1 using named parameter syntax
     var result1 = try db.exec(
@@ -24175,12 +26429,16 @@ test "SQL function with expression body evaluates correctly (named parameter)" {
 
 test "SQL function with $1 positional parameter evaluates correctly" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_sql_function_dollar_param.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_sql_function_dollar_param.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a function using PostgreSQL-style $1 positional parameter
     var result1 = try db.exec(
@@ -24212,12 +26470,16 @@ test "SQL function with $1 positional parameter evaluates correctly" {
 
 test "SQL function in WHERE clause returns correct rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_sql_function_where.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_sql_function_where.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create test table
     var result0 = try db.exec("CREATE TABLE t (id INTEGER, val TEXT)");
@@ -24265,12 +26527,16 @@ test "SQL function in WHERE clause returns correct rows" {
 
 test "SQL function in ORDER BY clause affects sort order" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_sql_function_order_by.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_sql_function_order_by.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create test table
     var result0 = try db.exec("CREATE TABLE numbers (id INTEGER, num INTEGER)");
@@ -24331,14 +26597,17 @@ test "SQL function in ORDER BY clause affects sort order" {
 // ── Milestone 14H: Trigger Engine Integration Tests ───────────────────
 
 test "CREATE TRIGGER and DROP TRIGGER integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_create_drop_trigger.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_create_drop_trigger.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a table first
     var result0 = try db.exec("CREATE TABLE users (id INTEGER, name TEXT)");
@@ -24366,14 +26635,17 @@ test "CREATE TRIGGER and DROP TRIGGER integration" {
 }
 
 test "CREATE OR REPLACE TRIGGER integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_or_replace_trigger.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_or_replace_trigger.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a table first
     var result0 = try db.exec("CREATE TABLE products (id INTEGER, price REAL)");
@@ -24401,14 +26673,17 @@ test "CREATE OR REPLACE TRIGGER integration" {
 }
 
 test "ALTER TRIGGER ENABLE/DISABLE integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_trigger.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_trigger.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a table first
     var result0 = try db.exec("CREATE TABLE logs (id INTEGER, message TEXT)");
@@ -24436,14 +26711,17 @@ test "ALTER TRIGGER ENABLE/DISABLE integration" {
 }
 
 test "CREATE TRIGGER with different timings" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_timings.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_timings.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
-    defer {
-        db.close();
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    defer db.close();
 
     // Create a table first
     var result0 = try db.exec("CREATE TABLE events (id INTEGER, data TEXT)");
@@ -24474,12 +26752,16 @@ test "CREATE TRIGGER with different timings" {
 // ── Role Management Tests ───────────────────────────────────────────
 
 test "CREATE ROLE and DROP ROLE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_create_drop_role.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_create_drop_role.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24511,12 +26793,16 @@ test "CREATE ROLE and DROP ROLE" {
 }
 
 test "ALTER ROLE basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_alter_role.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_role.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24537,12 +26823,16 @@ test "ALTER ROLE basic" {
 }
 
 test "GRANT and REVOKE basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_grant_revoke.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grant_revoke.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24564,12 +26854,16 @@ test "GRANT and REVOKE basic" {
 }
 
 test "GRANT multiple privileges" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_grant_multiple.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grant_multiple.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24586,12 +26880,16 @@ test "GRANT multiple privileges" {
 }
 
 test "GRANT with grant option" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_grant_option.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grant_option.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24603,12 +26901,16 @@ test "GRANT with grant option" {
 }
 
 test "GRANT role membership" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_grant_role.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grant_role.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24630,12 +26932,16 @@ test "GRANT role membership" {
 }
 
 test "GRANT role with admin option" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_grant_role_admin.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grant_role_admin.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24656,12 +26962,16 @@ test "GRANT role with admin option" {
 }
 
 test "GRANT role to multiple members" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_grant_role_multiple.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grant_role_multiple.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24686,12 +26996,16 @@ test "GRANT role to multiple members" {
 }
 
 test "REVOKE role membership" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_revoke_role.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_revoke_role.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24714,12 +27028,16 @@ test "REVOKE role membership" {
 }
 
 test "REVOKE role from multiple members" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_revoke_role_multiple.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_revoke_role_multiple.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24746,12 +27064,16 @@ test "REVOKE role from multiple members" {
 }
 
 test "CREATE POLICY and DROP POLICY basic" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_create_drop_policy.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_create_drop_policy.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24788,12 +27110,16 @@ test "CREATE POLICY and DROP POLICY basic" {
 }
 
 test "ALTER TABLE RLS commands" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_alter_table_rls.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_table_rls.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24820,12 +27146,16 @@ test "ALTER TABLE RLS commands" {
 }
 
 test "CREATE POLICY UPDATE with both USING and WITH CHECK" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_policy_update.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_policy_update.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -24841,12 +27171,16 @@ test "CREATE POLICY UPDATE with both USING and WITH CHECK" {
 // ============================================================================
 
 test "Hot standby prevents INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_standby_insert.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_standby_insert.db", .{dir_path});
 
     // Create database on primary first
     var db_primary = try Database.open(allocator, path, .{});
@@ -24863,12 +27197,16 @@ test "Hot standby prevents INSERT" {
 }
 
 test "Hot standby prevents UPDATE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_standby_update.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_standby_update.db", .{dir_path});
 
     // Create table on primary (disabled mode)
     var db_primary = try Database.open(allocator, path, .{});
@@ -24887,12 +27225,16 @@ test "Hot standby prevents UPDATE" {
 }
 
 test "Hot standby prevents DELETE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_standby_delete.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_standby_delete.db", .{dir_path});
 
     // Create table on primary (disabled mode)
     var db_primary = try Database.open(allocator, path, .{});
@@ -24911,12 +27253,16 @@ test "Hot standby prevents DELETE" {
 }
 
 test "Hot standby prevents DROP TABLE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_standby_drop.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_standby_drop.db", .{dir_path});
 
     // Create table on primary (disabled mode)
     var db_primary = try Database.open(allocator, path, .{});
@@ -24933,12 +27279,16 @@ test "Hot standby prevents DROP TABLE" {
 }
 
 test "Hot standby allows SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_standby_select.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_standby_select.db", .{dir_path});
 
     // Create table and insert data on primary
     var db_primary = try Database.open(allocator, path, .{});
@@ -24966,12 +27316,16 @@ test "Hot standby allows SELECT" {
 }
 
 test "Hot standby prevents CREATE TABLE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_standby_create_table.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_standby_create_table.db", .{dir_path});
 
     // Create initial table on primary (disabled mode)
     var db_primary = try Database.open(allocator, path, .{});
@@ -25000,11 +27354,16 @@ test "Hot standby prevents CREATE TABLE" {
 }
 
 test "ANALYZE collects table statistics" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25055,11 +27414,16 @@ test "ANALYZE collects table statistics" {
 }
 
 test "ANALYZE all tables" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_all.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_all.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25108,11 +27472,16 @@ test "ANALYZE all tables" {
 // ── Histogram Generation Tests (Milestone 20B) ──────────────────────────────
 
 test "ANALYZE generates histogram with basic values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_basic.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25158,11 +27527,16 @@ test "ANALYZE generates histogram with basic values" {
 }
 
 test "ANALYZE histogram with NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_nulls.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25204,11 +27578,16 @@ test "ANALYZE histogram with NULL values" {
 }
 
 test "ANALYZE histogram with duplicate values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_duplicates.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_duplicates.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25262,11 +27641,16 @@ test "ANALYZE histogram with duplicate values" {
 }
 
 test "ANALYZE histogram with fewer rows than buckets" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_few_rows.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_few_rows.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25306,11 +27690,16 @@ test "ANALYZE histogram with fewer rows than buckets" {
 }
 
 test "ANALYZE histogram edge case: empty table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_empty.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25341,11 +27730,16 @@ test "ANALYZE histogram edge case: empty table" {
 }
 
 test "ANALYZE histogram edge case: single value repeated" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_single_value.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_single_value.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25385,11 +27779,16 @@ test "ANALYZE histogram edge case: single value repeated" {
 }
 
 test "ANALYZE histogram bucket bounds are correct" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_bounds.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_bounds.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25439,11 +27838,16 @@ test "ANALYZE histogram bucket bounds are correct" {
 }
 
 test "ANALYZE histogram maintains equi-depth distribution" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_equidepth.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_equidepth.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25498,11 +27902,16 @@ test "ANALYZE histogram maintains equi-depth distribution" {
 }
 
 test "ANALYZE histogram on TEXT column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_histogram_text.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_histogram_text.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25547,11 +27956,16 @@ test "ANALYZE histogram on TEXT column" {
 // ── Comprehensive Edge Case Tests for ANALYZE ──────────────────────
 
 test "ANALYZE calculates correlation with physical row order" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_correlation.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_correlation.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25714,11 +28128,16 @@ test "ANALYZE calculates correlation with physical row order" {
 }
 
 test "ANALYZE with very large dataset (stress test)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_large.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_large.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25769,11 +28188,16 @@ test "ANALYZE with very large dataset (stress test)" {
 }
 
 test "ANALYZE with skewed data distribution" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_skewed.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_skewed.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25820,11 +28244,16 @@ test "ANALYZE with skewed data distribution" {
 }
 
 test "ANALYZE on multi-column table (independent statistics)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_multicol.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_multicol.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25888,11 +28317,16 @@ test "ANALYZE on multi-column table (independent statistics)" {
 }
 
 test "ANALYZE on non-existent table returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_nonexistent.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_nonexistent.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25903,11 +28337,16 @@ test "ANALYZE on non-existent table returns error" {
 }
 
 test "ANALYZE with all NULL column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_all_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_all_nulls.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25946,11 +28385,16 @@ test "ANALYZE with all NULL column" {
 }
 
 test "ANALYZE with mixed NULL and non-NULL values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_analyze_mixed_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_analyze_mixed_nulls.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -25997,7 +28441,6 @@ test "ANALYZE with mixed NULL and non-NULL values" {
 }
 
 test "EXPLAIN simple SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26015,7 +28458,6 @@ test "EXPLAIN simple SELECT" {
 }
 
 test "EXPLAIN with JOIN" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26033,7 +28475,6 @@ test "EXPLAIN with JOIN" {
 }
 
 test "EXPLAIN ANALYZE SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26054,7 +28495,6 @@ test "EXPLAIN ANALYZE SELECT" {
 // ── Comprehensive Edge Case Tests for EXPLAIN ──────────────────────────
 
 test "EXPLAIN edge case: aggregation with GROUP BY" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26070,7 +28510,6 @@ test "EXPLAIN edge case: aggregation with GROUP BY" {
 }
 
 test "EXPLAIN edge case: window function" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26086,7 +28525,6 @@ test "EXPLAIN edge case: window function" {
 }
 
 test "EXPLAIN edge case: CTE (WITH clause)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26103,7 +28541,6 @@ test "EXPLAIN edge case: CTE (WITH clause)" {
 }
 
 test "EXPLAIN edge case: UNION ALL set operation" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26117,11 +28554,10 @@ test "EXPLAIN edge case: UNION ALL set operation" {
 
     try std.testing.expect(result.message.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, result.message, "SetOp") != null or
-                           std.mem.indexOf(u8, result.message, "Union") != null);
+        std.mem.indexOf(u8, result.message, "Union") != null);
 }
 
 test "EXPLAIN edge case: DISTINCT elimination" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26134,11 +28570,10 @@ test "EXPLAIN edge case: DISTINCT elimination" {
 
     try std.testing.expect(result.message.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, result.message, "Distinct") != null or
-                           std.mem.indexOf(u8, result.message, "Scan") != null);
+        std.mem.indexOf(u8, result.message, "Scan") != null);
 }
 
 test "EXPLAIN edge case: LEFT JOIN with filter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26155,7 +28590,6 @@ test "EXPLAIN edge case: LEFT JOIN with filter" {
 }
 
 test "EXPLAIN edge case: cross join (Cartesian product)" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26169,11 +28603,10 @@ test "EXPLAIN edge case: cross join (Cartesian product)" {
 
     try std.testing.expect(result.message.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, result.message, "Join") != null or
-                           std.mem.indexOf(u8, result.message, "Scan") != null);
+        std.mem.indexOf(u8, result.message, "Scan") != null);
 }
 
 test "EXPLAIN edge case: invalid query returns error" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26185,7 +28618,6 @@ test "EXPLAIN edge case: invalid query returns error" {
 }
 
 test "EXPLAIN ANALYZE edge case: multiple aggregates" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26203,7 +28635,6 @@ test "EXPLAIN ANALYZE edge case: multiple aggregates" {
 }
 
 test "SQL function NULLIF integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26238,7 +28669,6 @@ test "SQL function NULLIF integration" {
 }
 
 test "SQL function GREATEST integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26281,7 +28711,6 @@ test "SQL function GREATEST integration" {
 }
 
 test "SQL function LEAST integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26324,7 +28753,6 @@ test "SQL function LEAST integration" {
 }
 
 test "SQL function COALESCE integration" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var db = try Database.open(allocator, ":memory:", .{});
@@ -26359,10 +28787,15 @@ test "SQL function COALESCE integration" {
 }
 
 test "CREATE INDEX creates index on table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26385,10 +28818,15 @@ test "CREATE INDEX creates index on table" {
 }
 
 test "CREATE INDEX IF NOT EXISTS" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_idx_ine.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_idx_ine.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26408,10 +28846,15 @@ test "CREATE INDEX IF NOT EXISTS" {
 }
 
 test "CREATE UNIQUE INDEX creates unique index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_unique_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_unique_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26433,10 +28876,15 @@ test "CREATE UNIQUE INDEX creates unique index" {
 }
 
 test "CREATE INDEX with INCLUDE clause stores included columns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_idx_include.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_idx_include.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26460,10 +28908,15 @@ test "CREATE INDEX with INCLUDE clause stores included columns" {
 }
 
 test "DROP INDEX removes index from table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_drop_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_drop_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26493,10 +28946,15 @@ test "DROP INDEX removes index from table" {
 }
 
 test "DROP INDEX IF EXISTS does not error when index missing" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_drop_idx_ife.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_drop_idx_ife.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26512,10 +28970,15 @@ test "DROP INDEX IF EXISTS does not error when index missing" {
 }
 
 test "CREATE INDEX USING HASH parses successfully" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_hash_idx_parse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_parse.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26531,10 +28994,15 @@ test "CREATE INDEX USING HASH parses successfully" {
 }
 
 test "CREATE INDEX USING HASH stores hash index in catalog" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_hash_idx_catalog.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_catalog.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26557,10 +29025,15 @@ test "CREATE INDEX USING HASH stores hash index in catalog" {
 }
 
 test "CREATE UNIQUE INDEX USING HASH creates unique hash index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_unique_hash_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_unique_hash_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26583,10 +29056,15 @@ test "CREATE UNIQUE INDEX USING HASH creates unique hash index" {
 }
 
 test "CREATE INDEX USING BTREE is default if USING clause omitted" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_btree_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_btree_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26609,10 +29087,15 @@ test "CREATE INDEX USING BTREE is default if USING clause omitted" {
 }
 
 test "CREATE INDEX USING HASH with INCLUDE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_hash_idx_include.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_include.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26636,10 +29119,15 @@ test "CREATE INDEX USING HASH with INCLUDE clause" {
 }
 
 test "Hash index INSERT stores values in hash index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_hash_idx_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26663,10 +29151,15 @@ test "Hash index INSERT stores values in hash index" {
 }
 
 test "Hash index equality SELECT uses hash index for equality queries" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_hash_idx_equality.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_equality.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26701,10 +29194,15 @@ test "Hash index equality SELECT uses hash index for equality queries" {
 }
 
 test "Hash index rejects range queries and falls back to seq scan" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_hash_idx_range_reject.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_range_reject.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26773,10 +29271,15 @@ test "Hash index rejects range queries and falls back to seq scan" {
 }
 
 test "Hash index supports IN clause for multiple equality checks" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_hash_idx_in_clause.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_in_clause.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26814,10 +29317,15 @@ test "Hash index supports IN clause for multiple equality checks" {
 }
 
 test "CREATE INDEX USING HASH IF NOT EXISTS" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_create_hash_idx_ine.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_ine.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26837,10 +29345,15 @@ test "CREATE INDEX USING HASH IF NOT EXISTS" {
 }
 
 test "Hash index with NULL values in indexed column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_hash_idx_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26864,10 +29377,15 @@ test "Hash index with NULL values in indexed column" {
 }
 
 test "Hash index error when no column specified in CREATE INDEX" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_hash_idx_no_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_no_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26889,10 +29407,15 @@ test "Hash index error when no column specified in CREATE INDEX" {
 // ── CREATE INDEX CONCURRENTLY tests ────────────────────────────────────
 
 test "Parse CREATE INDEX CONCURRENTLY basic syntax" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_parse_concurrent_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_parse_concurrent_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26912,10 +29435,15 @@ test "Parse CREATE INDEX CONCURRENTLY basic syntax" {
 }
 
 test "Create index concurrently on empty table starts in building state" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_concurrent_empty_table.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_empty_table.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26933,10 +29461,15 @@ test "Create index concurrently on empty table starts in building state" {
 }
 
 test "Create unique index concurrently should mark as unique" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_unique_concurrent_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_unique_concurrent_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26953,10 +29486,15 @@ test "Create unique index concurrently should mark as unique" {
 }
 
 test "Create index concurrently with IF NOT EXISTS" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_concurrent_if_not_exists.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_if_not_exists.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26976,10 +29514,15 @@ test "Create index concurrently with IF NOT EXISTS" {
 }
 
 test "Create index concurrently with USING clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_concurrent_using.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_using.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -26995,10 +29538,15 @@ test "Create index concurrently with USING clause" {
 }
 
 test "Create index concurrently with INCLUDE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_concurrent_include.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_include.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27014,10 +29562,15 @@ test "Create index concurrently with INCLUDE clause" {
 }
 
 test "Create unique index concurrently with multiple columns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_concurrent_multi_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_multi_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27033,10 +29586,15 @@ test "Create unique index concurrently with multiple columns" {
 }
 
 test "Concurrent writes still work during index build" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_concurrent_writes.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_writes.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27056,10 +29614,15 @@ test "Concurrent writes still work during index build" {
 }
 
 test "Index marked valid after successful build" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_index_marked_valid.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_index_marked_valid.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27079,10 +29642,15 @@ test "Index marked valid after successful build" {
 }
 
 test "Second create index concurrently on same name fails" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_duplicate_concurrent_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_duplicate_concurrent_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27106,10 +29674,15 @@ test "Second create index concurrently on same name fails" {
 }
 
 test "Create unique index concurrently with hash type" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_unique_concurrent_hash.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_unique_concurrent_hash.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27127,10 +29700,15 @@ test "Create unique index concurrently with hash type" {
 // ── REINDEX tests ──────────────────────────────────────────────────────
 
 test "REINDEX INDEX rebuilds a btree index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_btree.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_btree.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27169,10 +29747,15 @@ test "REINDEX INDEX rebuilds a btree index" {
 }
 
 test "REINDEX INDEX rebuilds a hash index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_hash.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_hash.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27211,7 +29794,6 @@ test "REINDEX INDEX rebuilds a hash index" {
 }
 
 test "REINDEX INDEX on gin index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     // SKIP: TSVECTOR type not implemented yet (Phase 5+)
     // This test will be enabled when full-text search types are added
@@ -27219,10 +29801,15 @@ test "REINDEX INDEX on gin index" {
 }
 
 test "REINDEX TABLE rebuilds all indexes on a table" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_table.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_table.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27259,10 +29846,15 @@ test "REINDEX TABLE rebuilds all indexes on a table" {
 }
 
 test "REINDEX INDEX handles concurrent index state" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_concurrent.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_concurrent.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27282,10 +29874,15 @@ test "REINDEX INDEX handles concurrent index state" {
 }
 
 test "REINDEX INDEX updates statistics" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_stats.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_stats.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27314,10 +29911,15 @@ test "REINDEX INDEX updates statistics" {
 }
 
 test "REINDEX INDEX on nonexistent index fails" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_noexist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_noexist.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27331,10 +29933,15 @@ test "REINDEX INDEX on nonexistent index fails" {
 }
 
 test "REINDEX TABLE on nonexistent table fails" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_table_noexist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_table_noexist.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27344,10 +29951,15 @@ test "REINDEX TABLE on nonexistent table fails" {
 }
 
 test "REINDEX TABLE on table without indexes succeeds" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_table_no_idx.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_table_no_idx.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27363,10 +29975,15 @@ test "REINDEX TABLE on table without indexes succeeds" {
 }
 
 test "REINDEX DATABASE rebuilds all indexes" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_database.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_database.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27391,10 +30008,15 @@ test "REINDEX DATABASE rebuilds all indexes" {
 }
 
 test "REINDEX INDEX preserves index type" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_preserve_type.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_preserve_type.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27418,10 +30040,15 @@ test "REINDEX INDEX preserves index type" {
 }
 
 test "REINDEX INDEX preserves UNIQUE constraint" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_preserve_unique.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_preserve_unique.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27453,10 +30080,15 @@ test "REINDEX INDEX preserves UNIQUE constraint" {
 }
 
 test "REINDEX INDEX on invalid index state" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_reindex_invalid.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_invalid.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27483,8 +30115,14 @@ test "REINDEX INDEX on invalid index state" {
 
 test "Column-level UNIQUE constraint is enforced on duplicate INSERT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_col_unique_enforce.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_col_unique_enforce.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27503,8 +30141,14 @@ test "Column-level UNIQUE constraint is enforced on duplicate INSERT" {
 
 test "Table-level single-column UNIQUE constraint is enforced on duplicate INSERT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_tbl_unique_enforce.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_tbl_unique_enforce.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27523,8 +30167,14 @@ test "Table-level single-column UNIQUE constraint is enforced on duplicate INSER
 
 test "Column-level UNIQUE constraint allows distinct non-duplicate values" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_col_unique_distinct.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_col_unique_distinct.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27553,11 +30203,16 @@ test "Column-level UNIQUE constraint allows distinct non-duplicate values" {
 // ── PreparedStatement Tests ─────────────────────────────────────────────
 
 test "prepared stmt: basic prepare and execute SELECT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_basic_select.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_basic_select.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27591,11 +30246,16 @@ test "prepared stmt: basic prepare and execute SELECT" {
 }
 
 test "prepared stmt: bind multiple parameters INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_multi_bind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_multi_bind.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27630,11 +30290,16 @@ test "prepared stmt: bind multiple parameters INSERT" {
 }
 
 test "prepared stmt: repeated execution with different binds" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_repeated.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_repeated.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27667,11 +30332,16 @@ test "prepared stmt: repeated execution with different binds" {
 }
 
 test "prepared stmt: SELECT with repeated execution" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_select_repeated.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_select_repeated.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27702,11 +30372,16 @@ test "prepared stmt: SELECT with repeated execution" {
 }
 
 test "prepared stmt: NULL parameter binding" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27737,11 +30412,16 @@ test "prepared stmt: NULL parameter binding" {
 }
 
 test "prepared stmt: all parameter types" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_types.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_types.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27778,11 +30458,16 @@ test "prepared stmt: all parameter types" {
 }
 
 test "prepared stmt: error on invalid SQL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_invalid_sql.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_invalid_sql.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27792,11 +30477,16 @@ test "prepared stmt: error on invalid SQL" {
 }
 
 test "prepared stmt: error on wrong parameter count" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_wrong_param_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_wrong_param_count.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27816,11 +30506,16 @@ test "prepared stmt: error on wrong parameter count" {
 }
 
 test "prepared stmt: error on invalid parameter index" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_invalid_index.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_invalid_index.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27836,11 +30531,16 @@ test "prepared stmt: error on invalid parameter index" {
 }
 
 test "prepared stmt: error on execute without bind" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_no_bind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_no_bind.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27856,11 +30556,16 @@ test "prepared stmt: error on execute without bind" {
 }
 
 test "prepared stmt: memory leak detection" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_memory.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_memory.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27883,11 +30588,16 @@ test "prepared stmt: memory leak detection" {
 }
 
 test "prepared stmt: complex SELECT with JOIN" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_join.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_join.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27921,11 +30631,16 @@ test "prepared stmt: complex SELECT with JOIN" {
 }
 
 test "prepared stmt: UPDATE with parameter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27956,11 +30671,16 @@ test "prepared stmt: UPDATE with parameter" {
 }
 
 test "prepared stmt: DELETE with parameter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -27990,11 +30710,16 @@ test "prepared stmt: DELETE with parameter" {
 }
 
 test "prepared stmt: SELECT with multiple WHERE parameters" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_multi_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_multi_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28024,11 +30749,16 @@ test "prepared stmt: SELECT with multiple WHERE parameters" {
 }
 
 test "prepared stmt: performance vs direct exec" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_perf.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_perf.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28060,11 +30790,16 @@ test "prepared stmt: performance vs direct exec" {
 }
 
 test "prepared stmt: rebind after execution" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_rebind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_rebind.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28106,11 +30841,16 @@ test "prepared stmt: rebind after execution" {
 }
 
 test "prepared stmt: bind date parameter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_date_bind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_date_bind.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28142,11 +30882,16 @@ test "prepared stmt: bind date parameter" {
 }
 
 test "prepared stmt: bind timestamp parameter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_ts_bind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_ts_bind.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28178,11 +30923,16 @@ test "prepared stmt: bind timestamp parameter" {
 }
 
 test "prepared stmt: bind numeric parameter" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_numeric_bind.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_numeric_bind.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28214,11 +30964,16 @@ test "prepared stmt: bind numeric parameter" {
 }
 
 test "prepared stmt: bind date in WHERE clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_prepared_date_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_date_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28271,11 +31026,16 @@ test "prepared stmt: bind date in WHERE clause" {
 // ── $N-Style Parameter Tests ──────────────────────────────────────────────
 
 test "numbered param: $1 in SELECT WHERE" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_numbered_param_select.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_select.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28308,11 +31068,16 @@ test "numbered param: $1 in SELECT WHERE" {
 }
 
 test "numbered param: $1 and $2 in INSERT" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_numbered_param_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28346,11 +31111,16 @@ test "numbered param: $1 and $2 in INSERT" {
 }
 
 test "numbered param: reuse same parameter $1 twice" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_numbered_param_reuse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_reuse.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28385,11 +31155,16 @@ test "numbered param: reuse same parameter $1 twice" {
 }
 
 test "numbered param: out of order $2 before $1" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_numbered_param_out_of_order.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_out_of_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28423,11 +31198,16 @@ test "numbered param: out of order $2 before $1" {
 }
 
 test "numbered param: $1-style rejects $0" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_numbered_param_zero.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_zero.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28444,11 +31224,16 @@ test "numbered param: $1-style rejects $0" {
 }
 
 test "numbered param: mixed ? and $1 rejected" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
     if (!ENABLE_PREPARED_STMT_TESTS) return error.SkipZigTest;
-    const path = "test_numbered_param_mixed.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_mixed.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28465,10 +31250,15 @@ test "numbered param: mixed ? and $1 rejected" {
 }
 
 test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - median with even set" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_median.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_median.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28497,10 +31287,15 @@ test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - median with even set"
 }
 
 test "percentile_cont(0.0) WITHIN GROUP (ORDER BY value) - minimum" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_min.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_min.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28528,10 +31323,15 @@ test "percentile_cont(0.0) WITHIN GROUP (ORDER BY value) - minimum" {
 }
 
 test "percentile_cont(1.0) WITHIN GROUP (ORDER BY value) - maximum" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_max.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_max.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28559,10 +31359,15 @@ test "percentile_cont(1.0) WITHIN GROUP (ORDER BY value) - maximum" {
 }
 
 test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - single row" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_single.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28590,10 +31395,15 @@ test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - single row" {
 }
 
 test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - all NULLs returns NULL" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_nulls.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28616,10 +31426,15 @@ test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - all NULLs returns NUL
 }
 
 test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value) - discrete median" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_median.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_median.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28643,10 +31458,15 @@ test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value) - discrete median" {
 }
 
 test "percentile_disc(0.0) WITHIN GROUP (ORDER BY value) - first value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_min.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_min.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28669,10 +31489,15 @@ test "percentile_disc(0.0) WITHIN GROUP (ORDER BY value) - first value" {
 }
 
 test "percentile_disc(1.0) WITHIN GROUP (ORDER BY value) - last value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_max.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_max.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28695,10 +31520,15 @@ test "percentile_disc(1.0) WITHIN GROUP (ORDER BY value) - last value" {
 }
 
 test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value DESC) - with descending order" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_desc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_desc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28722,10 +31552,15 @@ test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value DESC) - with descending 
 }
 
 test "mode() WITHIN GROUP (ORDER BY value) - most frequent value" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mode_most_frequent.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mode_most_frequent.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28749,10 +31584,15 @@ test "mode() WITHIN GROUP (ORDER BY value) - most frequent value" {
 }
 
 test "mode() WITHIN GROUP (ORDER BY value) - equal frequency returns smallest" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mode_equal_freq.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mode_equal_freq.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -28776,10 +31616,15 @@ test "mode() WITHIN GROUP (ORDER BY value) - equal frequency returns smallest" {
 }
 
 test "percentile_cont(0.25) WITHIN GROUP (ORDER BY value) - Q1 quartile" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_q1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_q1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29024,8 +31869,14 @@ test "generate_series with WHERE" {
 
 test "INSERT RETURNING *" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_insert_returning.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_returning.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29053,8 +31904,14 @@ test "INSERT RETURNING *" {
 
 test "INSERT RETURNING specific column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_insert_returning_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_returning_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29080,8 +31937,14 @@ test "INSERT RETURNING specific column" {
 
 test "INSERT RETURNING expression" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_insert_returning_expr.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_returning_expr.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29107,8 +31970,14 @@ test "INSERT RETURNING expression" {
 
 test "UPDATE RETURNING *" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_update_returning.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_update_returning.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29138,8 +32007,14 @@ test "UPDATE RETURNING *" {
 
 test "UPDATE RETURNING specific column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_update_returning_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_update_returning_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29168,8 +32043,14 @@ test "UPDATE RETURNING specific column" {
 
 test "DELETE RETURNING *" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_delete_returning.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_delete_returning.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29199,8 +32080,14 @@ test "DELETE RETURNING *" {
 
 test "DELETE RETURNING specific column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_delete_ret_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_delete_ret_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29229,8 +32116,14 @@ test "DELETE RETURNING specific column" {
 
 test "UPDATE RETURNING multiple rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_update_ret_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_update_ret_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29260,8 +32153,14 @@ test "UPDATE RETURNING multiple rows" {
 
 test "INSERT RETURNING multiple rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_insert_ret_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_ret_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29298,8 +32197,14 @@ test "INSERT RETURNING multiple rows" {
 
 test "percentile_cont with integers" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_int.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_int.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29329,8 +32234,14 @@ test "percentile_cont with integers" {
 
 test "mode() WITHIN GROUP - all same value" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mode_all_same.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mode_all_same.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29355,8 +32266,14 @@ test "mode() WITHIN GROUP - all same value" {
 
 test "percentile_cont empty table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29380,8 +32297,14 @@ test "percentile_cont empty table" {
 
 test "INSERT ON CONFLICT DO NOTHING — basic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_nothing_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29428,8 +32351,14 @@ test "INSERT ON CONFLICT DO NOTHING — basic" {
 
 test "INSERT ON CONFLICT DO NOTHING — no conflict" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_nothing_no_conflict.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_no_conflict.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29464,8 +32393,14 @@ test "INSERT ON CONFLICT DO NOTHING — no conflict" {
 
 test "INSERT ON CONFLICT DO UPDATE SET — basic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_update_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29500,8 +32435,14 @@ test "INSERT ON CONFLICT DO UPDATE SET — basic" {
 
 test "INSERT ON CONFLICT DO UPDATE SET — uses EXCLUDED" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_update_excluded.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_excluded.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29536,8 +32477,14 @@ test "INSERT ON CONFLICT DO UPDATE SET — uses EXCLUDED" {
 
 test "INSERT ON CONFLICT DO UPDATE SET — with expression" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_update_expr.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_expr.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29572,8 +32519,14 @@ test "INSERT ON CONFLICT DO UPDATE SET — with expression" {
 
 test "INSERT ON CONFLICT DO NOTHING — multiple values, some conflict" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_nothing_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29609,8 +32562,14 @@ test "INSERT ON CONFLICT DO NOTHING — multiple values, some conflict" {
 
 test "INSERT ON CONFLICT DO UPDATE SET — multiple assignments" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_update_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29646,8 +32605,14 @@ test "INSERT ON CONFLICT DO UPDATE SET — multiple assignments" {
 
 test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_nothing_returning.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_returning.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29690,8 +32655,14 @@ test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
 
 test "INSERT ON CONFLICT DO UPDATE — MVCC: row has TupleHeader in transaction" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_update_mvcc_header.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_mvcc_header.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29739,8 +32710,14 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: row has TupleHeader in transaction"
 
 test "INSERT ON CONFLICT DO UPDATE — MVCC: header has correct xmin in transaction" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_upsert_do_update_mvcc_xmin.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_mvcc_xmin.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30124,8 +33101,14 @@ test "json_each with WHERE clause" {
 
 test "LATERAL — json_each expands column from table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lateral_json_each.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_json_each.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30181,8 +33164,14 @@ test "LATERAL — json_each expands column from table" {
 
 test "LATERAL — json_each multiple rows expand independently" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lateral_json_each_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_json_each_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30211,8 +33200,14 @@ test "LATERAL — json_each multiple rows expand independently" {
 
 test "LATERAL — LEFT JOIN LATERAL with empty JSON object" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lateral_left_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_left_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30267,8 +33262,14 @@ test "LATERAL — LEFT JOIN LATERAL with empty JSON object" {
 
 test "LATERAL — json_array_elements expands column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lateral_json_array.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_json_array.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30306,8 +33307,14 @@ test "LATERAL — json_array_elements expands column" {
 
 test "LATERAL — generate_series with column as stop" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_lateral_generate_series.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_generate_series.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30338,8 +33345,14 @@ test "LATERAL — generate_series with column as stop" {
 
 test "row_to_json integration: basic row from table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_to_json_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_to_json_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30393,8 +33406,14 @@ test "row_to_json integration: basic row from table" {
 
 test "row_to_json integration: filtered single row with WHERE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_to_json_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_to_json_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30440,8 +33459,14 @@ test "row_to_json integration: filtered single row with WHERE" {
 
 test "FILTER — COUNT(*) FILTER (WHERE condition)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_count_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_count_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30482,8 +33507,14 @@ test "FILTER — COUNT(*) FILTER (WHERE condition)" {
 
 test "FILTER — COUNT(*) FILTER (WHERE false) returns 0" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_count_false.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_count_false.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30516,8 +33547,14 @@ test "FILTER — COUNT(*) FILTER (WHERE false) returns 0" {
 
 test "FILTER — SUM(x) FILTER (WHERE x > 0)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_sum_positive.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_sum_positive.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30550,8 +33587,14 @@ test "FILTER — SUM(x) FILTER (WHERE x > 0)" {
 
 test "FILTER — AVG(x) FILTER (WHERE x IS NOT NULL)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_avg_not_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_avg_not_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30584,8 +33627,14 @@ test "FILTER — AVG(x) FILTER (WHERE x IS NOT NULL)" {
 
 test "FILTER — Multiple FILTER clauses in one SELECT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_multiple.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_multiple.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30626,8 +33675,14 @@ test "FILTER — Multiple FILTER clauses in one SELECT" {
 
 test "FILTER — with GROUP BY" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_group_by.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_group_by.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30691,8 +33746,14 @@ test "FILTER — with GROUP BY" {
 
 test "FILTER — COUNT(DISTINCT x) FILTER (WHERE x > 0)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_filter_count_distinct.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_filter_count_distinct.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30729,8 +33790,14 @@ test "FILTER — COUNT(DISTINCT x) FILTER (WHERE x > 0)" {
 
 test "ROLLUP: basic two-column rollup" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_rollup_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rollup_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30766,7 +33833,8 @@ test "ROLLUP: basic two-column rollup" {
         if (row.values.len >= 3 and
             row.values[0] == .null_value and
             row.values[1] == .null_value and
-            row.values[2] == .integer) {
+            row.values[2] == .integer)
+        {
             grand_total = row.values[2].integer;
             found_grand_total = true;
         }
@@ -30781,8 +33849,14 @@ test "ROLLUP: basic two-column rollup" {
 
 test "ROLLUP: one-column rollup" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_rollup_one_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rollup_one_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30818,8 +33892,14 @@ test "ROLLUP: one-column rollup" {
 
 test "CUBE: basic two-column cube" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_cube_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_cube_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30859,7 +33939,8 @@ test "CUBE: basic two-column cube" {
         if (row.values.len >= 3 and
             row.values[0] == .null_value and
             row.values[1] == .null_value and
-            row.values[2] == .integer) {
+            row.values[2] == .integer)
+        {
             grand_total = row.values[2].integer;
             found_grand_total = true;
         }
@@ -30874,8 +33955,14 @@ test "CUBE: basic two-column cube" {
 
 test "GROUPING SETS: explicit three groupings" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_grouping_sets_explicit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grouping_sets_explicit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30912,7 +33999,8 @@ test "GROUPING SETS: explicit three groupings" {
         if (row.values.len >= 3 and
             row.values[0] == .null_value and
             row.values[1] == .null_value and
-            row.values[2] == .integer) {
+            row.values[2] == .integer)
+        {
             found_grand_total = true;
         }
     }
@@ -30924,8 +34012,14 @@ test "GROUPING SETS: explicit three groupings" {
 
 test "GROUPING SETS: single grouping set" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_grouping_sets_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grouping_sets_single.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30963,8 +34057,14 @@ test "GROUPING SETS: single grouping set" {
 
 test "ROLLUP: NULL in non-grouped columns" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_rollup_null_columns.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rollup_null_columns.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30994,14 +34094,16 @@ test "ROLLUP: NULL in non-grouped columns" {
         // Look for dept subtotal: dept is not NULL, job is NULL
         if (row.values.len >= 2 and
             row.values[0] != .null_value and
-            row.values[1] == .null_value) {
+            row.values[1] == .null_value)
+        {
             found_dept_subtotal = true;
         }
 
         // Look for grand total: both NULL
         if (row.values.len >= 2 and
             row.values[0] == .null_value and
-            row.values[1] == .null_value) {
+            row.values[1] == .null_value)
+        {
             found_grand_total = true;
         }
     }
@@ -31016,8 +34118,14 @@ test "ROLLUP: NULL in non-grouped columns" {
 
 test "GROUPING() with ROLLUP — detect grand total rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_grouping_rollup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grouping_rollup.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31076,8 +34184,14 @@ test "GROUPING() with ROLLUP — detect grand total rows" {
 
 test "GROUPING() with GROUPING SETS — bitmask for two-arg GROUPING" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_grouping_sets_bitmask.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grouping_sets_bitmask.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31150,8 +34264,14 @@ test "GROUPING() with GROUPING SETS — bitmask for two-arg GROUPING" {
 
 test "GROUPING() returns 0 for regular GROUP BY" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_grouping_regular.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_grouping_regular.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31190,10 +34310,15 @@ test "GROUPING() returns 0 for regular GROUP BY" {
 }
 
 test "ORDER BY ASC NULLS FIRST — NULLs appear before non-NULLs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_order_nulls_first_asc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_first_asc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31232,10 +34357,15 @@ test "ORDER BY ASC NULLS FIRST — NULLs appear before non-NULLs" {
 }
 
 test "ORDER BY ASC NULLS LAST — NULLs appear after non-NULLs" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_order_nulls_last_asc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_last_asc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31274,10 +34404,15 @@ test "ORDER BY ASC NULLS LAST — NULLs appear after non-NULLs" {
 }
 
 test "ORDER BY DESC NULLS LAST — NULLs appear after non-NULLs in DESC sort" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_order_nulls_last_desc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_last_desc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31316,10 +34451,15 @@ test "ORDER BY DESC NULLS LAST — NULLs appear after non-NULLs in DESC sort" {
 }
 
 test "ORDER BY DESC NULLS FIRST — NULLs appear before non-NULLs in DESC sort" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_order_nulls_first_desc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_first_desc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31358,10 +34498,15 @@ test "ORDER BY DESC NULLS FIRST — NULLs appear before non-NULLs in DESC sort" 
 }
 
 test "FETCH FIRST n ROWS ONLY — basic limit" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_fetch_first_n.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_first_n.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31390,10 +34535,15 @@ test "FETCH FIRST n ROWS ONLY — basic limit" {
 }
 
 test "FETCH NEXT n ROWS ONLY — NEXT is alias for FIRST" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_fetch_next_n.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_next_n.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31422,10 +34572,15 @@ test "FETCH NEXT n ROWS ONLY — NEXT is alias for FIRST" {
 }
 
 test "FETCH FIRST 1 ROW ONLY — singular ROW keyword" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_fetch_first_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_first_1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31457,10 +34612,15 @@ test "FETCH FIRST 1 ROW ONLY — singular ROW keyword" {
 }
 
 test "FETCH FIRST 0 ROWS ONLY — zero rows" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_fetch_first_0.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_first_0.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31485,10 +34645,15 @@ test "FETCH FIRST 0 ROWS ONLY — zero rows" {
 }
 
 test "DEFAULT ASC ordering — NULLs go last without explicit NULLS clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_default_asc_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_default_asc_nulls.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31527,10 +34692,15 @@ test "DEFAULT ASC ordering — NULLs go last without explicit NULLS clause" {
 }
 
 test "DEFAULT DESC ordering — NULLs go first without explicit NULLS clause" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_default_desc_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_default_desc_nulls.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31569,10 +34739,15 @@ test "DEFAULT DESC ordering — NULLs go first without explicit NULLS clause" {
 }
 
 test "Multi-column ORDER BY with different NULLS policies" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_multicolumn_order_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multicolumn_order_nulls.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31611,10 +34786,15 @@ test "Multi-column ORDER BY with different NULLS policies" {
 }
 
 test "NULLS FIRST with TEXT column — NULLs sort before text values" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_text_nulls_first.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_text_nulls_first.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31660,10 +34840,15 @@ test "NULLS FIRST with TEXT column — NULLs sort before text values" {
 }
 
 test "FETCH FIRST combined with OFFSET" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_fetch_with_offset.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_with_offset.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31693,10 +34878,15 @@ test "FETCH FIRST combined with OFFSET" {
 }
 
 test "FETCH FIRST more rows than available" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_fetch_more_than_available.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_more_than_available.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31726,10 +34916,15 @@ test "FETCH FIRST more rows than available" {
 }
 
 test "ORDER BY with all NULLs in column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_all_nulls_order.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_all_nulls_order.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31771,10 +34966,15 @@ test "ORDER BY with all NULLs in column" {
 }
 
 test "Window function ORDER BY with NULLS FIRST" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_window_order_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_window_order_nulls.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31830,10 +35030,15 @@ test "Window function ORDER BY with NULLS FIRST" {
 }
 
 test "GENERATED ALWAYS AS — basic string concatenation" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_generated_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31873,10 +35078,15 @@ test "GENERATED ALWAYS AS — basic string concatenation" {
 }
 
 test "GENERATED ALWAYS AS — arithmetic expression" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_generated_arith.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_arith.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31916,10 +35126,15 @@ test "GENERATED ALWAYS AS — arithmetic expression" {
 }
 
 test "GENERATED ALWAYS AS — generated column survives UPDATE of base columns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_generated_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31963,10 +35178,15 @@ test "GENERATED ALWAYS AS — generated column survives UPDATE of base columns" 
 }
 
 test "GENERATED ALWAYS AS — error when inserting into generated column" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_generated_no_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_no_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31989,10 +35209,15 @@ test "GENERATED ALWAYS AS — error when inserting into generated column" {
 }
 
 test "GENERATED ALWAYS AS — generated column is selectable like any other" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_generated_select.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_select.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32037,10 +35262,15 @@ test "GENERATED ALWAYS AS — generated column is selectable like any other" {
 }
 
 test "GENERATED ALWAYS AS — multiple generated columns" {
-
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_eng_generated_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32083,7 +35313,14 @@ test "GENERATED ALWAYS AS — multiple generated columns" {
 
 test "SERIAL: auto-increment when column omitted" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_autoinc.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_autoinc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32109,7 +35346,14 @@ test "SERIAL: auto-increment when column omitted" {
 
 test "BIGSERIAL: auto-increment when column omitted" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_bigserial_autoinc.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bigserial_autoinc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32141,7 +35385,14 @@ test "BIGSERIAL: auto-increment when column omitted" {
 
 test "SERIAL: explicit value skips auto-increment" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_explicit.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_explicit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32167,7 +35418,14 @@ test "SERIAL: explicit value skips auto-increment" {
 
 test "SERIAL: INSERT without column list auto-increments" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_no_cols.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_no_cols.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32202,7 +35460,14 @@ test "SERIAL: INSERT without column list auto-increments" {
 
 test "SERIAL: multiple auto-increments in sequence" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_sequence.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_sequence.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32244,7 +35509,14 @@ test "SERIAL: multiple auto-increments in sequence" {
 
 test "SERIAL: auto-increment with NULL omitted from column list" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_multi_row.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_multi_row.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32271,8 +35543,14 @@ test "SERIAL: auto-increment with NULL omitted from column list" {
 
 test "CHECK: basic constraint enforced on INSERT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32289,8 +35567,14 @@ test "CHECK: basic constraint enforced on INSERT" {
 
 test "CHECK: NULL value passes constraint" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32310,8 +35594,14 @@ test "CHECK: NULL value passes constraint" {
 
 test "CHECK: zero fails strictly-greater constraint" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_zero.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_zero.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32325,8 +35615,14 @@ test "CHECK: zero fails strictly-greater constraint" {
 
 test "CHECK: UPDATE enforces constraint" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_update_fail.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_update_fail.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32343,8 +35639,14 @@ test "CHECK: UPDATE enforces constraint" {
 
 test "CHECK: UPDATE to valid value succeeds" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_update_pass.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_update_pass.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32367,8 +35669,14 @@ test "CHECK: UPDATE to valid value succeeds" {
 
 test "CHECK: multi-column expression references column by name" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_multi.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_multi.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32385,8 +35693,14 @@ test "CHECK: multi-column expression references column by name" {
 
 test "CHECK: text comparison constraint" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_text.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_text.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32403,8 +35717,14 @@ test "CHECK: text comparison constraint" {
 
 test "CHECK: constraint persisted across db reopen" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_persist.db", .{dir_path});
 
     // Create table with CHECK constraint, insert valid data
     {
@@ -32428,8 +35748,14 @@ test "CHECK: constraint persisted across db reopen" {
 
 test "CHECK: BETWEEN expression" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_between.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_between.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32456,8 +35782,14 @@ test "CHECK: BETWEEN expression" {
 
 test "CHECK: IN expression" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_in.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_in.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32476,8 +35808,14 @@ test "CHECK: IN expression" {
 
 test "CHECK: arithmetic expression" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_arithmetic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_arithmetic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32497,8 +35835,14 @@ test "CHECK: arithmetic expression" {
 
 test "CHECK: multiple CHECK constraints on one column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_check_multiple.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_check_multiple.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32525,8 +35869,14 @@ test "CHECK: multiple CHECK constraints on one column" {
 
 test "SERIAL: counter persists across db reopen" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_serial_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_serial_persist.db", .{dir_path});
 
     // First session: insert 3 rows
     {
@@ -32559,8 +35909,14 @@ test "SERIAL: counter persists across db reopen" {
 
 test "GENERATED ALWAYS AS — expression persists across db reopen" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_generated_persist.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_generated_persist.db", .{dir_path});
 
     // First session: create table and insert
     {
@@ -32599,8 +35955,14 @@ test "GENERATED ALWAYS AS — expression persists across db reopen" {
 
 test "ALTER TABLE ADD COLUMN — new column appears with NULL for existing rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_add_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_add_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32647,8 +36009,14 @@ test "ALTER TABLE ADD COLUMN — new column appears with NULL for existing rows"
 
 test "ALTER TABLE ADD COLUMN with DEFAULT — existing rows get default value" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_add_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_add_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32688,8 +36056,14 @@ test "ALTER TABLE ADD COLUMN with DEFAULT — existing rows get default value" {
 
 test "ALTER TABLE RENAME COLUMN — new name accessible, old name fails" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_rename_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_rename_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32716,8 +36090,14 @@ test "ALTER TABLE RENAME COLUMN — new name accessible, old name fails" {
 
 test "ALTER TABLE RENAME TO — table accessible under new name" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_rename_table.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_rename_table.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32745,8 +36125,14 @@ test "ALTER TABLE RENAME TO — table accessible under new name" {
 
 test "ALTER TABLE DROP COLUMN — column no longer accessible" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_drop_col.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_drop_col.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32774,8 +36160,14 @@ test "ALTER TABLE DROP COLUMN — column no longer accessible" {
 
 test "ALTER TABLE DROP COLUMN IF EXISTS — no error on missing column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_drop_if_exists.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_drop_if_exists.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32797,8 +36189,14 @@ test "ALTER TABLE DROP COLUMN IF EXISTS — no error on missing column" {
 
 test "percentile_cont(0.5) WITHIN GROUP (ORDER BY v) — odd count — median" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_odd.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_odd.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32826,8 +36224,14 @@ test "percentile_cont(0.5) WITHIN GROUP (ORDER BY v) — odd count — median" {
 
 test "percentile_cont(0.5) WITHIN GROUP (ORDER BY v) — even count — interpolated" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_even.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_even.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32855,8 +36259,14 @@ test "percentile_cont(0.5) WITHIN GROUP (ORDER BY v) — even count — interpol
 
 test "percentile_cont(0.0) and percentile_cont(1.0) — min and max" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_minmax.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_minmax.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32902,8 +36312,14 @@ test "percentile_cont(0.0) and percentile_cont(1.0) — min and max" {
 
 test "percentile_disc(0.5) WITHIN GROUP (ORDER BY v) — discrete percentile" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32931,8 +36347,14 @@ test "percentile_disc(0.5) WITHIN GROUP (ORDER BY v) — discrete percentile" {
 
 test "percentile_disc(0.25) and percentile_disc(0.75) — quartiles" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_quartiles.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_quartiles.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32978,8 +36400,14 @@ test "percentile_disc(0.25) and percentile_disc(0.75) — quartiles" {
 
 test "percentile_cont — NULL handling (skips NULLs)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_nulls.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_nulls.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33008,8 +36436,14 @@ test "percentile_cont — NULL handling (skips NULLs)" {
 
 test "percentile_cont ORDER BY DESC — reverses sort order" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_cont_desc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_cont_desc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33038,8 +36472,14 @@ test "percentile_cont ORDER BY DESC — reverses sort order" {
 
 test "percentile_disc WITH GROUP BY — aggregate per group" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_percentile_disc_groupby.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_groupby.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33084,8 +36524,14 @@ test "percentile_disc WITH GROUP BY — aggregate per group" {
 
 test "CREATE TABLE AS SELECT — basic copy of all columns from source table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ctas_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ctas_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33117,8 +36563,14 @@ test "CREATE TABLE AS SELECT — basic copy of all columns from source table" {
 
 test "CREATE TABLE AS SELECT — with column selection and WHERE filter" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ctas_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ctas_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33162,8 +36614,14 @@ test "CREATE TABLE AS SELECT — with column selection and WHERE filter" {
 
 test "CREATE TABLE AS SELECT — with computed/aliased column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ctas_computed.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ctas_computed.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33195,8 +36653,14 @@ test "CREATE TABLE AS SELECT — with computed/aliased column" {
 
 test "CREATE TABLE AS SELECT — with aggregation and GROUP BY" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ctas_agg.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ctas_agg.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33248,8 +36712,14 @@ test "CREATE TABLE AS SELECT — with aggregation and GROUP BY" {
 
 test "CREATE TABLE AS SELECT — fails if target table already exists" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ctas_exists.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ctas_exists.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33266,8 +36736,14 @@ test "CREATE TABLE AS SELECT — fails if target table already exists" {
 
 test "CREATE TABLE IF NOT EXISTS AS SELECT — succeeds then no-op on second attempt" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_ctas_if_not_exists.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_ctas_if_not_exists.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34188,13 +37664,18 @@ test "SELECT FOR UPDATE returns rows correctly and acquires locks" {
     try testing.expectEqual(@as(usize, 0), db.lock_manager.activeRowLockCount());
 }
 
-
 // ── MERGE Tests ──
 
 test "MERGE basic: insert when not matched" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_basic_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_basic_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34259,8 +37740,14 @@ test "MERGE basic: insert when not matched" {
 
 test "MERGE basic: update when matched" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_basic_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_basic_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34324,8 +37811,14 @@ test "MERGE basic: update when matched" {
 
 test "MERGE: insert and update in same statement" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_insert_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_insert_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34390,8 +37883,14 @@ test "MERGE: insert and update in same statement" {
 
 test "MERGE: delete when matched" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34450,8 +37949,14 @@ test "MERGE: delete when matched" {
 
 test "MERGE: when matched with additional condition" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_when_cond.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_when_cond.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34513,8 +38018,14 @@ test "MERGE: when matched with additional condition" {
 
 test "MERGE: not matched by source delete" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_src.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_src.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34579,8 +38090,14 @@ test "MERGE: not matched by source delete" {
 
 test "MERGE: using subquery as source" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_subquery.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_subquery.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34644,8 +38161,14 @@ test "MERGE: using subquery as source" {
 
 test "MERGE: no rows affected when no match and no clause" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_no_match.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_no_match.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34705,8 +38228,14 @@ test "MERGE: no rows affected when no match and no clause" {
 
 test "MERGE: error when target table does not exist" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_err_notarget.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_err_notarget.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34732,8 +38261,14 @@ test "MERGE: error when target table does not exist" {
 
 test "MERGE: error when source table does not exist" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_err_nosrc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_err_nosrc.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34754,8 +38289,14 @@ test "MERGE: error when source table does not exist" {
 
 test "MERGE: handles NULL values in match column correctly" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_null_match.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_null_match.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34815,8 +38356,14 @@ test "MERGE: handles NULL values in match column correctly" {
 
 test "MERGE: with conditional WHEN MATCHED clause filters correctly" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_cond_filter.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_cond_filter.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34874,15 +38421,21 @@ test "MERGE: with conditional WHEN MATCHED clause filters correctly" {
 
         try testing.expectEqual(@as(usize, 3), row_count);
         try testing.expectEqual(@as(i64, 100), vals[0]); // id=1 updated
-        try testing.expectEqual(@as(i64, 20), vals[1]);  // id=2 unchanged
+        try testing.expectEqual(@as(i64, 20), vals[1]); // id=2 unchanged
         try testing.expectEqual(@as(i64, 300), vals[2]); // id=3 updated
     }
 }
 
 test "MERGE DELETE action: rows_affected count is accurate" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_delete_count.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_delete_count.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -35150,8 +38703,14 @@ test "VALUES table expr: single column" {
 
 test "VALUES table expr: JOIN with real table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_values_join.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_values_join.db", .{dir_path});
     var db = try createTestDb(std.testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -35561,8 +39120,14 @@ test "setseed with valid seed returns NULL" {
 test "pg_table_size returns positive integer after inserting rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_pg_table_size.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pg_table_size.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -35594,8 +39159,14 @@ test "pg_table_size returns positive integer after inserting rows" {
 test "pg_total_relation_size returns value >= pg_table_size" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const path = "test_pg_total_size.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pg_total_size.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -35649,11 +39220,14 @@ test "pg_database_size returns positive integer" {
 
 test "trigger: AFTER INSERT ROW trigger fires and executes body SQL" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_after_insert_row.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_after_insert_row.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -35697,11 +39271,14 @@ test "trigger: AFTER INSERT ROW trigger fires and executes body SQL" {
 
 test "trigger: AFTER DELETE ROW trigger fires on DELETE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_after_delete_row.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_after_delete_row.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -35749,11 +39326,14 @@ test "trigger: AFTER DELETE ROW trigger fires on DELETE" {
 
 test "trigger: AFTER UPDATE ROW trigger fires on UPDATE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_after_update_row.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_after_update_row.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -35801,11 +39381,14 @@ test "trigger: AFTER UPDATE ROW trigger fires on UPDATE" {
 
 test "trigger: BEFORE INSERT trigger fires before the row is inserted" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_before_insert.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_before_insert.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -35849,11 +39432,14 @@ test "trigger: BEFORE INSERT trigger fires before the row is inserted" {
 
 test "trigger: AFTER INSERT fires for each row (multiple inserts)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_multiple_rows.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_multiple_rows.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -35903,11 +39489,14 @@ test "trigger: AFTER INSERT fires for each row (multiple inserts)" {
 
 test "trigger: Disabled trigger does not fire" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_disabled.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_disabled.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -35964,11 +39553,14 @@ test "trigger: Disabled trigger does not fire" {
 
 test "trigger: AFTER INSERT STATEMENT trigger fires once for multi-row insert" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_statement_level.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_statement_level.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -36012,11 +39604,14 @@ test "trigger: AFTER INSERT STATEMENT trigger fires once for multi-row insert" {
 
 test "TRIGGER WHEN condition TRUE fires trigger" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_true.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_true.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -36061,11 +39656,14 @@ test "TRIGGER WHEN condition TRUE fires trigger" {
 
 test "TRIGGER WHEN condition FALSE suppresses trigger" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_false.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_false.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -36110,11 +39708,14 @@ test "TRIGGER WHEN condition FALSE suppresses trigger" {
 
 test "TRIGGER WHEN condition with arithmetic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_arithmetic.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_arithmetic.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -36164,9 +39765,14 @@ test "TRIGGER WHEN condition with arithmetic" {
 test "RLS USING expression filters rows in SELECT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_rls_using_filter.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_using_filter.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -36226,9 +39832,14 @@ test "RLS USING expression filters rows in SELECT" {
 test "RLS USING expression with FALSE suppresses all rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_rls_using_false.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_using_false.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -36274,9 +39885,14 @@ test "RLS USING expression with FALSE suppresses all rows" {
 test "RLS DELETE USING — only deletes rows matching policy" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_rls_delete_using.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_delete_using.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -36331,9 +39947,14 @@ test "RLS DELETE USING — only deletes rows matching policy" {
 test "RLS UPDATE USING — only updates rows matching policy" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_rls_update_using.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_update_using.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -36403,9 +40024,14 @@ test "RLS UPDATE USING — only updates rows matching policy" {
 test "RLS INSERT WITH CHECK — blocks violating inserts" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_rls_insert_with_check_block.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_insert_with_check_block.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -36451,9 +40077,14 @@ test "RLS INSERT WITH CHECK — blocks violating inserts" {
 test "RLS INSERT WITH CHECK — allows valid inserts" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_rls_insert_with_check_allow.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_insert_with_check_allow.db", .{dir_path});
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
@@ -36941,10 +40572,16 @@ test "json_agg ORDER BY with GROUP BY: per-group ordered arrays" {
 
 test "COPY FROM basic CSV import without header" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_basic.db";
-    const csv_path = "test_copy_basic.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_basic.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_basic.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -36958,7 +40595,9 @@ test "COPY FROM basic CSV import without header" {
     try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
 
     // COPY FROM the CSV file
-    var r2 = try db.execSQL("COPY users FROM 'test_copy_basic.csv'");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&sql_buf, "COPY users FROM '{s}'", .{csv_path});
+    var r2 = try db.execSQL(sql);
     defer r2.close(testing.allocator);
 
     // Verify row count
@@ -36974,10 +40613,16 @@ test "COPY FROM basic CSV import without header" {
 
 test "COPY FROM with HEADER skips first line" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_header.db";
-    const csv_path = "test_copy_header.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_header.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_header.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -36991,7 +40636,9 @@ test "COPY FROM with HEADER skips first line" {
     try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
 
     // COPY FROM with HEADER option
-    var r2 = try db.execSQL("COPY products FROM 'test_copy_header.csv' WITH (HEADER)");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&sql_buf, "COPY products FROM '{s}' WITH (HEADER)", .{csv_path});
+    var r2 = try db.execSQL(sql);
     defer r2.close(testing.allocator);
 
     // Verify we have 3 data rows (header was skipped)
@@ -37007,10 +40654,16 @@ test "COPY FROM with HEADER skips first line" {
 
 test "COPY FROM with custom DELIMITER" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_delimiter.db";
-    const csv_path = "test_copy_delimiter.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_delimiter.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_delimiter.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -37024,7 +40677,9 @@ test "COPY FROM with custom DELIMITER" {
     try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
 
     // COPY FROM with custom delimiter
-    var r2 = try db.execSQL("COPY data FROM 'test_copy_delimiter.csv' WITH (DELIMITER '|')");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&sql_buf, "COPY data FROM '{s}' WITH (DELIMITER '|')", .{csv_path});
+    var r2 = try db.execSQL(sql);
     defer r2.close(testing.allocator);
 
     // Verify data was parsed correctly with pipe delimiter
@@ -37040,10 +40695,16 @@ test "COPY FROM with custom DELIMITER" {
 
 test "COPY TO basic export to CSV" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_to_basic.db";
-    const csv_path = "test_copy_to_basic.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_to_basic.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_to_basic.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -37056,7 +40717,9 @@ test "COPY TO basic export to CSV" {
     defer r2.close(testing.allocator);
 
     // COPY TO export to CSV
-    var r3 = try db.execSQL("COPY students TO 'test_copy_to_basic.csv'");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&sql_buf, "COPY students TO '{s}'", .{csv_path});
+    var r3 = try db.execSQL(sql);
     defer r3.close(testing.allocator);
 
     // Verify file was created and contains data
@@ -37081,10 +40744,16 @@ test "COPY TO basic export to CSV" {
 
 test "COPY TO with HEADER includes column names" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_to_header.db";
-    const csv_path = "test_copy_to_header.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_to_header.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_to_header.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -37097,7 +40766,9 @@ test "COPY TO with HEADER includes column names" {
     defer r2.close(testing.allocator);
 
     // COPY TO with HEADER
-    var r3 = try db.execSQL("COPY items TO 'test_copy_to_header.csv' WITH (HEADER)");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&sql_buf, "COPY items TO '{s}' WITH (HEADER)", .{csv_path});
+    var r3 = try db.execSQL(sql);
     defer r3.close(testing.allocator);
 
     // Verify file contains header row
@@ -37117,10 +40788,16 @@ test "COPY TO with HEADER includes column names" {
 
 test "COPY (query) TO exports query result subset" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_query_to.db";
-    const csv_path = "test_copy_query_to.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_query_to.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_query_to.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -37133,7 +40810,13 @@ test "COPY (query) TO exports query result subset" {
     defer r2.close(testing.allocator);
 
     // COPY (SELECT ...) TO export only completed orders
-    var r3 = try db.execSQL("COPY (SELECT id, status, amount FROM orders WHERE status = 'completed') TO 'test_copy_query_to.csv'");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(
+        &sql_buf,
+        "COPY (SELECT id, status, amount FROM orders WHERE status = 'completed') TO '{s}'",
+        .{csv_path},
+    );
+    var r3 = try db.execSQL(sql);
     defer r3.close(testing.allocator);
 
     // Verify file contains only 2 rows (the completed orders)
@@ -37151,8 +40834,14 @@ test "COPY (query) TO exports query result subset" {
 
 test "COPY FROM nonexistent file returns error" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_missing.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_missing.db", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -37168,10 +40857,16 @@ test "COPY FROM nonexistent file returns error" {
 
 test "COPY FROM type coercion across columns" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_copy_types.db";
-    const csv_path = "test_copy_types.csv";
-    defer std.fs.cwd().deleteFile(path) catch {};
-    defer std.fs.cwd().deleteFile(csv_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_types.db", .{dir_path});
+    var csv_path_buf: [512]u8 = undefined;
+    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_types.csv", .{dir_path});
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -37185,7 +40880,9 @@ test "COPY FROM type coercion across columns" {
     try std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content });
 
     // COPY FROM
-    var r2 = try db.execSQL("COPY mixed FROM 'test_copy_types.csv'");
+    var sql_buf: [768]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&sql_buf, "COPY mixed FROM '{s}'", .{csv_path});
+    var r2 = try db.execSQL(sql);
     defer r2.close(testing.allocator);
 
     // Verify types were coerced correctly
@@ -37205,8 +40902,14 @@ test "COPY FROM type coercion across columns" {
 
 test "ALTER COLUMN SET DEFAULT applies to new inserts" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_col_set_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_set_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37229,8 +40932,14 @@ test "ALTER COLUMN SET DEFAULT applies to new inserts" {
 
 test "ALTER COLUMN DROP DEFAULT removes default" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_col_drop_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_drop_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37262,8 +40971,14 @@ test "ALTER COLUMN DROP DEFAULT removes default" {
 
 test "ALTER COLUMN SET NOT NULL adds constraint" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_col_set_not_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_set_not_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37288,8 +41003,14 @@ test "ALTER COLUMN SET NOT NULL adds constraint" {
 
 test "ALTER COLUMN DROP NOT NULL removes constraint" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_col_drop_not_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_drop_not_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37314,8 +41035,14 @@ test "ALTER COLUMN DROP NOT NULL removes constraint" {
 
 test "ALTER COLUMN SET DEFAULT with string literal" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_col_string_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_string_default.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37338,8 +41065,14 @@ test "ALTER COLUMN SET DEFAULT with string literal" {
 
 test "ALTER COLUMN SET DEFAULT persists across reopen" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_alter_col_persist_default.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_persist_default.db", .{dir_path});
 
     // First session: create table, set default
     {
@@ -37377,11 +41110,14 @@ test "ALTER COLUMN SET DEFAULT persists across reopen" {
 
 test "trigger WHEN (NEW.col > threshold) fires only when condition true on INSERT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_new_col_insert.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_new_col_insert.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -37430,11 +41166,14 @@ test "trigger WHEN (NEW.col > threshold) fires only when condition true on INSER
 
 test "trigger WHEN (OLD.status != NEW.status) fires only on UPDATE change" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_old_new_update.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_old_new_update.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -37487,11 +41226,14 @@ test "trigger WHEN (OLD.status != NEW.status) fires only on UPDATE change" {
 
 test "trigger WHEN (OLD.amount < 0) fires on DELETE with OLD row reference" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_old_col_delete.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_old_col_delete.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -37543,11 +41285,14 @@ test "trigger WHEN (OLD.amount < 0) fires on DELETE with OLD row reference" {
 
 test "trigger WHEN (NEW.col < 0) condition false suppresses INSERT trigger" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_new_col_false.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_new_col_false.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -37598,11 +41343,14 @@ test "trigger WHEN (NEW.col < 0) condition false suppresses INSERT trigger" {
 
 test "trigger WHEN (NEW.col >= 0 AND NEW.col <= 50) compound condition on INSERT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_when_new_compound.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_new_compound.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -37663,8 +41411,14 @@ test "trigger WHEN (NEW.col >= 0 AND NEW.col <= 50) compound condition on INSERT
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - basic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37732,8 +41486,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - basic" {
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - uses target column value in expression" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_update_expr.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_update_expr.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37801,8 +41561,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - uses target column value i
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE THEN DELETE - verifies delete still works" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37858,8 +41624,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN DELETE - verifies delete still work
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - empty source updates all" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_empty_source.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_empty_source.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37909,8 +41681,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - empty source updates all" 
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN DELETE - filters correctly" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_and_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_and_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -37990,8 +41768,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN DELETE - filters corr
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN UPDATE - conditional update" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_and_update.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_and_update.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38069,8 +41853,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN UPDATE - conditional 
 
 test "MERGE: WHEN NOT MATCHED BY SOURCE - multiple clauses with conditions" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_merge_not_matched_by_source_multiple_conditions.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_multiple_conditions.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38160,8 +41950,14 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE - multiple clauses with conditions" {
 
 test "FETCH FIRST n ROWS WITH TIES — basic, returns tied rows at boundary" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_with_ties_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_with_ties_1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38216,8 +42012,14 @@ test "FETCH FIRST n ROWS WITH TIES — basic, returns tied rows at boundary" {
 
 test "FETCH FIRST n ROWS WITH TIES — no tie at boundary, returns exactly n rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_with_ties_2.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_with_ties_2.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38267,8 +42069,14 @@ test "FETCH FIRST n ROWS WITH TIES — no tie at boundary, returns exactly n row
 
 test "FETCH FIRST n ROWS WITH TIES — all remaining rows tie" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_with_ties_3.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_with_ties_3.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38303,8 +42111,14 @@ test "FETCH FIRST n ROWS WITH TIES — all remaining rows tie" {
 
 test "FETCH FIRST 1 ROWS WITH TIES — single row with no tie" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_with_ties_4.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_with_ties_4.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38347,8 +42161,14 @@ test "FETCH FIRST 1 ROWS WITH TIES — single row with no tie" {
 
 test "FETCH FIRST n ROWS WITH TIES — with NULL values and NULLS LAST" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_with_ties_5.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_with_ties_5.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38391,11 +42211,14 @@ test "FETCH FIRST n ROWS WITH TIES — with NULL values and NULLS LAST" {
 
 test "trigger: UPDATE OF salary fires when salary column is updated" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_update_of_salary.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_salary.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -38443,11 +42266,14 @@ test "trigger: UPDATE OF salary fires when salary column is updated" {
 
 test "trigger: UPDATE OF salary suppressed when only name column is updated" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_update_of_salary_suppressed.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_salary_suppressed.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -38495,11 +42321,14 @@ test "trigger: UPDATE OF salary suppressed when only name column is updated" {
 
 test "trigger: UPDATE OF (multiple columns) fires when any specified column is updated" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_update_of_multiple.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_multiple.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -38547,11 +42376,14 @@ test "trigger: UPDATE OF (multiple columns) fires when any specified column is u
 
 test "trigger: UPDATE OF (multiple columns) suppressed when no specified column is updated" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_update_of_multiple_suppressed.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_multiple_suppressed.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -38599,11 +42431,14 @@ test "trigger: UPDATE OF (multiple columns) suppressed when no specified column 
 
 test "trigger: Regular AFTER UPDATE (without UPDATE OF) fires for all updates" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_trigger_regular_update.db";
-    std.fs.cwd().deleteFile(path) catch {};
-    defer {
-        std.fs.cwd().deleteFile(path) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_regular_update.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -38651,8 +42486,14 @@ test "trigger: Regular AFTER UPDATE (without UPDATE OF) fires for all updates" {
 
 test "gist index INSERT maintains index" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gist_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gist_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38686,8 +42527,14 @@ test "gist index INSERT maintains index" {
 
 test "gist index DELETE removes index entry" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gist_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gist_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38723,8 +42570,14 @@ test "gist index DELETE removes index entry" {
 
 test "gin index INSERT maintains index" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38758,8 +42611,14 @@ test "gin index INSERT maintains index" {
 
 test "gin index DELETE removes index entry" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38795,8 +42654,14 @@ test "gin index DELETE removes index entry" {
 
 test "gist index created with USING GIN keyword recognizes gin in catalog" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_keyword_catalog.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_keyword_catalog.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38821,8 +42686,14 @@ test "gist index created with USING GIN keyword recognizes gin in catalog" {
 
 test "GIN index on array column — catalog wiring sets array_ops opclass" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_array_opclass.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_array_opclass.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38846,8 +42717,14 @@ test "GIN index on array column — catalog wiring sets array_ops opclass" {
 
 test "GIN index on jsonb column — catalog wiring sets jsonb_ops opclass" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_jsonb_opclass.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_jsonb_opclass.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38871,8 +42748,14 @@ test "GIN index on jsonb column — catalog wiring sets jsonb_ops opclass" {
 
 test "GIN index on tsvector column assigns tsvector_ops opclass" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_tsvector_opclass.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_tsvector_opclass.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38896,8 +42779,14 @@ test "GIN index on tsvector column assigns tsvector_ops opclass" {
 
 test "GIN index on scalar column — backward compatibility (gin_opclass remains .none)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_scalar_compat.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_scalar_compat.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38920,8 +42809,14 @@ test "GIN index on scalar column — backward compatibility (gin_opclass remains
 
 test "GIN native storage — array_ops INSERT populates native GIN posting list" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_array_native_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_array_native_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -38976,8 +42871,14 @@ test "GIN native storage — array_ops INSERT populates native GIN posting list"
 
 test "GIN native storage — array_ops multi-key fan-out (1 row → 3 entries)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_array_fanout.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_array_fanout.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39039,8 +42940,14 @@ test "GIN native storage — array_ops multi-key fan-out (1 row → 3 entries)" 
 
 test "GIN native storage — jsonb_ops INSERT populates native GIN posting list" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_jsonb_native_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_jsonb_native_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39094,8 +43001,14 @@ test "GIN native storage — jsonb_ops INSERT populates native GIN posting list"
 
 test "GIN native storage — tsvector_ops INSERT verifies opclass and GIN search" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_tsvector_native_insert.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_tsvector_native_insert.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39137,8 +43050,14 @@ test "GIN native storage — tsvector_ops INSERT verifies opclass and GIN search
 
 test "GIN native storage — DELETE removes from array_ops posting list" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_array_delete.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_array_delete.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39211,8 +43130,14 @@ test "GIN native storage — DELETE removes from array_ops posting list" {
 test "GinIndexScanOp basic single match — returns matching row" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_gin_indexscan_single.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_single.db", .{dir_path});
 
     // Create a database with array column and GIN index
     var db = try createTestDb(allocator, path);
@@ -39255,7 +43180,7 @@ test "GinIndexScanOp basic single match — returns matching row" {
     query_buf[5] = 0x01; // integer tag
     std.mem.writeInt(i64, query_buf[6..14], 10, .little); // value = 10
 
-    const col_names = [_][]const u8{"id", "labels"};
+    const col_names = [_][]const u8{ "id", "labels" };
 
     // Create GinIndexScanOp and iterate
     var gin_scan = executor_mod.GinIndexScanOp.init(
@@ -39286,8 +43211,14 @@ test "GinIndexScanOp basic single match — returns matching row" {
 test "GinIndexScanOp multiple matches — returns all matching rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_gin_indexscan_multiple.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_multiple.db", .{dir_path});
 
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
@@ -39320,7 +43251,7 @@ test "GinIndexScanOp multiple matches — returns all matching rows" {
     query_buf[5] = 0x01;
     std.mem.writeInt(i64, query_buf[6..14], 42, .little);
 
-    const col_names = [_][]const u8{"id", "labels"};
+    const col_names = [_][]const u8{ "id", "labels" };
 
     var gin_scan = executor_mod.GinIndexScanOp.init(
         allocator,
@@ -39335,7 +43266,7 @@ test "GinIndexScanOp multiple matches — returns all matching rows" {
     defer gin_scan.close();
 
     var result_count: usize = 0;
-    var found_ids = [_]i64{0, 0, 0};
+    var found_ids = [_]i64{ 0, 0, 0 };
     while (try gin_scan.next()) |row| : (result_count += 1) {
         var r = row;
         defer r.deinit();
@@ -39352,8 +43283,14 @@ test "GinIndexScanOp multiple matches — returns all matching rows" {
 test "GinIndexScanOp no match — returns null immediately" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_gin_indexscan_nomatch.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_nomatch.db", .{dir_path});
 
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
@@ -39380,7 +43317,7 @@ test "GinIndexScanOp no match — returns null immediately" {
     query_buf[5] = 0x01;
     std.mem.writeInt(i64, query_buf[6..14], 999, .little);
 
-    const col_names = [_][]const u8{"id", "labels"};
+    const col_names = [_][]const u8{ "id", "labels" };
 
     var gin_scan = executor_mod.GinIndexScanOp.init(
         allocator,
@@ -39402,8 +43339,14 @@ test "GinIndexScanOp no match — returns null immediately" {
 test "GinIndexScanOp MVCC visibility filtering — skips invisible rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_gin_indexscan_mvcc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_mvcc.db", .{dir_path});
 
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
@@ -39429,7 +43372,7 @@ test "GinIndexScanOp MVCC visibility filtering — skips invisible rows" {
     query_buf[5] = 0x01;
     std.mem.writeInt(i64, query_buf[6..14], 42, .little);
 
-    const col_names = [_][]const u8{"id", "labels"};
+    const col_names = [_][]const u8{ "id", "labels" };
 
     // Create an MVCC context with a snapshot that makes the inserted row invisible
     // (simulating a concurrent transaction started before the insert)
@@ -39468,8 +43411,14 @@ test "GinIndexScanOp MVCC visibility filtering — skips invisible rows" {
 test "GinIndexScanOp orphaned posting entry — skips missing row without error" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_gin_indexscan_orphan.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_orphan.db", .{dir_path});
 
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
@@ -39501,7 +43450,7 @@ test "GinIndexScanOp orphaned posting entry — skips missing row without error"
     query_buf[5] = 0x01;
     std.mem.writeInt(i64, query_buf[6..14], 42, .little);
 
-    const col_names = [_][]const u8{"id", "labels"};
+    const col_names = [_][]const u8{ "id", "labels" };
 
     var gin_scan = executor_mod.GinIndexScanOp.init(
         allocator,
@@ -39530,8 +43479,14 @@ test "GinIndexScanOp orphaned posting entry — skips missing row without error"
 test "GinIndexScanOp strategy 1 (overlaps/OR) — returns union of matches" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const path = "test_gin_indexscan_strategy1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_strategy1.db", .{dir_path});
 
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
@@ -39565,7 +43520,7 @@ test "GinIndexScanOp strategy 1 (overlaps/OR) — returns union of matches" {
     query_buf[14] = 0x01;
     std.mem.writeInt(i64, query_buf[15..23], 20, .little);
 
-    const col_names = [_][]const u8{"id", "labels"};
+    const col_names = [_][]const u8{ "id", "labels" };
 
     var gin_scan = executor_mod.GinIndexScanOp.init(
         allocator,
@@ -39595,8 +43550,14 @@ test "GinIndexScanOp strategy 1 (overlaps/OR) — returns union of matches" {
 
 test "multiple rows with gist index — all found" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gist_multiple_rows.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gist_multiple_rows.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39635,8 +43596,14 @@ test "multiple rows with gist index — all found" {
 
 test "TABLESAMPLE BERNOULLI(100) returns all rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_tablesample_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_tablesample_1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39664,8 +43631,14 @@ test "TABLESAMPLE BERNOULLI(100) returns all rows" {
 
 test "TABLESAMPLE BERNOULLI(0) returns no rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_tablesample_2.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_tablesample_2.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39693,8 +43666,14 @@ test "TABLESAMPLE BERNOULLI(0) returns no rows" {
 
 test "TABLESAMPLE BERNOULLI(50) REPEATABLE is deterministic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_tablesample_3.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_tablesample_3.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39737,8 +43716,14 @@ test "TABLESAMPLE BERNOULLI(50) REPEATABLE is deterministic" {
 
 test "TABLESAMPLE SYSTEM(100) returns all rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_tablesample_4.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_tablesample_4.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39766,8 +43751,14 @@ test "TABLESAMPLE SYSTEM(100) returns all rows" {
 
 test "TABLESAMPLE BERNOULLI with alias" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_tablesample_5.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_tablesample_5.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39796,7 +43787,14 @@ test "TABLESAMPLE BERNOULLI with alias" {
 
 test "window EXCLUDE CURRENT ROW: SUM excludes current row from running total" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_exclude_current_row.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_exclude_current_row.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39837,7 +43835,14 @@ test "window EXCLUDE CURRENT ROW: SUM excludes current row from running total" {
 
 test "window EXCLUDE NO OTHERS: explicit — same as default running SUM" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_exclude_no_others.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_exclude_no_others.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39866,7 +43871,14 @@ test "window EXCLUDE NO OTHERS: explicit — same as default running SUM" {
 
 test "window EXCLUDE GROUP: excludes all peers from full-partition frame" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_exclude_group.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_exclude_group.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39909,7 +43921,14 @@ test "window EXCLUDE GROUP: excludes all peers from full-partition frame" {
 
 test "window EXCLUDE TIES: excludes peers but not current row" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_exclude_ties.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_exclude_ties.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39944,7 +43963,14 @@ test "window EXCLUDE TIES: excludes peers but not current row" {
 
 test "window EXCLUDE CURRENT ROW: COUNT(*) reduces by one per row" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_wf_exclude_count_star.db";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wf_exclude_count_star.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -39976,8 +44002,14 @@ test "window EXCLUDE CURRENT ROW: COUNT(*) reduces by one per row" {
 
 test "SIMILAR TO: basic pattern matching in WHERE clause" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_basic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40032,8 +44064,14 @@ test "SIMILAR TO: basic pattern matching in WHERE clause" {
 
 test "SIMILAR TO: alternation pattern" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_alt.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_alt.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40070,8 +44108,14 @@ test "SIMILAR TO: alternation pattern" {
 
 test "SIMILAR TO: quantifier patterns" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_quant.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_quant.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40121,8 +44165,14 @@ test "SIMILAR TO: quantifier patterns" {
 
 test "SIMILAR TO: character class pattern" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_class.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_class.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40153,8 +44203,14 @@ test "SIMILAR TO: character class pattern" {
 
 test "SIMILAR TO: NOT SIMILAR TO excludes matching rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_not.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_not.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40190,8 +44246,14 @@ test "SIMILAR TO: NOT SIMILAR TO excludes matching rows" {
 
 test "SIMILAR TO: NULL value handling" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40222,8 +44284,14 @@ test "SIMILAR TO: NULL value handling" {
 
 test "SIMILAR TO: underscore wildcard" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_under.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_under.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40259,8 +44327,14 @@ test "SIMILAR TO: underscore wildcard" {
 
 test "SIMILAR TO: grouping and quantifiers" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_similar_to_group.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_similar_to_group.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40301,8 +44375,14 @@ test "SIMILAR TO: grouping and quantifiers" {
 
 test "row constructor: (a, b) = (1, 2) equality" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_equality.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_equality.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40340,8 +44420,14 @@ test "row constructor: (a, b) = (1, 2) equality" {
 
 test "row constructor: (a, b) <> (3, 4) inequality" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_inequality.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_inequality.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40381,8 +44467,14 @@ test "row constructor: (a, b) <> (3, 4) inequality" {
 
 test "row constructor: (a, b) < (2, 0) lexicographic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_lexicographic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_lexicographic.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40429,8 +44521,14 @@ test "row constructor: (a, b) < (2, 0) lexicographic" {
 
 test "row constructor: (a, b) IN ((1, 2), (5, 6))" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_in.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_in.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40474,8 +44572,14 @@ test "row constructor: (a, b) IN ((1, 2), (5, 6))" {
 
 test "row constructor: ROW(a, b) = ROW(1, 2) explicit keyword" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_explicit.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_explicit.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40512,8 +44616,14 @@ test "row constructor: ROW(a, b) = ROW(1, 2) explicit keyword" {
 
 test "row constructor: (a, b) = (1, 2) with NULL returns NULL" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_row_null.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_row_null.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40549,8 +44659,14 @@ test "row constructor: (a, b) = (1, 2) with NULL returns NULL" {
 
 test "TRUNCATE TABLE removes all rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_1.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40582,8 +44698,14 @@ test "TRUNCATE TABLE removes all rows" {
 
 test "TRUNCATE TABLE without TABLE keyword" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_2.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_2.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40615,8 +44737,14 @@ test "TRUNCATE TABLE without TABLE keyword" {
 
 test "TRUNCATE TABLE on empty table succeeds" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_3.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_3.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40638,8 +44766,14 @@ test "TRUNCATE TABLE on empty table succeeds" {
 
 test "TRUNCATE TABLE multiple tables" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_4.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_4.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40690,8 +44824,14 @@ test "TRUNCATE TABLE multiple tables" {
 
 test "TRUNCATE TABLE preserves schema" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_5.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_5.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40722,8 +44862,14 @@ test "TRUNCATE TABLE preserves schema" {
 
 test "TRUNCATE TABLE clears secondary indexes" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_6.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_6.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40760,8 +44906,14 @@ test "TRUNCATE TABLE clears secondary indexes" {
 
 test "TRUNCATE TABLE non-existent table returns error" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_truncate_7.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_truncate_7.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40887,8 +45039,14 @@ test "IS JSON: non-string operand (integer) returns FALSE" {
 
 test "IS JSON: filters rows in WHERE clause" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_is_json_where.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_is_json_where.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -40915,10 +45073,15 @@ test "IS JSON: filters rows in WHERE clause" {
     try testing.expectEqual(@as(i64, 3), ids.items[1]);
 }
 
-
 test "PreparedStatement: numbered params can be prepared and executed twice in a row" {
-    const path = "test_prepared_numbered_params_twice.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_numbered_params_twice.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
@@ -40991,8 +45154,14 @@ fn concurrentTestWorker(ctx: ConcurrentTestContext) void {
 }
 
 test "concurrent multi-threaded SQL execution on shared Database" {
-    const path = "test_concurrent_sql_execution.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_concurrent_sql_execution.db", .{dir_path});
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -41054,7 +45223,6 @@ test "concurrent multi-threaded SQL execution on shared Database" {
     try testing.expectEqual(@as(u64, 80), row_count);
 }
 
-
 // ── GIN Planner Cutover Tests (Step 7 of GIN Native Storage Wiring) ────────
 // Tests for tryBuildGinIndexScan: verifies the planner actually routes
 // `@>`/`@@` predicates on native-GIN-indexed columns through GinIndexScanOp
@@ -41063,8 +45231,14 @@ test "concurrent multi-threaded SQL execution on shared Database" {
 
 test "GIN cutover — jsonb_ops @> uses native GIN scan and excludes non-matching rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_cutover_jsonb.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_cutover_jsonb.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41106,8 +45280,14 @@ test "GIN cutover — jsonb_ops @> uses native GIN scan and excludes non-matchin
 
 test "GIN cutover — jsonb_ops @> with no matches returns empty result" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_cutover_jsonb_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_cutover_jsonb_empty.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41132,8 +45312,14 @@ test "GIN cutover — jsonb_ops @> with no matches returns empty result" {
 
 test "GIN cutover — tsvector_ops @@ uses native GIN scan and excludes non-matching rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_cutover_tsvector.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_cutover_tsvector.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41169,8 +45355,14 @@ test "GIN cutover — tsvector_ops @@ uses native GIN scan and excludes non-matc
 
 test "GIN cutover — array_ops @> uses native GIN scan and excludes non-matching rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_gin_cutover_array.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_cutover_array.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41286,8 +45478,14 @@ test "step 3: btree index with covering_storage=true writes covering entry, not 
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step3_covering_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step3_covering_1.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41364,8 +45562,14 @@ test "step 3: btree index with covering_storage=false writes plain row_key (back
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step3_noncovering_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step3_noncovering_1.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41409,8 +45613,14 @@ test "step 3: hash index ignores covering_storage flag (no-op for non-btree)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step3_hash_1.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step3_hash_1.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41460,8 +45670,14 @@ test "step 4: CREATE INDEX ... INCLUDE sets covering_storage=true and writes rea
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step4_covering_create.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step4_covering_create.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41519,8 +45735,14 @@ test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backwar
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step4_noncovering_create.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step4_noncovering_create.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41575,8 +45797,14 @@ test "step 6: Full scan with covering index uses Index Only Scan path" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step6_indexonly_fullscan.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_fullscan.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41641,8 +45869,14 @@ test "step 6: WHERE equality on indexed column uses Index Only Scan path" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step6_indexonly_whereeq.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_whereeq.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41698,8 +45932,14 @@ test "step 6: SELECT * must fallback to heap scan (not in covering index)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step6_indexonly_fallback_selectstar.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_fallback_selectstar.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41748,8 +45988,14 @@ test "step 6: Partial coverage fallback to heap scan" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step6_indexonly_fallback_partial.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_fallback_partial.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41797,8 +46043,14 @@ test "step 6: Non-covering index regression test (must not use Index Only Scan)"
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_step6_indexonly_noncovering.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_noncovering.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41942,8 +46194,14 @@ test "phase 0b: insertIndexEntries with composite_key=true allows duplicate inde
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0b_composite_insert_dup.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_composite_insert_dup.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42020,8 +46278,14 @@ test "phase 0b: deleteIndexEntries with composite_key=true removes only the spec
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0b_composite_delete_one.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_composite_delete_one.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42091,8 +46355,14 @@ test "phase 0b: collectRowKeysForEquality returns all row_keys for a given idx_k
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0b_collect_rowkeys.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_collect_rowkeys.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42177,8 +46447,14 @@ test "phase 0b: collectRowKeysForEquality returns empty slice when no matches" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0b_collect_empty.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_collect_empty.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42226,8 +46502,14 @@ test "phase 0b: composite_key=false (legacy) still rejects duplicate indexed val
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0b_composite_legacy_unique.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_composite_legacy_unique.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42271,8 +46553,14 @@ test "phase 0d: CREATE INDEX on non-unique column sets composite_key=true" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0d_create_idx_composite_flag.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0d_create_idx_composite_flag.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42298,8 +46586,14 @@ test "phase 0d: CREATE UNIQUE INDEX keeps composite_key=false" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0d_create_unique_idx_no_composite.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0d_create_unique_idx_no_composite.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42325,8 +46619,14 @@ test "phase 0d: end-to-end INSERT with duplicate indexed value on non-unique ind
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase0d_insert_dup_indexed_value.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0d_insert_dup_indexed_value.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42385,8 +46685,14 @@ test "phase 5: Bitmap-OR basic correctness — two indexed columns with OR predi
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_bitmap_or_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_or_basic.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42435,8 +46741,14 @@ test "phase 5: Bitmap-AND basic correctness — two indexed columns with AND pre
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_bitmap_and_basic.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_and_basic.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42483,8 +46795,14 @@ test "phase 5: Mixed AND-of-OR predicate falls back correctly (no regression)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_mixed_and_or.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_mixed_and_or.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42535,8 +46853,14 @@ test "phase 5: OR with one non-indexed column falls back correctly" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_or_one_nonindexed.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_or_one_nonindexed.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42581,8 +46905,14 @@ test "phase 5: MVCC visibility through bitmap-OR path — invisible rows do not 
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_bitmap_or_mvcc.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_or_mvcc.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42642,8 +46972,14 @@ test "phase 5: Empty result correctness — bitmap-OR/AND with zero matches" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_bitmap_empty_result.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_empty_result.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42697,8 +47033,14 @@ test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    const path = "test_phase5_bitmap_operatorchain_reuse.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_operatorchain_reuse.db", .{dir_path});
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42781,8 +47123,14 @@ test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak
 
 test "MATCH_RECOGNIZE: classic V-shape stock price pattern" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_vshape.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_vshape.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42798,15 +47146,13 @@ test "MATCH_RECOGNIZE: classic V-shape stock price pattern" {
     // ONE ROW PER MATCH (default) only exposes PARTITION BY + MEASURES columns per SQL:2016 —
     // there's no 1:1 correspondence with input rows for other columns since a match spans
     // several of them — so pull MATCH_NUMBER() through MEASURES rather than raw table columns.
-    var r3 = try db.execSQL(
-        "SELECT match_num FROM prices MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT match_num FROM prices MATCH_RECOGNIZE (" ++
         "  ORDER BY day " ++
         "  MEASURES MATCH_NUMBER() AS match_num " ++
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     var count: usize = 0;
@@ -42821,8 +47167,14 @@ test "MATCH_RECOGNIZE: classic V-shape stock price pattern" {
 
 test "MATCH_RECOGNIZE: ALL ROWS PER MATCH outputs all matched rows" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_allrows.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_allrows.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42833,16 +47185,14 @@ test "MATCH_RECOGNIZE: ALL ROWS PER MATCH outputs all matched rows" {
     defer r2.close(testing.allocator);
 
     // Same V-shape pattern but with ALL ROWS PER MATCH — should output 5 rows
-    var r3 = try db.execSQL(
-        "SELECT stock, day, price FROM prices MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT stock, day, price FROM prices MATCH_RECOGNIZE (" ++
         "  ORDER BY day " ++
         "  ALL ROWS PER MATCH " ++
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
         ") " ++
-        "WHERE stock = 'AAPL'"
-    );
+        "WHERE stock = 'AAPL'");
     defer r3.close(testing.allocator);
 
     var count: usize = 0;
@@ -42857,8 +47207,14 @@ test "MATCH_RECOGNIZE: ALL ROWS PER MATCH outputs all matched rows" {
 
 test "MATCH_RECOGNIZE: PARTITION BY with multiple partitions" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_partition.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_partition.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42866,25 +47222,21 @@ test "MATCH_RECOGNIZE: PARTITION BY with multiple partitions" {
     defer r1.close(testing.allocator);
 
     // Two partitions: AAPL with V-shape (matches), GOOG with monotonic (no match)
-    var r2 = try db.execSQL(
-        "INSERT INTO prices VALUES " ++
+    var r2 = try db.execSQL("INSERT INTO prices VALUES " ++
         "('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95), " ++
-        "('GOOG', 1, 100), ('GOOG', 2, 110), ('GOOG', 3, 120)"
-    );
+        "('GOOG', 1, 100), ('GOOG', 2, 110), ('GOOG', 3, 120)");
     defer r2.close(testing.allocator);
 
     // Partition by stock, find V-patterns within each partition. ONE ROW PER MATCH (default)
     // always exposes PARTITION BY columns per SQL:2016, so "stock" is available without a
     // MEASURES clause; "day" (an ORDER BY, not PARTITION BY, column) would not be.
-    var r3 = try db.execSQL(
-        "SELECT stock FROM prices MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT stock FROM prices MATCH_RECOGNIZE (" ++
         "  PARTITION BY stock " ++
         "  ORDER BY day " ++
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     var aapl_matches: usize = 0;
@@ -42909,8 +47261,14 @@ test "MATCH_RECOGNIZE: PARTITION BY with multiple partitions" {
 
 test "MATCH_RECOGNIZE: MEASURES with FIRST/LAST/MATCH_NUMBER/CLASSIFIER" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_measures.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_measures.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42923,8 +47281,7 @@ test "MATCH_RECOGNIZE: MEASURES with FIRST/LAST/MATCH_NUMBER/CLASSIFIER" {
     // Query with MEASURES: first_price (FIRST), last_price (LAST), match_num (MATCH_NUMBER).
     // The outer SELECT references the MEASURES aliases as plain output columns — PREV/NEXT/
     // FIRST/LAST/MATCH_NUMBER/CLASSIFIER are only valid inside the MATCH_RECOGNIZE clause itself.
-    var r3 = try db.execSQL(
-        "SELECT first_price, last_price, match_num " ++
+    var r3 = try db.execSQL("SELECT first_price, last_price, match_num " ++
         "FROM prices MATCH_RECOGNIZE (" ++
         "  ORDER BY day " ++
         "  MEASURES " ++
@@ -42934,8 +47291,7 @@ test "MATCH_RECOGNIZE: MEASURES with FIRST/LAST/MATCH_NUMBER/CLASSIFIER" {
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     var count: usize = 0;
@@ -42965,8 +47321,14 @@ test "MATCH_RECOGNIZE: MEASURES with FIRST/LAST/MATCH_NUMBER/CLASSIFIER" {
 
 test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW allows overlapping matches" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_skip_next.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_skip_next.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42980,15 +47342,13 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW allows overlapping matches" 
     // With SKIP TO NEXT ROW, overlapping matches are found. ONE ROW PER MATCH (default) only
     // exposes PARTITION BY + MEASURES columns, so pull the match's first id through MEASURES
     // rather than selecting the raw "id" column.
-    var r3 = try db.execSQL(
-        "SELECT first_id FROM t MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT first_id FROM t MATCH_RECOGNIZE (" ++
         "  ORDER BY id " ++
         "  MEASURES FIRST(A.id) AS first_id " ++
         "  AFTER MATCH SKIP TO NEXT ROW " ++
         "  PATTERN (A B) " ++
         "  DEFINE A AS A.val = 1, B AS B.val = 1 " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     var count: usize = 0;
@@ -42998,13 +47358,19 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW allows overlapping matches" 
         count += 1;
     }
     // Should find multiple matches: (1,2), (2,3), (3,4), (4,5) = 4 matches
-    try testing.expect(count >= 2);  // At least 2 overlapping matches
+    try testing.expect(count >= 2); // At least 2 overlapping matches
 }
 
 test "MATCH_RECOGNIZE: AFTER MATCH SKIP PAST LAST ROW prevents overlapping matches" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_skip_past.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_skip_past.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43015,15 +47381,13 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP PAST LAST ROW prevents overlapping match
     defer r2.close(testing.allocator);
 
     // With SKIP PAST LAST ROW (default), non-overlapping matches only
-    var r3 = try db.execSQL(
-        "SELECT first_id FROM t MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT first_id FROM t MATCH_RECOGNIZE (" ++
         "  ORDER BY id " ++
         "  MEASURES FIRST(A.id) AS first_id " ++
         "  AFTER MATCH SKIP PAST LAST ROW " ++
         "  PATTERN (A B) " ++
         "  DEFINE A AS A.val = 1, B AS B.val = 1 " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     var count: usize = 0;
@@ -43038,8 +47402,14 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP PAST LAST ROW prevents overlapping match
 
 test "MATCH_RECOGNIZE: error path - DEFINE variable not in PATTERN" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_err_define.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_err_define.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43050,20 +47420,24 @@ test "MATCH_RECOGNIZE: error path - DEFINE variable not in PATTERN" {
     defer r2.close(testing.allocator);
 
     // DEFINE references variable X that doesn't appear in PATTERN (A B) — should error
-    const result = db.execSQL(
-        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+    const result = db.execSQL("SELECT * FROM t MATCH_RECOGNIZE (" ++
         "  ORDER BY id " ++
         "  PATTERN (A B) " ++
-        "  DEFINE X AS X.val = 1 " ++  // X not in pattern!
-        ")"
-    );
+        "  DEFINE X AS X.val = 1 " ++ // X not in pattern!
+        ")");
     try testing.expectError(error.AnalysisError, result);
 }
 
 test "MATCH_RECOGNIZE: error path - missing ORDER BY" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_err_orderby.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_err_orderby.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43074,19 +47448,23 @@ test "MATCH_RECOGNIZE: error path - missing ORDER BY" {
     defer r2.close(testing.allocator);
 
     // MATCH_RECOGNIZE without ORDER BY — should error per analyzer requirement
-    const result = db.execSQL(
-        "SELECT * FROM t MATCH_RECOGNIZE (" ++
+    const result = db.execSQL("SELECT * FROM t MATCH_RECOGNIZE (" ++
         "  PATTERN (A B) " ++
         "  DEFINE A AS A.val = 1, B AS B.val = 1 " ++
-        ")"
-    );
+        ")");
     try testing.expectError(error.AnalysisError, result);
 }
 
 test "MATCH_RECOGNIZE MEASURES SEMANTICS: RUNNING LAST() in ALL ROWS PER MATCH grows per row" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_running_semantics.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_running_semantics.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43094,23 +47472,19 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: RUNNING LAST() in ALL ROWS PER MATCH g
     defer r1.close(testing.allocator);
 
     // V-shape pattern: prices 100,90,80,85,95 over 5 days
-    var r2 = try db.execSQL(
-        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)"
-    );
+    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
     defer r2.close(testing.allocator);
 
     // ALL ROWS PER MATCH with RUNNING LAST(price) — should emit 5 rows where running_last value
     // grows from 100→90→80→85→95 (the match "so far" at each row)
-    var r3 = try db.execSQL(
-        "SELECT price, running_last FROM prices MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT price, running_last FROM prices MATCH_RECOGNIZE (" ++
         "  ORDER BY day " ++
         "  ALL ROWS PER MATCH " ++
         "  MEASURES RUNNING LAST(price) AS running_last " ++
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     // Collect all rows and verify running_last values
@@ -43139,8 +47513,14 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: RUNNING LAST() in ALL ROWS PER MATCH g
 
 test "MATCH_RECOGNIZE MEASURES SEMANTICS: FINAL LAST() in ALL ROWS PER MATCH is constant" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_final_semantics.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_final_semantics.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43148,23 +47528,19 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: FINAL LAST() in ALL ROWS PER MATCH is 
     defer r1.close(testing.allocator);
 
     // Same V-shape pattern: prices 100,90,80,85,95 over 5 days
-    var r2 = try db.execSQL(
-        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)"
-    );
+    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
     defer r2.close(testing.allocator);
 
     // ALL ROWS PER MATCH with FINAL LAST(price) — should emit 5 rows where final_last value
     // is constant at 95 (the match's final row) for all 5 rows
-    var r3 = try db.execSQL(
-        "SELECT price, final_last FROM prices MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT price, final_last FROM prices MATCH_RECOGNIZE (" ++
         "  ORDER BY day " ++
         "  ALL ROWS PER MATCH " ++
         "  MEASURES FINAL LAST(price) AS final_last " ++
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     // Collect all rows and verify final_last values
@@ -43190,8 +47566,14 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: FINAL LAST() in ALL ROWS PER MATCH is 
 
 test "MATCH_RECOGNIZE MEASURES SEMANTICS: no keyword defaults to RUNNING (grows per row)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
-    const path = "test_mr_default_semantics.db";
-    defer std.fs.cwd().deleteFile(path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_mr_default_semantics.db", .{dir_path});
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43199,23 +47581,19 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: no keyword defaults to RUNNING (grows 
     defer r1.close(testing.allocator);
 
     // Same V-shape pattern: prices 100,90,80,85,95 over 5 days
-    var r2 = try db.execSQL(
-        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)"
-    );
+    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
     defer r2.close(testing.allocator);
 
     // ALL ROWS PER MATCH without RUNNING/FINAL keyword — should default to RUNNING
     // (values grow per row, same as explicit RUNNING)
-    var r3 = try db.execSQL(
-        "SELECT price, default_last FROM prices MATCH_RECOGNIZE (" ++
+    var r3 = try db.execSQL("SELECT price, default_last FROM prices MATCH_RECOGNIZE (" ++
         "  ORDER BY day " ++
         "  ALL ROWS PER MATCH " ++
         "  MEASURES LAST(price) AS default_last " ++
         "  PATTERN (A B+ C+) " ++
         "  DEFINE B AS B.price < PREV(B.price), " ++
         "         C AS C.price > PREV(C.price) " ++
-        ")"
-    );
+        ")");
     defer r3.close(testing.allocator);
 
     // Collect all rows and verify default_last values
