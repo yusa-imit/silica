@@ -9,6 +9,9 @@ const std = @import("std");
 pub const checksum = @import("util/checksum.zig");
 pub const varint = @import("util/varint.zig");
 
+// Build tooling — `zig build tidy` mechanical checks
+pub const tidy = @import("tidy.zig");
+
 // Storage modules
 pub const page = @import("storage/page.zig");
 pub const buffer_pool = @import("storage/buffer_pool.zig");
