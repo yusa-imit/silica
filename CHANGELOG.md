@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sql/engine.zig` (819 occurrences across 6 variant shapes, including WAL-mode companion
   `-wal` paths and CSV import/export `COPY` literals) now write into a `std.testing.tmpDir`
   instead of the repo root. This completes the scratch-DB-to-tmp-dir sub-item — 0 files remain.
+- **`zig build tidy` step, part 1** (plan 001): new `src/tidy.zig` checker plus `zig build tidy`
+  target enforce function length (≤ 70 lines, ratchet baseline that may only shrink) and missing
+  `//!` module headers against a checked-in `tidy_baseline.txt` (58 function-length + 17
+  missing-header entries). A line ≤ 100 columns check is implemented but intentionally not yet
+  gated — the codebase has 3,521 pre-existing violations, addressed in part 2 alongside wiring
+  `tidy` as a `zig build test` dependency and the remaining ban-list checks.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,
