@@ -46,11 +46,11 @@ fn randomKeyword(random: std.Random) []const u8 {
         "UPDATE", "update", "UpDaTe",
         "DELETE", "delete", "DeLeTe",
         "CREATE", "create", "CrEaTe",
-        "DROP", "drop", "DrOp",
-        "TABLE", "table", "TaBlE",
-        "WHERE", "where", "WhErE",
-        "FROM", "from", "FrOm",
-        "JOIN", "join", "JoIn",
+        "DROP",   "drop",   "DrOp",
+        "TABLE",  "table",  "TaBlE",
+        "WHERE",  "where",  "WhErE",
+        "FROM",   "from",   "FrOm",
+        "JOIN",   "join",   "JoIn",
     };
     return keywords[random.intRangeLessThan(usize, 0, keywords.len)];
 }
@@ -58,10 +58,10 @@ fn randomKeyword(random: std.Random) []const u8 {
 /// Generate a random operator string.
 fn randomOperator(random: std.Random) []const u8 {
     const ops = [_][]const u8{
-        "=",  "==", "!=", "<>", "<", ">", "<=", ">=",
-        "+",  "-",  "*",  "/",  "%", "||", "<<", ">>",
-        "&",  "|",  "~",  "->", "->>", "@>", "<@",
-        "?",  "?|", "?&", "#>", "#>>", "#-", "@@",
+        "=",  "==", "!=", "<>",  "<",   ">",  "<=", ">=",
+        "+",  "-",  "*",  "/",   "%",   "||", "<<", ">>",
+        "&",  "|",  "~",  "->",  "->>", "@>", "<@", "?",
+        "?|", "?&", "#>", "#>>", "#-",  "@@",
     };
     return ops[random.intRangeLessThan(usize, 0, ops.len)];
 }
@@ -230,16 +230,16 @@ test "fuzz: malformed number literals" {
     const random = rng.random();
 
     const cases = [_][]const u8{
-        "0x",        // Hex with no digits
-        "0xG",       // Hex with invalid char
-        "1e",        // Exponent with no digits
-        "1e+",       // Exponent with sign but no digits
-        "1.2.3",     // Multiple dots
-        "..5",       // Double dot
-        ".e5",       // Dot-exponent without digits
-        "123abc",    // Number followed by identifier
-        "0b101",     // Binary (not supported by current tokenizer)
-        "0o777",     // Octal (not supported)
+        "0x", // Hex with no digits
+        "0xG", // Hex with invalid char
+        "1e", // Exponent with no digits
+        "1e+", // Exponent with sign but no digits
+        "1.2.3", // Multiple dots
+        "..5", // Double dot
+        ".e5", // Dot-exponent without digits
+        "123abc", // Number followed by identifier
+        "0b101", // Binary (not supported by current tokenizer)
+        "0o777", // Octal (not supported)
     };
 
     for (cases) |input| {
@@ -414,7 +414,8 @@ test "fuzz: partial and misspelled keywords" {
 
     const base_keywords = [_][]const u8{
         "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP",
-        "TABLE", "INDEX", "WHERE", "FROM", "JOIN", "ORDER", "GROUP",
+        "TABLE",  "INDEX",  "WHERE",  "FROM",   "JOIN",   "ORDER",
+        "GROUP",
     };
 
     for (0..100) |_| {
@@ -455,25 +456,25 @@ test "fuzz: edge case inputs" {
     _ = std.testing.allocator;
 
     const cases = [_][]const u8{
-        "",                   // Empty
-        " ",                  // Single space
-        "   \t\n\r  ",        // Whitespace only
-        "\x00",               // Null byte
-        "\x00\x00\x00",       // Multiple nulls
-        ";;;;;;;",            // Only semicolons
-        "((((((",             // Only left parens
-        "))))))",             // Only right parens
-        ",,,,,,",             // Only commas
-        "......",             // Only dots
-        "''",                 // Empty string literal
-        "\"\"",               // Empty quoted identifier
-        "'",                  // Single quote
-        "\"",                 // Single double quote
-        "--",                 // Comment start only
-        "-- comment\n",       // Line comment with newline
-        "/*",                 // Unclosed block comment
-        "/* unclosed",        // Unclosed block comment with text
-        "/* nested /* */",    // Partially nested comment
+        "", // Empty
+        " ", // Single space
+        "   \t\n\r  ", // Whitespace only
+        "\x00", // Null byte
+        "\x00\x00\x00", // Multiple nulls
+        ";;;;;;;", // Only semicolons
+        "((((((", // Only left parens
+        "))))))", // Only right parens
+        ",,,,,,", // Only commas
+        "......", // Only dots
+        "''", // Empty string literal
+        "\"\"", // Empty quoted identifier
+        "'", // Single quote
+        "\"", // Single double quote
+        "--", // Comment start only
+        "-- comment\n", // Line comment with newline
+        "/*", // Unclosed block comment
+        "/* unclosed", // Unclosed block comment with text
+        "/* nested /* */", // Partially nested comment
     };
 
     for (cases) |input| {
@@ -505,7 +506,7 @@ test "fuzz: deeply nested block comments" {
         }
 
         // Add some content
-        try buf.appendSlice(allocator,"content");
+        try buf.appendSlice(allocator, "content");
 
         // Close nested comments
         for (0..depth) |_| {
@@ -531,7 +532,7 @@ test "fuzz: random SQL-like statements" {
         defer buf.deinit(allocator);
 
         // Generate a pseudo-SQL statement
-        try buf.appendSlice(allocator,randomKeyword(random));
+        try buf.appendSlice(allocator, randomKeyword(random));
         try buf.append(allocator, ' ');
 
         const num_parts = random.intRangeAtMost(usize, 3, 15);

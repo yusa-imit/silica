@@ -152,7 +152,7 @@ pub const FileWatcher = struct {
             callback: *const fn () void,
             should_stop: *std.atomic.Value(bool),
 
-        fn run(ctx: @This()) void {
+            fn run(ctx: @This()) void {
                 const builtin = @import("builtin");
                 const watch_fn = switch (builtin.os.tag) {
                     .macos => watchFileKqueue,

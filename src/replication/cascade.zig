@@ -334,7 +334,7 @@ test "CascadeCoordinator: forwarding disabled" {
     try testing.expect(!coordinator.isCascadingEnabled());
 
     // forwardWalData should return early when forwarding disabled
-    const data = [_]u8{1, 2, 3};
+    const data = [_]u8{ 1, 2, 3 };
     try coordinator.forwardWalData(100, 103, &data);
     try testing.expectEqual(@as(LSN, 0), coordinator.last_forwarded_lsn);
 }

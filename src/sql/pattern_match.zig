@@ -293,7 +293,6 @@ fn getAllQuantifierEndpoints(
     return result.items;
 }
 
-
 // ==============================================================================
 // TEST HELPERS — used below to construct PatternNode trees without the parser
 // ==============================================================================

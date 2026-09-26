@@ -195,13 +195,13 @@ test "roundtrip boundary values" {
     const boundaries = [_]u64{
         0,
         1,
-        0x7F,       // 127 — max 1-byte
-        0x80,       // 128 — min 2-byte
-        0x3FFF,     // 16383 — max 2-byte
-        0x4000,     // 16384 — min 3-byte
-        0x1FFFFF,   // max 3-byte
-        0x200000,   // min 4-byte
-        0xFFFFFFF,  // max 4-byte
+        0x7F, // 127 — max 1-byte
+        0x80, // 128 — min 2-byte
+        0x3FFF, // 16383 — max 2-byte
+        0x4000, // 16384 — min 3-byte
+        0x1FFFFF, // max 3-byte
+        0x200000, // min 4-byte
+        0xFFFFFFF, // max 4-byte
         0x10000000, // min 5-byte
         std.math.maxInt(u32),
         std.math.maxInt(u64),
@@ -236,10 +236,10 @@ test "varint roundtrip random-like values" {
 test "encode/decode values near byte boundaries" {
     var buf: [max_encoded_len]u8 = undefined;
     const test_values = [_]u64{
-        0x7E,   // max 1-byte - 1
-        0x7F,   // max 1-byte
-        0x80,   // min 2-byte
-        0x81,   // min 2-byte + 1
+        0x7E, // max 1-byte - 1
+        0x7F, // max 1-byte
+        0x80, // min 2-byte
+        0x81, // min 2-byte + 1
         0x3FFE, // max 2-byte - 1
         0x3FFF, // max 2-byte
         0x4000, // min 3-byte

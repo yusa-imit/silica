@@ -24,9 +24,9 @@ pub const IndexEntryError = error{
 
 /// Decoded index entry with owned memory.
 pub const DecodedIndexEntry = struct {
-    row_key: []u8,       // owned, caller frees
+    row_key: []u8, // owned, caller frees
     header: TupleHeader,
-    values: []Value,     // owned, caller frees (each Value.free + slice free)
+    values: []Value, // owned, caller frees (each Value.free + slice free)
 };
 
 /// Encode a covering index entry: [row_key_len:u16][row_key][header:12B][values].

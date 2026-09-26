@@ -37,13 +37,13 @@ pub const LockMode = enum(u8) {
 
 /// Table-level lock modes (PostgreSQL-compatible).
 pub const TableLockMode = enum(u8) {
-    access_share,        // SELECT
-    row_share,           // SELECT FOR SHARE
-    row_exclusive,       // INSERT/UPDATE/DELETE
-    share,               // CREATE INDEX
+    access_share, // SELECT
+    row_share, // SELECT FOR SHARE
+    row_exclusive, // INSERT/UPDATE/DELETE
+    share, // CREATE INDEX
     share_row_exclusive, // ALTER TABLE (some variants)
-    exclusive,           // VACUUM, some schema changes
-    access_exclusive,    // DDL (DROP TABLE, ALTER TABLE ADD COLUMN)
+    exclusive, // VACUUM, some schema changes
+    access_exclusive, // DDL (DROP TABLE, ALTER TABLE ADD COLUMN)
 
     /// Check if this mode conflicts with another mode using PostgreSQL conflict matrix.
     pub fn conflictsWith(self: TableLockMode, other: TableLockMode) bool {

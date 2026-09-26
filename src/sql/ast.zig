@@ -450,9 +450,9 @@ pub const WindowDef = struct {
 
 /// MATCH_RECOGNIZE (SQL:2016) — Row pattern matching quantifier
 pub const PatternQuantifier = enum {
-    one_or_more,   // +
-    zero_or_more,  // *
-    zero_or_one,   // ?
+    one_or_more, // +
+    zero_or_more, // *
+    zero_or_one, // ?
 };
 
 /// MATCH_RECOGNIZE pattern node — recursive structure for PATTERN clause
@@ -482,8 +482,8 @@ pub const DefineItem = struct {
 
 /// MEASURES clause semantics (SQL:2016) — RUNNING is default
 pub const MeasureSemantics = enum {
-    running,  // RUNNING — measure re-evaluated per row (default)
-    final,    // FINAL — measure evaluated once at end of match
+    running, // RUNNING — measure re-evaluated per row (default)
+    final, // FINAL — measure evaluated once at end of match
 };
 
 /// MEASURES clause item — computes a result column from a match
@@ -498,14 +498,14 @@ pub const MeasureItem = struct {
 
 /// Rows per match: ONE ROW or ALL ROWS (SQL:2016)
 pub const RowsPerMatch = enum {
-    one_row,   // ONE ROW PER MATCH (default)
-    all_rows,  // ALL ROWS PER MATCH
+    one_row, // ONE ROW PER MATCH (default)
+    all_rows, // ALL ROWS PER MATCH
 };
 
 /// After match skip strategy (SQL:2016) — limited v1 scope
 pub const AfterMatchSkip = enum {
     past_last_row, // SKIP PAST LAST ROW (default)
-    to_next_row,   // SKIP TO NEXT ROW
+    to_next_row, // SKIP TO NEXT ROW
 };
 
 /// MATCH_RECOGNIZE specification — groups all pattern-matching clauses
@@ -610,17 +610,17 @@ pub const SelectStmt = struct {
 
 /// Strength of a row-level locking clause.
 pub const LockStrength = enum {
-    update,        // FOR UPDATE — exclusive lock
+    update, // FOR UPDATE — exclusive lock
     no_key_update, // FOR NO KEY UPDATE — exclusive lock (weaker, not used in key)
-    share,         // FOR SHARE — shared lock
-    key_share,     // FOR KEY SHARE — shared lock (weaker)
+    share, // FOR SHARE — shared lock
+    key_share, // FOR KEY SHARE — shared lock (weaker)
 };
 
 /// Wait policy when a row lock cannot be immediately acquired.
 pub const LockWaitPolicy = enum {
-    wait,         // Default: block until lock acquired (single-threaded: same as nowait)
-    nowait,       // Return error if lock cannot be acquired immediately
-    skip_locked,  // Skip rows that are currently locked
+    wait, // Default: block until lock acquired (single-threaded: same as nowait)
+    nowait, // Return error if lock cannot be acquired immediately
+    skip_locked, // Skip rows that are currently locked
 };
 
 /// A single FOR UPDATE/SHARE locking clause.
@@ -644,9 +644,9 @@ pub const OnConflictClause = struct {
 
 /// MERGE match condition type
 pub const MergeMatchCondition = enum {
-    matched,                 // WHEN MATCHED
-    not_matched,             // WHEN NOT MATCHED [BY TARGET]
-    not_matched_source,      // WHEN NOT MATCHED BY SOURCE
+    matched, // WHEN MATCHED
+    not_matched, // WHEN NOT MATCHED [BY TARGET]
+    not_matched_source, // WHEN NOT MATCHED BY SOURCE
 };
 
 /// MERGE action type
@@ -890,8 +890,8 @@ pub const FunctionReturn = union(enum) {
 /// Function volatility category.
 pub const FunctionVolatility = enum {
     immutable, // Same input always gives same output, no side effects
-    stable,    // Same input gives same output within a transaction
-    vol,       // Output can vary, has side effects (volatile)
+    stable, // Same input gives same output within a transaction
+    vol, // Output can vary, has side effects (volatile)
 };
 
 /// CREATE FUNCTION statement.
@@ -900,7 +900,7 @@ pub const CreateFunctionStmt = struct {
     parameters: []const FunctionParam = &.{},
     return_type: FunctionReturn,
     language: []const u8, // e.g., "sfl" for Silica Function Language
-    body: []const u8,     // Function body (SQL or SFL code)
+    body: []const u8, // Function body (SQL or SFL code)
     volatility: FunctionVolatility = .vol,
     or_replace: bool = false,
 };
@@ -915,8 +915,8 @@ pub const DropFunctionStmt = struct {
 
 /// Trigger timing: when the trigger fires relative to the event.
 pub const TriggerTiming = enum {
-    before,     // BEFORE INSERT/UPDATE/DELETE
-    after,      // AFTER INSERT/UPDATE/DELETE
+    before, // BEFORE INSERT/UPDATE/DELETE
+    after, // AFTER INSERT/UPDATE/DELETE
     instead_of, // INSTEAD OF (for views)
 };
 
@@ -930,7 +930,7 @@ pub const TriggerEvent = enum {
 
 /// Trigger level: per-row or per-statement.
 pub const TriggerLevel = enum {
-    row,       // FOR EACH ROW
+    row, // FOR EACH ROW
     statement, // FOR EACH STATEMENT
 };
 
