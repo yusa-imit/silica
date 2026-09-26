@@ -417,26 +417,30 @@ fn resolveExprType(
         .function_call => |func| {
             // Simple heuristic: check if it's an aggregate function
             if (std.mem.eql(u8, func.name, "COUNT") or std.mem.eql(u8, func.name, "count") or
-                std.mem.eql(u8, func.name, "Count")) {
+                std.mem.eql(u8, func.name, "Count"))
+            {
                 return 20; // INT8 (bigint)
             } else if (std.mem.eql(u8, func.name, "SUM") or std.mem.eql(u8, func.name, "sum") or
-                      std.mem.eql(u8, func.name, "Sum") or
-                      std.mem.eql(u8, func.name, "AVG") or std.mem.eql(u8, func.name, "avg") or
-                      std.mem.eql(u8, func.name, "Avg")) {
+                std.mem.eql(u8, func.name, "Sum") or
+                std.mem.eql(u8, func.name, "AVG") or std.mem.eql(u8, func.name, "avg") or
+                std.mem.eql(u8, func.name, "Avg"))
+            {
                 return 1700; // NUMERIC
             } else if (std.mem.eql(u8, func.name, "MIN") or std.mem.eql(u8, func.name, "min") or
-                      std.mem.eql(u8, func.name, "Min") or
-                      std.mem.eql(u8, func.name, "MAX") or std.mem.eql(u8, func.name, "max") or
-                      std.mem.eql(u8, func.name, "Max")) {
+                std.mem.eql(u8, func.name, "Min") or
+                std.mem.eql(u8, func.name, "MAX") or std.mem.eql(u8, func.name, "max") or
+                std.mem.eql(u8, func.name, "Max"))
+            {
                 // MIN/MAX return the argument type if available
                 if (func.args.len > 0) {
                     return resolveExprType(func.args[0], schema, allocator, default_table);
                 }
                 return 25; // default to TEXT
             } else if (std.mem.eql(u8, func.name, "UPPER") or std.mem.eql(u8, func.name, "upper") or
-                      std.mem.eql(u8, func.name, "LOWER") or std.mem.eql(u8, func.name, "lower") or
-                      std.mem.eql(u8, func.name, "SUBSTR") or std.mem.eql(u8, func.name, "substr") or
-                      std.mem.eql(u8, func.name, "LENGTH") or std.mem.eql(u8, func.name, "length")) {
+                std.mem.eql(u8, func.name, "LOWER") or std.mem.eql(u8, func.name, "lower") or
+                std.mem.eql(u8, func.name, "SUBSTR") or std.mem.eql(u8, func.name, "substr") or
+                std.mem.eql(u8, func.name, "LENGTH") or std.mem.eql(u8, func.name, "length"))
+            {
                 return 25; // TEXT functions return TEXT
             }
             // Default to TEXT for unknown functions
@@ -507,12 +511,11 @@ fn deriveOutputSchemaFromNode(
                 const col_type = resolveExprType(col.expr, schema, allocator, default_table);
                 const field_name = if (col.alias) |alias|
                     alias
-                else
-                    switch (col.expr.*) {
-                        .column_ref => |col_ref| col_ref.name,
-                        .function_call => |func| func.name,
-                        else => "?column?",
-                    };
+                else switch (col.expr.*) {
+                    .column_ref => |col_ref| col_ref.name,
+                    .function_call => |func| func.name,
+                    else => "?column?",
+                };
 
                 try fields.append(allocator, OutputField{
                     .name = field_name,
@@ -540,15 +543,14 @@ fn deriveOutputSchemaFromNode(
 
                 const field_name = if (agg_expr.alias) |alias|
                     alias
-                else
-                    switch (agg_expr.func) {
-                        .count, .count_star => "count",
-                        .sum => "sum",
-                        .avg => "avg",
-                        .min => "min",
-                        .max => "max",
-                        else => "?aggregate?",
-                    };
+                else switch (agg_expr.func) {
+                    .count, .count_star => "count",
+                    .sum => "sum",
+                    .avg => "avg",
+                    .min => "min",
+                    .max => "max",
+                    else => "?aggregate?",
+                };
 
                 fields[i] = OutputField{
                     .name = field_name,
@@ -573,11 +575,10 @@ fn deriveOutputSchemaFromNode(
                             const col_type = resolveExprType(expr_item.value, schema, allocator, vals.table);
                             const field_name = if (expr_item.alias) |alias|
                                 alias
-                            else
-                                switch (expr_item.value.*) {
-                                    .column_ref => |col_ref| col_ref.name,
-                                    else => "?column?",
-                                };
+                            else switch (expr_item.value.*) {
+                                .column_ref => |col_ref| col_ref.name,
+                                else => "?column?",
+                            };
                             try fields.append(allocator, OutputField{
                                 .name = field_name,
                                 .type_oid = col_type,
@@ -765,19 +766,19 @@ pub const Planner = struct {
             .create_function => self.planTransaction(), // handled early in engine
             .drop_function => self.planTransaction(), // handled early in engine
             .create_trigger => self.planTransaction(), // handled early in engine
-            .drop_trigger => self.planTransaction(),   // handled early in engine
-            .alter_trigger => self.planTransaction(),  // handled early in engine
-            .create_role => self.planTransaction(),    // handled early in engine
-            .drop_role => self.planTransaction(),      // handled early in engine
-            .alter_role => self.planTransaction(),     // handled early in engine
-            .grant => self.planTransaction(),          // handled early in engine
-            .revoke => self.planTransaction(),         // handled early in engine
-            .grant_role => self.planTransaction(),     // handled early in engine
-            .revoke_role => self.planTransaction(),    // handled early in engine
-            .create_policy => self.planTransaction(),  // handled early in engine
-            .drop_policy => self.planTransaction(),    // handled early in engine
+            .drop_trigger => self.planTransaction(), // handled early in engine
+            .alter_trigger => self.planTransaction(), // handled early in engine
+            .create_role => self.planTransaction(), // handled early in engine
+            .drop_role => self.planTransaction(), // handled early in engine
+            .alter_role => self.planTransaction(), // handled early in engine
+            .grant => self.planTransaction(), // handled early in engine
+            .revoke => self.planTransaction(), // handled early in engine
+            .grant_role => self.planTransaction(), // handled early in engine
+            .revoke_role => self.planTransaction(), // handled early in engine
+            .create_policy => self.planTransaction(), // handled early in engine
+            .drop_policy => self.planTransaction(), // handled early in engine
             .alter_table_rls => self.planTransaction(), // handled early in engine
-            .alter_table => self.planTransaction(),    // handled early in engine
+            .alter_table => self.planTransaction(), // handled early in engine
             .reindex => self.planTransaction(), // handled early in engine
             .explain => |s| self.planExplain(s),
             .copy => self.planTransaction(), // handled early in engine
@@ -998,12 +999,14 @@ pub const Planner = struct {
 
                 // Check CTE scope first — CTE columns are resolved at execution time
                 if (self.cte_names.contains(tn.name)) {
-                    return self.createNode(.{ .scan = .{
-                        .table = tn.name,
-                        .alias = tn.alias,
-                        .columns = &.{}, // columns resolved at execution time
-                        .tablesample = tn.tablesample,
-                    } });
+                    return self.createNode(.{
+                        .scan = .{
+                            .table = tn.name,
+                            .alias = tn.alias,
+                            .columns = &.{}, // columns resolved at execution time
+                            .tablesample = tn.tablesample,
+                        },
+                    });
                 }
 
                 // Check for system tables (pg_stat_activity, pg_locks)
@@ -1659,7 +1662,10 @@ fn expandGroupBySpec(alloc: std.mem.Allocator, spec: *const ast.GroupBySpec) !st
                 for (gset) |col| {
                     var found = false;
                     for (all_cols_list.items) |existing| {
-                        if (astExprsEq(existing, col)) { found = true; break; }
+                        if (astExprsEq(existing, col)) {
+                            found = true;
+                            break;
+                        }
                     }
                     if (!found) try all_cols_list.append(alloc, col);
                 }
@@ -2340,9 +2346,7 @@ test "plan simple CTE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "WITH cte AS (SELECT 1) SELECT * FROM cte;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "WITH cte AS (SELECT 1) SELECT * FROM cte;", &arena, &schema);
 
     // Plan should have one CTE
     try testing.expectEqual(@as(usize, 1), plan.ctes.len);
@@ -2369,9 +2373,7 @@ test "plan multiple CTEs" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a;", &arena, &schema);
 
     try testing.expectEqual(@as(usize, 2), plan.ctes.len);
     try testing.expectEqualStrings("a", plan.ctes[0].name);
@@ -2384,9 +2386,7 @@ test "plan CTE with column aliases" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "WITH cte(x, y) AS (SELECT 1, 2) SELECT * FROM cte;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "WITH cte(x, y) AS (SELECT 1, 2) SELECT * FROM cte;", &arena, &schema);
 
     try testing.expectEqual(@as(usize, 1), plan.ctes.len);
     try testing.expectEqual(@as(usize, 2), plan.ctes[0].column_names.len);
@@ -2400,9 +2400,7 @@ test "plan CTE referencing real table" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "WITH active_users AS (SELECT id, name FROM users) SELECT * FROM active_users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "WITH active_users AS (SELECT id, name FROM users) SELECT * FROM active_users;", &arena, &schema);
 
     try testing.expectEqual(@as(usize, 1), plan.ctes.len);
     try testing.expectEqualStrings("active_users", plan.ctes[0].name);
@@ -2427,9 +2425,7 @@ test "plan UNION" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users UNION SELECT id FROM orders;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users UNION SELECT id FROM orders;", &arena, &schema);
 
     // Root should be SetOp(union, Project(Scan(users)), Project(Scan(orders)))
     switch (plan.root.*) {
@@ -2464,9 +2460,7 @@ test "plan UNION ALL" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users UNION ALL SELECT id FROM orders;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users UNION ALL SELECT id FROM orders;", &arena, &schema);
 
     switch (plan.root.*) {
         .set_op => |s| try testing.expectEqual(ast.SetOpType.union_all, s.op),
@@ -2480,9 +2474,7 @@ test "plan INTERSECT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users INTERSECT SELECT id FROM orders;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users INTERSECT SELECT id FROM orders;", &arena, &schema);
 
     switch (plan.root.*) {
         .set_op => |s| try testing.expectEqual(ast.SetOpType.intersect, s.op),
@@ -2496,9 +2488,7 @@ test "plan EXCEPT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users EXCEPT SELECT id FROM orders;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users EXCEPT SELECT id FROM orders;", &arena, &schema);
 
     switch (plan.root.*) {
         .set_op => |s| try testing.expectEqual(ast.SetOpType.except, s.op),
@@ -2512,9 +2502,7 @@ test "plan UNION with ORDER BY and LIMIT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users UNION SELECT id FROM orders ORDER BY id LIMIT 5;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users UNION SELECT id FROM orders ORDER BY id LIMIT 5;", &arena, &schema);
 
     // Should be: Limit → Sort → SetOp(union, ...)
     switch (plan.root.*) {
@@ -2539,9 +2527,7 @@ test "plan chained set operations" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users UNION SELECT id FROM orders EXCEPT SELECT id FROM users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users UNION SELECT id FROM orders EXCEPT SELECT id FROM users;", &arena, &schema);
 
     // Root: SetOp(union, left, SetOp(except, ...))
     switch (plan.root.*) {
@@ -2564,9 +2550,7 @@ test "formatPlan set operation" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT id FROM users UNION ALL SELECT id FROM orders;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT id FROM users UNION ALL SELECT id FROM orders;", &arena, &schema);
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -2584,9 +2568,7 @@ test "plan SELECT DISTINCT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT DISTINCT name FROM users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT DISTINCT name FROM users;", &arena, &schema);
 
     // Should be: Distinct → Project → Scan
     switch (plan.root.*) {
@@ -2609,9 +2591,7 @@ test "plan SELECT DISTINCT with ORDER BY" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT DISTINCT name, age FROM users ORDER BY name;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT DISTINCT name, age FROM users ORDER BY name;", &arena, &schema);
 
     // Should be: Distinct → Project → Sort → Scan
     switch (plan.root.*) {
@@ -2639,9 +2619,7 @@ test "plan SELECT DISTINCT ON" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name, age;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name, age;", &arena, &schema);
 
     // Should be: Distinct On → Project → Sort → Scan
     switch (plan.root.*) {
@@ -2667,9 +2645,7 @@ test "plan DISTINCT with LIMIT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT DISTINCT name FROM users LIMIT 5;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT DISTINCT name FROM users LIMIT 5;", &arena, &schema);
 
     // Should be: Limit → Distinct → Project → Scan
     switch (plan.root.*) {
@@ -2691,9 +2667,7 @@ test "formatPlan distinct" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT DISTINCT name FROM users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT DISTINCT name FROM users;", &arena, &schema);
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -2709,9 +2683,7 @@ test "formatPlan distinct on" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT DISTINCT ON (name) name, age FROM users ORDER BY name;", &arena, &schema);
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -2727,9 +2699,7 @@ test "plan recursive CTE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT * FROM cnt;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT * FROM cnt;", &arena, &schema);
 
     // Should have one CTE marked as recursive
     try testing.expectEqual(@as(usize, 1), plan.ctes.len);
@@ -2754,9 +2724,7 @@ test "plan non-recursive CTE with WITH RECURSIVE keyword" {
     defer schema.deinit();
 
     // WITH RECURSIVE without UNION ALL — CTE is not actually recursive
-    const plan = try parseAndPlan(testing.allocator,
-        "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte;", &arena, &schema);
 
     try testing.expectEqual(@as(usize, 1), plan.ctes.len);
     try testing.expect(!plan.ctes[0].recursive); // No set_operation → not recursive
@@ -2770,9 +2738,7 @@ test "plan CREATE FUNCTION scalar" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE FUNCTION add(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x + y;';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE FUNCTION add(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x + y;';", &arena, &schema);
 
     // CREATE FUNCTION is a DDL statement handled in engine, returns transaction plan
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
@@ -2784,9 +2750,7 @@ test "plan CREATE FUNCTION with OR REPLACE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE OR REPLACE FUNCTION add(x INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x;';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE OR REPLACE FUNCTION add(x INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x;';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2797,9 +2761,7 @@ test "plan CREATE FUNCTION table return" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE FUNCTION get_users() RETURNS TABLE (id INTEGER, name TEXT) LANGUAGE sfl AS 'SELECT 1, ''test'';';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE FUNCTION get_users() RETURNS TABLE (id INTEGER, name TEXT) LANGUAGE sfl AS 'SELECT 1, ''test'';';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2810,9 +2772,7 @@ test "plan CREATE FUNCTION setof return" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE FUNCTION generate_series(start INTEGER, stop INTEGER) RETURNS SETOF INTEGER LANGUAGE sfl AS 'RETURN start;';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE FUNCTION generate_series(start INTEGER, stop INTEGER) RETURNS SETOF INTEGER LANGUAGE sfl AS 'RETURN start;';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2823,9 +2783,7 @@ test "plan CREATE FUNCTION with volatility IMMUTABLE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE FUNCTION pi() RETURNS REAL LANGUAGE sfl IMMUTABLE AS 'RETURN 3.14159;';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE FUNCTION pi() RETURNS REAL LANGUAGE sfl IMMUTABLE AS 'RETURN 3.14159;';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2836,9 +2794,7 @@ test "plan CREATE FUNCTION with volatility STABLE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE FUNCTION current_user() RETURNS TEXT LANGUAGE sfl STABLE AS 'RETURN ''admin'';';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE FUNCTION current_user() RETURNS TEXT LANGUAGE sfl STABLE AS 'RETURN ''admin'';';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2849,9 +2805,7 @@ test "plan CREATE FUNCTION with volatility VOLATILE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE FUNCTION random() RETURNS REAL LANGUAGE sfl VOLATILE AS 'RETURN 0.5;';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE FUNCTION random() RETURNS REAL LANGUAGE sfl VOLATILE AS 'RETURN 0.5;';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2862,9 +2816,7 @@ test "plan DROP FUNCTION simple" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP FUNCTION add;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP FUNCTION add;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2875,9 +2827,7 @@ test "plan DROP FUNCTION with parameter types" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP FUNCTION add(INTEGER, INTEGER);",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP FUNCTION add(INTEGER, INTEGER);", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2888,9 +2838,7 @@ test "plan DROP FUNCTION IF EXISTS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP FUNCTION IF EXISTS nonexistent;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP FUNCTION IF EXISTS nonexistent;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2903,9 +2851,7 @@ test "plan CREATE TRIGGER BEFORE INSERT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER audit_insert BEFORE INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id)';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER audit_insert BEFORE INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id)';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2916,9 +2862,7 @@ test "plan CREATE TRIGGER AFTER UPDATE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER update_timestamp AFTER UPDATE ON products FOR EACH ROW AS 'UPDATE products SET modified_at = NOW() WHERE id = NEW.id';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER update_timestamp AFTER UPDATE ON products FOR EACH ROW AS 'UPDATE products SET modified_at = NOW() WHERE id = NEW.id';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2929,9 +2873,7 @@ test "plan CREATE TRIGGER BEFORE DELETE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER archive_user BEFORE DELETE ON users FOR EACH ROW AS 'INSERT INTO archived_users SELECT * FROM users WHERE id = OLD.id';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER archive_user BEFORE DELETE ON users FOR EACH ROW AS 'INSERT INTO archived_users SELECT * FROM users WHERE id = OLD.id';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2942,9 +2884,7 @@ test "plan CREATE TRIGGER with UPDATE OF columns" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER price_change AFTER UPDATE OF price, discount ON products FOR EACH ROW AS 'INSERT INTO price_history VALUES (OLD.price, NEW.price)';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER price_change AFTER UPDATE OF price, discount ON products FOR EACH ROW AS 'INSERT INTO price_history VALUES (OLD.price, NEW.price)';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2955,9 +2895,7 @@ test "plan CREATE TRIGGER with WHEN clause" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER high_salary_alert AFTER INSERT ON employees FOR EACH ROW WHEN (NEW.salary > 100000) AS 'INSERT INTO alerts VALUES (NEW.id)';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER high_salary_alert AFTER INSERT ON employees FOR EACH ROW WHEN (NEW.salary > 100000) AS 'INSERT INTO alerts VALUES (NEW.id)';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2968,9 +2906,7 @@ test "plan CREATE TRIGGER statement-level" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER check_batch AFTER INSERT ON orders FOR EACH STATEMENT AS 'SELECT validate_batch()';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER check_batch AFTER INSERT ON orders FOR EACH STATEMENT AS 'SELECT validate_batch()';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2981,9 +2917,7 @@ test "plan CREATE TRIGGER INSTEAD OF (for views)" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER view_insert INSTEAD OF INSERT ON user_view FOR EACH ROW AS 'INSERT INTO users VALUES (NEW.id, NEW.name)';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER view_insert INSTEAD OF INSERT ON user_view FOR EACH ROW AS 'INSERT INTO users VALUES (NEW.id, NEW.name)';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -2994,9 +2928,7 @@ test "plan CREATE TRIGGER TRUNCATE event" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE TRIGGER log_truncate AFTER TRUNCATE ON sensitive_data FOR EACH STATEMENT AS 'INSERT INTO security_log VALUES (NOW())';",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE TRIGGER log_truncate AFTER TRUNCATE ON sensitive_data FOR EACH STATEMENT AS 'INSERT INTO security_log VALUES (NOW())';", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3007,9 +2939,7 @@ test "plan DROP TRIGGER simple" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP TRIGGER audit_insert ON users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP TRIGGER audit_insert ON users;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3020,9 +2950,7 @@ test "plan DROP TRIGGER IF EXISTS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP TRIGGER IF EXISTS nonexistent ON users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP TRIGGER IF EXISTS nonexistent ON users;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3033,9 +2961,7 @@ test "plan ALTER TRIGGER ENABLE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "ALTER TRIGGER audit_insert ON users ENABLE;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "ALTER TRIGGER audit_insert ON users ENABLE;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3046,9 +2972,7 @@ test "plan ALTER TRIGGER DISABLE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "ALTER TRIGGER update_timestamp ON products DISABLE;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "ALTER TRIGGER update_timestamp ON products DISABLE;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3059,9 +2983,7 @@ test "plan GRANT SELECT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "GRANT SELECT ON TABLE users TO alice;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "GRANT SELECT ON TABLE users TO alice;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3072,9 +2994,7 @@ test "plan GRANT multiple privileges" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "GRANT SELECT, INSERT, UPDATE ON TABLE products TO bob;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "GRANT SELECT, INSERT, UPDATE ON TABLE products TO bob;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3085,9 +3005,7 @@ test "plan GRANT ALL PRIVILEGES" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "GRANT ALL PRIVILEGES ON TABLE admin_data TO superuser;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "GRANT ALL PRIVILEGES ON TABLE admin_data TO superuser;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3098,9 +3016,7 @@ test "plan GRANT with WITH GRANT OPTION" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "GRANT DELETE ON TABLE logs TO manager WITH GRANT OPTION;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "GRANT DELETE ON TABLE logs TO manager WITH GRANT OPTION;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3111,9 +3027,7 @@ test "plan REVOKE SELECT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "REVOKE SELECT ON TABLE users FROM alice;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "REVOKE SELECT ON TABLE users FROM alice;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3124,9 +3038,7 @@ test "plan REVOKE multiple privileges" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "REVOKE INSERT, UPDATE, DELETE ON TABLE restricted FROM user1;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "REVOKE INSERT, UPDATE, DELETE ON TABLE restricted FROM user1;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3137,9 +3049,7 @@ test "plan REVOKE ALL PRIVILEGES" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "REVOKE ALL PRIVILEGES ON TABLE sensitive FROM guest;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "REVOKE ALL PRIVILEGES ON TABLE sensitive FROM guest;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3150,9 +3060,7 @@ test "plan CREATE POLICY basic SELECT" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE POLICY view_policy ON users FOR SELECT USING (id = current_user_id());",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE POLICY view_policy ON users FOR SELECT USING (id = current_user_id());", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3163,9 +3071,7 @@ test "plan CREATE POLICY PERMISSIVE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE POLICY allow_read ON data AS PERMISSIVE FOR SELECT USING (public = true);",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE POLICY allow_read ON data AS PERMISSIVE FOR SELECT USING (public = true);", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3176,9 +3082,7 @@ test "plan CREATE POLICY RESTRICTIVE" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE POLICY block_sensitive ON logs AS RESTRICTIVE FOR ALL USING (level != 'DEBUG');",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE POLICY block_sensitive ON logs AS RESTRICTIVE FOR ALL USING (level != 'DEBUG');", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3189,9 +3093,7 @@ test "plan CREATE POLICY INSERT with WITH CHECK" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE POLICY insert_check ON posts FOR INSERT WITH CHECK (author_id = current_user_id());",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE POLICY insert_check ON posts FOR INSERT WITH CHECK (author_id = current_user_id());", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3202,9 +3104,7 @@ test "plan CREATE POLICY UPDATE with both clauses" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = current_user()) WITH CHECK (user_id = current_user());",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = current_user()) WITH CHECK (user_id = current_user());", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3215,9 +3115,7 @@ test "plan CREATE POLICY ALL command" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "CREATE POLICY all_access ON public_table FOR ALL USING (true);",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "CREATE POLICY all_access ON public_table FOR ALL USING (true);", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3228,9 +3126,7 @@ test "plan DROP POLICY simple" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP POLICY old_policy ON users;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP POLICY old_policy ON users;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3241,9 +3137,7 @@ test "plan DROP POLICY IF EXISTS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "DROP POLICY IF EXISTS maybe_policy ON accounts;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "DROP POLICY IF EXISTS maybe_policy ON accounts;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3254,9 +3148,7 @@ test "plan ALTER TABLE ENABLE RLS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "ALTER TABLE sensitive_data ENABLE ROW LEVEL SECURITY;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "ALTER TABLE sensitive_data ENABLE ROW LEVEL SECURITY;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3267,9 +3159,7 @@ test "plan ALTER TABLE DISABLE RLS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "ALTER TABLE public_data DISABLE ROW LEVEL SECURITY;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "ALTER TABLE public_data DISABLE ROW LEVEL SECURITY;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3280,9 +3170,7 @@ test "plan ALTER TABLE FORCE RLS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "ALTER TABLE admin_logs FORCE ROW LEVEL SECURITY;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "ALTER TABLE admin_logs FORCE ROW LEVEL SECURITY;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3293,9 +3181,7 @@ test "plan ALTER TABLE NO FORCE RLS" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "ALTER TABLE normal_table NO FORCE ROW LEVEL SECURITY;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "ALTER TABLE normal_table NO FORCE ROW LEVEL SECURITY;", &arena, &schema);
 
     try testing.expectEqual(PlanType.transaction, plan.plan_type);
 }
@@ -3311,9 +3197,7 @@ test "deriveOutputSchema - SELECT with simple columns" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT id, name FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT id, name FROM users", &arena, &schema);
 
     // Derive output schema from the plan
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
@@ -3342,9 +3226,7 @@ test "deriveOutputSchema - SELECT with COUNT aggregate" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT COUNT(*) FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT COUNT(*) FROM users", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3367,9 +3249,7 @@ test "deriveOutputSchema - INSERT without RETURNING" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "INSERT INTO users VALUES (1, 'test')",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "INSERT INTO users VALUES (1, 'test')", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3389,9 +3269,7 @@ test "deriveOutputSchema - INSERT with RETURNING" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "INSERT INTO users VALUES (1, 'test') RETURNING id",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "INSERT INTO users VALUES (1, 'test') RETURNING id", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3413,9 +3291,7 @@ test "deriveOutputSchema - UPDATE without RETURNING" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "UPDATE users SET name = 'updated' WHERE id = 1",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "UPDATE users SET name = 'updated' WHERE id = 1", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3432,9 +3308,7 @@ test "deriveOutputSchema - DELETE without RETURNING" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "DELETE FROM users WHERE id = 1",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "DELETE FROM users WHERE id = 1", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3451,9 +3325,7 @@ test "deriveOutputSchema - CREATE TABLE (DDL)" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "CREATE TABLE new_table (id INTEGER, name TEXT)",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "CREATE TABLE new_table (id INTEGER, name TEXT)", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3470,9 +3342,7 @@ test "deriveOutputSchema - SELECT with function call in projection" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT UPPER(name) FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT UPPER(name) FROM users", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3495,9 +3365,7 @@ test "deriveOutputSchema - SELECT with column alias" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT id AS user_id, name AS full_name FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT id AS user_id, name AS full_name FROM users", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3519,9 +3387,7 @@ test "deriveOutputSchema - SELECT with SUM aggregate" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT SUM(id) FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT SUM(id) FROM users", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3542,9 +3408,7 @@ test "deriveOutputSchema - SELECT with MIN/MAX aggregates" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT MIN(id), MAX(id) FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT MIN(id), MAX(id) FROM users", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3568,9 +3432,7 @@ test "deriveOutputSchema - SELECT * from table" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT * FROM users",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT * FROM users", &arena, &schema);
 
     const output_schema = try deriveOutputSchema(&plan, schema.provider(), allocator);
     defer allocator.free(output_schema.fields);
@@ -3595,9 +3457,7 @@ test "planTableRef: MATCH_RECOGNIZE produces PlanNode.match_recognize wrapping p
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS mr;",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS mr;", &arena, &schema);
 
     // planSelect always wraps the FROM body in a Project node (step 3.6 of
     // planSelect), so the match_recognize node sits one level below root.
@@ -3617,9 +3477,7 @@ test "planTableRef: MATCH_RECOGNIZE preserves alias in plan node" {
     var schema = testSchema(allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(allocator,
-        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS my_mr;",
-        &arena, &schema);
+    const plan = try parseAndPlan(allocator, "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS my_mr;", &arena, &schema);
 
     try testing.expect(plan.root.* == .project);
     try testing.expect(plan.root.project.input.* == .match_recognize);
@@ -3634,9 +3492,7 @@ test "formatPlan: MATCH_RECOGNIZE node outputs MatchRecognize text" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS mr;",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0) AS mr;", &arena, &schema);
 
     // Collect formatPlan output via fixedBufferStream
     var buf: [2048]u8 = undefined;
@@ -3658,9 +3514,7 @@ test "formatPlan: MATCH_RECOGNIZE indents nested scan correctly" {
     var schema = testSchema(testing.allocator);
     defer schema.deinit();
 
-    const plan = try parseAndPlan(testing.allocator,
-        "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0);",
-        &arena, &schema);
+    const plan = try parseAndPlan(testing.allocator, "SELECT * FROM orders MATCH_RECOGNIZE (ORDER BY id PATTERN (A+) DEFINE A AS A.amount > 0);", &arena, &schema);
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);

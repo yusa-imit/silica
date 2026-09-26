@@ -1043,7 +1043,7 @@ test "Phase 3: caught-up returns null" {
     const current = wal.currentLsn();
     // Pack LSN into u64: (checkpoint_seq << 32) | frame_index
     sender.current_lsn = (@as(LSN, @intCast(current.checkpoint_seq)) << 32) |
-                         (@as(LSN, @intCast(current.frame_index)));
+        (@as(LSN, @intCast(current.frame_index)));
 
     // Allocate minimum buffer
     var buf: [4096 + 24]u8 = undefined;

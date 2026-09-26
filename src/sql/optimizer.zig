@@ -232,8 +232,7 @@ pub const Optimizer = struct {
     ) std.mem.Allocator.Error!void {
         switch (expr.*) {
             // Literals and bind parameters — no column refs
-            .integer_literal, .float_literal, .string_literal, .blob_literal,
-            .boolean_literal, .null_literal, .bind_parameter => {},
+            .integer_literal, .float_literal, .string_literal, .blob_literal, .boolean_literal, .null_literal, .bind_parameter => {},
 
             // Column reference — the core case
             .column_ref => |cr| {
@@ -567,16 +566,18 @@ pub const Optimizer = struct {
             const eff_cols = self.effectiveScanColumns(scan);
             const covers = indexCoversColumns(eff_cols, idx.column_name, idx.included_columns);
             if (idx.covering_storage and covers and eff_cols.len > 0) {
-                return self.createNode(.{ .scan = .{
-                    .table = scan.table,
-                    .alias = scan.alias,
-                    // Narrow to the actually-required columns so the physical layer's
-                    // own coverage re-check (buildTableScan) sees the same pruned set
-                    // this decision was based on, instead of the full table schema.
-                    .columns = eff_cols,
-                    .index_only = true,
-                    .tablesample = scan.tablesample,
-                } });
+                return self.createNode(.{
+                    .scan = .{
+                        .table = scan.table,
+                        .alias = scan.alias,
+                        // Narrow to the actually-required columns so the physical layer's
+                        // own coverage re-check (buildTableScan) sees the same pruned set
+                        // this decision was based on, instead of the full table schema.
+                        .columns = eff_cols,
+                        .index_only = true,
+                        .tablesample = scan.tablesample,
+                    },
+                });
             }
         }
         return self.createNode(.{ .scan = scan });
@@ -670,7 +671,6 @@ pub const Optimizer = struct {
             .algorithm = algorithm,
         } });
     }
-
 
     /// Select the best join algorithm based on cost estimates.
     fn selectJoinAlgorithm(
@@ -1994,12 +1994,14 @@ test "join reordering: join with no condition preserved" {
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
     const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
 
-    const join = try arena.create(PlanNode, .{ .join = .{
-        .left = left_scan,
-        .right = right_scan,
-        .join_type = .inner,
-        .on_condition = null, // Cross join
-    } });
+    const join = try arena.create(PlanNode, .{
+        .join = .{
+            .left = left_scan,
+            .right = right_scan,
+            .join_type = .inner,
+            .on_condition = null, // Cross join
+        },
+    });
 
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
@@ -2208,12 +2210,14 @@ test "join algorithm selection: no condition uses nested loop" {
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
     const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
 
-    const join = try arena.create(PlanNode, .{ .join = .{
-        .left = left_scan,
-        .right = right_scan,
-        .join_type = .inner,
-        .on_condition = null, // Cross join (no condition)
-    } });
+    const join = try arena.create(PlanNode, .{
+        .join = .{
+            .left = left_scan,
+            .right = right_scan,
+            .join_type = .inner,
+            .on_condition = null, // Cross join (no condition)
+        },
+    });
 
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = join, .plan_type = .select_query });
@@ -2464,10 +2468,12 @@ test "optimize sort with empty order by" {
     defer arena.deinit();
 
     const scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users" } });
-    const sort_node = try arena.create(PlanNode, .{ .sort = .{
-        .input = scan,
-        .order_by = &.{}, // Empty ORDER BY
-    } });
+    const sort_node = try arena.create(PlanNode, .{
+        .sort = .{
+            .input = scan,
+            .order_by = &.{}, // Empty ORDER BY
+        },
+    });
 
     var opt = Optimizer.init(&arena);
     const optimized = try opt.optimize(.{ .root = sort_node, .plan_type = .select_query });
@@ -3107,4 +3113,3 @@ test "collectRequiredColumns: no scans in tree returns empty map" {
 
     try testing.expectEqual(@as(usize, 0), result.count());
 }
-

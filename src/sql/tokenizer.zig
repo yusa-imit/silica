@@ -1271,8 +1271,8 @@ test "nested block comments" {
 test "simple SELECT statement" {
     const sql = "SELECT id, name FROM users WHERE age > 18;";
     try expectTokens(sql, &.{
-        .kw_select, .identifier, .comma,     .identifier, .kw_from,
-        .identifier, .kw_where,  .identifier, .greater_than, .integer_literal,
+        .kw_select,  .identifier, .comma,      .identifier,   .kw_from,
+        .identifier, .kw_where,   .identifier, .greater_than, .integer_literal,
         .semicolon,
     });
 }
@@ -1280,8 +1280,8 @@ test "simple SELECT statement" {
 test "CREATE TABLE statement" {
     const sql = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);";
     try expectTokens(sql, &.{
-        .kw_create,  .kw_table,   .identifier, .left_paren, .identifier,
-        .kw_integer, .kw_primary, .kw_key,     .comma,      .identifier,
+        .kw_create,  .kw_table,   .identifier, .left_paren,  .identifier,
+        .kw_integer, .kw_primary, .kw_key,     .comma,       .identifier,
         .kw_text,    .kw_not,     .kw_null,    .right_paren, .semicolon,
     });
 }
@@ -1289,9 +1289,9 @@ test "CREATE TABLE statement" {
 test "INSERT statement" {
     const sql = "INSERT INTO users (name, age) VALUES ('Alice', 30);";
     try expectTokens(sql, &.{
-        .kw_insert,      .kw_into,          .identifier,  .left_paren,
-        .identifier,     .comma,            .identifier,  .right_paren,
-        .kw_values,      .left_paren,       .string_literal, .comma,
+        .kw_insert,       .kw_into,     .identifier,     .left_paren,
+        .identifier,      .comma,       .identifier,     .right_paren,
+        .kw_values,       .left_paren,  .string_literal, .comma,
         .integer_literal, .right_paren, .semicolon,
     });
 }
@@ -1299,13 +1299,13 @@ test "INSERT statement" {
 test "complex WHERE clause" {
     const sql = "SELECT * FROM t WHERE a >= 1 AND b <= 10 OR c IN (1, 2, 3)";
     try expectTokens(sql, &.{
-        .kw_select,            .star,                 .kw_from,
-        .identifier,           .kw_where,             .identifier,
-        .greater_than_or_equal, .integer_literal,     .kw_and,
-        .identifier,           .less_than_or_equal,   .integer_literal,
-        .kw_or,                .identifier,           .kw_in,
-        .left_paren,           .integer_literal,      .comma,
-        .integer_literal,      .comma,                .integer_literal,
+        .kw_select,             .star,               .kw_from,
+        .identifier,            .kw_where,           .identifier,
+        .greater_than_or_equal, .integer_literal,    .kw_and,
+        .identifier,            .less_than_or_equal, .integer_literal,
+        .kw_or,                 .identifier,         .kw_in,
+        .left_paren,            .integer_literal,    .comma,
+        .integer_literal,       .comma,              .integer_literal,
         .right_paren,
     });
 }
@@ -1313,9 +1313,9 @@ test "complex WHERE clause" {
 test "JOIN query" {
     const sql = "SELECT a.id FROM a INNER JOIN b ON a.id = b.id";
     try expectTokens(sql, &.{
-        .kw_select,  .identifier, .dot,       .identifier, .kw_from,
-        .identifier, .kw_inner,   .kw_join,   .identifier, .kw_on,
-        .identifier, .dot,        .identifier, .equals,    .identifier,
+        .kw_select,  .identifier, .dot,        .identifier, .kw_from,
+        .identifier, .kw_inner,   .kw_join,    .identifier, .kw_on,
+        .identifier, .dot,        .identifier, .equals,     .identifier,
         .dot,        .identifier,
     });
 }
@@ -1408,9 +1408,9 @@ test "VIEW and CTE keywords" {
 test "CASE expression tokens" {
     const sql = "CASE WHEN x = 1 THEN 'one' ELSE 'other' END";
     try expectTokens(sql, &.{
-        .kw_case,        .kw_when,        .identifier, .equals,
-        .integer_literal, .kw_then,       .string_literal,
-        .kw_else,        .string_literal, .kw_end,
+        .kw_case,         .kw_when, .identifier,     .equals,
+        .integer_literal, .kw_then, .string_literal, .kw_else,
+        .string_literal,  .kw_end,
     });
 }
 
@@ -1425,16 +1425,16 @@ test "multiline SQL" {
         \\  active = 1
     ;
     try expectTokens(sql, &.{
-        .kw_select,  .identifier,      .comma,   .identifier,
-        .kw_from,    .identifier,      .kw_where, .identifier,
-        .equals,     .integer_literal,
+        .kw_select, .identifier,      .comma,    .identifier,
+        .kw_from,   .identifier,      .kw_where, .identifier,
+        .equals,    .integer_literal,
     });
 }
 
 test "consecutive tokens without whitespace" {
     try expectTokens("(1+2)*3", &.{
-        .left_paren, .integer_literal, .plus, .integer_literal,
-        .right_paren, .star, .integer_literal,
+        .left_paren,  .integer_literal, .plus,            .integer_literal,
+        .right_paren, .star,            .integer_literal,
     });
 }
 
@@ -1496,11 +1496,11 @@ test "IS NULL / IS NOT NULL" {
 test "GROUP BY HAVING" {
     const sql = "SELECT dept, COUNT(*) FROM emp GROUP BY dept HAVING COUNT(*) > 5";
     try expectTokens(sql, &.{
-        .kw_select,        .identifier, .comma,    .kw_count,
-        .left_paren,       .star,       .right_paren, .kw_from,
-        .identifier,       .kw_group,   .kw_by,    .identifier,
-        .kw_having,        .kw_count,   .left_paren, .star,
-        .right_paren,      .greater_than, .integer_literal,
+        .kw_select,   .identifier,   .comma,           .kw_count,
+        .left_paren,  .star,         .right_paren,     .kw_from,
+        .identifier,  .kw_group,     .kw_by,           .identifier,
+        .kw_having,   .kw_count,     .left_paren,      .star,
+        .right_paren, .greater_than, .integer_literal,
     });
 }
 
@@ -1552,9 +1552,9 @@ test "window function keywords" {
 test "window function expression tokens" {
     const sql = "ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)";
     try expectTokens(sql, &.{
-        .kw_row_number, .left_paren,  .right_paren,  .kw_over,
-        .left_paren,    .kw_partition, .kw_by,        .identifier,
-        .kw_order,      .kw_by,        .identifier,   .kw_desc,
+        .kw_row_number, .left_paren,   .right_paren, .kw_over,
+        .left_paren,    .kw_partition, .kw_by,       .identifier,
+        .kw_order,      .kw_by,        .identifier,  .kw_desc,
         .right_paren,
     });
 }
@@ -1562,9 +1562,9 @@ test "window function expression tokens" {
 test "window frame specification tokens" {
     const sql = "SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)";
     try expectTokens(sql, &.{
-        .kw_sum,       .left_paren,   .identifier,    .right_paren,
-        .kw_over,      .left_paren,   .kw_rows,       .kw_between,
-        .kw_unbounded, .kw_preceding, .kw_and,        .kw_current,
+        .kw_sum,       .left_paren,   .identifier, .right_paren,
+        .kw_over,      .left_paren,   .kw_rows,    .kw_between,
+        .kw_unbounded, .kw_preceding, .kw_and,     .kw_current,
         .kw_row,       .right_paren,
     });
 }
@@ -1579,9 +1579,9 @@ test "SERIAL and BIGSERIAL keywords" {
 test "SERIAL in CREATE TABLE context" {
     const sql = "CREATE TABLE t (id SERIAL, name TEXT)";
     try expectTokens(sql, &.{
-        .kw_create, .kw_table, .identifier, .left_paren,
-        .identifier, .kw_serial, .comma,
-        .identifier, .kw_text, .right_paren,
+        .kw_create,  .kw_table,    .identifier, .left_paren,
+        .identifier, .kw_serial,   .comma,      .identifier,
+        .kw_text,    .right_paren,
     });
 }
 
@@ -1598,8 +1598,8 @@ test "array brackets" {
 test "ARRAY constructor expression tokens" {
     const sql = "ARRAY[1,2,3]";
     try expectTokens(sql, &.{
-        .kw_array, .left_bracket, .integer_literal, .comma,
-        .integer_literal, .comma, .integer_literal, .right_bracket,
+        .kw_array,        .left_bracket, .integer_literal, .comma,
+        .integer_literal, .comma,        .integer_literal, .right_bracket,
     });
 }
 
@@ -1613,8 +1613,8 @@ test "array subscript expression tokens" {
 test "CREATE TABLE with ARRAY column type" {
     const sql = "CREATE TABLE t (tags INTEGER[])";
     try expectTokens(sql, &.{
-        .kw_create, .kw_table, .identifier, .left_paren,
-        .identifier, .kw_integer, .left_bracket, .right_bracket,
+        .kw_create,   .kw_table,   .identifier,   .left_paren,
+        .identifier,  .kw_integer, .left_bracket, .right_bracket,
         .right_paren,
     });
 }
@@ -1629,8 +1629,8 @@ test "TYPE and ENUM keywords" {
 test "CREATE TYPE AS ENUM tokens" {
     const sql = "CREATE TYPE mood AS ENUM ('happy', 'sad')";
     try expectTokens(sql, &.{
-        .kw_create,     .kw_type,   .identifier, .kw_as,
-        .kw_enum,       .left_paren, .string_literal, .comma,
+        .kw_create,      .kw_type,     .identifier,     .kw_as,
+        .kw_enum,        .left_paren,  .string_literal, .comma,
         .string_literal, .right_paren,
     });
 }
@@ -1645,9 +1645,9 @@ test "JSON and JSONB keywords" {
 test "CREATE TABLE with JSON column type" {
     const sql = "CREATE TABLE t (data JSON, metadata JSONB)";
     try expectTokens(sql, &.{
-        .kw_create, .kw_table, .identifier, .left_paren,
-        .identifier, .kw_json, .comma,
-        .identifier, .kw_jsonb, .right_paren,
+        .kw_create,  .kw_table,    .identifier, .left_paren,
+        .identifier, .kw_json,     .comma,      .identifier,
+        .kw_jsonb,   .right_paren,
     });
 }
 

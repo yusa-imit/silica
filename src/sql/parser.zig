@@ -6948,9 +6948,7 @@ test "parse SELECT FROM pg_stat_activity with WHERE usename = 'postgres'" {
 }
 
 test "parse SELECT FROM pg_stat_activity with complex WHERE" {
-    var r = try testParseWithArena(
-        "SELECT * FROM pg_stat_activity WHERE state = 'active' AND query IS NOT NULL"
-    );
+    var r = try testParseWithArena("SELECT * FROM pg_stat_activity WHERE state = 'active' AND query IS NOT NULL");
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -7842,7 +7840,7 @@ test "MATCH_RECOGNIZE: full clause parses into TableRef.match_recognize" {
             "AFTER MATCH SKIP PAST LAST ROW " ++
             "PATTERN (A B+ C?) " ++
             "DEFINE B AS cond1, C AS cond2" ++
-        ") AS mr",
+            ") AS mr",
     );
     defer r.deinit();
 
@@ -7872,7 +7870,7 @@ test "MATCH_RECOGNIZE: PATTERN with precedence (A (B | C)+ D?) parses correct ne
             "ORDER BY o " ++
             "PATTERN (A (B | C)+ D?) " ++
             "DEFINE B AS b_cond, C AS c_cond, D AS d_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 
@@ -7917,7 +7915,7 @@ test "MATCH_RECOGNIZE: missing PATTERN clause returns parse error" {
             "ORDER BY o " ++
             "MEASURES m AS m1 " ++
             "DEFINE A AS a_cond" ++
-        ")",
+            ")",
     );
 
     // Expect parse to fail because PATTERN is required
@@ -7931,7 +7929,7 @@ test "MATCH_RECOGNIZE: ALL ROWS PER MATCH variant parses" {
             "ALL ROWS PER MATCH " ++
             "PATTERN (A+) " ++
             "DEFINE A AS a_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 
@@ -7946,7 +7944,7 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW variant parses" {
             "AFTER MATCH SKIP TO NEXT ROW " ++
             "PATTERN (A+) " ++
             "DEFINE A AS a_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 
@@ -7961,7 +7959,7 @@ test "MATCH_RECOGNIZE MEASURES: RUNNING keyword sets semantics to running" {
             "MEASURES RUNNING LAST(C.price) AS running_last " ++
             "PATTERN (A B+ C+) " ++
             "DEFINE B AS b_cond, C AS c_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 
@@ -7978,7 +7976,7 @@ test "MATCH_RECOGNIZE MEASURES: FINAL keyword sets semantics to final" {
             "MEASURES FINAL LAST(C.price) AS final_last " ++
             "PATTERN (A B+ C+) " ++
             "DEFINE B AS b_cond, C AS c_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 
@@ -7995,7 +7993,7 @@ test "MATCH_RECOGNIZE MEASURES: no keyword defaults to running semantics" {
             "MEASURES LAST(C.price) AS default_last " ++
             "PATTERN (A B+ C+) " ++
             "DEFINE B AS b_cond, C AS c_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 
@@ -8015,7 +8013,7 @@ test "MATCH_RECOGNIZE MEASURES: multiple items with mixed semantics parse correc
             "  LAST(A.price) AS default_last " ++
             "PATTERN (A B+ C+) " ++
             "DEFINE B AS b_cond, C AS c_cond" ++
-        ")",
+            ")",
     );
     defer r.deinit();
 

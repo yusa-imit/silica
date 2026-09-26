@@ -47,12 +47,12 @@ pub const Match = struct {
 const ClsItem = union(enum) {
     single: u8,
     range: struct { lo: u8, hi: u8 },
-    word,    // \w: [a-zA-Z0-9_]
-    digit,   // \d: [0-9]
-    space,   // \s: [ \t\n\r\f\v]
-    nword,   // \W
-    ndigit,  // \D
-    nspace,  // \S
+    word, // \w: [a-zA-Z0-9_]
+    digit, // \d: [0-9]
+    space, // \s: [ \t\n\r\f\v]
+    nword, // \W
+    ndigit, // \D
+    nspace, // \S
 };
 
 const CharClass = struct {
@@ -77,13 +77,13 @@ const Node = union(enum) {
 // ─ Bytecode instructions ─
 
 const InstTag = enum {
-    char,       // match specific char
-    any,        // match any char
-    cls,        // match character class
-    split,      // fork execution (a: next, b: jmp_to)
-    jmp,        // unconditional jump
-    save,       // save current position to slot n
-    match,      // success
+    char, // match specific char
+    any, // match any char
+    cls, // match character class
+    split, // fork execution (a: next, b: jmp_to)
+    jmp, // unconditional jump
+    save, // save current position to slot n
+    match, // success
     anchor_end, // match only at end of input
 };
 

@@ -548,4 +548,3 @@ test "CostEstimator: index scan with maximum quals" {
     const expected = (10.0 * 4.0) + (1000.0 * 0.005) + (1000.0 * 100.0 * 0.0025);
     try std.testing.expectApproxEqAbs(cost, expected, 1.0);
 }
-

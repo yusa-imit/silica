@@ -286,7 +286,6 @@ fn getColumnName(expr: *const ast.Expr) ?[]const u8 {
     };
 }
 
-
 // ── Tests ───────────────────────────────────────────────────────────────
 
 test "SelectivityEstimator: default selectivity" {
