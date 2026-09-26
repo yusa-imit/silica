@@ -56,6 +56,26 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the Silica CLI");
     run_step.dependOn(&run_cmd.step);
 
+    // `zig build tidy` — mechanical Tiger Style checks (line/function length,
+    // missing module headers) against a checked-in, shrink-only baseline.
+    const tidy_mod = b.addModule("tidy", .{
+        .root_source_file = b.path("src/tidy.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const tidy_exe = b.addExecutable(.{
+        .name = "tidy",
+        .root_module = tidy_mod,
+    });
+    b.installArtifact(tidy_exe);
+
+    const run_tidy = b.addRunArtifact(tidy_exe);
+    run_tidy.setCwd(b.path("."));
+    run_tidy.addArgs(&.{ "--src", "src", "--baseline", "tidy_baseline.txt" });
+
+    const tidy_step = b.step("tidy", "Run mechanical Tiger Style checks against src/");
+    tidy_step.dependOn(&run_tidy.step);
+
     // Optional test name filter: zig build test -Dtest-filter="some substring"
     const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
     const test_filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
@@ -83,6 +103,12 @@ pub fn build(b: *std.Build) void {
     // CLI tests must run AFTER library tests (not in parallel) because both
     // include library test blocks that create test DB files in the working directory.
     run_cli_unit_tests.step.dependOn(&run_lib_unit_tests.step);
+
+    // NOT wired into `test_step` yet: a real run of `zig build tidy` against
+    // `src/` finds ~3500 `line_too_long` violations (never baseline-covered
+    // by design — no ratchet for that class), so making `test` depend on it
+    // now would turn `zig build test` red on a pre-existing formatting gap
+    // far outside this task's scope. See session report / STATE.md.
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_cli_unit_tests.step);
