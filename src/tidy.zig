@@ -1,5 +1,6 @@
 //! Mechanical Tiger Style checks for `zig build tidy`: line length, function
-//! length against a ratchet baseline, and missing `//!` module headers.
+//! length against a ratchet baseline, missing `//!` module headers, and
+//! `std.debug.print` in library code.
 
 const std = @import("std");
 
@@ -15,11 +16,15 @@ fn maybe(ok: bool) void {
     _ = ok;
 }
 
-/// Category of a tidy violation. Kept small and exhaustive on purpose — the
-/// ban-list checks (catch-unreachable-without-SAFETY, debug-print-in-lib,
-/// time-in-lib, usize-in-wire-format) are deferred to a follow-up part and
-/// are not represented here yet.
-pub const Kind = enum { line_too_long, function_too_long, missing_module_header };
+/// Category of a tidy violation. The remaining ban-list checks
+/// (catch-unreachable-without-SAFETY, time-in-lib, usize-in-wire-format) are
+/// deferred to a follow-up part and are not represented here yet.
+pub const Kind = enum {
+    line_too_long,
+    function_too_long,
+    missing_module_header,
+    debug_print_in_lib,
+};
 
 /// A single mechanical-check failure, pinned to a file and (where
 /// applicable) a line and/or a named function.
@@ -30,8 +35,9 @@ pub const Violation = struct {
     kind: Kind,
     /// Function name for `function_too_long`; empty for every other kind.
     name: []const u8,
-    /// Measured line length (line_too_long) or function line span
-    /// (function_too_long); 0 for missing_module_header.
+    /// Measured line length (line_too_long), function line span
+    /// (function_too_long), or total occurrences in the file
+    /// (debug_print_in_lib); 0 for missing_module_header.
     count: u32,
 };
 
@@ -234,6 +240,7 @@ pub fn checkModuleHeader(
 /// Parses the checked-in baseline file format:
 ///   function_length:<path>:<function_name>:<max_lines>
 ///   missing_module_header:<path>
+///   debug_print_in_lib:<path>:<max_count>
 /// `#`-prefixed comment lines and blank lines are ignored.
 pub fn parseBaseline(gpa: std.mem.Allocator, text: []const u8) !std.ArrayList(BaselineEntry) {
     maybe(text.len == 0);
@@ -281,6 +288,10 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
         const limit = std.fmt.parseInt(u32, fields[3], 10) catch return error.InvalidBaselineLine;
         return .{ .kind = .function_too_long, .path = fields[1], .name = fields[2], .limit = limit };
     }
+    if (count == 3 and std.mem.eql(u8, fields[0], "debug_print_in_lib")) {
+        const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
+        return .{ .kind = .debug_print_in_lib, .path = fields[1], .name = "", .limit = limit };
+    }
     return error.InvalidBaselineLine;
 }
 
@@ -291,6 +302,9 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
 ///     is NOT covered, i.e. still fails: the ratchet).
 ///   - `missing_module_header` is covered iff a matching (path) baseline
 ///     entry exists with `kind == .missing_module_header`.
+///   - `debug_print_in_lib` is covered iff a matching (path) baseline entry
+///     exists with `limit >= violation.count` (same ratchet shape as
+///     `function_too_long`, keyed by path instead of path+name).
 ///   - `line_too_long` is never baseline-covered (hard check, no ratchet).
 pub fn unbaselined(
     gpa: std.mem.Allocator,
@@ -319,7 +333,18 @@ fn isCovered(violation: Violation, baseline: []const BaselineEntry) bool {
         .line_too_long => false,
         .missing_module_header => isMissingHeaderCovered(violation, baseline),
         .function_too_long => isFunctionLengthCovered(violation, baseline),
+        .debug_print_in_lib => isDebugPrintCovered(violation, baseline),
     };
+}
+
+fn isDebugPrintCovered(violation: Violation, baseline: []const BaselineEntry) bool {
+    assert(violation.kind == .debug_print_in_lib);
+    for (baseline) |entry| {
+        if (entry.kind != .debug_print_in_lib) continue;
+        if (!std.mem.eql(u8, entry.path, violation.path)) continue;
+        if (entry.limit >= violation.count) return true;
+    }
+    return false;
 }
 
 fn isMissingHeaderCovered(violation: Violation, baseline: []const BaselineEntry) bool {
@@ -340,6 +365,78 @@ fn isFunctionLengthCovered(violation: Violation, baseline: []const BaselineEntry
         if (entry.limit >= violation.count) return true;
     }
     return false;
+}
+
+/// Returns true when `path`'s basename marks it as a test/fuzz harness file
+/// (contains "test" or "fuzz"), which is not shipped library code and is
+/// therefore exempt from `checkDebugPrintInLib` in its entirety — matches
+/// this repo's existing naming convention (`*_test.zig`, `*_fuzz.zig`,
+/// `fuzz.zig`).
+fn isTestHarnessFile(path: []const u8) bool {
+    assert(path.len > 0);
+    const basename = std.fs.path.basename(path);
+    return std.mem.indexOf(u8, basename, "test") != null or
+        std.mem.indexOf(u8, basename, "fuzz") != null;
+}
+
+/// Returns the top-level `test "..." {` starting at zero-indented `line`, or
+/// `null` if `line` is not a test-block start — mirrors `matchFnStart`.
+fn matchTestStart(line: []const u8) bool {
+    if (line.len == 0 or line[0] == ' ' or line[0] == '\t') return false;
+    return std.mem.startsWith(u8, line, "test ") or std.mem.startsWith(u8, line, "test(");
+}
+
+/// Flags every `std.debug.print(` call site outside a top-level `test`
+/// block, in a non-harness file — a debug leftover per Tiger Style's
+/// mechanical check table. Whole harness files (see `isTestHarnessFile`) are
+/// skipped entirely; `count` on every emitted violation is the file's total
+/// so a single path-keyed baseline entry can ratchet the whole file at once.
+/// Known simplification (matches `checkFunctionLength`'s own textual scan):
+/// a `std.debug.print(` substring inside a string literal or comment counts
+/// as a hit too — this file's own doc comments and string literals above
+/// are why `src/tidy.zig` itself carries a small baseline entry.
+pub fn checkDebugPrintInLib(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    source: []const u8,
+    out: *std.ArrayList(Violation),
+) !void {
+    assert(path.len > 0);
+    maybe(source.len == 0);
+
+    if (isTestHarnessFile(path)) return;
+
+    var lines = std.ArrayList([]const u8){};
+    defer lines.deinit(gpa);
+    var split = std.mem.splitScalar(u8, source, '\n');
+    while (split.next()) |line| try lines.append(gpa, line);
+    const lines_total: u32 = @intCast(lines.items.len);
+
+    var hit_lines = std.ArrayList(u32){};
+    defer hit_lines.deinit(gpa);
+
+    var i: u32 = 0;
+    while (i < lines_total) : (i += 1) {
+        if (matchTestStart(lines.items[i])) {
+            i = functionEndLine(lines.items, i) - 1; // Resume after the test block's close.
+            continue;
+        }
+        if (std.mem.indexOf(u8, lines.items[i], "std.debug.print(") != null) {
+            try hit_lines.append(gpa, i + 1); // 1-based.
+        }
+    }
+    assert(hit_lines.items.len <= lines_total);
+
+    const total: u32 = @intCast(hit_lines.items.len);
+    for (hit_lines.items) |line_no| {
+        try out.append(gpa, .{
+            .path = path,
+            .line = line_no,
+            .kind = .debug_print_in_lib,
+            .name = "",
+            .count = total,
+        });
+    }
 }
 
 // ── `zig build tidy` CLI ─────────────────────────────────────────────────
@@ -432,7 +529,7 @@ fn collectZigFiles(arena: std.mem.Allocator, root: []const u8) ![][]const u8 {
     return files.items;
 }
 
-/// Reads `path` and runs all three mechanical checks against it, appending
+/// Reads `path` and runs all four mechanical checks against it, appending
 /// any violations to `out`. `arena` backs the file-content and line-index
 /// scratch that the checks themselves allocate.
 fn checkFile(
@@ -453,6 +550,7 @@ fn checkFile(
     try checkLineLength(gpa, path, source, max_cols_default, out);
     try checkFunctionLength(gpa, path, source, max_lines_default, out);
     try checkModuleHeader(gpa, path, source, out);
+    try checkDebugPrintInLib(gpa, path, source, out);
 }
 
 /// Reads the baseline file at `path`; a missing file is an empty baseline,
@@ -484,6 +582,10 @@ fn printViolation(stderr: *std.Io.Writer, violation: Violation) !void {
         .missing_module_header => try stderr.print(
             "{s}: missing_module_header: no leading //! doc comment\n",
             .{violation.path},
+        ),
+        .debug_print_in_lib => try stderr.print(
+            "{s}:{d}: debug_print_in_lib: std.debug.print in library code\n",
+            .{ violation.path, violation.line },
         ),
     }
 }
@@ -796,6 +898,148 @@ test "unbaselined filters a missing_module_header violation with a matching path
     defer result.deinit(allocator);
 
     try testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "checkDebugPrintInLib flags a call in a plain function" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn logStartup() void {
+        \\    std.debug.print("listening\n", .{});
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkDebugPrintInLib(allocator, "src/server/server.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqual(Kind.debug_print_in_lib, out.items[0].kind);
+    try testing.expectEqual(@as(u32, 2), out.items[0].line);
+    try testing.expectEqual(@as(u32, 1), out.items[0].count);
+}
+
+test "checkDebugPrintInLib does not flag a call inside a top-level test block" {
+    const allocator = testing.allocator;
+    const src =
+        \\test "prints on failure" {
+        \\    std.debug.print("boom\n", .{});
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkDebugPrintInLib(allocator, "src/storage/page.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkDebugPrintInLib skips harness files entirely by filename" {
+    const allocator = testing.allocator;
+    const src =
+        \\fn verifyTreeContents() void {
+        \\    std.debug.print("mismatch\n", .{});
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkDebugPrintInLib(allocator, "src/storage/fuzz.zig", src, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+
+    try checkDebugPrintInLib(allocator, "src/tx/jepsen_test.zig", src, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkDebugPrintInLib counts every occurrence in the file on each violation" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn a() void {
+        \\    std.debug.print("one\n", .{});
+        \\}
+        \\pub fn b() void {
+        \\    std.debug.print("two\n", .{});
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkDebugPrintInLib(allocator, "src/sql/engine.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    try testing.expectEqual(@as(u32, 2), out.items[0].count);
+    try testing.expectEqual(@as(u32, 2), out.items[1].count);
+}
+
+test "parseBaseline round-trips a debug_print_in_lib entry" {
+    const allocator = testing.allocator;
+    const text = "debug_print_in_lib:src/server/server.zig:8\n";
+
+    var entries = try parseBaseline(allocator, text);
+    defer entries.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqual(Kind.debug_print_in_lib, entries.items[0].kind);
+    try testing.expectEqualStrings("src/server/server.zig", entries.items[0].path);
+    try testing.expectEqual(@as(u32, 8), entries.items[0].limit);
+}
+
+test "unbaselined filters debug_print_in_lib within its baseline limit and keeps it once over" {
+    const allocator = testing.allocator;
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .debug_print_in_lib, .path = "src/server/server.zig", .name = "", .limit = 8 },
+    };
+
+    const covered = [_]Violation{
+        .{
+            .path = "src/server/server.zig",
+            .line = 87,
+            .kind = .debug_print_in_lib,
+            .name = "",
+            .count = 8,
+        },
+    };
+    var result_covered = try unbaselined(allocator, &covered, &baseline);
+    defer result_covered.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_covered.items.len);
+
+    const grown = [_]Violation{
+        .{
+            .path = "src/server/server.zig",
+            .line = 87,
+            .kind = .debug_print_in_lib,
+            .name = "",
+            .count = 9,
+        },
+    };
+    var result_grown = try unbaselined(allocator, &grown, &baseline);
+    defer result_grown.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_grown.items.len);
+}
+
+test "unbaselined keeps a debug_print_in_lib violation with no matching baseline entry" {
+    const allocator = testing.allocator;
+    const violations = [_]Violation{
+        .{
+            .path = "src/sql/parser.zig",
+            .line = 5,
+            .kind = .debug_print_in_lib,
+            .name = "",
+            .count = 1,
+        },
+    };
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .debug_print_in_lib, .path = "src/server/server.zig", .name = "", .limit = 8 },
+    };
+
+    var result = try unbaselined(allocator, &violations, &baseline);
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqualStrings("src/sql/parser.zig", result.items[0].path);
 }
 
 test "unbaselined never covers line_too_long regardless of baseline contents" {
