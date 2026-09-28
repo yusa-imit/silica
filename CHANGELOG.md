@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing-header entries). A line ≤ 100 columns check is implemented but intentionally not yet
   gated — the codebase has 3,521 pre-existing violations, addressed in part 2 alongside wiring
   `tidy` as a `zig build test` dependency and the remaining ban-list checks.
+- **`zig build tidy` step, part 2, ban-list batch 1** (plan 001): `debug_print_in_lib` check —
+  flags `std.debug.print(` in library code, skipping test/fuzz-named harness files and in-file
+  top-level `test` blocks, ratcheted per-file by occurrence count via `tidy_baseline.txt`
+  (`server/server.zig` 8, `sql/engine.zig` 2, `tidy.zig` 3). Remaining ban-list checks and the
+  line-length reduction are unstarted.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

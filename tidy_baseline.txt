@@ -77,3 +77,6 @@ missing_module_header:src/replication/sync.zig
 missing_module_header:src/replication/monitor.zig
 missing_module_header:src/replication/switchover.zig
 missing_module_header:src/server/server.zig
+debug_print_in_lib:src/server/server.zig:8
+debug_print_in_lib:src/sql/engine.zig:2
+debug_print_in_lib:src/tidy.zig:3
