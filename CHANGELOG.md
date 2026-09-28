@@ -67,6 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top-level `test` blocks, ratcheted per-file by occurrence count via `tidy_baseline.txt`
   (`server/server.zig` 8, `sql/engine.zig` 2, `tidy.zig` 3). Remaining ban-list checks and the
   line-length reduction are unstarted.
+- **`zig build tidy` step, part 2, ban-list batch 2** (plan 001): `usize_in_disk_format` check —
+  flags a bare `usize` field inside a plain `struct` whose body defines both `pub fn serialize`
+  and `pub fn deserialize` (the repo's convention for an on-disk/wire-format type), skipping
+  test/fuzz-named harness files and `packed struct`s (already explicitly sized). The mechanical
+  scan found zero real hits — `PageHeader`/`DatabaseHeader`/`WalHeader`/`WalFrameHeader`/
+  `TupleHeader` already use `u8`/`u16`/`u32`/fixed-size arrays throughout — so no
+  `tidy_baseline.txt` entries were needed. Remaining ban-list checks (`catch unreachable`
+  without `SAFETY:`, `std.time.*` in lib) and the line-length reduction are still unstarted.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

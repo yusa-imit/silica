@@ -1,6 +1,7 @@
 //! Mechanical Tiger Style checks for `zig build tidy`: line length, function
-//! length against a ratchet baseline, missing `//!` module headers, and
-//! `std.debug.print` in library code.
+//! length against a ratchet baseline, missing `//!` module headers,
+//! `std.debug.print` in library code, and bare `usize` fields in on-disk/
+//! wire-format structs.
 
 const std = @import("std");
 
@@ -17,13 +18,14 @@ fn maybe(ok: bool) void {
 }
 
 /// Category of a tidy violation. The remaining ban-list checks
-/// (catch-unreachable-without-SAFETY, time-in-lib, usize-in-wire-format) are
-/// deferred to a follow-up part and are not represented here yet.
+/// (catch-unreachable-without-SAFETY, time-in-lib) are deferred to a
+/// follow-up part and are not represented here yet.
 pub const Kind = enum {
     line_too_long,
     function_too_long,
     missing_module_header,
     debug_print_in_lib,
+    usize_in_disk_format,
 };
 
 /// A single mechanical-check failure, pinned to a file and (where
@@ -37,7 +39,8 @@ pub const Violation = struct {
     name: []const u8,
     /// Measured line length (line_too_long), function line span
     /// (function_too_long), or total occurrences in the file
-    /// (debug_print_in_lib); 0 for missing_module_header.
+    /// (debug_print_in_lib, usize_in_disk_format); 0 for
+    /// missing_module_header.
     count: u32,
 };
 
@@ -241,6 +244,7 @@ pub fn checkModuleHeader(
 ///   function_length:<path>:<function_name>:<max_lines>
 ///   missing_module_header:<path>
 ///   debug_print_in_lib:<path>:<max_count>
+///   usize_in_disk_format:<path>:<max_count>
 /// `#`-prefixed comment lines and blank lines are ignored.
 pub fn parseBaseline(gpa: std.mem.Allocator, text: []const u8) !std.ArrayList(BaselineEntry) {
     maybe(text.len == 0);
@@ -292,6 +296,10 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
         return .{ .kind = .debug_print_in_lib, .path = fields[1], .name = "", .limit = limit };
     }
+    if (count == 3 and std.mem.eql(u8, fields[0], "usize_in_disk_format")) {
+        const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
+        return .{ .kind = .usize_in_disk_format, .path = fields[1], .name = "", .limit = limit };
+    }
     return error.InvalidBaselineLine;
 }
 
@@ -305,6 +313,9 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
 ///   - `debug_print_in_lib` is covered iff a matching (path) baseline entry
 ///     exists with `limit >= violation.count` (same ratchet shape as
 ///     `function_too_long`, keyed by path instead of path+name).
+///   - `usize_in_disk_format` is covered iff a matching (path) baseline
+///     entry exists with `limit >= violation.count` (same path-keyed
+///     ratchet shape as `debug_print_in_lib`).
 ///   - `line_too_long` is never baseline-covered (hard check, no ratchet).
 pub fn unbaselined(
     gpa: std.mem.Allocator,
@@ -334,6 +345,7 @@ fn isCovered(violation: Violation, baseline: []const BaselineEntry) bool {
         .missing_module_header => isMissingHeaderCovered(violation, baseline),
         .function_too_long => isFunctionLengthCovered(violation, baseline),
         .debug_print_in_lib => isDebugPrintCovered(violation, baseline),
+        .usize_in_disk_format => isUsizeInDiskFormatCovered(violation, baseline),
     };
 }
 
@@ -341,6 +353,16 @@ fn isDebugPrintCovered(violation: Violation, baseline: []const BaselineEntry) bo
     assert(violation.kind == .debug_print_in_lib);
     for (baseline) |entry| {
         if (entry.kind != .debug_print_in_lib) continue;
+        if (!std.mem.eql(u8, entry.path, violation.path)) continue;
+        if (entry.limit >= violation.count) return true;
+    }
+    return false;
+}
+
+fn isUsizeInDiskFormatCovered(violation: Violation, baseline: []const BaselineEntry) bool {
+    assert(violation.kind == .usize_in_disk_format);
+    for (baseline) |entry| {
+        if (entry.kind != .usize_in_disk_format) continue;
         if (!std.mem.eql(u8, entry.path, violation.path)) continue;
         if (entry.limit >= violation.count) return true;
     }
@@ -439,6 +461,170 @@ pub fn checkDebugPrintInLib(
     }
 }
 
+/// Returns the struct name starting at zero-indented `line`, or `null` if
+/// `line` is not a `pub const <Name> = struct {` start. Explicitly rejects
+/// `packed struct` (already explicitly sized, e.g. this repo's
+/// `TupleFlags`/`ConstraintFlags`) — mirrors `matchFnStart`. Known gap: an
+/// `extern struct` on-disk/wire type (none exist in this repo today) would
+/// not match either "plain struct" or "packed struct" and so would bypass
+/// this check silently — no current false negative, but a future one.
+fn matchStructStart(line: []const u8) ?[]const u8 {
+    if (line.len == 0 or line[0] == ' ' or line[0] == '\t') return null;
+    if (!std.mem.startsWith(u8, line, "pub const ")) return null;
+    if (std.mem.indexOf(u8, line, "packed struct") != null) return null;
+
+    var rest = std.mem.trimLeft(u8, line["pub const ".len..], " \t");
+    var end: usize = 0;
+    while (end < rest.len and isWordChar(rest[end])) end += 1;
+    if (end == 0) return null;
+    const name = rest[0..end];
+    rest = std.mem.trimLeft(u8, rest[end..], " \t");
+
+    if (!std.mem.startsWith(u8, rest, "=")) return null;
+    rest = std.mem.trimLeft(u8, rest[1..], " \t");
+    if (!std.mem.startsWith(u8, rest, "struct")) return null;
+    // Deliberately does not verify an opening brace follows (unlike a
+    // stricter parser would) — `matchFnStart` makes the same tradeoff for
+    // `fn` declarations. Spelling the brace glyph as a string/char literal
+    // here would itself be textual content on this line, which the
+    // textual, non-string-aware `functionEndLine` brace-depth scan (used to
+    // find this very struct's end) would then miscount as a real opening
+    // brace — a self-inflicted false positive on `matchStructStart` itself.
+    return name;
+}
+
+/// True when the struct body `lines[start_index..end_line)` (0-based,
+/// half-open — `end_line` is `functionEndLine`'s 1-based close line, which
+/// equals the closing brace's 0-based index plus one) textually contains
+/// both a `pub fn serialize` and a `pub fn deserialize` line.
+fn isFormatStruct(lines: []const []const u8, start_index: u32, end_line: u32) bool {
+    assert(start_index < end_line);
+    assert(end_line <= lines.len);
+
+    var has_serialize = false;
+    var has_deserialize = false;
+    var j = start_index;
+    while (j < end_line) : (j += 1) {
+        if (std.mem.indexOf(u8, lines[j], "pub fn serialize") != null) has_serialize = true;
+        if (std.mem.indexOf(u8, lines[j], "pub fn deserialize") != null) has_deserialize = true;
+    }
+    return has_serialize and has_deserialize;
+}
+
+/// Returns the 0-based index of the first `pub fn` line within
+/// `lines[start_index..end_line)`, or `end_line` if none is found.
+fn firstPubFnLine(lines: []const []const u8, start_index: u32, end_line: u32) u32 {
+    assert(start_index < end_line);
+    assert(end_line <= lines.len);
+    var j = start_index;
+    while (j < end_line) : (j += 1) {
+        const trimmed = std.mem.trimLeft(u8, lines[j], " \t");
+        if (std.mem.startsWith(u8, trimmed, "pub fn ")) return j;
+    }
+    return end_line;
+}
+
+/// The word this check bans as a struct field type. Shared so callers can
+/// derive a per-line occurrence bound from `line.len` instead of assuming a
+/// fixed column width — a scanned source file is untrusted input, not a
+/// value this tool controls, so its assertions must hold for any line
+/// length rather than panic on an unusually long or dense one.
+const usize_needle = "usize";
+
+/// Counts whole-word (not preceded/followed by an identifier char)
+/// occurrences of `usize` on `line`. Bounded by `line.len`.
+fn countUsizeOccurrences(line: []const u8) u32 {
+    const needle = usize_needle;
+    var count: u32 = 0;
+    var i: usize = 0;
+    while (i + needle.len <= line.len) : (i += 1) {
+        if (!std.mem.eql(u8, line[i .. i + needle.len], needle)) continue;
+        const before_ok = i == 0 or !isWordChar(line[i - 1]);
+        const after_index = i + needle.len;
+        const after_ok = after_index == line.len or !isWordChar(line[after_index]);
+        if (before_ok and after_ok) count += 1;
+    }
+    return count;
+}
+
+/// Appends one entry to `hit_lines` per whole-word `usize` occurrence found
+/// in the field-declaration region of the struct at
+/// `lines[start_index..end_line)` — from the struct's open line up to (not
+/// including) its first `pub fn` line — but only when the struct is a
+/// format struct per `isFormatStruct`. Non-format structs contribute
+/// nothing.
+fn collectStructUsizeHits(
+    lines: []const []const u8,
+    start_index: u32,
+    end_line: u32,
+    hit_lines: *std.ArrayList(u32),
+    gpa: std.mem.Allocator,
+) !void {
+    assert(start_index < end_line);
+    assert(end_line <= lines.len);
+    if (!isFormatStruct(lines, start_index, end_line)) return;
+
+    const field_region_end = firstPubFnLine(lines, start_index, end_line);
+    assert(field_region_end <= end_line);
+
+    var j = start_index;
+    while (j < field_region_end) : (j += 1) {
+        const hits = countUsizeOccurrences(lines[j]);
+        assert(hits <= lines[j].len / usize_needle.len + 1);
+        var k: u32 = 0;
+        while (k < hits) : (k += 1) try hit_lines.append(gpa, j + 1); // 1-based.
+    }
+}
+
+/// Flags every whole-word `usize` field in the field-declaration region of
+/// a "format struct" — a top-level `pub const <Name> = struct { ... }`
+/// (never `packed struct`, already explicitly sized) whose body contains
+/// both `pub fn serialize` and `pub fn deserialize` — per Tiger Style's
+/// mechanical check table (`usize` in a public/wire struct: width varies
+/// across targets). `count` on every emitted violation is the file's total
+/// so a single path-keyed baseline entry can ratchet the whole file at
+/// once, mirroring `checkDebugPrintInLib`.
+pub fn checkUsizeInDiskFormat(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    source: []const u8,
+    out: *std.ArrayList(Violation),
+) !void {
+    assert(path.len > 0);
+    maybe(source.len == 0);
+
+    if (isTestHarnessFile(path)) return;
+
+    var lines = std.ArrayList([]const u8){};
+    defer lines.deinit(gpa);
+    var split = std.mem.splitScalar(u8, source, '\n');
+    while (split.next()) |line| try lines.append(gpa, line);
+    const lines_total: u32 = @intCast(lines.items.len);
+
+    var hit_lines = std.ArrayList(u32){};
+    defer hit_lines.deinit(gpa);
+
+    var i: u32 = 0;
+    while (i < lines_total) : (i += 1) {
+        if (matchStructStart(lines.items[i]) == null) continue;
+        const end_line = functionEndLine(lines.items, i);
+        try collectStructUsizeHits(lines.items, i, end_line, &hit_lines, gpa);
+        i = end_line - 1; // Resume scanning after this struct's own close.
+    }
+    assert(hit_lines.items.len <= source.len / usize_needle.len + 1);
+
+    const total: u32 = @intCast(hit_lines.items.len);
+    for (hit_lines.items) |line_no| {
+        try out.append(gpa, .{
+            .path = path,
+            .line = line_no,
+            .kind = .usize_in_disk_format,
+            .name = "",
+            .count = total,
+        });
+    }
+}
+
 // ── `zig build tidy` CLI ─────────────────────────────────────────────────
 
 /// Every directory nesting depth under `--src` gets counted against this
@@ -529,7 +715,7 @@ fn collectZigFiles(arena: std.mem.Allocator, root: []const u8) ![][]const u8 {
     return files.items;
 }
 
-/// Reads `path` and runs all four mechanical checks against it, appending
+/// Reads `path` and runs all five mechanical checks against it, appending
 /// any violations to `out`. `arena` backs the file-content and line-index
 /// scratch that the checks themselves allocate.
 fn checkFile(
@@ -551,6 +737,7 @@ fn checkFile(
     try checkFunctionLength(gpa, path, source, max_lines_default, out);
     try checkModuleHeader(gpa, path, source, out);
     try checkDebugPrintInLib(gpa, path, source, out);
+    try checkUsizeInDiskFormat(gpa, path, source, out);
 }
 
 /// Reads the baseline file at `path`; a missing file is an empty baseline,
@@ -585,6 +772,10 @@ fn printViolation(stderr: *std.Io.Writer, violation: Violation) !void {
         ),
         .debug_print_in_lib => try stderr.print(
             "{s}:{d}: debug_print_in_lib: std.debug.print in library code\n",
+            .{ violation.path, violation.line },
+        ),
+        .usize_in_disk_format => try stderr.print(
+            "{s}:{d}: usize_in_disk_format: bare usize in an on-disk/wire-format struct field\n",
             .{ violation.path, violation.line },
         ),
     }
@@ -1060,4 +1251,235 @@ test "unbaselined never covers line_too_long regardless of baseline contents" {
     try testing.expectEqual(@as(usize, 1), result.items.len);
     try testing.expectEqual(Kind.line_too_long, result.items[0].kind);
     try testing.expectEqual(@as(u32, 115), result.items[0].count);
+}
+
+test "checkUsizeInDiskFormat flags a usize field in a struct with serialize and deserialize" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub const PageHeader = struct {
+        \\    count: usize,
+        \\
+        \\    pub fn serialize(self: PageHeader, buf: []u8) void {
+        \\        _ = self;
+        \\        _ = buf;
+        \\    }
+        \\
+        \\    pub fn deserialize(buf: []const u8) PageHeader {
+        \\        _ = buf;
+        \\        return .{ .count = 0 };
+        \\    }
+        \\};
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkUsizeInDiskFormat(allocator, "src/storage/page.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqual(Kind.usize_in_disk_format, out.items[0].kind);
+    try testing.expectEqual(@as(u32, 2), out.items[0].line);
+    try testing.expectEqual(@as(u32, 1), out.items[0].count);
+    try testing.expectEqualStrings("", out.items[0].name);
+}
+
+test "checkUsizeInDiskFormat does not flag a usize field without serialize and deserialize" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub const Scratch = struct {
+        \\    count: usize,
+        \\
+        \\    pub fn reset(self: *Scratch) void {
+        \\        self.count = 0;
+        \\    }
+        \\};
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkUsizeInDiskFormat(allocator, "src/storage/page.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkUsizeInDiskFormat does not flag a format struct with no usize fields" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub const PageHeader = struct {
+        \\    magic: u32,
+        \\    flags: u8,
+        \\    reserved: [4]u8,
+        \\
+        \\    pub fn serialize(self: PageHeader, buf: []u8) void {
+        \\        _ = self;
+        \\        _ = buf;
+        \\    }
+        \\
+        \\    pub fn deserialize(buf: []const u8) PageHeader {
+        \\        _ = buf;
+        \\        return .{ .magic = 0, .flags = 0, .reserved = [_]u8{0} ** 4 };
+        \\    }
+        \\};
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkUsizeInDiskFormat(allocator, "src/storage/page.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkUsizeInDiskFormat counts every usize field occurrence on each violation" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub const WalHeader = struct {
+        \\    offset: usize,
+        \\    length: usize = 0,
+        \\
+        \\    pub fn serialize(self: WalHeader, buf: []u8) void {
+        \\        _ = self;
+        \\        _ = buf;
+        \\    }
+        \\
+        \\    pub fn deserialize(buf: []const u8) WalHeader {
+        \\        _ = buf;
+        \\        return .{ .offset = 0, .length = 0 };
+        \\    }
+        \\};
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkUsizeInDiskFormat(allocator, "src/tx/wal.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    try testing.expectEqual(@as(u32, 2), out.items[0].line);
+    try testing.expectEqual(@as(u32, 3), out.items[1].line);
+    try testing.expectEqual(@as(u32, 2), out.items[0].count);
+    try testing.expectEqual(@as(u32, 2), out.items[1].count);
+}
+
+test "checkUsizeInDiskFormat skips harness files entirely by filename" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub const PageHeader = struct {
+        \\    count: usize,
+        \\
+        \\    pub fn serialize(self: PageHeader, buf: []u8) void {
+        \\        _ = self;
+        \\        _ = buf;
+        \\    }
+        \\
+        \\    pub fn deserialize(buf: []const u8) PageHeader {
+        \\        _ = buf;
+        \\        return .{ .count = 0 };
+        \\    }
+        \\};
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkUsizeInDiskFormat(allocator, "src/storage/fuzz.zig", src, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+
+    try checkUsizeInDiskFormat(allocator, "src/tx/jepsen_test.zig", src, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkUsizeInDiskFormat does not match usize as a substring of a longer identifier" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub const IndexEntry = struct {
+        \\    usize_count: u32,
+        \\
+        \\    pub fn serialize(self: IndexEntry, buf: []u8) void {
+        \\        _ = self;
+        \\        _ = buf;
+        \\    }
+        \\
+        \\    pub fn deserialize(buf: []const u8) IndexEntry {
+        \\        _ = buf;
+        \\        return .{ .usize_count = 0 };
+        \\    }
+        \\};
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkUsizeInDiskFormat(allocator, "src/storage/index.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "parseBaseline round-trips a usize_in_disk_format entry" {
+    const allocator = testing.allocator;
+    const text = "usize_in_disk_format:src/storage/page.zig:3\n";
+
+    var entries = try parseBaseline(allocator, text);
+    defer entries.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqual(Kind.usize_in_disk_format, entries.items[0].kind);
+    try testing.expectEqualStrings("src/storage/page.zig", entries.items[0].path);
+    try testing.expectEqual(@as(u32, 3), entries.items[0].limit);
+}
+
+test "unbaselined filters usize_in_disk_format within its baseline limit and keeps it once over" {
+    const allocator = testing.allocator;
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .usize_in_disk_format, .path = "src/storage/page.zig", .name = "", .limit = 3 },
+    };
+
+    const covered = [_]Violation{
+        .{
+            .path = "src/storage/page.zig",
+            .line = 12,
+            .kind = .usize_in_disk_format,
+            .name = "",
+            .count = 3,
+        },
+    };
+    var result_covered = try unbaselined(allocator, &covered, &baseline);
+    defer result_covered.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_covered.items.len);
+
+    const grown = [_]Violation{
+        .{
+            .path = "src/storage/page.zig",
+            .line = 12,
+            .kind = .usize_in_disk_format,
+            .name = "",
+            .count = 4,
+        },
+    };
+    var result_grown = try unbaselined(allocator, &grown, &baseline);
+    defer result_grown.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_grown.items.len);
+}
+
+test "unbaselined keeps a usize_in_disk_format violation with no matching baseline entry" {
+    const allocator = testing.allocator;
+    const violations = [_]Violation{
+        .{
+            .path = "src/tx/wal.zig",
+            .line = 5,
+            .kind = .usize_in_disk_format,
+            .name = "",
+            .count = 1,
+        },
+    };
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .usize_in_disk_format, .path = "src/storage/page.zig", .name = "", .limit = 3 },
+    };
+
+    var result = try unbaselined(allocator, &violations, &baseline);
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqualStrings("src/tx/wal.zig", result.items[0].path);
 }
