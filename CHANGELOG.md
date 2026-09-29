@@ -75,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TupleHeader` already use `u8`/`u16`/`u32`/fixed-size arrays throughout — so no
   `tidy_baseline.txt` entries were needed. Remaining ban-list checks (`catch unreachable`
   without `SAFETY:`, `std.time.*` in lib) and the line-length reduction are still unstarted.
+- **`zig build tidy` step, part 2, ban-list batch 3** (plan 001): `catch_unreachable_no_safety`
+  check — flags a `catch unreachable` outside a top-level `test` block, in a non-harness file,
+  with no `SAFETY:` on its own line or within the 8 lines above it (the PR #143 blanket-comment
+  convention). Path-keyed shrink-only baseline: `sql/executor.zig` 18, `tidy.zig` 1 (self-match
+  on its own search string). Also split `resolveFunctionCallType` out of `planner.zig`'s
+  `resolveExprType`, which the PR #154 fmt pass had grown from 74 to 78 lines, past its
+  shrink-only tidy baseline; behavior unchanged. Remaining: `std.time.*` in lib and the
+  line-length reduction.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

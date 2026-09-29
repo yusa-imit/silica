@@ -1,7 +1,7 @@
 //! Mechanical Tiger Style checks for `zig build tidy`: line length, function
 //! length against a ratchet baseline, missing `//!` module headers,
-//! `std.debug.print` in library code, and bare `usize` fields in on-disk/
-//! wire-format structs.
+//! `std.debug.print` in library code, bare `usize` fields in on-disk/
+//! wire-format structs, and `catch unreachable` without a `SAFETY:` proof.
 
 const std = @import("std");
 
@@ -17,15 +17,16 @@ fn maybe(ok: bool) void {
     _ = ok;
 }
 
-/// Category of a tidy violation. The remaining ban-list checks
-/// (catch-unreachable-without-SAFETY, time-in-lib) are deferred to a
-/// follow-up part and are not represented here yet.
+/// Category of a tidy violation. The remaining ban-list check
+/// (time-in-lib) is deferred to a follow-up part and is not represented
+/// here yet.
 pub const Kind = enum {
     line_too_long,
     function_too_long,
     missing_module_header,
     debug_print_in_lib,
     usize_in_disk_format,
+    catch_unreachable_no_safety,
 };
 
 /// A single mechanical-check failure, pinned to a file and (where
@@ -39,8 +40,8 @@ pub const Violation = struct {
     name: []const u8,
     /// Measured line length (line_too_long), function line span
     /// (function_too_long), or total occurrences in the file
-    /// (debug_print_in_lib, usize_in_disk_format); 0 for
-    /// missing_module_header.
+    /// (debug_print_in_lib, usize_in_disk_format,
+    /// catch_unreachable_no_safety); 0 for missing_module_header.
     count: u32,
 };
 
@@ -245,6 +246,7 @@ pub fn checkModuleHeader(
 ///   missing_module_header:<path>
 ///   debug_print_in_lib:<path>:<max_count>
 ///   usize_in_disk_format:<path>:<max_count>
+///   catch_unreachable_no_safety:<path>:<max_count>
 /// `#`-prefixed comment lines and blank lines are ignored.
 pub fn parseBaseline(gpa: std.mem.Allocator, text: []const u8) !std.ArrayList(BaselineEntry) {
     maybe(text.len == 0);
@@ -300,6 +302,10 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
         return .{ .kind = .usize_in_disk_format, .path = fields[1], .name = "", .limit = limit };
     }
+    if (count == 3 and std.mem.eql(u8, fields[0], "catch_unreachable_no_safety")) {
+        const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
+        return .{ .kind = .catch_unreachable_no_safety, .path = fields[1], .name = "", .limit = limit };
+    }
     return error.InvalidBaselineLine;
 }
 
@@ -315,6 +321,9 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
 ///     `function_too_long`, keyed by path instead of path+name).
 ///   - `usize_in_disk_format` is covered iff a matching (path) baseline
 ///     entry exists with `limit >= violation.count` (same path-keyed
+///     ratchet shape as `debug_print_in_lib`).
+///   - `catch_unreachable_no_safety` is covered iff a matching (path)
+///     baseline entry exists with `limit >= violation.count` (same path-keyed
 ///     ratchet shape as `debug_print_in_lib`).
 ///   - `line_too_long` is never baseline-covered (hard check, no ratchet).
 pub fn unbaselined(
@@ -346,6 +355,7 @@ fn isCovered(violation: Violation, baseline: []const BaselineEntry) bool {
         .function_too_long => isFunctionLengthCovered(violation, baseline),
         .debug_print_in_lib => isDebugPrintCovered(violation, baseline),
         .usize_in_disk_format => isUsizeInDiskFormatCovered(violation, baseline),
+        .catch_unreachable_no_safety => isCatchUnreachableCovered(violation, baseline),
     };
 }
 
@@ -363,6 +373,16 @@ fn isUsizeInDiskFormatCovered(violation: Violation, baseline: []const BaselineEn
     assert(violation.kind == .usize_in_disk_format);
     for (baseline) |entry| {
         if (entry.kind != .usize_in_disk_format) continue;
+        if (!std.mem.eql(u8, entry.path, violation.path)) continue;
+        if (entry.limit >= violation.count) return true;
+    }
+    return false;
+}
+
+fn isCatchUnreachableCovered(violation: Violation, baseline: []const BaselineEntry) bool {
+    assert(violation.kind == .catch_unreachable_no_safety);
+    for (baseline) |entry| {
+        if (entry.kind != .catch_unreachable_no_safety) continue;
         if (!std.mem.eql(u8, entry.path, violation.path)) continue;
         if (entry.limit >= violation.count) return true;
     }
@@ -459,6 +479,75 @@ pub fn checkDebugPrintInLib(
             .count = total,
         });
     }
+}
+
+/// How many lines above a `catch unreachable` a `SAFETY:` comment may sit and
+/// still justify it. Wide enough for one blanket comment over a short run of
+/// sibling sites (the PR #143 convention); narrow enough that a comment in a
+/// different function cannot silently cover an unrelated site.
+const catch_safety_window_lines_max: u32 = 8;
+
+/// Flags every `catch unreachable` outside a top-level `test` block, in a
+/// non-harness file, that has no `SAFETY:` on its own line or within the
+/// `catch_safety_window_lines_max` lines above it — Tiger Style requires a
+/// proof comment for each one. `count` on every emitted violation is the
+/// file's total so a single path-keyed baseline entry ratchets the file.
+/// Known simplification (shared with `checkDebugPrintInLib`): the scan is
+/// textual, so the search string inside a string literal or comment counts.
+pub fn checkCatchUnreachable(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    source: []const u8,
+    out: *std.ArrayList(Violation),
+) !void {
+    assert(path.len > 0);
+    maybe(source.len == 0);
+
+    if (isTestHarnessFile(path)) return;
+
+    var lines = std.ArrayList([]const u8){};
+    defer lines.deinit(gpa);
+    var split = std.mem.splitScalar(u8, source, '\n');
+    while (split.next()) |line| try lines.append(gpa, line);
+    const lines_total: u32 = @intCast(lines.items.len);
+
+    var hit_lines = std.ArrayList(u32){};
+    defer hit_lines.deinit(gpa);
+
+    var i: u32 = 0;
+    while (i < lines_total) : (i += 1) {
+        if (matchTestStart(lines.items[i])) {
+            i = functionEndLine(lines.items, i) - 1; // Resume after the test block's close.
+            continue;
+        }
+        if (std.mem.indexOf(u8, lines.items[i], "catch unreachable") == null) continue;
+        if (hasSafetyNear(lines.items, i)) continue;
+        try hit_lines.append(gpa, i + 1); // 1-based.
+    }
+    assert(hit_lines.items.len <= lines_total);
+
+    const total: u32 = @intCast(hit_lines.items.len);
+    for (hit_lines.items) |line_no| {
+        try out.append(gpa, .{
+            .path = path,
+            .line = line_no,
+            .kind = .catch_unreachable_no_safety,
+            .name = "",
+            .count = total,
+        });
+    }
+}
+
+/// True when `SAFETY:` appears on `lines[index]` or within the
+/// `catch_safety_window_lines_max` lines above it.
+fn hasSafetyNear(lines: []const []const u8, index: u32) bool {
+    assert(index < lines.len);
+    const window_start = index -| catch_safety_window_lines_max;
+    var j: u32 = window_start;
+    while (j <= index) : (j += 1) {
+        if (std.mem.indexOf(u8, lines[j], "SAFETY:") != null) return true;
+    }
+    return false;
 }
 
 /// Returns the struct name starting at zero-indented `line`, or `null` if
@@ -715,7 +804,7 @@ fn collectZigFiles(arena: std.mem.Allocator, root: []const u8) ![][]const u8 {
     return files.items;
 }
 
-/// Reads `path` and runs all five mechanical checks against it, appending
+/// Reads `path` and runs all six mechanical checks against it, appending
 /// any violations to `out`. `arena` backs the file-content and line-index
 /// scratch that the checks themselves allocate.
 fn checkFile(
@@ -738,6 +827,7 @@ fn checkFile(
     try checkModuleHeader(gpa, path, source, out);
     try checkDebugPrintInLib(gpa, path, source, out);
     try checkUsizeInDiskFormat(gpa, path, source, out);
+    try checkCatchUnreachable(gpa, path, source, out);
 }
 
 /// Reads the baseline file at `path`; a missing file is an empty baseline,
@@ -776,6 +866,10 @@ fn printViolation(stderr: *std.Io.Writer, violation: Violation) !void {
         ),
         .usize_in_disk_format => try stderr.print(
             "{s}:{d}: usize_in_disk_format: bare usize in an on-disk/wire-format struct field\n",
+            .{ violation.path, violation.line },
+        ),
+        .catch_unreachable_no_safety => try stderr.print(
+            "{s}:{d}: catch_unreachable_no_safety: catch unreachable without a SAFETY: proof\n",
             .{ violation.path, violation.line },
         ),
     }
@@ -1482,4 +1576,156 @@ test "unbaselined keeps a usize_in_disk_format violation with no matching baseli
 
     try testing.expectEqual(@as(usize, 1), result.items.len);
     try testing.expectEqualStrings("src/tx/wal.zig", result.items[0].path);
+}
+
+test "checkCatchUnreachable flags an unjustified catch unreachable" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn f(buf: []u8) void {
+        \\    _ = std.fmt.bufPrint(buf, "{d}", .{1}) catch unreachable;
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkCatchUnreachable(allocator, "src/server/auth.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqual(Kind.catch_unreachable_no_safety, out.items[0].kind);
+    try testing.expectEqual(@as(u32, 2), out.items[0].line);
+    try testing.expectEqual(@as(u32, 1), out.items[0].count);
+}
+
+test "checkCatchUnreachable accepts a same-line SAFETY comment" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn f(buf: []u8) void {
+        \\    _ = std.fmt.bufPrint(buf, "{d}", .{1}) catch unreachable; // SAFETY: buf is 32 bytes
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkCatchUnreachable(allocator, "src/server/auth.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkCatchUnreachable accepts a SAFETY comment within the preceding window" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn f(buf: []u8) void {
+        \\    // SAFETY: every bufPrint below writes fixed-width output.
+        \\    _ = std.fmt.bufPrint(buf, "{d}", .{1}) catch unreachable;
+        \\    _ = std.fmt.bufPrint(buf, "{d}", .{2}) catch unreachable;
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkCatchUnreachable(allocator, "src/server/auth.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkCatchUnreachable rejects a SAFETY comment just outside the window" {
+    const allocator = testing.allocator;
+    var src = std.ArrayList(u8){};
+    defer src.deinit(allocator);
+    try src.appendSlice(allocator, "// SAFETY: too far away\n");
+    var pad: u32 = 0;
+    while (pad < catch_safety_window_lines_max) : (pad += 1) {
+        try src.appendSlice(allocator, "const x = 1;\n");
+    }
+    try src.appendSlice(allocator, "const y = f() catch unreachable;\n");
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkCatchUnreachable(allocator, "src/server/auth.zig", src.items, &out);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+}
+
+test "checkCatchUnreachable skips test blocks and harness files" {
+    const allocator = testing.allocator;
+    const src =
+        \\test "x" {
+        \\    f() catch unreachable;
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkCatchUnreachable(allocator, "src/server/auth.zig", src, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+
+    const plain = "pub fn f() void { g() catch unreachable; }\n";
+    try checkCatchUnreachable(allocator, "src/storage/fuzz.zig", plain, &out);
+    try checkCatchUnreachable(allocator, "src/sql/parser_error_tests.zig", plain, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkCatchUnreachable counts every unjustified site on each violation" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn f() void {
+        \\    a() catch unreachable;
+        \\    b() catch unreachable;
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkCatchUnreachable(allocator, "src/cli.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    try testing.expectEqual(@as(u32, 2), out.items[0].count);
+    try testing.expectEqual(@as(u32, 2), out.items[1].count);
+}
+
+test "parseBaseline round-trips a catch_unreachable_no_safety entry" {
+    const allocator = testing.allocator;
+    const text = "catch_unreachable_no_safety:src/cli.zig:4\n";
+
+    var entries = try parseBaseline(allocator, text);
+    defer entries.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqual(Kind.catch_unreachable_no_safety, entries.items[0].kind);
+    try testing.expectEqualStrings("src/cli.zig", entries.items[0].path);
+    try testing.expectEqual(@as(u32, 4), entries.items[0].limit);
+}
+
+test "unbaselined ratchets catch_unreachable_no_safety by per-file count" {
+    const allocator = testing.allocator;
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .catch_unreachable_no_safety, .path = "src/cli.zig", .name = "", .limit = 4 },
+    };
+    const covered = [_]Violation{
+        .{ .path = "src/cli.zig", .line = 9, .kind = .catch_unreachable_no_safety, .name = "", .count = 4 },
+    };
+    const grown = [_]Violation{
+        .{ .path = "src/cli.zig", .line = 9, .kind = .catch_unreachable_no_safety, .name = "", .count = 5 },
+    };
+    const unlisted = [_]Violation{
+        .{ .path = "src/sql/engine.zig", .line = 9, .kind = .catch_unreachable_no_safety, .name = "", .count = 1 },
+    };
+
+    var result_covered = try unbaselined(allocator, &covered, &baseline);
+    defer result_covered.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_covered.items.len);
+
+    var result_grown = try unbaselined(allocator, &grown, &baseline);
+    defer result_grown.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_grown.items.len);
+
+    var result_unlisted = try unbaselined(allocator, &unlisted, &baseline);
+    defer result_unlisted.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_unlisted.items.len);
 }

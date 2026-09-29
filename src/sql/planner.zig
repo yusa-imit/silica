@@ -415,36 +415,7 @@ fn resolveExprType(
             return columnTypeToOid(target_type);
         },
         .function_call => |func| {
-            // Simple heuristic: check if it's an aggregate function
-            if (std.mem.eql(u8, func.name, "COUNT") or std.mem.eql(u8, func.name, "count") or
-                std.mem.eql(u8, func.name, "Count"))
-            {
-                return 20; // INT8 (bigint)
-            } else if (std.mem.eql(u8, func.name, "SUM") or std.mem.eql(u8, func.name, "sum") or
-                std.mem.eql(u8, func.name, "Sum") or
-                std.mem.eql(u8, func.name, "AVG") or std.mem.eql(u8, func.name, "avg") or
-                std.mem.eql(u8, func.name, "Avg"))
-            {
-                return 1700; // NUMERIC
-            } else if (std.mem.eql(u8, func.name, "MIN") or std.mem.eql(u8, func.name, "min") or
-                std.mem.eql(u8, func.name, "Min") or
-                std.mem.eql(u8, func.name, "MAX") or std.mem.eql(u8, func.name, "max") or
-                std.mem.eql(u8, func.name, "Max"))
-            {
-                // MIN/MAX return the argument type if available
-                if (func.args.len > 0) {
-                    return resolveExprType(func.args[0], schema, allocator, default_table);
-                }
-                return 25; // default to TEXT
-            } else if (std.mem.eql(u8, func.name, "UPPER") or std.mem.eql(u8, func.name, "upper") or
-                std.mem.eql(u8, func.name, "LOWER") or std.mem.eql(u8, func.name, "lower") or
-                std.mem.eql(u8, func.name, "SUBSTR") or std.mem.eql(u8, func.name, "substr") or
-                std.mem.eql(u8, func.name, "LENGTH") or std.mem.eql(u8, func.name, "length"))
-            {
-                return 25; // TEXT functions return TEXT
-            }
-            // Default to TEXT for unknown functions
-            return 25; // TEXT
+            return resolveFunctionCallType(func, schema, allocator, default_table);
         },
         .unary_op => |op| {
             // Unary operations typically preserve or coerce the argument type
@@ -460,6 +431,47 @@ fn resolveExprType(
             return 25;
         },
     }
+}
+
+/// Resolve the result type OID of a function call by name: aggregates and
+/// text functions map to fixed OIDs, MIN/MAX follow their first argument, and
+/// unknown functions default to TEXT.
+fn resolveFunctionCallType(
+    func: std.meta.TagPayload(ast.Expr, .function_call),
+    schema: analyzer_mod.SchemaProvider,
+    allocator: Allocator,
+    default_table: ?[]const u8,
+) i32 {
+    // Simple heuristic: check if it's an aggregate function
+    if (std.mem.eql(u8, func.name, "COUNT") or std.mem.eql(u8, func.name, "count") or
+        std.mem.eql(u8, func.name, "Count"))
+    {
+        return 20; // INT8 (bigint)
+    } else if (std.mem.eql(u8, func.name, "SUM") or std.mem.eql(u8, func.name, "sum") or
+        std.mem.eql(u8, func.name, "Sum") or
+        std.mem.eql(u8, func.name, "AVG") or std.mem.eql(u8, func.name, "avg") or
+        std.mem.eql(u8, func.name, "Avg"))
+    {
+        return 1700; // NUMERIC
+    } else if (std.mem.eql(u8, func.name, "MIN") or std.mem.eql(u8, func.name, "min") or
+        std.mem.eql(u8, func.name, "Min") or
+        std.mem.eql(u8, func.name, "MAX") or std.mem.eql(u8, func.name, "max") or
+        std.mem.eql(u8, func.name, "Max"))
+    {
+        // MIN/MAX return the argument type if available
+        if (func.args.len > 0) {
+            return resolveExprType(func.args[0], schema, allocator, default_table);
+        }
+        return 25; // default to TEXT
+    } else if (std.mem.eql(u8, func.name, "UPPER") or std.mem.eql(u8, func.name, "upper") or
+        std.mem.eql(u8, func.name, "LOWER") or std.mem.eql(u8, func.name, "lower") or
+        std.mem.eql(u8, func.name, "SUBSTR") or std.mem.eql(u8, func.name, "substr") or
+        std.mem.eql(u8, func.name, "LENGTH") or std.mem.eql(u8, func.name, "length"))
+    {
+        return 25; // TEXT functions return TEXT
+    }
+    // Default to TEXT for unknown functions
+    return 25; // TEXT
 }
 
 /// Walk down single-input plan nodes to find the table name of the underlying scan,
