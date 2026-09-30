@@ -17,9 +17,7 @@ fn maybe(ok: bool) void {
     _ = ok;
 }
 
-/// Category of a tidy violation. The remaining ban-list check
-/// (time-in-lib) is deferred to a follow-up part and is not represented
-/// here yet.
+/// Category of a tidy violation.
 pub const Kind = enum {
     line_too_long,
     function_too_long,
@@ -27,6 +25,7 @@ pub const Kind = enum {
     debug_print_in_lib,
     usize_in_disk_format,
     catch_unreachable_no_safety,
+    std_time_in_lib,
 };
 
 /// A single mechanical-check failure, pinned to a file and (where
@@ -41,7 +40,8 @@ pub const Violation = struct {
     /// Measured line length (line_too_long), function line span
     /// (function_too_long), or total occurrences in the file
     /// (debug_print_in_lib, usize_in_disk_format,
-    /// catch_unreachable_no_safety); 0 for missing_module_header.
+    /// catch_unreachable_no_safety, std_time_in_lib); 0 for
+    /// missing_module_header.
     count: u32,
 };
 
@@ -247,6 +247,7 @@ pub fn checkModuleHeader(
 ///   debug_print_in_lib:<path>:<max_count>
 ///   usize_in_disk_format:<path>:<max_count>
 ///   catch_unreachable_no_safety:<path>:<max_count>
+///   std_time_in_lib:<path>:<max_count>
 /// `#`-prefixed comment lines and blank lines are ignored.
 pub fn parseBaseline(gpa: std.mem.Allocator, text: []const u8) !std.ArrayList(BaselineEntry) {
     maybe(text.len == 0);
@@ -306,6 +307,10 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
         return .{ .kind = .catch_unreachable_no_safety, .path = fields[1], .name = "", .limit = limit };
     }
+    if (count == 3 and std.mem.eql(u8, fields[0], "std_time_in_lib")) {
+        const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
+        return .{ .kind = .std_time_in_lib, .path = fields[1], .name = "", .limit = limit };
+    }
     return error.InvalidBaselineLine;
 }
 
@@ -325,6 +330,9 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
 ///   - `catch_unreachable_no_safety` is covered iff a matching (path)
 ///     baseline entry exists with `limit >= violation.count` (same path-keyed
 ///     ratchet shape as `debug_print_in_lib`).
+///   - `std_time_in_lib` is covered iff a matching (path) baseline entry
+///     exists with `limit >= violation.count` (same path-keyed ratchet shape
+///     as `debug_print_in_lib`).
 ///   - `line_too_long` is never baseline-covered (hard check, no ratchet).
 pub fn unbaselined(
     gpa: std.mem.Allocator,
@@ -356,7 +364,18 @@ fn isCovered(violation: Violation, baseline: []const BaselineEntry) bool {
         .debug_print_in_lib => isDebugPrintCovered(violation, baseline),
         .usize_in_disk_format => isUsizeInDiskFormatCovered(violation, baseline),
         .catch_unreachable_no_safety => isCatchUnreachableCovered(violation, baseline),
+        .std_time_in_lib => isStdTimeCovered(violation, baseline),
     };
+}
+
+fn isStdTimeCovered(violation: Violation, baseline: []const BaselineEntry) bool {
+    assert(violation.kind == .std_time_in_lib);
+    for (baseline) |entry| {
+        if (entry.kind != .std_time_in_lib) continue;
+        if (!std.mem.eql(u8, entry.path, violation.path)) continue;
+        if (entry.limit >= violation.count) return true;
+    }
+    return false;
 }
 
 fn isDebugPrintCovered(violation: Violation, baseline: []const BaselineEntry) bool {
@@ -532,6 +551,57 @@ pub fn checkCatchUnreachable(
             .path = path,
             .line = line_no,
             .kind = .catch_unreachable_no_safety,
+            .name = "",
+            .count = total,
+        });
+    }
+}
+
+/// Flags every `std.time.` use outside a top-level `test` block, in a
+/// non-harness file — library code takes an injected clock (Tiger Style
+/// mechanical check table). `count` on every emitted violation is the file's
+/// total so one path-keyed baseline entry ratchets the file; the entries only
+/// shrink as the deferred 0.16 clock migration lands. Known simplification
+/// (shared with `checkDebugPrintInLib`): the scan is textual, so the search
+/// string inside a string literal or comment counts.
+pub fn checkStdTimeInLib(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    source: []const u8,
+    out: *std.ArrayList(Violation),
+) !void {
+    assert(path.len > 0);
+    maybe(source.len == 0);
+
+    if (isTestHarnessFile(path)) return;
+
+    var lines = std.ArrayList([]const u8){};
+    defer lines.deinit(gpa);
+    var split = std.mem.splitScalar(u8, source, '\n');
+    while (split.next()) |line| try lines.append(gpa, line);
+    const lines_total: u32 = @intCast(lines.items.len);
+
+    var hit_lines = std.ArrayList(u32){};
+    defer hit_lines.deinit(gpa);
+
+    var i: u32 = 0;
+    while (i < lines_total) : (i += 1) {
+        if (matchTestStart(lines.items[i])) {
+            i = functionEndLine(lines.items, i) - 1; // Resume after the test block's close.
+            continue;
+        }
+        if (std.mem.indexOf(u8, lines.items[i], "std.time.") != null) {
+            try hit_lines.append(gpa, i + 1); // 1-based.
+        }
+    }
+    assert(hit_lines.items.len <= lines_total);
+
+    const total: u32 = @intCast(hit_lines.items.len);
+    for (hit_lines.items) |line_no| {
+        try out.append(gpa, .{
+            .path = path,
+            .line = line_no,
+            .kind = .std_time_in_lib,
             .name = "",
             .count = total,
         });
@@ -828,6 +898,7 @@ fn checkFile(
     try checkDebugPrintInLib(gpa, path, source, out);
     try checkUsizeInDiskFormat(gpa, path, source, out);
     try checkCatchUnreachable(gpa, path, source, out);
+    try checkStdTimeInLib(gpa, path, source, out);
 }
 
 /// Reads the baseline file at `path`; a missing file is an empty baseline,
@@ -870,6 +941,10 @@ fn printViolation(stderr: *std.Io.Writer, violation: Violation) !void {
         ),
         .catch_unreachable_no_safety => try stderr.print(
             "{s}:{d}: catch_unreachable_no_safety: catch unreachable without a SAFETY: proof\n",
+            .{ violation.path, violation.line },
+        ),
+        .std_time_in_lib => try stderr.print(
+            "{s}:{d}: std_time_in_lib: std.time.* in library code (inject a clock)\n",
             .{ violation.path, violation.line },
         ),
     }
@@ -1720,6 +1795,137 @@ test "unbaselined ratchets catch_unreachable_no_safety by per-file count" {
     var result_covered = try unbaselined(allocator, &covered, &baseline);
     defer result_covered.deinit(allocator);
     try testing.expectEqual(@as(usize, 0), result_covered.items.len);
+
+    var result_grown = try unbaselined(allocator, &grown, &baseline);
+    defer result_grown.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_grown.items.len);
+
+    var result_unlisted = try unbaselined(allocator, &unlisted, &baseline);
+    defer result_unlisted.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_unlisted.items.len);
+}
+
+test "checkStdTimeInLib flags every std.time. use and reports the file total" {
+    const allocator = testing.allocator;
+    const src =
+        \\pub fn f() i64 {
+        \\    const a = std.time.timestamp();
+        \\    return a + std.time.milliTimestamp();
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkStdTimeInLib(allocator, "src/config/file.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    try testing.expectEqual(Kind.std_time_in_lib, out.items[0].kind);
+    try testing.expectEqual(@as(u32, 2), out.items[0].line);
+    try testing.expectEqual(@as(u32, 3), out.items[1].line);
+    try testing.expectEqual(@as(u32, 2), out.items[0].count);
+    try testing.expectEqual(@as(u32, 2), out.items[1].count);
+}
+
+test "checkStdTimeInLib ignores source with no std.time. use" {
+    const allocator = testing.allocator;
+    const src = "pub fn f(clock: anytype) i64 { return clock.now(); }\n";
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkStdTimeInLib(allocator, "src/config/file.zig", src, &out);
+    try checkStdTimeInLib(allocator, "src/config/file.zig", "", &out);
+
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkStdTimeInLib skips test blocks and harness files" {
+    const allocator = testing.allocator;
+    const src =
+        \\test "x" {
+        \\    _ = std.time.timestamp();
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkStdTimeInLib(allocator, "src/config/file.zig", src, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+
+    const plain = "pub fn f() i64 { return std.time.timestamp(); }\n";
+    try checkStdTimeInLib(allocator, "src/tx/jepsen_test.zig", plain, &out);
+    try checkStdTimeInLib(allocator, "src/storage/fuzz.zig", plain, &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "checkStdTimeInLib resumes scanning after a test block" {
+    const allocator = testing.allocator;
+    const src =
+        \\test "x" {
+        \\    _ = std.time.timestamp();
+        \\}
+        \\pub fn f() i64 {
+        \\    return std.time.timestamp();
+        \\}
+    ;
+
+    var out = std.ArrayList(Violation){};
+    defer out.deinit(allocator);
+
+    try checkStdTimeInLib(allocator, "src/config/file.zig", src, &out);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqual(@as(u32, 5), out.items[0].line);
+}
+
+test "parseBaseline round-trips a std_time_in_lib entry" {
+    const allocator = testing.allocator;
+    const text = "std_time_in_lib:src/config/file.zig:15\n";
+
+    var entries = try parseBaseline(allocator, text);
+    defer entries.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqual(Kind.std_time_in_lib, entries.items[0].kind);
+    try testing.expectEqualStrings("src/config/file.zig", entries.items[0].path);
+    try testing.expectEqual(@as(u32, 15), entries.items[0].limit);
+}
+
+test "parseBaseline rejects a std_time_in_lib entry with a non-numeric limit" {
+    const allocator = testing.allocator;
+    try testing.expectError(
+        error.InvalidBaselineLine,
+        parseBaseline(allocator, "std_time_in_lib:src/config/file.zig:many\n"),
+    );
+}
+
+test "unbaselined ratchets std_time_in_lib by per-file count" {
+    const allocator = testing.allocator;
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .std_time_in_lib, .path = "src/config/file.zig", .name = "", .limit = 15 },
+    };
+    const covered = [_]Violation{
+        .{ .path = "src/config/file.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 15 },
+    };
+    const shrunk = [_]Violation{
+        .{ .path = "src/config/file.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 3 },
+    };
+    const grown = [_]Violation{
+        .{ .path = "src/config/file.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 16 },
+    };
+    const unlisted = [_]Violation{
+        .{ .path = "src/sql/engine.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 1 },
+    };
+
+    var result_covered = try unbaselined(allocator, &covered, &baseline);
+    defer result_covered.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_covered.items.len);
+
+    var result_shrunk = try unbaselined(allocator, &shrunk, &baseline);
+    defer result_shrunk.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_shrunk.items.len);
 
     var result_grown = try unbaselined(allocator, &grown, &baseline);
     defer result_grown.deinit(allocator);
