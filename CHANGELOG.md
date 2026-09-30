@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `resolveExprType`, which the PR #154 fmt pass had grown from 74 to 78 lines, past its
   shrink-only tidy baseline; behavior unchanged. Remaining: `std.time.*` in lib and the
   line-length reduction.
+- **`zig build tidy` step, part 2, ban-list batch 4** (plan 001): `std_time_in_lib` check —
+  flags `std.time.` outside a top-level `test` block in a non-harness file (library code takes
+  an injected clock). Path-keyed shrink-only baseline of 17 files / 54 sites, which the deferred
+  0.16 clock-migration item shrinks to zero (`tidy.zig` 3 is a self-match on its own search
+  string). This completes the ban list; remaining: line-length reduction and `test_step` wiring.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,
