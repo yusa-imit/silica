@@ -88,6 +88,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an injected clock). Path-keyed shrink-only baseline of 17 files / 54 sites, which the deferred
   0.16 clock-migration item shrinks to zero (`tidy.zig` 3 is a self-match on its own search
   string). This completes the ban list; remaining: line-length reduction and `test_step` wiring.
+- **`zig build tidy` step, part 2, line-length gate** (plan 001): `line_too_long` now ratchets
+  per file against `line_length:<path>:<max_line_count>` baseline entries (60 files, 3,620 long
+  lines at generation time; entries may only shrink), and `zig build tidy` is a hard dependency
+  of `zig build test`. A planted violation fails the build. Remaining: shrink the line-length
+  baseline to zero in batches.
 
 ### Added
 - **WAL checkpoint retention callback** (`Wal.setRetentionCallback`/`clearRetentionCallback`,

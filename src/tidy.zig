@@ -1,5 +1,5 @@
-//! Mechanical Tiger Style checks for `zig build tidy`: line length, function
-//! length against a ratchet baseline, missing `//!` module headers,
+//! Mechanical Tiger Style checks for `zig build tidy`: line length and function
+//! length, both against a ratchet baseline, missing `//!` module headers,
 //! `std.debug.print` in library code, bare `usize` fields in on-disk/
 //! wire-format structs, and `catch unreachable` without a `SAFETY:` proof.
 
@@ -248,6 +248,7 @@ pub fn checkModuleHeader(
 ///   usize_in_disk_format:<path>:<max_count>
 ///   catch_unreachable_no_safety:<path>:<max_count>
 ///   std_time_in_lib:<path>:<max_count>
+///   line_length:<path>:<max_line_count>
 /// `#`-prefixed comment lines and blank lines are ignored.
 pub fn parseBaseline(gpa: std.mem.Allocator, text: []const u8) !std.ArrayList(BaselineEntry) {
     maybe(text.len == 0);
@@ -311,6 +312,10 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
         return .{ .kind = .std_time_in_lib, .path = fields[1], .name = "", .limit = limit };
     }
+    if (count == 3 and std.mem.eql(u8, fields[0], "line_length")) {
+        const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
+        return .{ .kind = .line_too_long, .path = fields[1], .name = "", .limit = limit };
+    }
     return error.InvalidBaselineLine;
 }
 
@@ -333,7 +338,10 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
 ///   - `std_time_in_lib` is covered iff a matching (path) baseline entry
 ///     exists with `limit >= violation.count` (same path-keyed ratchet shape
 ///     as `debug_print_in_lib`).
-///   - `line_too_long` is never baseline-covered (hard check, no ratchet).
+///   - `line_too_long` is covered iff a matching (path) baseline entry exists
+///     with `limit >=` the number of `line_too_long` violations in that file
+///     (the ratchet counts long lines, not columns). Once a file exceeds its
+///     limit, every one of its long lines is reported.
 pub fn unbaselined(
     gpa: std.mem.Allocator,
     violations: []const Violation,
@@ -346,7 +354,7 @@ pub fn unbaselined(
     errdefer kept.deinit(gpa);
 
     for (violations) |violation| {
-        if (isCovered(violation, baseline)) continue;
+        if (isCovered(violation, violations, baseline)) continue;
         try kept.append(gpa, violation);
     }
 
@@ -356,9 +364,13 @@ pub fn unbaselined(
 
 /// Exhaustive on `Kind` by construction (a `switch` with no `else`) so a
 /// future fourth `Kind` fails the build here instead of silently passing.
-fn isCovered(violation: Violation, baseline: []const BaselineEntry) bool {
+fn isCovered(
+    violation: Violation,
+    violations: []const Violation,
+    baseline: []const BaselineEntry,
+) bool {
     return switch (violation.kind) {
-        .line_too_long => false,
+        .line_too_long => isLineLengthCovered(violation, violations, baseline),
         .missing_module_header => isMissingHeaderCovered(violation, baseline),
         .function_too_long => isFunctionLengthCovered(violation, baseline),
         .debug_print_in_lib => isDebugPrintCovered(violation, baseline),
@@ -366,6 +378,29 @@ fn isCovered(violation: Violation, baseline: []const BaselineEntry) bool {
         .catch_unreachable_no_safety => isCatchUnreachableCovered(violation, baseline),
         .std_time_in_lib => isStdTimeCovered(violation, baseline),
     };
+}
+
+/// Counts the file's long lines in `violations`; quadratic in the worst case
+/// (one scan per violation), which is bounded by the few thousand baselined
+/// long lines in the repo.
+fn isLineLengthCovered(
+    violation: Violation,
+    violations: []const Violation,
+    baseline: []const BaselineEntry,
+) bool {
+    assert(violation.kind == .line_too_long);
+    var file_count: u32 = 0;
+    for (violations) |other| {
+        if (other.kind != .line_too_long) continue;
+        if (std.mem.eql(u8, other.path, violation.path)) file_count += 1;
+    }
+    assert(file_count >= 1);
+    for (baseline) |entry| {
+        if (entry.kind != .line_too_long) continue;
+        if (!std.mem.eql(u8, entry.path, violation.path)) continue;
+        if (entry.limit >= file_count) return true;
+    }
+    return false;
 }
 
 fn isStdTimeCovered(violation: Violation, baseline: []const BaselineEntry) bool {
@@ -920,7 +955,7 @@ fn readBaselineFile(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
 fn printViolation(stderr: *std.Io.Writer, violation: Violation) !void {
     switch (violation.kind) {
         .line_too_long => try stderr.print(
-            "{s}:{d}: line_too_long: {d} columns\n",
+            "{s}:{d}: line_too_long: {d} columns (file over its baselined long-line count)\n",
             .{ violation.path, violation.line, violation.count },
         ),
         .function_too_long => try stderr.print(
@@ -1402,13 +1437,13 @@ test "unbaselined keeps a debug_print_in_lib violation with no matching baseline
     try testing.expectEqualStrings("src/sql/parser.zig", result.items[0].path);
 }
 
-test "unbaselined never covers line_too_long regardless of baseline contents" {
+test "unbaselined ignores other-kind baseline entries for line_too_long" {
     const allocator = testing.allocator;
     const violations = [_]Violation{
         .{ .path = "src/util/varint.zig", .line = 5, .kind = .line_too_long, .name = "", .count = 115 },
     };
     // Baseline entries for the same path, under other kinds, must not leak
-    // coverage onto the hard line-length check.
+    // coverage onto the line-length check.
     const baseline = [_]BaselineEntry{
         .{ .kind = .function_too_long, .path = "src/util/varint.zig", .name = "", .limit = 999 },
         .{ .kind = .missing_module_header, .path = "src/util/varint.zig", .name = "", .limit = 0 },
@@ -1420,6 +1455,81 @@ test "unbaselined never covers line_too_long regardless of baseline contents" {
     try testing.expectEqual(@as(usize, 1), result.items.len);
     try testing.expectEqual(Kind.line_too_long, result.items[0].kind);
     try testing.expectEqual(@as(u32, 115), result.items[0].count);
+}
+
+test "parseBaseline round-trips a line_length entry" {
+    const allocator = testing.allocator;
+
+    var entries = try parseBaseline(allocator, "line_length:src/sql/engine.zig:1200\n");
+    defer entries.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqual(Kind.line_too_long, entries.items[0].kind);
+    try testing.expectEqualStrings("src/sql/engine.zig", entries.items[0].path);
+    try testing.expectEqual(@as(u32, 1200), entries.items[0].limit);
+}
+
+test "parseBaseline rejects a line_length entry with a non-numeric limit" {
+    const allocator = testing.allocator;
+    try testing.expectError(
+        error.InvalidBaselineLine,
+        parseBaseline(allocator, "line_length:src/sql/engine.zig:lots\n"),
+    );
+}
+
+test "unbaselined ratchets line_too_long by per-file line count" {
+    const allocator = testing.allocator;
+    const baseline = [_]BaselineEntry{
+        .{ .kind = .line_too_long, .path = "src/a.zig", .name = "", .limit = 2 },
+    };
+    // Two long lines in a.zig fit the limit of 2 (the columns do not matter).
+    const covered = [_]Violation{
+        .{ .path = "src/a.zig", .line = 3, .kind = .line_too_long, .name = "", .count = 400 },
+        .{ .path = "src/a.zig", .line = 9, .kind = .line_too_long, .name = "", .count = 101 },
+    };
+    const shrunk = [_]Violation{
+        .{ .path = "src/a.zig", .line = 3, .kind = .line_too_long, .name = "", .count = 400 },
+    };
+    // A third long line pushes the file past its limit: every line reports.
+    const grown = [_]Violation{
+        .{ .path = "src/a.zig", .line = 3, .kind = .line_too_long, .name = "", .count = 101 },
+        .{ .path = "src/a.zig", .line = 9, .kind = .line_too_long, .name = "", .count = 101 },
+        .{ .path = "src/a.zig", .line = 12, .kind = .line_too_long, .name = "", .count = 101 },
+    };
+    const unlisted = [_]Violation{
+        .{ .path = "src/b.zig", .line = 1, .kind = .line_too_long, .name = "", .count = 101 },
+    };
+    // Another file's violations never count against a.zig's limit.
+    const mixed = [_]Violation{
+        .{ .path = "src/a.zig", .line = 3, .kind = .line_too_long, .name = "", .count = 101 },
+        .{ .path = "src/b.zig", .line = 1, .kind = .line_too_long, .name = "", .count = 101 },
+        .{ .path = "src/b.zig", .line = 2, .kind = .line_too_long, .name = "", .count = 101 },
+        .{ .path = "src/b.zig", .line = 3, .kind = .line_too_long, .name = "", .count = 101 },
+        .{ .path = "src/a.zig", .line = 9, .kind = .line_too_long, .name = "", .count = 101 },
+    };
+
+    var result_covered = try unbaselined(allocator, &covered, &baseline);
+    defer result_covered.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_covered.items.len);
+
+    var result_shrunk = try unbaselined(allocator, &shrunk, &baseline);
+    defer result_shrunk.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), result_shrunk.items.len);
+
+    var result_grown = try unbaselined(allocator, &grown, &baseline);
+    defer result_grown.deinit(allocator);
+    try testing.expectEqual(@as(usize, 3), result_grown.items.len);
+
+    var result_unlisted = try unbaselined(allocator, &unlisted, &baseline);
+    defer result_unlisted.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result_unlisted.items.len);
+
+    var result_mixed = try unbaselined(allocator, &mixed, &baseline);
+    defer result_mixed.deinit(allocator);
+    try testing.expectEqual(@as(usize, 3), result_mixed.items.len);
+    for (result_mixed.items) |violation| {
+        try testing.expectEqualStrings("src/b.zig", violation.path);
+    }
 }
 
 test "checkUsizeInDiskFormat flags a usize field in a struct with serialize and deserialize" {
