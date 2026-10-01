@@ -104,14 +104,11 @@ pub fn build(b: *std.Build) void {
     // include library test blocks that create test DB files in the working directory.
     run_cli_unit_tests.step.dependOn(&run_lib_unit_tests.step);
 
-    // NOT wired into `test_step` yet: a real run of `zig build tidy` against
-    // `src/` finds ~3500 `line_too_long` violations (never baseline-covered
-    // by design — no ratchet for that class), so making `test` depend on it
-    // now would turn `zig build test` red on a pre-existing formatting gap
-    // far outside this task's scope. See session report / STATE.md.
-
+    // Tidy is a hard dependency of `zig build test`: every class, including
+    // line length, ratchets against `tidy_baseline.txt`, which may only shrink.
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_cli_unit_tests.step);
+    test_step.dependOn(&run_tidy.step);
 
     // Add lib-only test step for debugging
     const lib_test_step = b.step("test-lib", "Run library tests only");
