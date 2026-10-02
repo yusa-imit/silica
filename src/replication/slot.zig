@@ -1,7 +1,7 @@
-// Replication Slot Management for Silica
-//
-// Manages replication slots that track WAL consumption by replicas.
-// Slots prevent WAL recycling until all replicas have received the data.
+//! Replication Slot Management for Silica
+//!
+//! Manages replication slots that track WAL consumption by replicas.
+//! Slots prevent WAL recycling until all replicas have received the data.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

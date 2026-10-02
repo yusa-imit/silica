@@ -1,3 +1,5 @@
+//! SQL tokenizer: splits SQL source text into `Token` values for `parser.zig`.
+
 const std = @import("std");
 
 /// SQL token types

@@ -1,3 +1,6 @@
+//! Standby mode coordinator for Silica: tracks read-only transactions on a replica
+//! while WAL is applied in the background.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

@@ -1,7 +1,7 @@
-// Replication Monitoring for Silica
-//
-// Provides pg_stat_replication-equivalent monitoring views.
-// Tracks replication status, lag, and connection state.
+//! Replication Monitoring for Silica
+//!
+//! Provides pg_stat_replication-equivalent monitoring views.
+//! Tracks replication status, lag, and connection state.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

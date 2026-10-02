@@ -1,3 +1,5 @@
+//! Terminal UI database browser for Silica, built on sailor's TUI library.
+
 const std = @import("std");
 const sailor = @import("sailor");
 const silica = @import("silica");

@@ -1,7 +1,7 @@
-// Replica Promotion for Silica
-//
-// Handles promotion of a standby replica to primary.
-// Used for failover and switchover scenarios.
+//! Replica Promotion for Silica
+//!
+//! Handles promotion of a standby replica to primary.
+//! Used for failover and switchover scenarios.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

@@ -1,3 +1,6 @@
+//! SQL abstract syntax tree node definitions produced by `parser.zig` and consumed
+//! by the analyzer, planner, and executor.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tokenizer = @import("tokenizer.zig");

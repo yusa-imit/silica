@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Module headers** (stabilization): added the `//!` module doc comment to the 17 files that lacked
+  one (10 replication files converted from `//`, 7 new) and emptied that class from
+  `tidy_baseline.txt`.
 - **Repo hygiene** (plan 001 item 2, part 1): removed the empty, untracked `src/query/`
   directory; added `README.md`, `LICENSE`, `docs` to `build.zig.zon` `.paths` so packaging
   includes them. Scratch-DB-to-tmp-dir migration split into its own plan item (1,350+ literal

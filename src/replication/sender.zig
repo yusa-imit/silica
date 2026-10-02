@@ -1,7 +1,7 @@
-// WAL Sender Process for Silica
-//
-// Streams WAL records from primary to replica over TCP.
-// Runs on the primary server and sends WAL data to connected replicas.
+//! WAL Sender Process for Silica
+//!
+//! Streams WAL records from primary to replica over TCP.
+//! Runs on the primary server and sends WAL data to connected replicas.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

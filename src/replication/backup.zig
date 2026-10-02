@@ -1,7 +1,7 @@
-// BaseBackup Module for Silica
-//
-// Implements PostgreSQL-style base backup functionality for initial replica provisioning.
-// Creates consistent snapshots of database files at specific LSN positions.
+//! BaseBackup Module for Silica
+//!
+//! Implements PostgreSQL-style base backup functionality for initial replica provisioning.
+//! Creates consistent snapshots of database files at specific LSN positions.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
