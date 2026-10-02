@@ -1,3 +1,6 @@
+//! TCP server for Silica: accepts PostgreSQL wire protocol v3 connections and hands
+//! each one to a `Connection` backed by the shared `Database`.
+
 const std = @import("std");
 const net = std.net;
 const os = std.os;

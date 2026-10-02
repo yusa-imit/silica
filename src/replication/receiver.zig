@@ -1,7 +1,7 @@
-// WAL Receiver Process for Silica
-//
-// Receives and applies WAL records from primary server.
-// Runs on replica servers to maintain synchronized copy.
+//! WAL Receiver Process for Silica
+//!
+//! Receives and applies WAL records from primary server.
+//! Runs on replica servers to maintain synchronized copy.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

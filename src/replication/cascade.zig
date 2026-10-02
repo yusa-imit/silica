@@ -1,7 +1,7 @@
-// Cascading Replication Infrastructure for Silica
-//
-// Enables hot standby replicas to act as WAL senders to downstream replicas,
-// creating a replication hierarchy: primary → intermediate → downstream.
+//! Cascading Replication Infrastructure for Silica
+//!
+//! Enables hot standby replicas to act as WAL senders to downstream replicas,
+//! creating a replication hierarchy: primary → intermediate → downstream.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

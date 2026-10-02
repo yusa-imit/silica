@@ -1,7 +1,7 @@
-// Controlled Primary/Replica Switchover for Silica
-//
-// Handles coordinated switchover of primary and replica roles, ensuring
-// minimal downtime and data consistency during role transitions.
+//! Controlled Primary/Replica Switchover for Silica
+//!
+//! Handles coordinated switchover of primary and replica roles, ensuring
+//! minimal downtime and data consistency during role transitions.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

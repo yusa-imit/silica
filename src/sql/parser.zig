@@ -1,3 +1,6 @@
+//! SQL parser: turns the token stream from `tokenizer.zig` into `ast.zig` nodes and
+//! reports syntax problems as `ParseError` values.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tokenizer = @import("tokenizer.zig");

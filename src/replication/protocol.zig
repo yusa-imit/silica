@@ -1,8 +1,8 @@
-// Replication Protocol for Silica
-//
-// Implements streaming replication protocol for WAL transmission between
-// primary and replica servers. Based on PostgreSQL's replication protocol
-// with simplifications for Silica's architecture.
+//! Replication Protocol for Silica
+//!
+//! Implements streaming replication protocol for WAL transmission between
+//! primary and replica servers. Based on PostgreSQL's replication protocol
+//! with simplifications for Silica's architecture.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

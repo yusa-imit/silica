@@ -1,3 +1,6 @@
+//! Command-line front end for Silica: argument parsing and the embedded SQL shell
+//! (REPL), with dispatch to the TUI browser and the server mode.
+
 const std = @import("std");
 const sailor = @import("sailor");
 const silica = @import("silica");

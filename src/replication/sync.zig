@@ -1,7 +1,7 @@
-// Synchronous Replication Coordinator for Silica
-//
-// Manages synchronous commit semantics, tracking which standbys are synchronous
-// and coordinating commit acknowledgments from replicas.
+//! Synchronous Replication Coordinator for Silica
+//!
+//! Manages synchronous commit semantics, tracking which standbys are synchronous
+//! and coordinating commit acknowledgments from replicas.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
