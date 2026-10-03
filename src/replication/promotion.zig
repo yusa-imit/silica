@@ -80,7 +80,10 @@ pub const PromotionCoordinator = struct {
     }
 
     /// Set standby coordinator reference
-    pub fn setStandbyCoordinator(self: *PromotionCoordinator, coord: *standby.StandbyCoordinator) void {
+    pub fn setStandbyCoordinator(
+        self: *PromotionCoordinator,
+        coord: *standby.StandbyCoordinator,
+    ) void {
         self.standby_coordinator = coord;
     }
 

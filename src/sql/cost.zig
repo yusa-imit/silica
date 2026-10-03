@@ -16,7 +16,7 @@ const ast = @import("ast.zig");
 const TableStats = @import("stats.zig").TableStats;
 const ColumnStats = @import("stats.zig").ColumnStats;
 
-// ── Cost Parameters ───────────────────────────────────────────────────
+// ── Cost Parameters ────────────────────────
 
 /// Cost configuration — default values based on PostgreSQL defaults.
 pub const CostConfig = struct {
@@ -48,7 +48,7 @@ pub const CostConfig = struct {
     page_size: u32 = 4096,
 };
 
-// ── Cost Estimation ───────────────────────────────────────────────────
+// ── Cost Estimation ────────────────────────
 
 /// Cost estimator for query plans.
 pub const CostEstimator = struct {
@@ -202,7 +202,7 @@ pub const CostEstimator = struct {
     }
 };
 
-// ── Tests ─────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "CostEstimator: init with default config" {
     const estimator = CostEstimator.init(.{});
@@ -327,7 +327,7 @@ test "CostEstimator: hash join cheaper than nested loop for large tables" {
     try std.testing.expect(hash_join_cost < nested_loop_cost);
 }
 
-// ── Edge Case Tests ──────────────────────────────────────────────────
+// ── Edge Case Tests ────────────────────────
 
 test "CostEstimator: null avg_row_size uses default" {
     const estimator = CostEstimator.init(.{});

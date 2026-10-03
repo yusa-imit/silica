@@ -111,7 +111,11 @@ pub const BaseBackupCoordinator = struct {
     }
 
     /// Start a new base backup to target directory
-    pub fn startBackup(self: *BaseBackupCoordinator, target_dir: []const u8, start_lsn: LSN) !BackupInfo {
+    pub fn startBackup(
+        self: *BaseBackupCoordinator,
+        target_dir: []const u8,
+        start_lsn: LSN,
+    ) !BackupInfo {
         self.backup_lock.lock();
         defer self.backup_lock.unlock();
 
@@ -192,7 +196,12 @@ pub const BaseBackupCoordinator = struct {
     }
 
     /// Add file to backup manifest
-    pub fn addFileToBackup(self: *BaseBackupCoordinator, path: []const u8, size: u64, _: ?u32) !void {
+    pub fn addFileToBackup(
+        self: *BaseBackupCoordinator,
+        path: []const u8,
+        size: u64,
+        _: ?u32,
+    ) !void {
         self.backup_lock.lock();
         defer self.backup_lock.unlock();
 
@@ -643,7 +652,7 @@ test "BaseBackupCoordinator handles zero max_backup_size (unlimited)" {
     }
 }
 
-// ── Stress Tests ──────────────────────────────────────────────────────
+// ── Stress Tests ─────────────────────────
 
 test "BaseBackupCoordinator: concurrent startBackup attempts stress" {
     const allocator = std.testing.allocator;

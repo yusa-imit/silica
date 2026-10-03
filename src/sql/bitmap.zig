@@ -10,7 +10,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -336,7 +336,7 @@ test "RowKeySet.unionOf preserves original sets unchanged" {
     try testing.expectEqualSlices(u8, "bob", set_a.items[1]);
 }
 
-// ── Type Definition ─────────────────────────────────────────────────────────
+// ── Type Definition ────────────────────────
 
 fn lessThanRowKey(_: void, a: []u8, b: []u8) bool {
     return std.mem.lessThan(u8, a, b);

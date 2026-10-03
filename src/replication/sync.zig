@@ -46,7 +46,11 @@ pub const SyncCoordinator = struct {
     commit_cond: std.Thread.Condition,
 
     /// Initialize synchronous replication coordinator
-    pub fn init(allocator: Allocator, mode: SyncMode, sync_standby_names: []const u8) !SyncCoordinator {
+    pub fn init(
+        allocator: Allocator,
+        mode: SyncMode,
+        sync_standby_names: []const u8,
+    ) !SyncCoordinator {
         const names_copy = try allocator.dupe(u8, sync_standby_names);
         return .{
             .allocator = allocator,
@@ -502,7 +506,11 @@ test "SyncCoordinator: concurrent stress test with multiple threads" {
             var i: usize = 0;
             while (i < num_ops_per_thread) : (i += 1) {
                 var name_buf: [32]u8 = undefined;
-                const standby_name = std.fmt.bufPrint(&name_buf, "replica{d}", .{(ctx.thread_id % 3) + 1}) catch unreachable;
+                const standby_name = std.fmt.bufPrint(
+                    &name_buf,
+                    "replica{d}",
+                    .{(ctx.thread_id % 3) + 1},
+                ) catch unreachable;
 
                 // Register standby (idempotent, no error expected)
                 ctx.coordinator.registerStandby(standby_name) catch {
@@ -549,7 +557,8 @@ test "SyncCoordinator: concurrent stress test with multiple threads" {
     }
 
     // After all threads finish, coordinator should be in a consistent state
-    // Some standbys may still be registered due to races (last operation was register, not unregister)
+    // Some standbys may still be registered due to races (last operation was register, not
+    // unregister)
     const min_lsn = coord.getMinSyncFlushLSN();
 
     // Verify min LSN is a valid value (either 0 for registered standbys or maxInt for none)
