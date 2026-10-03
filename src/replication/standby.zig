@@ -357,7 +357,8 @@ test "StandbyCoordinator register duplicate transaction ID" {
     defer coord.deinit();
 
     try coord.registerReadOnlyTxn(100);
-    try coord.registerReadOnlyTxn(100); // Duplicate allowed (same txn could have multiple snapshots)
+    // Duplicate allowed (same txn could have multiple snapshots).
+    try coord.registerReadOnlyTxn(100);
     try std.testing.expectEqual(@as(usize, 2), coord.getActiveReadOnlyTxnCount());
 
     coord.unregisterReadOnlyTxn(100); // Removes first instance

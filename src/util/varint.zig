@@ -73,7 +73,7 @@ pub fn encodedLen(value: u64) usize {
     return (bits + 6) / 7;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "encode/decode zero" {
     var buf: [max_encoded_len]u8 = undefined;
@@ -159,7 +159,10 @@ test "encodedLen correctness" {
 
 test "encodedLen matches actual encoded length" {
     var buf: [max_encoded_len]u8 = undefined;
-    const test_values = [_]u64{ 0, 1, 127, 128, 255, 256, 16383, 16384, 1 << 20, 1 << 32, 1 << 48, std.math.maxInt(u64) };
+    const test_values = [_]u64{
+        0,     1,     127,     128,     255,     256,
+        16383, 16384, 1 << 20, 1 << 32, 1 << 48, std.math.maxInt(u64),
+    };
     for (test_values) |value| {
         const actual = try encode(value, &buf);
         try std.testing.expectEqual(actual, encodedLen(value));

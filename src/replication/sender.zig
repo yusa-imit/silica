@@ -277,7 +277,11 @@ pub const WalSender = struct {
     }
 
     /// Create SYSTEM_IDENTIFICATION message
-    pub fn createSystemInfoMessage(self: *WalSender, allocator: Allocator, database_name: []const u8) !BackendMessage {
+    pub fn createSystemInfoMessage(
+        self: *WalSender,
+        allocator: Allocator,
+        database_name: []const u8,
+    ) !BackendMessage {
         const system_id_copy = try allocator.dupe(u8, self.system_id);
         const db_name_copy = try allocator.dupe(u8, database_name);
         return .{
@@ -487,7 +491,13 @@ test "WalSender should send keepalive" {
     var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
-    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 100 });
+    var sender = try WalSender.init(
+        allocator,
+        &slot_mgr,
+        "system",
+        1,
+        .{ .keepalive_interval_ms = 100 },
+    );
     defer sender.deinit();
 
     // Initially should not send
@@ -603,7 +613,13 @@ test "WalSender — zero keepalive interval" {
     var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
-    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 0 });
+    var sender = try WalSender.init(
+        allocator,
+        &slot_mgr,
+        "system",
+        1,
+        .{ .keepalive_interval_ms = 0 },
+    );
     defer sender.deinit();
 
     // With zero interval, should always return true
@@ -616,7 +632,13 @@ test "WalSender — multiple consecutive keepalive calls" {
     var slot_mgr = slot.SlotManager.init(allocator);
     defer slot_mgr.deinit();
 
-    var sender = try WalSender.init(allocator, &slot_mgr, "system", 1, .{ .keepalive_interval_ms = 50 });
+    var sender = try WalSender.init(
+        allocator,
+        &slot_mgr,
+        "system",
+        1,
+        .{ .keepalive_interval_ms = 50 },
+    );
     defer sender.deinit();
 
     // Wait for interval

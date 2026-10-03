@@ -202,7 +202,7 @@ fn parseSize(s: []const u8) !i64 {
     return base * multiplier;
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "ConfigManager init and deinit" {
     var config = ConfigManager.init(std.testing.allocator);
@@ -563,7 +563,7 @@ test "parseSize rejects invalid unit" {
     try std.testing.expectError(error.InvalidSizeFormat, parseSize("4XB"));
 }
 
-// ── Additional comprehensive tests ─────────────────────────────────────
+// ── Additional comprehensive tests ───────────────────
 
 test "registerParameter with integer bounds" {
     var config = ConfigManager.init(std.testing.allocator);
@@ -872,7 +872,10 @@ test "text parameter accepts special characters" {
     });
 
     try config.set("connection_string", "host=db.example.com:5432;user=admin;pass=p@ss!word");
-    try std.testing.expectEqualStrings("host=db.example.com:5432;user=admin;pass=p@ss!word", config.get("connection_string").?);
+    try std.testing.expectEqualStrings(
+        "host=db.example.com:5432;user=admin;pass=p@ss!word",
+        config.get("connection_string").?,
+    );
 }
 
 test "text parameter accepts numeric strings" {

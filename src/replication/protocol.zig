@@ -277,7 +277,7 @@ pub fn serializeBackendMessage(allocator: Allocator, msg: BackendMessage) ![]u8 
     return buf.toOwnedSlice(allocator);
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -437,7 +437,7 @@ test "serialize ERROR_RESPONSE" {
     try testing.expectEqual(@as(u8, 'E'), bytes[0]);
 }
 
-// ── Edge Case Tests ──────────────────────────────────────────────────
+// ── Edge Case Tests ────────────────────────
 
 test "START_REPLICATION with empty slot name" {
     const msg = FrontendMessage{
@@ -587,7 +587,8 @@ test "SYSTEM_INFO with empty strings" {
     defer testing.allocator.free(bytes);
 
     try testing.expectEqual(@as(u8, 'i'), bytes[0]);
-    // 1 (tag) + 4 (system_id_len=0) + 0 (empty) + 4 (timeline) + 8 (wal_pos) + 4 (db_len=0) + 0 (empty) = 21 bytes
+    // 1 (tag) + 4 (system_id_len=0) + 0 (empty) + 4 (timeline) + 8 (wal_pos) + 4 (db_len=0)
+    // + 0 (empty) = 21 bytes
     try testing.expectEqual(@as(usize, 21), bytes.len);
 }
 

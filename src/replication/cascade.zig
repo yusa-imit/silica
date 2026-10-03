@@ -124,7 +124,10 @@ pub const CascadeCoordinator = struct {
     }
 
     /// Set standby coordinator reference
-    pub fn setStandbyCoordinator(self: *CascadeCoordinator, coordinator: *standby.StandbyCoordinator) void {
+    pub fn setStandbyCoordinator(
+        self: *CascadeCoordinator,
+        coordinator: *standby.StandbyCoordinator,
+    ) void {
         self.standby_coordinator = coordinator;
     }
 

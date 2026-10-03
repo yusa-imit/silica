@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Line length** (plan 001 tidy part 2, batch 1): wrapped or shortened every line over 100 columns
+  in 16 files (replication, util, config, `sql/ast.zig`, `sql/bitmap.zig`, `sql/cost.zig`) and
+  removed their `line_length:` entries from `tidy_baseline.txt` (60 -> 44 files).
 - **Module headers** (stabilization): added the `//!` module doc comment to the 17 files that lacked
   one (10 replication files converted from `//`, 7 new) and emptied that class from
   `tidy_baseline.txt`.

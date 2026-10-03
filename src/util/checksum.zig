@@ -26,7 +26,7 @@ pub fn verify(data: []const u8, expected: u32) bool {
     return crc32c(data) == expected;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "crc32c empty input" {
     try std.testing.expectEqual(@as(u32, 0), crc32c(""));

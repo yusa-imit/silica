@@ -64,14 +64,20 @@ pub const SlotManager = struct {
 
         // Create slot
         const slot = ReplicationSlot.init(self.allocator, name, temporary) catch |err| {
-            return if (err == error.OutOfMemory) SlotError.OutOfMemory else SlotError.SerializationError;
+            return if (err == error.OutOfMemory)
+                SlotError.OutOfMemory
+            else
+                SlotError.SerializationError;
         };
 
         // Store in cache
         self.slots.put(slot.name, slot) catch |err| {
             var mut_slot = slot;
             mut_slot.deinit();
-            return if (err == error.OutOfMemory) SlotError.OutOfMemory else SlotError.SerializationError;
+            return if (err == error.OutOfMemory)
+                SlotError.OutOfMemory
+            else
+                SlotError.SerializationError;
         };
     }
 
@@ -436,7 +442,10 @@ test "SlotManager: slot not found errors" {
     try std.testing.expectError(SlotError.SlotNotFound, manager.dropSlot("nonexistent"));
     try std.testing.expectError(SlotError.SlotNotFound, manager.activateSlot("nonexistent"));
     try std.testing.expectError(SlotError.SlotNotFound, manager.deactivateSlot("nonexistent"));
-    try std.testing.expectError(SlotError.SlotNotFound, manager.updateSlotLSN("nonexistent", 100, 200));
+    try std.testing.expectError(
+        SlotError.SlotNotFound,
+        manager.updateSlotLSN("nonexistent", 100, 200),
+    );
 }
 
 // ============================================================================
@@ -781,7 +790,11 @@ test "SlotManager: concurrent stress test with multiple threads" {
             var i: usize = 0;
             while (i < num_ops_per_thread) : (i += 1) {
                 var name_buf: [32]u8 = undefined;
-                const name = std.fmt.bufPrint(&name_buf, "slot_t{d}_i{d}", .{ ctx.thread_id, i }) catch unreachable;
+                const name = std.fmt.bufPrint(
+                    &name_buf,
+                    "slot_t{d}_i{d}",
+                    .{ ctx.thread_id, i },
+                ) catch unreachable;
 
                 // Create slot
                 ctx.mgr.createSlot(name, false) catch |err| {

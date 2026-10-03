@@ -665,10 +665,18 @@ test "Phase 4: receiver applies real WAL frames to local Wal and Pager" {
     defer allocator.free(dir_path);
 
     var src_path_buf: [512]u8 = undefined;
-    const src_path = try std.fmt.bufPrint(&src_path_buf, "{s}/test_receiver_phase4_src.db", .{dir_path});
+    const src_path = try std.fmt.bufPrint(
+        &src_path_buf,
+        "{s}/test_receiver_phase4_src.db",
+        .{dir_path},
+    );
 
     var dst_path_buf: [512]u8 = undefined;
-    const dst_path = try std.fmt.bufPrint(&dst_path_buf, "{s}/test_receiver_phase4_dst.db", .{dir_path});
+    const dst_path = try std.fmt.bufPrint(
+        &dst_path_buf,
+        "{s}/test_receiver_phase4_dst.db",
+        .{dir_path},
+    );
 
     // Source side: create Wal, write pages, commit
     var src_wal = try wal_mod.Wal.init(allocator, src_path, 4096);
@@ -742,10 +750,18 @@ test "Phase 4: receiver with non-commit frame does not checkpoint yet" {
     defer allocator.free(dir_path);
 
     var src_path_buf: [512]u8 = undefined;
-    const src_path = try std.fmt.bufPrint(&src_path_buf, "{s}/test_receiver_phase4_noncommit_src.db", .{dir_path});
+    const src_path = try std.fmt.bufPrint(
+        &src_path_buf,
+        "{s}/test_receiver_phase4_noncommit_src.db",
+        .{dir_path},
+    );
 
     var dst_path_buf: [512]u8 = undefined;
-    const dst_path = try std.fmt.bufPrint(&dst_path_buf, "{s}/test_receiver_phase4_noncommit_dst.db", .{dir_path});
+    const dst_path = try std.fmt.bufPrint(
+        &dst_path_buf,
+        "{s}/test_receiver_phase4_noncommit_dst.db",
+        .{dir_path},
+    );
 
     // Source side: write 2 frames and commit
     var src_wal = try wal_mod.Wal.init(allocator, src_path, 4096);
