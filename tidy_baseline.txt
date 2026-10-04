@@ -85,10 +85,7 @@ std_time_in_lib:src/tui.zig:3
 std_time_in_lib:src/tx/wal.zig:2
 line_length:src/cli.zig:262
 line_length:src/config/file.zig:15
-line_length:src/replication/integration_test.zig:6
-line_length:src/replication/monitor.zig:6
 line_length:src/replication/transport.zig:15
-line_length:src/server/auth.zig:8
 line_length:src/server/connection.zig:25
 line_length:src/server/server.zig:11
 line_length:src/server/wire.zig:15
@@ -97,7 +94,6 @@ line_length:src/sql/catalog.zig:118
 line_length:src/sql/conformance_test.zig:27
 line_length:src/sql/engine.zig:1186
 line_length:src/sql/executor.zig:598
-line_length:src/sql/index_entry.zig:7
 line_length:src/sql/optimizer.zig:69
 line_length:src/sql/parser.zig:207
 line_length:src/sql/parser_error_tests.zig:17
@@ -105,12 +101,8 @@ line_length:src/sql/parser_fuzz.zig:28
 line_length:src/sql/pattern_match.zig:32
 line_length:src/sql/planner.zig:136
 line_length:src/sql/selectivity.zig:12
-line_length:src/sql/stats.zig:6
-line_length:src/sql/tokenizer.zig:7
 line_length:src/sql/tokenizer_fuzz.zig:22
 line_length:src/storage/btree.zig:87
-line_length:src/storage/buffer_pool.zig:10
-line_length:src/storage/fsm.zig:6
 line_length:src/storage/fuzz.zig:18
 line_length:src/storage/gin_index.zig:94
 line_length:src/storage/gist_index.zig:26
@@ -123,7 +115,5 @@ line_length:src/tx/crash_test.zig:12
 line_length:src/tx/jepsen_test.zig:46
 line_length:src/tx/lock.zig:16
 line_length:src/tx/mvcc.zig:25
-line_length:src/tx/vacuum.zig:9
 line_length:src/tx/wal.zig:34
 line_length:src/tx/wal_fuzz.zig:21
-line_length:src/util/regex.zig:8

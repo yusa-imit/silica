@@ -24,7 +24,11 @@ pub const UserCredential = struct {
     password_hash: []const u8, // Format depends on auth method
     allocator: Allocator,
 
-    pub fn init(allocator: Allocator, username: []const u8, password_hash: []const u8) !UserCredential {
+    pub fn init(
+        allocator: Allocator,
+        username: []const u8,
+        password_hash: []const u8,
+    ) !UserCredential {
         const username_copy = try allocator.dupe(u8, username);
         errdefer allocator.free(username_copy);
         const hash_copy = try allocator.dupe(u8, password_hash);
@@ -73,7 +77,7 @@ pub const CredentialStore = struct {
     }
 };
 
-// ── TRUST Authentication ──────────────────────────────────────────────────
+// ── TRUST Authentication ───────────────────────
 
 /// TRUST authentication - no password verification
 /// WARNING: Only use in development or trusted networks
@@ -82,7 +86,7 @@ pub fn authenticateTrust(username: []const u8) !void {
     _ = username;
 }
 
-// ── MD5 Authentication ──────────────────────────────────────────────────
+// ── MD5 Authentication ───────────────────────
 
 /// Generate MD5 salt (4 random bytes)
 pub fn generateMd5Salt(random: std.Random) [4]u8 {
@@ -166,7 +170,7 @@ pub fn storePasswordMd5(
     return result;
 }
 
-// ── SCRAM-SHA-256 Authentication ──────────────────────────────────────────
+// ── SCRAM-SHA-256 Authentication ────────────────────
 
 /// SCRAM-SHA-256 configuration
 pub const ScramConfig = struct {
@@ -191,7 +195,13 @@ pub fn storePasswordScram(
 
     // Compute salted password: Hi(password, salt, iterations)
     var salted_password: [32]u8 = undefined;
-    try crypto.pwhash.pbkdf2(&salted_password, password, &salt, config.iterations, crypto.auth.hmac.sha2.HmacSha256);
+    try crypto.pwhash.pbkdf2(
+        &salted_password,
+        password,
+        &salt,
+        config.iterations,
+        crypto.auth.hmac.sha2.HmacSha256,
+    );
 
     // Client key = HMAC(salted_password, "Client Key")
     var client_key: [32]u8 = undefined;
@@ -262,7 +272,13 @@ pub fn verifyPasswordScram(
 
     // Compute salted password from provided password
     var salted_password: [32]u8 = undefined;
-    try crypto.pwhash.pbkdf2(&salted_password, provided_password, &salt, iterations, crypto.auth.hmac.sha2.HmacSha256);
+    try crypto.pwhash.pbkdf2(
+        &salted_password,
+        provided_password,
+        &salt,
+        iterations,
+        crypto.auth.hmac.sha2.HmacSha256,
+    );
 
     // Client key = HMAC(salted_password, "Client Key")
     var client_key: [32]u8 = undefined;
@@ -276,7 +292,7 @@ pub fn verifyPasswordScram(
     return crypto.timing_safe.eql([32]u8, expected_stored_key, computed_stored_key);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "CredentialStore - add and get user" {
     const allocator = std.testing.allocator;
@@ -384,7 +400,10 @@ test "SCRAM-SHA-256 - invalid hash format (missing colon in iter_salt)" {
 
 test "SCRAM-SHA-256 - invalid hash format (missing colon in keys)" {
     // Missing colon between stored_key and server_key (using valid base64)
-    const result = verifyPasswordScram("SCRAM-SHA-256$4096:AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "password");
+    const result = verifyPasswordScram(
+        "SCRAM-SHA-256$4096:AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "password",
+    );
     try std.testing.expectError(error.InvalidHashFormat, result);
 }
 

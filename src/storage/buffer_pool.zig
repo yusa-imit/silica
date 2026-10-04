@@ -18,11 +18,11 @@ const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 const wal_mod = @import("../tx/wal.zig");
 const Wal = wal_mod.Wal;
 
-// ── Configuration ────────────────────────────────────────────────────
+// ── Configuration ─────────────────────────
 
 pub const DEFAULT_POOL_SIZE: u32 = 2000;
 
-// ── Buffer Frame ─────────────────────────────────────────────────────
+// ── Buffer Frame ─────────────────────────
 
 /// A single frame in the buffer pool, holding one cached page.
 pub const BufferFrame = struct {
@@ -46,7 +46,7 @@ pub const BufferFrame = struct {
     }
 };
 
-// ── Buffer Pool ──────────────────────────────────────────────────────
+// ── Buffer Pool ──────────────────────────
 
 pub const BufferPool = struct {
     /// The underlying pager for disk I/O.
@@ -91,7 +91,12 @@ pub const BufferPool = struct {
             };
         }
 
-        const lru = zuda.containers.cache.LRUCache(u32, u32, std.hash_map.AutoContext(u32), null).init(allocator, cap);
+        const lru = zuda.containers.cache.LRUCache(
+            u32,
+            u32,
+            std.hash_map.AutoContext(u32),
+            null,
+        ).init(allocator, cap);
 
         return BufferPool{
             .pager = pager,
@@ -204,7 +209,7 @@ pub const BufferPool = struct {
         return self.page_map.contains(page_id);
     }
 
-    // ── Internal: LRU management ─────────────────────────────────────
+    // ── Internal: LRU management ────────────────────
 
     /// Find or allocate a frame for a new page. Evicts LRU if pool is full.
     fn getEvictableFrame(self: *BufferPool, new_page_id: u32) !*BufferFrame {
@@ -268,7 +273,7 @@ pub const BufferPool = struct {
     }
 };
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "BufferPool basic fetch and unpin" {
     const allocator = std.testing.allocator;
@@ -1408,7 +1413,7 @@ test "BufferPool sequential operations with page reuse" {
     try std.testing.expect(pool.pageCount() <= 5);
 }
 
-// ── Tests for zuda LRUCache Migration (Phase 1) ──────────────────
+// ── Tests for zuda LRUCache Migration (Phase 1) ───────────────
 
 test "BufferPool with zuda LRU: evicts oldest unpinned page on capacity overflow" {
     // Verifies basic LRU eviction: fetch 3 pages, unpin all, fetch 4th page,
@@ -1466,7 +1471,8 @@ test "BufferPool with zuda LRU: evicts oldest unpinned page on capacity overflow
 
 test "BufferPool with zuda LRU: moves accessed page to MRU end" {
     // Verifies that accessing an unpinned page (re-fetching it) moves it to MRU end.
-    // Fetch pages 0, 1, 2 → access page 0 (MRU) → fetch page 3 → verify page 1 evicted, not 0.
+    // Fetch pages 0, 1, 2 → access page 0 (MRU) → fetch page 3 → verify page 1 evicted,
+    // not 0.
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1579,7 +1585,11 @@ test "BufferPool with zuda LRU: multiple pin count prevents eviction" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bp_zuda_multipin_protect.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_bp_zuda_multipin_protect.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1733,7 +1743,8 @@ test "BufferPool with zuda LRU: page reuse after eviction and re-fetch" {
     // Verify page 0 is no longer in pool
     try std.testing.expect(!pool.containsPage(pids[0]));
 
-    // Re-fetch page 0 — should load from disk into a frame (possibly the same frame that held page 2)
+    // Re-fetch page 0 — should load from disk into a frame (possibly the same frame that
+    // held page 2)
     const f0_refetch = try pool.fetchPage(pids[0]);
     try std.testing.expectEqual(@as(u8, 'X'), f0_refetch.data[PAGE_HEADER_SIZE]);
 

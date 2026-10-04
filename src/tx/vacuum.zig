@@ -328,7 +328,9 @@ fn updateFsmForTree(pool: *BufferPool, tree: *BTree, fsm: *FreeSpaceMap) !void {
     while (true) {
         const frame = try pool.fetchPage(page_id);
         defer pool.unpinPage(page_id, false);
-        const header = try page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
+        const header = try page_mod.PageHeader.deserialize(
+            frame.data[0..page_mod.PAGE_HEADER_SIZE],
+        );
 
         if (header.page_type == .leaf) {
             break;
@@ -348,7 +350,9 @@ fn updateFsmForTree(pool: *BufferPool, tree: *BTree, fsm: *FreeSpaceMap) !void {
     while (page_id != 0) {
         const frame = try pool.fetchPage(page_id);
         defer pool.unpinPage(page_id, false);
-        const header = try page_mod.PageHeader.deserialize(frame.data[0..page_mod.PAGE_HEADER_SIZE]);
+        const header = try page_mod.PageHeader.deserialize(
+            frame.data[0..page_mod.PAGE_HEADER_SIZE],
+        );
 
         if (header.page_type != .leaf) break;
 
@@ -361,7 +365,7 @@ fn updateFsmForTree(pool: *BufferPool, tree: *BTree, fsm: *FreeSpaceMap) !void {
     }
 }
 
-// ── Auto-Vacuum Daemon ────────────────────────────────────────────────
+// ── Auto-Vacuum Daemon ───────────────────────
 
 /// Configuration for the auto-vacuum daemon.
 pub const AutoVacuumConfig = struct {
@@ -484,7 +488,10 @@ pub const AutoVacuumDaemon = struct {
 
     /// Return a list of table names that need vacuuming.
     /// Caller must free the returned slice (but NOT the string contents).
-    pub fn getTablesNeedingVacuum(self: *const AutoVacuumDaemon, allocator: Allocator) ![][]const u8 {
+    pub fn getTablesNeedingVacuum(
+        self: *const AutoVacuumDaemon,
+        allocator: Allocator,
+    ) ![][]const u8 {
         if (!self.config.enabled) return allocator.alloc([]const u8, 0);
 
         var result = std.ArrayListUnmanaged([]const u8){};
@@ -531,7 +538,7 @@ pub const AutoVacuumDaemon = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "isDeadTuple — aborted xmin with hint flag" {
     const allocator = std.testing.allocator;
@@ -768,7 +775,11 @@ test "vacuumTable — removes dead tuples from aborted transactions" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_dead_aborted.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_vacuum_dead_aborted.db",
+        .{dir_path},
+    );
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -853,7 +864,11 @@ test "vacuumTable — removes committed deletes below horizon" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_dead_deleted.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_vacuum_dead_deleted.db",
+        .{dir_path},
+    );
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);
@@ -1517,7 +1532,7 @@ test "vacuum FSM reflects free space correctly" {
     try std.testing.expect(fsm.totalFreeSpace() > 0);
 }
 
-// ── Auto-Vacuum Tests ─────────────────────────────────────────────────
+// ── Auto-Vacuum Tests ────────────────────────
 
 test "AutoVacuumDaemon — init and deinit" {
     const allocator = std.testing.allocator;
@@ -1929,7 +1944,11 @@ test "vacuumTable — handles invalid root page" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_vacuum_invalid_root.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_vacuum_invalid_root.db",
+        .{dir_path},
+    );
 
     const pager = try allocator.create(Pager);
     defer allocator.destroy(pager);

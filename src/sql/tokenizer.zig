@@ -503,7 +503,11 @@ pub const Tokenizer = struct {
                 }
                 if (self.pos > digit_start) {
                     // $N where N is one or more digits
-                    return .{ .type = .numbered_placeholder, .start = start, .len = self.pos - start };
+                    return .{
+                        .type = .numbered_placeholder,
+                        .start = start,
+                        .len = self.pos - start,
+                    };
                 }
                 // bare $ is invalid
                 return .{ .type = .invalid, .start = start, .len = 1 };
@@ -516,7 +520,11 @@ pub const Tokenizer = struct {
                             self.pos += 1;
                             if (self.pos < self.source.len and self.source[self.pos] == '>') {
                                 self.pos += 1;
-                                return .{ .type = .json_path_extract_text, .start = start, .len = 3 };
+                                return .{
+                                    .type = .json_path_extract_text,
+                                    .start = start,
+                                    .len = 3,
+                                };
                             }
                             return .{ .type = .json_path_extract, .start = start, .len = 2 };
                         },
@@ -546,7 +554,9 @@ pub const Tokenizer = struct {
         }
 
         // Blob literal: X'...' or x'...'
-        if ((ch == 'X' or ch == 'x') and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '\'') {
+        if ((ch == 'X' or ch == 'x') and self.pos + 1 < self.source.len and
+            self.source[self.pos + 1] == '\'')
+        {
             return self.scanBlobLiteral();
         }
 
@@ -687,10 +697,14 @@ pub const Tokenizer = struct {
         }
 
         // Exponent part (e/E)
-        if (self.pos < self.source.len and (self.source[self.pos] == 'e' or self.source[self.pos] == 'E')) {
+        if (self.pos < self.source.len and
+            (self.source[self.pos] == 'e' or self.source[self.pos] == 'E'))
+        {
             is_float = true;
             self.pos += 1;
-            if (self.pos < self.source.len and (self.source[self.pos] == '+' or self.source[self.pos] == '-')) {
+            if (self.pos < self.source.len and
+                (self.source[self.pos] == '+' or self.source[self.pos] == '-'))
+            {
                 self.pos += 1;
             }
             if (self.pos >= self.source.len or !isDigit(self.source[self.pos])) {
@@ -1058,7 +1072,11 @@ fn expectTokens(source: []const u8, expected: []const TokenType) !void {
     try std.testing.expectEqual(TokenType.eof, eof.type);
 }
 
-fn expectSingleToken(source: []const u8, expected_type: TokenType, expected_lexeme: []const u8) !void {
+fn expectSingleToken(
+    source: []const u8,
+    expected_type: TokenType,
+    expected_lexeme: []const u8,
+) !void {
     var tokenizer = Tokenizer.init(source);
     const tok = tokenizer.next();
     try std.testing.expectEqual(expected_type, tok.type);
@@ -1693,7 +1711,16 @@ test "JSON existence operators" {
     // try expectTokens(sql, &.{ .identifier, .json_key_exists, .string_literal });
 
     const sql2 = "data ?| ARRAY['a','b']";
-    try expectTokens(sql2, &.{ .identifier, .json_any_key_exists, .kw_array, .left_bracket, .string_literal, .comma, .string_literal, .right_bracket });
+    try expectTokens(sql2, &.{
+        .identifier,
+        .json_any_key_exists,
+        .kw_array,
+        .left_bracket,
+        .string_literal,
+        .comma,
+        .string_literal,
+        .right_bracket,
+    });
 }
 
 test "JSON path operators" {

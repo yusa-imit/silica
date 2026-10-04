@@ -764,7 +764,10 @@ test "ReplicationMonitor: slot not found errors" {
     defer monitor.deinit();
 
     try std.testing.expectError(error.SlotNotFound, monitor.updateState("nonexistent", .streaming));
-    try std.testing.expectError(error.SlotNotFound, monitor.updateProgress("nonexistent", 1000, 900, 850, 800));
+    try std.testing.expectError(
+        error.SlotNotFound,
+        monitor.updateProgress("nonexistent", 1000, 900, 850, 800),
+    );
     try std.testing.expectError(error.SlotNotFound, monitor.getStat("nonexistent"));
     try std.testing.expectError(error.SlotNotFound, monitor.unregisterConnection("nonexistent"));
 }
@@ -779,11 +782,17 @@ test "ReplicationMonitor: invalid slot name" {
     defer monitor.deinit();
 
     // Empty slot name
-    try std.testing.expectError(error.InvalidSlotName, monitor.registerConnection("", "walreceiver", "192.168.1.10", 5432));
+    try std.testing.expectError(
+        error.InvalidSlotName,
+        monitor.registerConnection("", "walreceiver", "192.168.1.10", 5432),
+    );
 
     // Slot name too long (>255 characters)
     const long_name = "a" ** 256;
-    try std.testing.expectError(error.InvalidSlotName, monitor.registerConnection(long_name, "walreceiver", "192.168.1.10", 5432));
+    try std.testing.expectError(
+        error.InvalidSlotName,
+        monitor.registerConnection(long_name, "walreceiver", "192.168.1.10", 5432),
+    );
 }
 
 test "ReplicationMonitor: reregister connection" {
@@ -1294,7 +1303,11 @@ test "ReplicationMonitor: concurrent register/update/unregister stress" {
 
                 // Generate unique slot name per thread
                 var slot_buf: [64]u8 = undefined;
-                const slot_name = try std.fmt.bufPrint(&slot_buf, "slot_{d}_{d}", .{ ctx.thread_id, i });
+                const slot_name = try std.fmt.bufPrint(
+                    &slot_buf,
+                    "slot_{d}_{d}",
+                    .{ ctx.thread_id, i },
+                );
 
                 switch (op) {
                     0 => {
@@ -1313,7 +1326,13 @@ test "ReplicationMonitor: concurrent register/update/unregister stress" {
                     2 => {
                         // Update progress
                         const lsn_base: LSN = 1000 + @as(LSN, i);
-                        ctx.mon.updateProgress(slot_name, lsn_base, lsn_base, lsn_base, lsn_base) catch {};
+                        ctx.mon.updateProgress(
+                            slot_name,
+                            lsn_base,
+                            lsn_base,
+                            lsn_base,
+                            lsn_base,
+                        ) catch {};
                     },
                     3 => {
                         // Unregister connection
@@ -1526,7 +1545,8 @@ test "ReplicationMonitor: rapid threshold crossing" {
     try monitor.updateProgress("slot1", 1000, 950, 950, 950); // Recovery (lag=50)
     try monitor.checkLagThresholds();
 
-    // Verify all transitions were captured (should have at least warning, critical, recovery, recovery)
+    // Verify all transitions were captured (should have at least warning, critical,
+    // recovery, recovery)
     try std.testing.expect(alert_ctx.severities.items.len >= 4);
     // First should be warning
     try std.testing.expectEqual(AlertSeverity.warning, alert_ctx.severities.items[0]);

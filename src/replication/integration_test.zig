@@ -94,7 +94,9 @@ pub fn runReceiverLoop(
                 continue;
             }
             // Stream closed or error
-            if (err == error.EndOfStream or err == error.ConnectionClosed or err == error.NotOpenForReading) {
+            if (err == error.EndOfStream or err == error.ConnectionClosed or
+                err == error.NotOpenForReading)
+            {
                 if (stop.load(.acquire)) {
                     return;
                 }
@@ -147,7 +149,9 @@ pub fn runSenderStatusReaderLoop(
                 continue;
             }
             // Stream closed or error
-            if (err == error.EndOfStream or err == error.ConnectionClosed or err == error.NotOpenForReading) {
+            if (err == error.EndOfStream or err == error.ConnectionClosed or
+                err == error.NotOpenForReading)
+            {
                 if (stop.load(.acquire)) {
                     return;
                 }
@@ -181,9 +185,17 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
     defer allocator.free(dir_path);
 
     var primary_path_buf: [512]u8 = undefined;
-    const primary_path = try std.fmt.bufPrint(&primary_path_buf, "{s}/test_phase5_primary.db", .{dir_path});
+    const primary_path = try std.fmt.bufPrint(
+        &primary_path_buf,
+        "{s}/test_phase5_primary.db",
+        .{dir_path},
+    );
     var replica_path_buf: [512]u8 = undefined;
-    const replica_path = try std.fmt.bufPrint(&replica_path_buf, "{s}/test_phase5_replica.db", .{dir_path});
+    const replica_path = try std.fmt.bufPrint(
+        &replica_path_buf,
+        "{s}/test_phase5_replica.db",
+        .{dir_path},
+    );
 
     // ── Setup: Create primary Wal + Pager ──
 
@@ -230,7 +242,9 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
 
     // Wait for accept to complete and get the server-side stream
     var wait_count: u32 = 0;
-    while (accepted_stream == null and accept_error == null and wait_count < 1000) : (wait_count += 1) {
+    while (accepted_stream == null and accept_error == null and
+        wait_count < 1000) : (wait_count += 1)
+    {
         std.Thread.sleep(1_000_000); // 1 ms
     }
     try std.testing.expect(accepted_stream != null);
@@ -306,7 +320,8 @@ test "Phase 5: end-to-end WAL replication over real loopback socket" {
 
     sender.wal = &primary_wal;
     // Note: phase 3's existing tests create wal_mutex; for simplicity in this test,
-    // we reuse the primary_wal directly and don't need wal_mutex since threads coordinate via stop flag
+    // we reuse the primary_wal directly and don't need wal_mutex since threads coordinate
+    // via stop flag
     var wal_mutex = std.Thread.Mutex{};
     sender.wal_mutex = &wal_mutex;
     sender.stream = server_stream;

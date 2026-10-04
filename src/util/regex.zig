@@ -177,7 +177,13 @@ pub const Regex = struct {
         return null;
     }
 
-    pub fn findFrom(self: *const Regex, alloc: Allocator, text: []const u8, from_pos: usize, flags: Flags) Error!?Match {
+    pub fn findFrom(
+        self: *const Regex,
+        alloc: Allocator,
+        text: []const u8,
+        from_pos: usize,
+        flags: Flags,
+    ) Error!?Match {
         const start = from_pos;
         const max_start = if (self.startsWithAnchor()) start + 1 else text.len + 1;
 
@@ -206,7 +212,14 @@ pub const Regex = struct {
         return self.insts.len > 0 and self.insts[0].tag == .save and self.insts[0].data == 0;
     }
 
-    fn matchAt(self: *const Regex, alloc: Allocator, text: []const u8, start_pos: usize, saves: *[64]?usize, flags: Flags) Error!?usize {
+    fn matchAt(
+        self: *const Regex,
+        alloc: Allocator,
+        text: []const u8,
+        start_pos: usize,
+        saves: *[64]?usize,
+        flags: Flags,
+    ) Error!?usize {
         var stack = std.ArrayListUnmanaged(Thread){};
         defer stack.deinit(alloc);
 
@@ -230,7 +243,8 @@ pub const Regex = struct {
                 .char => {
                     if (thread.pos < text.len) {
                         const matches = if (flags.ignore_case)
-                            std.ascii.toLower(text[thread.pos]) == std.ascii.toLower(@as(u8, @intCast(inst.data)))
+                            std.ascii.toLower(text[thread.pos]) ==
+                                std.ascii.toLower(@as(u8, @intCast(inst.data)))
                         else
                             text[thread.pos] == @as(u8, @intCast(inst.data));
 
@@ -325,14 +339,19 @@ pub const Regex = struct {
         var positive_match = false;
         for (cc.items) |item| {
             const matches = switch (item) {
-                .single => |c| if (ignore_case) std.ascii.toLower(c) == std.ascii.toLower(ch) else c == ch,
+                .single => |c| if (ignore_case)
+                    std.ascii.toLower(c) == std.ascii.toLower(ch)
+                else
+                    c == ch,
                 .range => |r| ch >= r.lo and ch <= r.hi,
                 .word => isWordChar(ch),
                 .digit => ch >= '0' and ch <= '9',
-                .space => ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '\x0c' or ch == '\x0b',
+                .space => ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or
+                    ch == '\x0c' or ch == '\x0b',
                 .nword => !isWordChar(ch),
                 .ndigit => !(ch >= '0' and ch <= '9'),
-                .nspace => !(ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '\x0c' or ch == '\x0b'),
+                .nspace => !(ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or
+                    ch == '\x0c' or ch == '\x0b'),
             };
             if (matches) {
                 positive_match = true;
@@ -697,7 +716,9 @@ const Parser = struct {
                     else => ClsItem{ .single = escaped },
                 };
                 try items.append(self.arena, item);
-            } else if (ch == '-' and self.peek() != null and self.peek() != ']' and items.items.len > 0) {
+            } else if (ch == '-' and self.peek() != null and self.peek() != ']' and
+                items.items.len > 0)
+            {
                 const next = self.consume().?;
                 if (items.pop()) |last| {
                     if (last == .single) {
@@ -769,7 +790,10 @@ const Compiler = struct {
     fn compileClassData(self: *Compiler, cls_node: *const Node) Error!u32 {
         const cls_data = cls_node.cls;
         const cls_idx = @as(u32, @intCast(self.char_classes.items.len));
-        try self.char_classes.append(self.alloc, CharClass{ .neg = cls_data.neg, .items = cls_data.items });
+        try self.char_classes.append(
+            self.alloc,
+            CharClass{ .neg = cls_data.neg, .items = cls_data.items },
+        );
         const pc = @as(u32, @intCast(self.insts.items.len));
         try self.insts.append(self.alloc, Inst{ .tag = .cls, .data = cls_idx });
         return pc;
