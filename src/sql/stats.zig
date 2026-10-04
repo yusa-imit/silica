@@ -19,7 +19,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-// ── Statistics Structures ───────────────────────────────────────────────
+// ── Statistics Structures ──────────────────────
 
 /// Table-level statistics.
 pub const TableStats = struct {
@@ -88,7 +88,7 @@ pub const ColumnStats = struct {
     }
 };
 
-// ── Serialization ───────────────────────────────────────────────────────
+// ── Serialization ─────────────────────────
 
 /// Serialize table statistics to bytes for catalog storage.
 pub fn serializeTableStats(allocator: Allocator, stats: TableStats) ![]u8 {
@@ -155,7 +155,7 @@ pub fn serializeColumnStats(allocator: Allocator, stats: ColumnStats) ![]u8 {
 pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnStats {
     var pos: usize = 0;
 
-    // Minimum size: 8 (distinct_count) + 8 (null_fraction) + 8 (avg_width) + 8 (correlation) + 2 (mcv_count) + 2 (bucket_count) = 36 bytes
+    // Minimum size: four 8-byte fields + two 2-byte counts (mcv, bucket) = 36 bytes
     if (data.len < 36) return error.InvalidData;
 
     const distinct_count = std.mem.readInt(u64, data[pos..][0..8], .little);
@@ -243,7 +243,7 @@ pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnSta
     };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -374,7 +374,7 @@ test "ColumnStats deserialization with invalid data" {
     try testing.expectError(error.InvalidData, deserializeColumnStats(alloc, &buf));
 }
 
-// ── Comprehensive Edge Case Tests ──────────────────────────────────────
+// ── Comprehensive Edge Case Tests ────────────────────
 
 test "ColumnStats with extreme f64 values" {
     const alloc = testing.allocator;
@@ -415,7 +415,10 @@ test "ColumnStats with many MCVs" {
         const value = try alloc.alloc(u8, 5);
         value[0] = 0x01; // integer tag
         std.mem.writeInt(u32, value[1..5], i, .little);
-        try mcv_list.append(alloc, .{ .value = value, .frequency = @as(f64, @floatFromInt(i)) / 100.0 });
+        try mcv_list.append(alloc, .{
+            .value = value,
+            .frequency = @as(f64, @floatFromInt(i)) / 100.0,
+        });
     }
 
     const stats = ColumnStats{

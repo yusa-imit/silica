@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Line length** (plan 001 tidy part 2, batch 2): wrapped or shortened every line over 100 bytes
+  in 10 files (`sql/index_entry`, `sql/stats`, `sql/tokenizer`, `replication/integration_test`,
+  `replication/monitor`, `server/auth`, `storage/buffer_pool`, `storage/fsm`, `tx/vacuum`,
+  `util/regex`) and removed their `line_length:` entries from `tidy_baseline.txt` (44 -> 34 files).
 - **Line length** (plan 001 tidy part 2, batch 1): wrapped or shortened every line over 100 columns
   in 16 files (replication, util, config, `sql/ast.zig`, `sql/bitmap.zig`, `sql/cost.zig`) and
   removed their `line_length:` entries from `tidy_baseline.txt` (60 -> 44 files).

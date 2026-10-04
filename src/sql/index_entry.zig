@@ -33,10 +33,16 @@ pub const DecodedIndexEntry = struct {
 /// The values blob is produced by `executor_mod.serializeRow`, which already
 /// prefixes its own col_count — no separate col_count field is added here.
 /// Returns an allocated byte buffer that the caller owns.
-pub fn encodeIndexEntry(allocator: Allocator, row_key: []const u8, header: TupleHeader, included_vals: []const Value) IndexEntryError![]u8 {
+pub fn encodeIndexEntry(
+    allocator: Allocator,
+    row_key: []const u8,
+    header: TupleHeader,
+    included_vals: []const Value,
+) IndexEntryError![]u8 {
     if (row_key.len > std.math.maxInt(u16)) return IndexEntryError.InvalidIndexEntry;
 
-    const values_bytes = executor_mod.serializeRow(allocator, included_vals) catch return IndexEntryError.OutOfMemory;
+    const values_bytes = executor_mod.serializeRow(allocator, included_vals) catch
+        return IndexEntryError.OutOfMemory;
     defer allocator.free(values_bytes);
 
     const total_len = 2 + row_key.len + TUPLE_HEADER_SIZE + values_bytes.len;
@@ -63,7 +69,8 @@ pub fn encodeIndexEntry(allocator: Allocator, row_key: []const u8, header: Tuple
 }
 
 /// Decode a covering index entry from bytes.
-/// Returns owned DecodedIndexEntry; caller must free row_key, each value in values array, and the values array itself.
+/// Returns owned DecodedIndexEntry; caller must free row_key, each value in values array,
+/// and the values array itself.
 pub fn decodeIndexEntry(allocator: Allocator, bytes: []const u8) IndexEntryError!DecodedIndexEntry {
     if (bytes.len < 2) return IndexEntryError.InvalidIndexEntry;
     const row_key_len = std.mem.readInt(u16, bytes[0..2], .little);
@@ -71,7 +78,8 @@ pub fn decodeIndexEntry(allocator: Allocator, bytes: []const u8) IndexEntryError
     const row_key_end = 2 + @as(usize, row_key_len);
     if (bytes.len < row_key_end) return IndexEntryError.InvalidIndexEntry;
 
-    const row_key = allocator.dupe(u8, bytes[2..row_key_end]) catch return IndexEntryError.OutOfMemory;
+    const row_key = allocator.dupe(u8, bytes[2..row_key_end]) catch
+        return IndexEntryError.OutOfMemory;
     errdefer allocator.free(row_key);
 
     const header_end = row_key_end + TUPLE_HEADER_SIZE;
@@ -93,7 +101,7 @@ pub fn decodeIndexEntry(allocator: Allocator, bytes: []const u8) IndexEntryError
     };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -140,7 +148,10 @@ test "encode/decode round-trip with mixed value types" {
     try testing.expectEqual(header.xmin, decoded.header.xmin);
     try testing.expectEqual(header.xmax, decoded.header.xmax);
     try testing.expectEqual(header.cid, decoded.header.cid);
-    try testing.expectEqual(@as(u8, @bitCast(header.flags)), @as(u8, @bitCast(decoded.header.flags)));
+    try testing.expectEqual(
+        @as(u8, @bitCast(header.flags)),
+        @as(u8, @bitCast(decoded.header.flags)),
+    );
 
     // Verify values match
     try testing.expectEqual(@as(usize, 4), decoded.values.len);
@@ -427,7 +438,12 @@ test "encode/decode memory safety: multiple round trips" {
     }
 
     // Re-encode the decoded entry
-    const encoded2 = try encodeIndexEntry(allocator, decoded1.row_key, decoded1.header, decoded1.values);
+    const encoded2 = try encodeIndexEntry(
+        allocator,
+        decoded1.row_key,
+        decoded1.header,
+        decoded1.values,
+    );
     defer allocator.free(encoded2);
 
     const decoded2 = try decodeIndexEntry(allocator, encoded2);

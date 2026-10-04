@@ -20,7 +20,7 @@ const page_mod = @import("page.zig");
 const PageHeader = page_mod.PageHeader;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 /// Size of the FSM page metadata after the page header.
 /// [entry_count: u32][next_fsm_page: u32]
@@ -35,7 +35,7 @@ pub const MAX_CATEGORY: u8 = 255;
 /// Leaf page overhead: page header (16) + prev/next pointers (8).
 const LEAF_OVERHEAD: u16 = PAGE_HEADER_SIZE + 8;
 
-// ── Free Space Map ─────────────────────────────────────────────────────
+// ── Free Space Map ─────────────────────────
 
 pub const FreeSpaceMap = struct {
     map: std.AutoHashMap(u32, u8),
@@ -197,7 +197,7 @@ pub const FreeSpaceMap = struct {
         return stats;
     }
 
-    // ── Disk Persistence ───────────────────────────────────────────────
+    // ── Disk Persistence ───────────────────────
 
     /// Number of FSM entries that fit in a single page.
     fn entriesPerPage(self: *const FreeSpaceMap) u32 {
@@ -234,7 +234,10 @@ pub const FreeSpaceMap = struct {
             @memset(buf, 0);
 
             const entries_this_page = @min(per_page, total_entries - page_idx * per_page);
-            const next_page = if (page_idx + 1 < num_pages) fsm_pages[page_idx + 1] else @as(u32, 0);
+            const next_page = if (page_idx + 1 < num_pages)
+                fsm_pages[page_idx + 1]
+            else
+                @as(u32, 0);
 
             // Write page header
             const hdr = PageHeader{
@@ -312,7 +315,7 @@ pub const FreeSpaceMap = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "bytesToCategory and categoryToMinBytes basic" {
     var fsm = FreeSpaceMap.init(std.testing.allocator, 4096);
@@ -734,7 +737,10 @@ test "memory leak detection" {
 }
 
 test "FSM update with FailingAllocator triggers OOM" {
-    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var failing_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
     var fsm = FreeSpaceMap.init(failing_allocator.allocator(), 4096);
     defer fsm.deinit();
 
