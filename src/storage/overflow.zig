@@ -25,7 +25,7 @@ const PageHeader = page_mod.PageHeader;
 const PageType = page_mod.PageType;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 /// Size of the next-page pointer at the start of overflow page content.
 const OVERFLOW_NEXT_PTR_SIZE: u32 = 4;
@@ -36,14 +36,14 @@ const OVERFLOW_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + OVERFLOW_NEXT_PTR_SIZE;
 /// Size of the overflow page pointer stored at the end of an inline cell.
 pub const OVERFLOW_PTR_SIZE: u32 = 4;
 
-// ── Error Types ────────────────────────────────────────────────────────
+// ── Error Types ──────────────────────────
 
 pub const OverflowError = error{
     CorruptOverflowChain,
     PayloadTooLarge,
 };
 
-// ── Public API ─────────────────────────────────────────────────────────
+// ── Public API ──────────────────────────
 
 /// Calculate the maximum cell size that can be stored inline (without overflow).
 /// This is 1/4 of the usable leaf page space (page_size - page_header - leaf_header).
@@ -55,7 +55,8 @@ pub fn maxInlineSize(page_size: u32) u32 {
 
 /// For a value that overflows, calculate how many bytes of the value are stored inline.
 /// We keep as much of the value inline as possible while leaving room for the overflow
-/// page pointer (4 bytes). The inline prefix size is: maxInlineSize - key_overhead - OVERFLOW_PTR_SIZE.
+/// page pointer (4 bytes). The inline prefix size is:
+/// maxInlineSize - key_overhead - OVERFLOW_PTR_SIZE.
 ///
 /// Returns the number of value bytes to store inline.
 pub fn inlineValueSize(page_size: u32, key: []const u8) u32 {
@@ -77,7 +78,8 @@ pub fn inlineValueSize(page_size: u32, key: []const u8) u32 {
 pub fn needsOverflow(page_size: u32, key: []const u8, value: []const u8) bool {
     const key_len_size: u32 = @intCast(varint.encodedLen(key.len));
     const val_len_size: u32 = @intCast(varint.encodedLen(value.len));
-    const cell_size = key_len_size + @as(u32, @intCast(key.len)) + val_len_size + @as(u32, @intCast(value.len));
+    const cell_size = key_len_size + @as(u32, @intCast(key.len)) + val_len_size +
+        @as(u32, @intCast(value.len));
     return cell_size > maxInlineSize(page_size);
 }
 
@@ -134,7 +136,10 @@ pub fn writeOverflowChain(
         const chunk_start = data_offset;
         const chunk_end = @min(data_offset + capacity, overflow_data.len);
         const chunk_len = chunk_end - chunk_start;
-        @memcpy(frame.data[OVERFLOW_HEADER_SIZE..][0..chunk_len], overflow_data[chunk_start..chunk_end]);
+        @memcpy(
+            frame.data[OVERFLOW_HEADER_SIZE..][0..chunk_len],
+            overflow_data[chunk_start..chunk_end],
+        );
 
         // Store actual payload size in cell_count field (reused for overflow pages)
         // This helps us know exactly how much data is on this page.
@@ -236,7 +241,7 @@ pub fn overflowPageCount(page_size: u32, overflow_data_len: usize) u32 {
     return @intCast((overflow_data_len + capacity - 1) / capacity);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "maxInlineSize - default page size" {
     // page_size=4096, usable=4096-16-8=4072, max_inline=1018
@@ -331,7 +336,14 @@ test "write and read overflow chain - single page" {
     try std.testing.expect(first_page != 0);
 
     // Read it back with empty inline prefix
-    const result = try readOverflowValue(allocator, &pool, page_size, first_page, "", overflow_data.len);
+    const result = try readOverflowValue(
+        allocator,
+        &pool,
+        page_size,
+        first_page,
+        "",
+        overflow_data.len,
+    );
     defer allocator.free(result);
 
     try std.testing.expectEqualSlices(u8, overflow_data, result);
@@ -405,7 +417,14 @@ test "write and read overflow chain - with inline prefix" {
     const first_page = try writeOverflowChain(&pool, &pager, overflow_data);
 
     // Read complete value
-    const result = try readOverflowValue(allocator, &pool, page_size, first_page, inline_prefix, total_len);
+    const result = try readOverflowValue(
+        allocator,
+        &pool,
+        page_size,
+        first_page,
+        inline_prefix,
+        total_len,
+    );
     defer allocator.free(result);
 
     // Verify inline prefix
@@ -621,7 +640,9 @@ test "Overflow: CorruptOverflowChain error when page type is not overflow" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_corrupt_type.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_corrupt_type.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
     defer pager.deinit();
@@ -660,7 +681,9 @@ test "Overflow: CorruptOverflowChain when chain is incomplete" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_incomplete_chain.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_incomplete_chain.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
     defer pager.deinit();
@@ -688,7 +711,9 @@ test "Overflow: CorruptOverflowChain when next pointer forms invalid chain" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_bad_next_ptr.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_bad_next_ptr.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
     defer pager.deinit();
@@ -740,7 +765,9 @@ test "Overflow: CorruptOverflowChain when freeOverflowChain encounters non-overf
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_free_corrupt.db", .{dir_path});
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_overflow_free_corrupt.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, test_path, .{ .page_size = page_size });
     defer pager.deinit();

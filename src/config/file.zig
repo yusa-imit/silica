@@ -69,7 +69,11 @@ pub const ConfigLoader = struct {
     /// Load configuration from file
     pub fn load(self: *ConfigLoader) !void {
         // Read file content
-        const content = std.fs.cwd().readFileAlloc(self.allocator, self.file_path, 10 * 1024 * 1024) catch |err| {
+        const content = std.fs.cwd().readFileAlloc(
+            self.allocator,
+            self.file_path,
+            10 * 1024 * 1024,
+        ) catch |err| {
             return switch (err) {
                 error.AccessDenied => error.PermissionDenied,
                 else => error.FileReadError,
@@ -184,7 +188,12 @@ pub const FileWatcher = struct {
 };
 
 /// Watch a file using kqueue (macOS)
-fn watchFileKqueue(file_fd: std.posix.fd_t, file_path: []const u8, callback: *const fn () void, should_stop: *std.atomic.Value(bool)) !void {
+fn watchFileKqueue(
+    file_fd: std.posix.fd_t,
+    file_path: []const u8,
+    callback: *const fn () void,
+    should_stop: *std.atomic.Value(bool),
+) !void {
     _ = file_path; // Unused on macOS (kqueue uses file descriptor)
     const builtin = @import("builtin");
 
@@ -247,7 +256,12 @@ fn watchFileKqueue(file_fd: std.posix.fd_t, file_path: []const u8, callback: *co
 }
 
 /// Watch a file using inotify (Linux)
-fn watchFileInotify(file_fd: std.posix.fd_t, file_path: []const u8, callback: *const fn () void, should_stop: *std.atomic.Value(bool)) !void {
+fn watchFileInotify(
+    file_fd: std.posix.fd_t,
+    file_path: []const u8,
+    callback: *const fn () void,
+    should_stop: *std.atomic.Value(bool),
+) !void {
     _ = file_fd; // Unused on Linux (inotify uses file path)
     const builtin = @import("builtin");
 
@@ -283,7 +297,6 @@ fn watchFileInotify(file_fd: std.posix.fd_t, file_path: []const u8, callback: *c
             }
             return err;
         };
-
         if (ready > 0 and (poll_fds[0].revents & std.posix.POLL.IN) != 0) {
             // Read inotify events
             var event_buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
@@ -297,8 +310,10 @@ fn watchFileInotify(file_fd: std.posix.fd_t, file_path: []const u8, callback: *c
             // Process events
             var offset: usize = 0;
             while (offset < bytes_read) {
-                const event = @as(*const std.os.linux.inotify_event, @ptrCast(@alignCast(&event_buf[offset])));
-
+                const event = @as(
+                    *const std.os.linux.inotify_event,
+                    @ptrCast(@alignCast(&event_buf[offset])),
+                );
                 // Check if it's a modify event
                 if ((event.mask & IN_MODIFY) != 0) {
                     // File was modified, call the callback
@@ -334,7 +349,7 @@ pub fn parseConfigFile(allocator: Allocator, content: []const u8) !ConfigMap {
         // Handle line continuation (backslash at end)
         const has_continuation = std.mem.endsWith(u8, line, "\\");
         if (has_continuation) {
-            // PostgreSQL multiline: remove backslash, keep trailing content spaces, trim leading spaces on continuation lines
+            // PostgreSQL multiline: drop backslash, keep trailing, trim leading spaces
             const without_backslash = line[0 .. line.len - 1];
 
             if (continuation_buf.items.len > 0) {
@@ -577,7 +592,7 @@ pub fn isReloadable(param_name: []const u8) bool {
     return false;
 }
 
-// ── Tests ─────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "parseConfigFile parses valid INI-style config" {
     const content =
@@ -1222,7 +1237,7 @@ test "parseConfigFile handles multiline values" {
     try std.testing.expectEqualStrings("public, admin, test", map.get("search_path").?);
 }
 
-// ── FileWatcher Tests ──────────────────────────────────────────
+// ── FileWatcher Tests ────────────────────────
 
 test "FileWatcher init creates instance" {
     var watcher = FileWatcher.init(std.testing.allocator, "/tmp/test.conf");
@@ -1289,7 +1304,9 @@ test "FileWatcher callback invocation on file modification" {
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/watch_test.conf", .{tmp_path});
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/watch_test.conf", .{
+        tmp_path,
+    });
     defer std.testing.allocator.free(file_path);
 
     var callback_invoked = false;
@@ -1333,7 +1350,9 @@ test "FileWatcher handles file deletion gracefully" {
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/delete_test.conf", .{tmp_path});
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/delete_test.conf", .{
+        tmp_path,
+    });
     defer std.testing.allocator.free(file_path);
 
     var watcher = FileWatcher.init(std.testing.allocator, file_path);
@@ -1438,7 +1457,10 @@ test "FileWatcher does not callback for non-watched files" {
     const result = watcher.start(&callback.cb);
     if (result) |_| {
         // Modify the OTHER file (not watched)
-        try tmp_dir.dir.writeFile(.{ .sub_path = "other.conf", .data = "shared_buffers = 256MB\n" });
+        try tmp_dir.dir.writeFile(.{
+            .sub_path = "other.conf",
+            .data = "shared_buffers = 256MB\n",
+        });
 
         std.Thread.sleep(100 * std.time.ns_per_ms);
 
@@ -1460,7 +1482,9 @@ test "FileWatcher can be stopped and restarted" {
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/restart.conf", .{tmp_path});
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/restart.conf", .{
+        tmp_path,
+    });
     defer std.testing.allocator.free(file_path);
 
     var callback_count: usize = 0;
@@ -1520,7 +1544,9 @@ test "FileWatcher callback receives correct file path context" {
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/context.conf", .{tmp_path});
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/context.conf", .{
+        tmp_path,
+    });
     defer std.testing.allocator.free(file_path);
 
     var watcher = FileWatcher.init(std.testing.allocator, file_path);
@@ -1615,11 +1641,18 @@ test "FileWatcher supports long file paths" {
 
     // Create nested directories for a long path
     try tmp_dir.dir.makePath("very/long/nested/directory/structure");
-    try tmp_dir.dir.writeFile(.{ .sub_path = "very/long/nested/directory/structure/config.conf", .data = "work_mem = 4MB\n" });
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "very/long/nested/directory/structure/config.conf",
+        .data = "work_mem = 4MB\n",
+    });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/very/long/nested/directory/structure/config.conf", .{tmp_path});
+    const file_path = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}/very/long/nested/directory/structure/config.conf",
+        .{tmp_path},
+    );
     defer std.testing.allocator.free(file_path);
 
     var watcher = FileWatcher.init(std.testing.allocator, file_path);
@@ -1641,7 +1674,8 @@ test "FileWatcher supports long file paths" {
 //    Current: expectError(OutOfMemory) → Should be: just call start(), expect void
 // 2. Line 1156 "FileWatcher start rejects invalid file path" - invalid path returns FileNotFound
 //    Current: expectError(OutOfMemory) → Should be: expectError(FileNotFound)
-// 3. Line 1397 "FileWatcher memory is properly cleaned up on error" - invalid path returns FileNotFound
+// 3. Line 1397 "FileWatcher memory is properly cleaned up on error" -
+//    invalid path returns FileNotFound
 //    Current: expectError(OutOfMemory) → Should be: expectError(FileNotFound)
 // 4. Line 1462 "FileWatcher supports long file paths" - long valid path should succeed
 //    Current: expectError(OutOfMemory) → Should be: just call start(), expect void

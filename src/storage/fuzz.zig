@@ -16,7 +16,7 @@ const Pager = page_mod.Pager;
 const BufferPool = buffer_pool_mod.BufferPool;
 const BTree = btree_mod.BTree;
 
-// ── Test Helpers ─────────────────────────────────────────────────────────
+// ── Test Helpers ─────────────────────────
 
 /// Create a B+Tree backed by a temporary file for testing.
 /// Uses heap allocation to avoid pointer invalidation from struct moves.
@@ -27,7 +27,12 @@ const TestTree = struct {
     path: []const u8,
     allocator: std.mem.Allocator,
 
-    fn init(allocator: std.mem.Allocator, path: []const u8, page_size: u32, pool_size: u32) !TestTree {
+    fn init(
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        page_size: u32,
+        pool_size: u32,
+    ) !TestTree {
         const pager = try allocator.create(Pager);
         pager.* = try Pager.init(allocator, path, .{ .page_size = page_size });
 
@@ -135,7 +140,7 @@ fn verifyTreeContents(
     try std.testing.expectEqual(expected_keys.count(), scan_count);
 }
 
-// ── Fuzz Test 1: Random insert/delete sequences ─────────────────────────
+// ── Fuzz Test 1: Random insert/delete sequences ───────────────
 
 test "fuzz: random insert-delete sequences" {
     const allocator = std.testing.allocator;
@@ -210,7 +215,7 @@ test "fuzz: random insert-delete sequences" {
     try verifyTreeContents(allocator, &tt.tree, &live_keys);
 }
 
-// ── Fuzz Test 2: Random insert-delete with small pages ──────────────────
+// ── Fuzz Test 2: Random insert-delete with small pages ─────────────
 
 test "fuzz: random operations with 512-byte pages" {
     const allocator = std.testing.allocator;
@@ -279,7 +284,7 @@ test "fuzz: random operations with 512-byte pages" {
     try verifyTreeContents(allocator, &tt.tree, &live_keys);
 }
 
-// ── Fuzz Test 3: Mixed overflow and inline values ───────────────────────
+// ── Fuzz Test 3: Mixed overflow and inline values ──────────────
 
 test "fuzz: mixed overflow and inline values" {
     const allocator = std.testing.allocator;
@@ -356,7 +361,7 @@ test "fuzz: mixed overflow and inline values" {
     try verifyTreeContents(allocator, &tt.tree, &live_keys);
 }
 
-// ── Fuzz Test 4: Insert-delete-reinsert stress ──────────────────────────
+// ── Fuzz Test 4: Insert-delete-reinsert stress ───────────────
 
 test "fuzz: insert all, delete all, reinsert all" {
     const allocator = std.testing.allocator;
@@ -429,7 +434,7 @@ test "fuzz: insert all, delete all, reinsert all" {
     }
 }
 
-// ── Fuzz Test 5: Cursor consistency after random mutations ──────────────
+// ── Fuzz Test 5: Cursor consistency after random mutations ───────────
 
 test "fuzz: cursor scan matches point lookups after random ops" {
     const allocator = std.testing.allocator;
@@ -440,7 +445,9 @@ test "fuzz: cursor scan matches point lookups after random ops" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_cursor_consistency.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_cursor_consistency.db", .{
+        dir_path,
+    });
 
     var tt = try TestTree.init(allocator, path, 1024, 500);
     defer tt.deinit();
@@ -523,7 +530,7 @@ test "fuzz: cursor scan matches point lookups after random ops" {
     try std.testing.expectEqual(live_keys.count(), backward_count);
 }
 
-// ── Fuzz Test 6: Seek cursor accuracy ───────────────────────────────────
+// ── Fuzz Test 6: Seek cursor accuracy ──────────────────
 
 test "fuzz: cursor seek finds correct positions" {
     const allocator = std.testing.allocator;
@@ -590,7 +597,7 @@ test "fuzz: cursor seek finds correct positions" {
     }
 }
 
-// ── Fuzz Test 7: Multiple page sizes ────────────────────────────────────
+// ── Fuzz Test 7: Multiple page sizes ───────────────────
 
 test "fuzz: correctness across page sizes" {
     const allocator = std.testing.allocator;
@@ -604,7 +611,10 @@ test "fuzz: correctness across page sizes" {
 
     for (page_sizes) |ps| {
         var path_buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_pagesize_{d}.db", .{ dir_path, ps }) catch unreachable;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_pagesize_{d}.db", .{
+            dir_path,
+            ps,
+        }) catch unreachable;
 
         var tt = try TestTree.init(allocator, path, ps, 500);
         defer tt.deinit();
@@ -658,7 +668,7 @@ test "fuzz: correctness across page sizes" {
     }
 }
 
-// ── Fuzz Test 8: Sequential insert then random delete ───────────────────
+// ── Fuzz Test 8: Sequential insert then random delete ─────────────
 
 test "fuzz: sequential insert, random delete pattern" {
     const allocator = std.testing.allocator;
@@ -669,7 +679,9 @@ test "fuzz: sequential insert, random delete pattern" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_seq_insert_rand_delete.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_seq_insert_rand_delete.db", .{
+        dir_path,
+    });
 
     var tt = try TestTree.init(allocator, path, 4096, 500);
     defer tt.deinit();
@@ -728,7 +740,7 @@ test "fuzz: sequential insert, random delete pattern" {
     try std.testing.expectEqual(@as(usize, half), count);
 }
 
-// ── Fuzz Test 9: Reverse insert order stress ────────────────────────────
+// ── Fuzz Test 9: Reverse insert order stress ────────────────
 
 test "fuzz: reverse order inserts with small pages" {
     const allocator = std.testing.allocator;
@@ -778,7 +790,7 @@ test "fuzz: reverse order inserts with small pages" {
     }
 }
 
-// ── Fuzz Test 10: Overflow values with small pages ──────────────────────
+// ── Fuzz Test 10: Overflow values with small pages ──────────────
 
 test "fuzz: overflow values with 512-byte pages" {
     const allocator = std.testing.allocator;
@@ -789,7 +801,9 @@ test "fuzz: overflow values with 512-byte pages" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_overflow_small_pages.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_overflow_small_pages.db", .{
+        dir_path,
+    });
 
     var tt = try TestTree.init(allocator, path, 512, 500);
     defer tt.deinit();
@@ -847,7 +861,7 @@ test "fuzz: overflow values with 512-byte pages" {
     try verifyTreeContents(allocator, &tt.tree, &live_keys);
 }
 
-// ── Fuzz Test 11: Rapid grow-shrink cycles ──────────────────────────────
+// ── Fuzz Test 11: Rapid grow-shrink cycles ─────────────────
 
 test "fuzz: grow-shrink cycles" {
     const allocator = std.testing.allocator;
@@ -921,7 +935,7 @@ test "fuzz: grow-shrink cycles" {
     }
 }
 
-// ── Fuzz Test 12: Duplicate key rejection under stress ──────────────────
+// ── Fuzz Test 12: Duplicate key rejection under stress ─────────────
 
 test "fuzz: duplicate key rejection is consistent" {
     const allocator = std.testing.allocator;

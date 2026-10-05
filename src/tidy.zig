@@ -294,7 +294,12 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
     }
     if (count == 4 and std.mem.eql(u8, fields[0], "function_length")) {
         const limit = std.fmt.parseInt(u32, fields[3], 10) catch return error.InvalidBaselineLine;
-        return .{ .kind = .function_too_long, .path = fields[1], .name = fields[2], .limit = limit };
+        return .{
+            .kind = .function_too_long,
+            .path = fields[1],
+            .name = fields[2],
+            .limit = limit,
+        };
     }
     if (count == 3 and std.mem.eql(u8, fields[0], "debug_print_in_lib")) {
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
@@ -306,7 +311,12 @@ fn parseBaselineLine(line: []const u8) error{InvalidBaselineLine}!BaselineEntry 
     }
     if (count == 3 and std.mem.eql(u8, fields[0], "catch_unreachable_no_safety")) {
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
-        return .{ .kind = .catch_unreachable_no_safety, .path = fields[1], .name = "", .limit = limit };
+        return .{
+            .kind = .catch_unreachable_no_safety,
+            .path = fields[1],
+            .name = "",
+            .limit = limit,
+        };
     }
     if (count == 3 and std.mem.eql(u8, fields[0], "std_time_in_lib")) {
         const limit = std.fmt.parseInt(u32, fields[2], 10) catch return error.InvalidBaselineLine;
@@ -819,7 +829,7 @@ pub fn checkUsizeInDiskFormat(
     }
 }
 
-// ── `zig build tidy` CLI ─────────────────────────────────────────────────
+// ── `zig build tidy` CLI ───────────────────────
 
 /// Every directory nesting depth under `--src` gets counted against this
 /// bound before the walk gives up — a defensive limit against a pathological
@@ -988,7 +998,12 @@ fn printViolation(stderr: *std.Io.Writer, violation: Violation) !void {
 /// Walks `options.src_dir`, checks every `*.zig` file found, filters the
 /// result through `options.baseline_path`, and prints every remaining
 /// violation to `stderr`. Returns the count that should fail the build.
-fn run(gpa: std.mem.Allocator, arena: std.mem.Allocator, options: Options, stderr: *std.Io.Writer) !u32 {
+fn run(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    options: Options,
+    stderr: *std.Io.Writer,
+) !u32 {
     assert(options.src_dir.len > 0);
     assert(options.baseline_path.len > 0);
 
@@ -1039,7 +1054,7 @@ pub fn main() !void {
     if (violation_count > 0) std.process.exit(1);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -1233,10 +1248,21 @@ test "parseBaseline round-trips both entry kinds around comments and blank lines
 test "unbaselined filters a function_too_long violation within its baseline limit" {
     const allocator = testing.allocator;
     const violations = [_]Violation{
-        .{ .path = "src/sql/engine.zig", .line = 42, .kind = .function_too_long, .name = "parseSelect", .count = 100 },
+        .{
+            .path = "src/sql/engine.zig",
+            .line = 42,
+            .kind = .function_too_long,
+            .name = "parseSelect",
+            .count = 100,
+        },
     };
     const baseline = [_]BaselineEntry{
-        .{ .kind = .function_too_long, .path = "src/sql/engine.zig", .name = "parseSelect", .limit = 120 },
+        .{
+            .kind = .function_too_long,
+            .path = "src/sql/engine.zig",
+            .name = "parseSelect",
+            .limit = 120,
+        },
     };
 
     var result = try unbaselined(allocator, &violations, &baseline);
@@ -1248,10 +1274,21 @@ test "unbaselined filters a function_too_long violation within its baseline limi
 test "unbaselined keeps a function_too_long violation that grew past its baseline limit" {
     const allocator = testing.allocator;
     const violations = [_]Violation{
-        .{ .path = "src/sql/engine.zig", .line = 42, .kind = .function_too_long, .name = "parseSelect", .count = 130 },
+        .{
+            .path = "src/sql/engine.zig",
+            .line = 42,
+            .kind = .function_too_long,
+            .name = "parseSelect",
+            .count = 130,
+        },
     };
     const baseline = [_]BaselineEntry{
-        .{ .kind = .function_too_long, .path = "src/sql/engine.zig", .name = "parseSelect", .limit = 120 },
+        .{
+            .kind = .function_too_long,
+            .path = "src/sql/engine.zig",
+            .name = "parseSelect",
+            .limit = 120,
+        },
     };
 
     var result = try unbaselined(allocator, &violations, &baseline);
@@ -1267,10 +1304,21 @@ test "unbaselined keeps a function_too_long violation that grew past its baselin
 test "unbaselined keeps a function_too_long violation with no matching baseline entry" {
     const allocator = testing.allocator;
     const violations = [_]Violation{
-        .{ .path = "src/sql/engine.zig", .line = 7, .kind = .function_too_long, .name = "brandNewOffender", .count = 90 },
+        .{
+            .path = "src/sql/engine.zig",
+            .line = 7,
+            .kind = .function_too_long,
+            .name = "brandNewOffender",
+            .count = 90,
+        },
     };
     const baseline = [_]BaselineEntry{
-        .{ .kind = .function_too_long, .path = "src/sql/engine.zig", .name = "parseSelect", .limit = 120 },
+        .{
+            .kind = .function_too_long,
+            .path = "src/sql/engine.zig",
+            .name = "parseSelect",
+            .limit = 120,
+        },
     };
 
     var result = try unbaselined(allocator, &violations, &baseline);
@@ -1283,7 +1331,13 @@ test "unbaselined keeps a function_too_long violation with no matching baseline 
 test "unbaselined filters a missing_module_header violation with a matching path entry" {
     const allocator = testing.allocator;
     const violations = [_]Violation{
-        .{ .path = "src/legacy/old.zig", .line = 0, .kind = .missing_module_header, .name = "", .count = 0 },
+        .{
+            .path = "src/legacy/old.zig",
+            .line = 0,
+            .kind = .missing_module_header,
+            .name = "",
+            .count = 0,
+        },
     };
     const baseline = [_]BaselineEntry{
         .{ .kind = .missing_module_header, .path = "src/legacy/old.zig", .name = "", .limit = 0 },
@@ -1440,7 +1494,13 @@ test "unbaselined keeps a debug_print_in_lib violation with no matching baseline
 test "unbaselined ignores other-kind baseline entries for line_too_long" {
     const allocator = testing.allocator;
     const violations = [_]Violation{
-        .{ .path = "src/util/varint.zig", .line = 5, .kind = .line_too_long, .name = "", .count = 115 },
+        .{
+            .path = "src/util/varint.zig",
+            .line = 5,
+            .kind = .line_too_long,
+            .name = "",
+            .count = 115,
+        },
     };
     // Baseline entries for the same path, under other kinds, must not leak
     // coverage onto the line-length check.
@@ -1893,13 +1953,31 @@ test "unbaselined ratchets catch_unreachable_no_safety by per-file count" {
         .{ .kind = .catch_unreachable_no_safety, .path = "src/cli.zig", .name = "", .limit = 4 },
     };
     const covered = [_]Violation{
-        .{ .path = "src/cli.zig", .line = 9, .kind = .catch_unreachable_no_safety, .name = "", .count = 4 },
+        .{
+            .path = "src/cli.zig",
+            .line = 9,
+            .kind = .catch_unreachable_no_safety,
+            .name = "",
+            .count = 4,
+        },
     };
     const grown = [_]Violation{
-        .{ .path = "src/cli.zig", .line = 9, .kind = .catch_unreachable_no_safety, .name = "", .count = 5 },
+        .{
+            .path = "src/cli.zig",
+            .line = 9,
+            .kind = .catch_unreachable_no_safety,
+            .name = "",
+            .count = 5,
+        },
     };
     const unlisted = [_]Violation{
-        .{ .path = "src/sql/engine.zig", .line = 9, .kind = .catch_unreachable_no_safety, .name = "", .count = 1 },
+        .{
+            .path = "src/sql/engine.zig",
+            .line = 9,
+            .kind = .catch_unreachable_no_safety,
+            .name = "",
+            .count = 1,
+        },
     };
 
     var result_covered = try unbaselined(allocator, &covered, &baseline);
@@ -2017,16 +2095,40 @@ test "unbaselined ratchets std_time_in_lib by per-file count" {
         .{ .kind = .std_time_in_lib, .path = "src/config/file.zig", .name = "", .limit = 15 },
     };
     const covered = [_]Violation{
-        .{ .path = "src/config/file.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 15 },
+        .{
+            .path = "src/config/file.zig",
+            .line = 9,
+            .kind = .std_time_in_lib,
+            .name = "",
+            .count = 15,
+        },
     };
     const shrunk = [_]Violation{
-        .{ .path = "src/config/file.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 3 },
+        .{
+            .path = "src/config/file.zig",
+            .line = 9,
+            .kind = .std_time_in_lib,
+            .name = "",
+            .count = 3,
+        },
     };
     const grown = [_]Violation{
-        .{ .path = "src/config/file.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 16 },
+        .{
+            .path = "src/config/file.zig",
+            .line = 9,
+            .kind = .std_time_in_lib,
+            .name = "",
+            .count = 16,
+        },
     };
     const unlisted = [_]Violation{
-        .{ .path = "src/sql/engine.zig", .line = 9, .kind = .std_time_in_lib, .name = "", .count = 1 },
+        .{
+            .path = "src/sql/engine.zig",
+            .line = 9,
+            .kind = .std_time_in_lib,
+            .name = "",
+            .count = 1,
+        },
     };
 
     var result_covered = try unbaselined(allocator, &covered, &baseline);

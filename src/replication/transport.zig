@@ -20,7 +20,8 @@ pub const TransportError = error{
     BufferTooSmall,
     EndOfStream,
     ConnectionClosed,
-} || Allocator.Error || std.fs.File.ReadError || std.fs.File.WriteError || std.net.Stream.ReadError || std.net.Stream.WriteError;
+} || Allocator.Error || std.fs.File.ReadError || std.fs.File.WriteError ||
+    std.net.Stream.ReadError || std.net.Stream.WriteError;
 
 /// Wrapper reader for std.net.Stream that provides readByte, readInt, readNoEof
 const StreamReader = struct {
@@ -245,7 +246,11 @@ pub fn deinitBackendMessage(allocator: Allocator, msg: *BackendMessage) void {
 
 /// Send a FrontendMessage over a stream
 /// Serializes the message and writes it to the stream
-pub fn sendFrontendMessage(stream: std.net.Stream, allocator: Allocator, msg: FrontendMessage) !void {
+pub fn sendFrontendMessage(
+    stream: std.net.Stream,
+    allocator: Allocator,
+    msg: FrontendMessage,
+) !void {
     const bytes = try protocol.serializeFrontendMessage(allocator, msg);
     defer allocator.free(bytes);
     try stream.writeAll(bytes);
@@ -279,14 +284,19 @@ pub fn setReceiveTimeout(stream: std.net.Stream, timeout_ms: u32) !void {
     var tv: std.posix.timeval = undefined;
     tv.sec = @intCast(timeout_ms / 1000);
     tv.usec = @intCast((timeout_ms % 1000) * 1000);
-    try std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+    try std.posix.setsockopt(
+        stream.handle,
+        std.posix.SOL.SOCKET,
+        std.posix.SO.RCVTIMEO,
+        std.mem.asBytes(&tv),
+    );
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
-// ── FrontendMessage decode round-trip tests ──────────────────────────
+// ── FrontendMessage decode round-trip tests ────────────────
 
 test "FrontendMessage round-trip: START_REPLICATION" {
     const original = FrontendMessage{
@@ -306,8 +316,14 @@ test "FrontendMessage round-trip: START_REPLICATION" {
     defer deinitFrontendMessage(testing.allocator, @constCast(&parsed));
 
     // Verify all fields match
-    try testing.expectEqual(original.start_replication.start_lsn, parsed.start_replication.start_lsn);
-    try testing.expectEqualStrings(original.start_replication.slot_name, parsed.start_replication.slot_name);
+    try testing.expectEqual(
+        original.start_replication.start_lsn,
+        parsed.start_replication.start_lsn,
+    );
+    try testing.expectEqualStrings(
+        original.start_replication.slot_name,
+        parsed.start_replication.slot_name,
+    );
 }
 
 test "FrontendMessage round-trip: STANDBY_STATUS" {
@@ -331,8 +347,14 @@ test "FrontendMessage round-trip: STANDBY_STATUS" {
     try testing.expectEqual(original.standby_status.write_lsn, parsed.standby_status.write_lsn);
     try testing.expectEqual(original.standby_status.flush_lsn, parsed.standby_status.flush_lsn);
     try testing.expectEqual(original.standby_status.apply_lsn, parsed.standby_status.apply_lsn);
-    try testing.expectEqual(original.standby_status.client_timestamp, parsed.standby_status.client_timestamp);
-    try testing.expectEqual(original.standby_status.reply_requested, parsed.standby_status.reply_requested);
+    try testing.expectEqual(
+        original.standby_status.client_timestamp,
+        parsed.standby_status.client_timestamp,
+    );
+    try testing.expectEqual(
+        original.standby_status.reply_requested,
+        parsed.standby_status.reply_requested,
+    );
 }
 
 test "FrontendMessage round-trip: CREATE_SLOT" {
@@ -398,7 +420,7 @@ test "FrontendMessage round-trip: BASE_BACKUP" {
     try testing.expect(std.meta.activeTag(parsed) == std.meta.activeTag(original));
 }
 
-// ── BackendMessage decode round-trip tests ────────────────────────────
+// ── BackendMessage decode round-trip tests ─────────────────
 
 test "BackendMessage round-trip: COPYBOTH_RESPONSE" {
     const original = BackendMessage{ .copyboth_response = {} };
@@ -478,7 +500,10 @@ test "BackendMessage round-trip: SYSTEM_INFO" {
     try testing.expectEqualStrings(original.system_info.system_id, parsed.system_info.system_id);
     try testing.expectEqual(original.system_info.timeline_id, parsed.system_info.timeline_id);
     try testing.expectEqual(original.system_info.wal_position, parsed.system_info.wal_position);
-    try testing.expectEqualStrings(original.system_info.database_name, parsed.system_info.database_name);
+    try testing.expectEqualStrings(
+        original.system_info.database_name,
+        parsed.system_info.database_name,
+    );
 }
 
 test "BackendMessage round-trip: ERROR_RESPONSE" {
@@ -522,7 +547,7 @@ test "BackendMessage round-trip: BACKUP_DATA" {
     try testing.expectEqual(original.backup_data.is_last_chunk, parsed.backup_data.is_last_chunk);
 }
 
-// ── Real loopback socket round-trip test ──────────────────────────────
+// ── Real loopback socket round-trip test ─────────────────
 
 test "Real TCP loopback: FrontendMessage identify_system and BackendMessage keepalive round-trip" {
     // TCP loopback test using duplex pipes for simulated socket pair.
@@ -534,7 +559,8 @@ test "Real TCP loopback: FrontendMessage identify_system and BackendMessage keep
     // For this test, we validate the transport layer by checking that:
     // 1. sendFrontendMessage correctly serializes messages
     // 2. receiveBackendMessage correctly deserializes messages
-    // This is proven by the round-trip tests above (e.g., "FrontendMessage round-trip: IDENTIFY_SYSTEM")
+    // This is proven by the round-trip tests above
+    // (e.g., "FrontendMessage round-trip: IDENTIFY_SYSTEM")
     // which exercise the exact same serialize/deserialize paths via protocol.zig.
     //
     // A full TCP loopback test requires handling Zig's std.net threading model,
@@ -571,7 +597,10 @@ test "Real TCP loopback: FrontendMessage identify_system and BackendMessage keep
     stream.pos = 0;
     const parsed_frontend = try parseFrontendMessage(allocator, stream.reader());
     defer deinitFrontendMessage(allocator, @constCast(&parsed_frontend));
-    try testing.expectEqual(@as(std.meta.Tag(FrontendMessage), .identify_system), std.meta.activeTag(parsed_frontend));
+    try testing.expectEqual(
+        @as(std.meta.Tag(FrontendMessage), .identify_system),
+        std.meta.activeTag(parsed_frontend),
+    );
 
     const parsed_backend = try parseBackendMessage(allocator, stream.reader());
     defer deinitBackendMessage(allocator, @constCast(&parsed_backend));
@@ -622,7 +651,7 @@ test "Buffer-based round-trip: FrontendMessage and BackendMessage over in-memory
     try testing.expectEqual(parsed_backend.keepalive.reply_requested, false);
 }
 
-// ── Non-regression guard for optional stream field ──────────────────
+// ── Non-regression guard for optional stream field ──────────────
 
 test "WalSender has optional stream field defaulting to null" {
     var sender = try WalSender.init(

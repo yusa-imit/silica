@@ -30,7 +30,7 @@ fn expectParseSuccess(sql: []const u8) !void {
     _ = try p.parseStmt();
 }
 
-// ── SELECT Error Tests ────────────────────────────────────────────────────
+// ── SELECT Error Tests ───────────────────────
 
 test "parse SELECT without FROM should fail" {
     try expectParseFail("SELECT col1, col2");
@@ -60,7 +60,7 @@ test "parse DISTINCT ON with empty list should fail" {
     try expectParseFail("SELECT DISTINCT ON () col FROM users");
 }
 
-// ── INSERT Error Tests ────────────────────────────────────────────────────
+// ── INSERT Error Tests ───────────────────────
 
 test "parse INSERT without VALUES or SELECT should fail" {
     try expectParseFail("INSERT INTO users (name, email)");
@@ -78,7 +78,7 @@ test "parse INSERT with trailing comma in columns should fail" {
     try expectParseFail("INSERT INTO users (name, email,) VALUES ('Alice', 'alice@example.com')");
 }
 
-// ── UPDATE Error Tests ────────────────────────────────────────────────────
+// ── UPDATE Error Tests ───────────────────────
 
 test "parse UPDATE without SET should fail" {
     try expectParseFail("UPDATE users WHERE id = 1");
@@ -96,7 +96,7 @@ test "parse UPDATE SET with trailing comma should fail" {
     try expectParseFail("UPDATE users SET name = 'Alice', WHERE id = 1");
 }
 
-// ── DELETE Error Tests ────────────────────────────────────────────────────
+// ── DELETE Error Tests ───────────────────────
 
 test "parse DELETE without FROM should fail" {
     try expectParseFail("DELETE users WHERE id = 1");
@@ -106,7 +106,7 @@ test "parse DELETE with missing table name should fail" {
     try expectParseFail("DELETE FROM WHERE id = 1");
 }
 
-// ── CREATE TABLE Error Tests ──────────────────────────────────────────────
+// ── CREATE TABLE Error Tests ─────────────────────
 
 test "parse CREATE TABLE without columns should fail" {
     try expectParseFail("CREATE TABLE users ()");
@@ -129,7 +129,7 @@ test "parse CREATE TABLE with duplicate column names should fail" {
     try expectParseFail("CREATE TABLE users (id INTEGER, id TEXT)");
 }
 
-// ── Expression Error Tests ────────────────────────────────────────────────
+// ── Expression Error Tests ──────────────────────
 
 test "parse WHERE with empty condition should fail" {
     try expectParseFail("SELECT * FROM users WHERE");
@@ -159,7 +159,7 @@ test "parse function call with trailing comma should fail" {
     try expectParseFail("SELECT COUNT(id,) FROM users");
 }
 
-// ── CASE Expression Error Tests ───────────────────────────────────────────
+// ── CASE Expression Error Tests ────────────────────
 
 test "parse CASE without END should fail" {
     try expectParseFail("SELECT CASE WHEN x > 0 THEN 1 ELSE 0 FROM users");
@@ -177,7 +177,7 @@ test "parse CASE without any WHEN should fail" {
     try expectParseFail("SELECT CASE ELSE 0 END FROM users");
 }
 
-// ── JOIN Error Tests ──────────────────────────────────────────────────────
+// ── JOIN Error Tests ────────────────────────
 
 test "parse JOIN without ON or USING should fail" {
     try expectParseFail("SELECT * FROM users JOIN orders");
@@ -195,7 +195,7 @@ test "parse CROSS JOIN with ON clause should fail" {
     try expectParseFail("SELECT * FROM users CROSS JOIN orders ON users.id = orders.user_id");
 }
 
-// ── ORDER BY / GROUP BY Error Tests ───────────────────────────────────────
+// ── ORDER BY / GROUP BY Error Tests ───────────────────
 
 test "parse ORDER BY without column should fail" {
     try expectParseFail("SELECT * FROM users ORDER BY");
@@ -219,7 +219,7 @@ test "parse HAVING without GROUP BY should succeed" {
     try expectParseSuccess("SELECT col1, count(*) FROM users HAVING count(*) > 1");
 }
 
-// ── LIMIT / OFFSET Error Tests ────────────────────────────────────────────
+// ── LIMIT / OFFSET Error Tests ─────────────────────
 
 test "parse LIMIT with non-integer should fail" {
     try expectParseFail("SELECT * FROM users LIMIT abc");
@@ -237,7 +237,7 @@ test "parse OFFSET with non-integer should fail" {
     try expectParseFail("SELECT * FROM users LIMIT 10 OFFSET xyz");
 }
 
-// ── IN / BETWEEN Error Tests ──────────────────────────────────────────────
+// ── IN / BETWEEN Error Tests ─────────────────────
 
 test "parse IN with empty list should fail" {
     try expectParseFail("SELECT * FROM users WHERE id IN ()");
@@ -259,7 +259,7 @@ test "parse NOT BETWEEN with missing AND should fail" {
     try expectParseFail("SELECT * FROM users WHERE age NOT BETWEEN 18 30");
 }
 
-// ── Subquery Error Tests ──────────────────────────────────────────────────
+// ── Subquery Error Tests ───────────────────────
 
 test "parse subquery without closing paren should fail" {
     try expectParseFail("SELECT * FROM (SELECT * FROM users");
@@ -281,7 +281,7 @@ test "parse EXISTS with missing closing paren should fail" {
     try expectParseFail("SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders");
 }
 
-// ── UNION / INTERSECT / EXCEPT Error Tests ────────────────────────────────
+// ── UNION / INTERSECT / EXCEPT Error Tests ─────────────────
 
 test "parse UNION without second SELECT should fail" {
     try expectParseFail("SELECT * FROM users UNION");
@@ -295,7 +295,7 @@ test "parse EXCEPT without second SELECT should fail" {
     try expectParseFail("SELECT * FROM users EXCEPT");
 }
 
-// ── CREATE INDEX Error Tests ──────────────────────────────────────────────
+// ── CREATE INDEX Error Tests ─────────────────────
 
 test "parse CREATE INDEX without ON clause should fail" {
     try expectParseFail("CREATE INDEX idx_name");
@@ -313,7 +313,7 @@ test "parse CREATE INDEX with empty column list should fail" {
     try expectParseFail("CREATE INDEX idx_name ON users ()");
 }
 
-// ── ALTER TABLE Error Tests ───────────────────────────────────────────────
+// ── ALTER TABLE Error Tests ──────────────────────
 
 test "parse ALTER TABLE without action should fail" {
     try expectParseFail("ALTER TABLE users");
@@ -327,7 +327,7 @@ test "parse ALTER TABLE DROP COLUMN without column name should fail" {
     try expectParseFail("ALTER TABLE users DROP COLUMN");
 }
 
-// ── DROP Error Tests ──────────────────────────────────────────────────────
+// ── DROP Error Tests ────────────────────────
 
 test "parse DROP without object type should fail" {
     try expectParseFail("DROP users");
@@ -341,7 +341,7 @@ test "parse DROP INDEX without index name should fail" {
     try expectParseFail("DROP INDEX");
 }
 
-// ── Edge Cases ─────────────────────────────────────────────────────────────
+// ── Edge Cases ──────────────────────────
 
 test "parse completely empty statement should fail" {
     try expectParseFail("");

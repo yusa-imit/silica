@@ -18,7 +18,7 @@ const stats_mod = @import("stats.zig");
 const TableStats = stats_mod.TableStats;
 const ColumnStats = stats_mod.ColumnStats;
 
-// ── Constants ───────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 /// Default selectivity when no statistics are available.
 const DEFAULT_SELECTIVITY: f64 = 0.1;
@@ -38,7 +38,7 @@ const LIKE_SUBSTRING_SELECTIVITY: f64 = 0.2;
 /// Minimum selectivity for any predicate (avoid zero estimates).
 const MIN_SELECTIVITY: f64 = 0.0001;
 
-// ── Selectivity Estimator ───────────────────────────────────────────────
+// ── Selectivity Estimator ──────────────────────
 
 pub const SelectivityEstimator = struct {
     allocator: Allocator,
@@ -86,7 +86,7 @@ pub const SelectivityEstimator = struct {
         };
     }
 
-    // ── Binary Operators ────────────────────────────────────────────────
+    // ── Binary Operators ───────────────────────
 
     fn estimateBinaryOp(
         self: *SelectivityEstimator,
@@ -151,7 +151,7 @@ pub const SelectivityEstimator = struct {
         return DEFAULT_RANGE_SELECTIVITY;
     }
 
-    // ── IS NULL / IS NOT NULL ───────────────────────────────────────────
+    // ── IS NULL / IS NOT NULL ─────────────────────
 
     fn estimateIsNullNode(
         self: *SelectivityEstimator,
@@ -175,7 +175,7 @@ pub const SelectivityEstimator = struct {
         return if (is_null_node.negated) 0.9 else 0.1;
     }
 
-    // ── IN List ─────────────────────────────────────────────────────────
+    // ── IN List ──────────────────────────
 
     fn estimateInList(
         self: *SelectivityEstimator,
@@ -198,7 +198,7 @@ pub const SelectivityEstimator = struct {
         return if (in_list.negated) (1.0 - result) else result;
     }
 
-    // ── LIKE ────────────────────────────────────────────────────────────
+    // ── LIKE ───────────────────────────
 
     fn estimateLike(self: *SelectivityEstimator, like: anytype) f64 {
         _ = self;
@@ -238,7 +238,7 @@ pub const SelectivityEstimator = struct {
         return if (like.negated) (1.0 - base_sel) else base_sel;
     }
 
-    // ── Logical Combinators ─────────────────────────────────────────────
+    // ── Logical Combinators ──────────────────────
 
     fn estimateAnd(
         self: *SelectivityEstimator,
@@ -276,7 +276,7 @@ pub const SelectivityEstimator = struct {
     }
 };
 
-// ── Helper Functions ────────────────────────────────────────────────────
+// ── Helper Functions ────────────────────────
 
 /// Extract column name from an expression (if it's a column reference).
 fn getColumnName(expr: *const ast.Expr) ?[]const u8 {
@@ -286,7 +286,7 @@ fn getColumnName(expr: *const ast.Expr) ?[]const u8 {
     };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "SelectivityEstimator: default selectivity" {
     const allocator = std.testing.allocator;
@@ -573,7 +573,7 @@ test "SelectivityEstimator: NOT LIKE pattern" {
     try std.testing.expectApproxEqRel(1.0 - LIKE_PREFIX_SELECTIVITY, sel, 0.0001);
 }
 
-// ── Edge Case Tests ─────────────────────────────────────────────────────
+// ── Edge Case Tests ────────────────────────
 
 test "SelectivityEstimator: NOT EQUAL selectivity" {
     const allocator = std.testing.allocator;
@@ -686,8 +686,10 @@ test "SelectivityEstimator: nested AND expressions" {
     } };
 
     const sel = estimator.estimatePredicate(&outer_and, null, null);
-    // Expected: DEFAULT_RANGE_SELECTIVITY * DEFAULT_RANGE_SELECTIVITY * DEFAULT_EQUALITY_SELECTIVITY
-    const expected = DEFAULT_RANGE_SELECTIVITY * DEFAULT_RANGE_SELECTIVITY * DEFAULT_EQUALITY_SELECTIVITY;
+    // Expected: DEFAULT_RANGE_SELECTIVITY * DEFAULT_RANGE_SELECTIVITY *
+    // DEFAULT_EQUALITY_SELECTIVITY
+    const expected = DEFAULT_RANGE_SELECTIVITY * DEFAULT_RANGE_SELECTIVITY *
+        DEFAULT_EQUALITY_SELECTIVITY;
     try std.testing.expectEqual(expected, sel);
 }
 

@@ -181,7 +181,12 @@ pub const Server = struct {
         defer self.allocator.free(startup_info.database);
 
         // Create a connection handler with authenticated user
-        var conn = Connection.init(self.allocator, self.database, startup_info.user, startup_info.database) catch |err| {
+        var conn = Connection.init(
+            self.allocator,
+            self.database,
+            startup_info.user,
+            startup_info.database,
+        ) catch |err| {
             std.debug.print("Failed to initialize connection: {any}\n", .{err});
             return;
         };
@@ -194,7 +199,10 @@ pub const Server = struct {
     }
 
     /// Perform startup handshake and authentication
-    fn performStartup(self: *Self, stream: net.Stream) !struct { user: []const u8, database: []const u8 } {
+    fn performStartup(
+        self: *Self,
+        stream: net.Stream,
+    ) !struct { user: []const u8, database: []const u8 } {
         const StreamReader = std.io.GenericReader(net.Stream, net.Stream.ReadError, struct {
             fn read(s: net.Stream, buffer: []u8) net.Stream.ReadError!usize {
                 return s.read(buffer);
@@ -245,8 +253,15 @@ pub const Server = struct {
                 const pwd_msg = try wire.PasswordMessage.parse(msg.payload);
 
                 // Verify password
-                const cred = self.credentials.getUser(startup.user) orelse return error.AuthenticationFailed;
-                const verified = try auth.verifyPasswordMd5(self.allocator, cred.password_hash, pwd_msg.password, startup.user, salt);
+                const cred = self.credentials.getUser(startup.user) orelse
+                    return error.AuthenticationFailed;
+                const verified = try auth.verifyPasswordMd5(
+                    self.allocator,
+                    cred.password_hash,
+                    pwd_msg.password,
+                    startup.user,
+                    salt,
+                );
                 if (!verified) return error.AuthenticationFailed;
 
                 // Send AuthenticationOk
@@ -263,7 +278,10 @@ pub const Server = struct {
                 defer write_buf.deinit(self.allocator);
                 var writer = write_buf.writer(self.allocator);
 
-                const auth_cleartext = wire.Authentication{ .auth_type = .cleartext_password, .salt = null };
+                const auth_cleartext = wire.Authentication{
+                    .auth_type = .cleartext_password,
+                    .salt = null,
+                };
                 try auth_cleartext.write(writer);
                 try stream.writeAll(write_buf.items);
 
@@ -275,7 +293,8 @@ pub const Server = struct {
                 const pwd_msg = try wire.PasswordMessage.parse(msg.payload);
 
                 // Verify password
-                const cred = self.credentials.getUser(startup.user) orelse return error.AuthenticationFailed;
+                const cred = self.credentials.getUser(startup.user) orelse
+                    return error.AuthenticationFailed;
                 const verified = try auth.verifyPasswordScram(cred.password_hash, pwd_msg.password);
                 if (!verified) return error.AuthenticationFailed;
 
@@ -299,7 +318,10 @@ pub const Server = struct {
             try stream.writeAll(write_buf.items);
 
             write_buf.clearRetainingCapacity();
-            const encoding_params = wire.ParameterStatus{ .name = "client_encoding", .value = "UTF8" };
+            const encoding_params = wire.ParameterStatus{
+                .name = "client_encoding",
+                .value = "UTF8",
+            };
             try encoding_params.write(writer);
             try stream.writeAll(write_buf.items);
         }
@@ -573,7 +595,9 @@ test "Server.shutdown with no active connections" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_clean.db", .{dir_path});
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_clean.db", .{
+        dir_path,
+    });
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -598,7 +622,9 @@ test "Server.shutdown with timeout on active connections" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_timeout.db", .{dir_path});
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_timeout.db", .{
+        dir_path,
+    });
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -711,7 +737,9 @@ test "Server.active_connections - stress test with many concurrent threads" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_concurrent_stress.db", .{dir_path});
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_concurrent_stress.db", .{
+        dir_path,
+    });
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,
@@ -763,7 +791,9 @@ test "Server.shutdown - stress test with rapid connections" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_stress.db", .{dir_path});
+    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_server_shutdown_stress.db", .{
+        dir_path,
+    });
 
     var server = try Server.init(allocator, .{
         .database_path = db_path,

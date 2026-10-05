@@ -25,7 +25,10 @@ fn execSql(db: *Database, sql: []const u8) !void {
     result.close(db.allocator);
 }
 
-fn materializeRows(allocator: std.mem.Allocator, result: *engine_mod.QueryResult) !std.ArrayList(Row) {
+fn materializeRows(
+    allocator: std.mem.Allocator,
+    result: *engine_mod.QueryResult,
+) !std.ArrayList(Row) {
     var rows: std.ArrayList(Row) = .{};
     errdefer {
         for (rows.items) |*row| row.deinit();
@@ -52,9 +55,9 @@ fn simulateCrash(db: *Database) void {
     db.close(); // frees all other resources without WAL checkpoint
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Crash Point 1: During Transaction Commit (before WAL flush)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "crash: commit before WAL flush" {
     const allocator = testing.allocator;
@@ -108,9 +111,9 @@ test "crash: commit before WAL flush" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Crash Point 2: During WAL Checkpoint
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "crash: during checkpoint" {
     // The WAL recovery is designed to be idempotent: if checkpoint was interrupted,
@@ -152,9 +155,9 @@ test "crash: during checkpoint" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Crash Point 4: During Page Write (Torn Page Scenario)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "crash: torn page during write" {
     // A torn page occurs when a power failure interrupts a page write,
@@ -215,9 +218,9 @@ test "crash: torn page during write" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Crash Point 5: Multiple Transactions, Partial Commits
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "crash: multiple transactions, partial commits" {
     // TX1 commits successfully (WAL has committed frames).
@@ -266,9 +269,9 @@ test "crash: multiple transactions, partial commits" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Crash Point 3, 6, 7: Deferred — require additional infrastructure
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "crash: after WAL write, before main DB update" {
     // This scenario (committed WAL, crash before checkpoint, data recovered on reopen)
@@ -357,7 +360,10 @@ test "crash: during recovery (double crash)" {
 
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const db_path = try std.mem.concat(allocator, u8, &[_][]const u8{ dir_path, "/crash_double.db" });
+    const db_path = try std.mem.concat(allocator, u8, &[_][]const u8{
+        dir_path,
+        "/crash_double.db",
+    });
     defer allocator.free(db_path);
 
     // Session 1: commit TX → first crash (WAL has committed frames, main DB stale)

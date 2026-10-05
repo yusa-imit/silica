@@ -12,7 +12,7 @@
 const std = @import("std");
 const checksum = @import("../util/checksum.zig");
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 pub const MAGIC = [4]u8{ 'S', 'L', 'C', 'A' };
 pub const FORMAT_VERSION: u32 = 1;
@@ -22,7 +22,7 @@ pub const MAX_PAGE_SIZE: u32 = 65536;
 pub const HEADER_PAGE_ID: u32 = 0;
 pub const SCHEMA_ROOT_PAGE_ID: u32 = 1;
 
-// ── Page Types ─────────────────────────────────────────────────────────
+// ── Page Types ──────────────────────────
 
 pub const PageType = enum(u8) {
     /// Database header page (page 0 only)
@@ -39,7 +39,7 @@ pub const PageType = enum(u8) {
     fsm = 0x06,
 };
 
-// ── Page Header ────────────────────────────────────────────────────────
+// ── Page Header ──────────────────────────
 // Every page starts with this 16-byte header.
 
 pub const PAGE_HEADER_SIZE: u32 = 16;
@@ -86,7 +86,7 @@ pub const PageHeader = struct {
     }
 };
 
-// ── Database Header (Page 0) ───────────────────────────────────────────
+// ── Database Header (Page 0) ─────────────────────
 // Stored in the first page. Contains metadata about the entire database.
 
 pub const DB_HEADER_SIZE: u32 = 64;
@@ -139,7 +139,7 @@ pub const DatabaseHeader = struct {
     }
 };
 
-// ── Pager ──────────────────────────────────────────────────────────────
+// ── Pager ────────────────────────────
 
 /// Backing store for pager — either file-based or in-memory.
 pub const Backing = union(enum) {
@@ -387,7 +387,7 @@ pub const Pager = struct {
         return self.page_size - PAGE_HEADER_SIZE;
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────
+    // ── Internal helpers ───────────────────────
 
     pub fn flushHeader(self: *Pager) !void {
         try self.writeHeaderPage();
@@ -455,7 +455,7 @@ pub const Pager = struct {
     }
 };
 
-// ── Utility ────────────────────────────────────────────────────────────
+// ── Utility ───────────────────────────
 
 fn isValidPageSize(size: u32) bool {
     if (size < MIN_PAGE_SIZE or size > MAX_PAGE_SIZE) return false;
@@ -463,7 +463,7 @@ fn isValidPageSize(size: u32) bool {
     return (size & (size - 1)) == 0;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "PageHeader serialize/deserialize roundtrip" {
     const header = PageHeader{
@@ -924,7 +924,9 @@ test "Pager freelist chain with 10 pages" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_freelist_chain_10.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_freelist_chain_10.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1004,7 +1006,9 @@ test "Pager min page size 512 data integrity" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_min_page_size_integrity.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_min_page_size_integrity.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -1128,7 +1132,9 @@ test "Pager checksum over all-zero content" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_zero_content_checksum.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_zero_content_checksum.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -1168,7 +1174,9 @@ test "Pager freePage then allocPage reuses before extending" {
     defer std.testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_reuse_before_extend.db", .{dir_path});
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_pager_reuse_before_extend.db", .{
+        dir_path,
+    });
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
