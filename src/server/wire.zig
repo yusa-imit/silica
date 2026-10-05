@@ -34,7 +34,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-// ── Message Types ──────────────────────────────────────────────────────
+// ── Message Types ─────────────────────────
 
 /// Frontend message types (client → server)
 pub const FrontendMessageType = enum(u8) {
@@ -86,7 +86,7 @@ pub const AuthenticationType = enum(i32) {
     _,
 };
 
-// ── Message Structures ──────────────────────────────────────────────────
+// ── Message Structures ───────────────────────
 
 /// Query message (simple query protocol)
 pub const Query = struct {
@@ -118,12 +118,14 @@ pub const Parse = struct {
         var offset: usize = 0;
 
         // Statement name (null-terminated)
-        const stmt_name_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse return error.InvalidMessage;
+        const stmt_name_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse
+            return error.InvalidMessage;
         const stmt_name = payload[offset..stmt_name_end];
         offset = stmt_name_end + 1;
 
         // Query string (null-terminated)
-        const query_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse return error.InvalidMessage;
+        const query_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse
+            return error.InvalidMessage;
         const query = payload[offset..query_end];
         offset = query_end + 1;
 
@@ -168,12 +170,14 @@ pub const Bind = struct {
         var offset: usize = 0;
 
         // Portal name (null-terminated)
-        const portal_name_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse return error.InvalidMessage;
+        const portal_name_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse
+            return error.InvalidMessage;
         const portal_name = payload[offset..portal_name_end];
         offset = portal_name_end + 1;
 
         // Statement name (null-terminated)
-        const stmt_name_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse return error.InvalidMessage;
+        const stmt_name_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse
+            return error.InvalidMessage;
         const stmt_name = payload[offset..stmt_name_end];
         offset = stmt_name_end + 1;
 
@@ -296,7 +300,8 @@ pub const Close = struct {
 
         // Name (null-terminated string)
         const name_start = 1;
-        const name_end = std.mem.indexOfScalar(u8, payload[name_start..], 0) orelse return error.InvalidMessage;
+        const name_end = std.mem.indexOfScalar(u8, payload[name_start..], 0) orelse
+            return error.InvalidMessage;
         const name = payload[name_start .. name_start + name_end];
 
         return Close{
@@ -322,7 +327,8 @@ pub const Describe = struct {
 
         // Name (null-terminated string)
         const name_start = 1;
-        const name_end = std.mem.indexOfScalar(u8, payload[name_start..], 0) orelse return error.InvalidMessage;
+        const name_end = std.mem.indexOfScalar(u8, payload[name_start..], 0) orelse
+            return error.InvalidMessage;
         const name = payload[name_start .. name_start + name_end];
 
         return Describe{
@@ -522,7 +528,8 @@ pub const Startup = struct {
 
             // Value (null-terminated)
             if (offset >= payload.len) return error.InvalidMessage;
-            const value_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse return error.InvalidMessage;
+            const value_end = std.mem.indexOfScalarPos(u8, payload, offset, 0) orelse
+                return error.InvalidMessage;
             const value = payload[offset..value_end];
             offset = value_end + 1;
 
@@ -596,7 +603,7 @@ pub const ParameterStatus = struct {
     }
 };
 
-// ── Message Reader ──────────────────────────────────────────────────────
+// ── Message Reader ─────────────────────────
 
 /// Read a message from a reader
 pub fn readMessage(reader: anytype, allocator: Allocator) !struct {
@@ -641,7 +648,7 @@ pub fn readStartupMessage(reader: anytype, allocator: Allocator) ![]u8 {
     return payload;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "Query message serialization" {
     const allocator = std.testing.allocator;
@@ -842,7 +849,7 @@ test "readMessage helper" {
     try std.testing.expectEqualStrings("SELECT 1\x00", msg.payload);
 }
 
-// ── Edge Case & Error Path Tests ───────────────────────────────────────
+// ── Edge Case & Error Path Tests ────────────────────
 
 test "Query parse - empty payload" {
     const result = Query.parse(&[_]u8{});
@@ -990,7 +997,8 @@ test "Bind message - NULL param value" {
     defer bind_msg.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), bind_msg.param_values.len);
-    try std.testing.expectEqual(@as(usize, 0), bind_msg.param_values[0].len); // NULL represented as empty slice
+    // NULL represented as empty slice
+    try std.testing.expectEqual(@as(usize, 0), bind_msg.param_values[0].len);
 }
 
 test "Bind message - truncated result format count" {
@@ -1178,7 +1186,10 @@ test "Startup message parsing" {
     // Protocol version 3.0 = 196608 (0x00030000)
     try buf.writer(allocator).writeInt(i32, 196608, .big);
     // user=alice\0database=testdb\0application_name=psql\0\0
-    try buf.appendSlice(allocator, "user\x00alice\x00database\x00testdb\x00application_name\x00psql\x00\x00");
+    try buf.appendSlice(
+        allocator,
+        "user\x00alice\x00database\x00testdb\x00application_name\x00psql\x00\x00",
+    );
 
     var startup = try Startup.parse(buf.items, allocator);
     defer startup.deinit(allocator);
@@ -1236,7 +1247,7 @@ test "PasswordMessage - missing null terminator" {
     try std.testing.expectError(error.InvalidMessage, result);
 }
 
-// ── Describe, ParameterDescription, NoData Tests ─────────────────
+// ── Describe, ParameterDescription, NoData Tests ───────────────
 
 test "Describe.parse - statement target" {
     const allocator = std.testing.allocator;

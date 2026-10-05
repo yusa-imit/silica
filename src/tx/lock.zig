@@ -17,7 +17,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zuda = @import("zuda");
 
-// ── Lock Modes ─────────────────────────────────────────────────────────
+// ── Lock Modes ──────────────────────────
 
 /// Row-level lock modes.
 pub const LockMode = enum(u8) {
@@ -73,7 +73,7 @@ pub const TableLockMode = enum(u8) {
     }
 };
 
-// ── Lock Target ────────────────────────────────────────────────────────
+// ── Lock Target ──────────────────────────
 
 /// Identifies a specific row to be locked.
 pub const LockTarget = struct {
@@ -94,7 +94,7 @@ pub const LockTarget = struct {
     }
 };
 
-// ── Lock Info ──────────────────────────────────────────────────────────
+// ── Lock Info ──────────────────────────
 
 /// Information about a row-level lock.
 pub const RowLockInfo = struct {
@@ -150,7 +150,7 @@ pub const TableLockEntry = struct {
 
 pub const TableLockList = std.ArrayListUnmanaged(TableLockEntry);
 
-// ── Wait-For Graph ─────────────────────────────────────────────────────
+// ── Wait-For Graph ─────────────────────────
 
 /// Wait-for graph for deadlock detection.
 ///
@@ -260,12 +260,18 @@ pub const WaitForGraph = struct {
                 const neighbors = adapter.graph.edges.get(vertex) orelse return null;
 
                 // Convert to zuda Edge format
-                adapter.neighbors_buf.ensureTotalCapacity(adapter.allocator_, neighbors.items.len) catch return null;
+                adapter.neighbors_buf.ensureTotalCapacity(
+                    adapter.allocator_,
+                    neighbors.items.len,
+                ) catch return null;
                 for (neighbors.items) |neighbor_xid| {
                     adapter.neighbors_buf.appendAssumeCapacity(.{ .target = neighbor_xid });
                 }
 
-                return if (adapter.neighbors_buf.items.len > 0) adapter.neighbors_buf.items else null;
+                return if (adapter.neighbors_buf.items.len > 0)
+                    adapter.neighbors_buf.items
+                else
+                    null;
             }
         };
 
@@ -295,7 +301,7 @@ pub const WaitForGraph = struct {
     }
 };
 
-// ── Lock Manager ───────────────────────────────────────────────────────
+// ── Lock Manager ─────────────────────────
 
 pub const LockError = error{
     LockConflict,
@@ -358,7 +364,7 @@ pub const LockManager = struct {
         self.wait_for.deinit(self.allocator);
     }
 
-    // ── Row-level Locks ────────────────────────────────────────────
+    // ── Row-level Locks ───────────────────────
 
     /// Acquire a row-level lock. Returns error if a conflicting lock exists.
     pub fn acquireRowLock(
@@ -429,7 +435,9 @@ pub const LockManager = struct {
         // If we already hold it, check for upgrade scenario
         if (existing.isHeldBy(xid)) {
             // Shared → exclusive upgrade with other holders is conflict
-            if (existing.mode == .shared and mode == .exclusive and existing.holders.items.len > 1) {
+            if (existing.mode == .shared and mode == .exclusive and
+                existing.holders.items.len > 1)
+            {
                 return true;
             }
             return false;
@@ -450,7 +458,7 @@ pub const LockManager = struct {
         return info.holders.items[0];
     }
 
-    // ── Table-level Locks ──────────────────────────────────────────
+    // ── Table-level Locks ──────────────────────
 
     /// Acquire a table-level lock.
     pub fn acquireTableLock(
@@ -515,7 +523,7 @@ pub const LockManager = struct {
         }
     }
 
-    // ── Batch Operations ───────────────────────────────────────────
+    // ── Batch Operations ───────────────────────
 
     /// Release ALL locks held by a transaction (called on commit/rollback).
     pub fn releaseAllLocks(self: *LockManager, xid: u32) void {
@@ -573,7 +581,7 @@ pub const LockManager = struct {
         }
     }
 
-    // ── Deadlock Detection ───────────────────────────────────────
+    // ── Deadlock Detection ──────────────────────
 
     /// Record that `waiter_xid` is waiting for a lock held by `blocker_xid`.
     /// Then check for deadlock cycles. Returns DeadlockDetected if a cycle exists.
@@ -617,7 +625,7 @@ pub const LockManager = struct {
         return null;
     }
 
-    // ── Monitoring ─────────────────────────────────────────────────
+    // ── Monitoring ─────────────────────────
 
     /// Count total active row locks.
     pub fn activeRowLockCount(self: *LockManager) usize {
@@ -649,7 +657,7 @@ pub const LockManager = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "LockMode conflictsWith" {
     try std.testing.expect(LockMode.shared.conflictsWith(.exclusive));
@@ -1228,7 +1236,10 @@ test "LockManager — table lock ACCESS EXCLUSIVE blocks everything" {
     try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .row_share));
     try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .row_exclusive));
     try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .share));
-    try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .share_row_exclusive));
+    try std.testing.expectError(
+        error.LockConflict,
+        lm.acquireTableLock(2, 5, .share_row_exclusive),
+    );
     try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .exclusive));
     try std.testing.expectError(error.LockConflict, lm.acquireTableLock(2, 5, .access_exclusive));
 
@@ -1277,7 +1288,7 @@ test "LockManager — removeHolder for non-holding txn is no-op" {
     try std.testing.expect(info.isHeldBy(2));
 }
 
-// ── Wait-For Graph Tests ──────────────────────────────────────────────
+// ── Wait-For Graph Tests ───────────────────────
 
 test "WaitForGraph — init and deinit" {
     const allocator = std.testing.allocator;
