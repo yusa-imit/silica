@@ -18,7 +18,7 @@ const Allocator = std.mem.Allocator;
 const executor_mod = @import("../sql/executor.zig");
 const Value = executor_mod.Value;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 /// Invalid/unassigned transaction ID.
 pub const INVALID_XID: u32 = 0;
@@ -39,7 +39,7 @@ pub const FROZEN_XID: u32 = 1;
 /// Layout: [xmin:4][xmax:4][cid:2][flags:1][padding:1] = 12 bytes
 pub const TUPLE_HEADER_SIZE: usize = 12;
 
-// ── Tuple Header ───────────────────────────────────────────────────────
+// ── Tuple Header ─────────────────────────
 
 /// Flags for tuple header state.
 pub const TupleFlags = packed struct(u8) {
@@ -117,7 +117,7 @@ pub const TupleHeader = struct {
     }
 };
 
-// ── Isolation Level ────────────────────────────────────────────────────
+// ── Isolation Level ────────────────────────
 
 pub const IsolationLevel = enum {
     read_committed,
@@ -125,7 +125,7 @@ pub const IsolationLevel = enum {
     serializable,
 };
 
-// ── Transaction State ──────────────────────────────────────────────────
+// ── Transaction State ────────────────────────
 
 pub const TransactionState = enum {
     active,
@@ -133,7 +133,7 @@ pub const TransactionState = enum {
     aborted,
 };
 
-// ── Snapshot ───────────────────────────────────────────────────────────
+// ── Snapshot ───────────────────────────
 
 /// A point-in-time view of which transactions are active.
 /// Used to determine tuple visibility.
@@ -186,7 +186,7 @@ pub const Snapshot = struct {
     }
 };
 
-// ── Visibility Check ───────────────────────────────────────────────────
+// ── Visibility Check ────────────────────────
 
 /// Determine if a tuple is visible to the given snapshot.
 ///
@@ -282,7 +282,7 @@ pub fn isTupleVisibleWithTm(
     return !xmax_visible;
 }
 
-// ── Transaction Manager ────────────────────────────────────────────────
+// ── Transaction Manager ───────────────────────
 
 /// Manages transaction IDs, snapshots, and transaction state.
 /// Thread-safe when shared across multiple connections.
@@ -601,7 +601,7 @@ pub const TransactionManager = struct {
     }
 };
 
-// ── SSI Tracker ──────────────────────────────────────────────────────
+// ── SSI Tracker ──────────────────────────
 
 /// Serializable Snapshot Isolation (SSI) tracker.
 ///
@@ -645,7 +645,10 @@ pub const SsiTracker = struct {
         self.deinitMap(&self.rw_out);
     }
 
-    fn deinitMap(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void))) void {
+    fn deinitMap(
+        self: *SsiTracker,
+        map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+    ) void {
         var it = map.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.deinit(self.allocator);
@@ -657,7 +660,12 @@ pub const SsiTracker = struct {
     /// Also checks if any concurrent SERIALIZABLE transaction has already
     /// written to this table — if so, records the rw-antidependency.
     /// IMPORTANT: Caller must hold TransactionManager mutex.
-    pub fn registerReadLocked(self: *SsiTracker, xid: u32, table_page_id: u32, active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo)) !void {
+    pub fn registerReadLocked(
+        self: *SsiTracker,
+        xid: u32,
+        table_page_id: u32,
+        active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo),
+    ) !void {
         // Add to read set
         try self.addToSet(&self.read_sets, xid, table_page_id);
 
@@ -681,7 +689,12 @@ pub const SsiTracker = struct {
     /// Also checks if any concurrent SERIALIZABLE transaction has already
     /// read from this table — if so, records the rw-antidependency.
     /// IMPORTANT: Caller must hold TransactionManager mutex.
-    pub fn registerWriteLocked(self: *SsiTracker, xid: u32, table_page_id: u32, active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo)) !void {
+    pub fn registerWriteLocked(
+        self: *SsiTracker,
+        xid: u32,
+        table_page_id: u32,
+        active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo),
+    ) !void {
         // Add to write set
         try self.addToSet(&self.write_sets, xid, table_page_id);
 
@@ -729,7 +742,12 @@ pub const SsiTracker = struct {
     /// Check whether writer_xid's writes are NOT visible in reader_xid's snapshot.
     /// This is true when writer_xid was active in reader_xid's snapshot (concurrent).
     /// IMPORTANT: Caller must hold TransactionManager mutex.
-    fn isNotVisibleInLocked(self: *SsiTracker, writer_xid: u32, reader_xid: u32, active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo)) bool {
+    fn isNotVisibleInLocked(
+        self: *SsiTracker,
+        writer_xid: u32,
+        reader_xid: u32,
+        active_txns: *const std.AutoHashMapUnmanaged(u32, TransactionManager.TransactionInfo),
+    ) bool {
         _ = self;
         // Get reader's snapshot
         const reader_info = active_txns.get(reader_xid) orelse return false;
@@ -739,20 +757,35 @@ pub const SsiTracker = struct {
     }
 
     /// Register a read (for standalone tests - wraps around TM mutex).
-    pub fn registerRead(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+    pub fn registerRead(
+        self: *SsiTracker,
+        xid: u32,
+        table_page_id: u32,
+        tm: *TransactionManager,
+    ) !void {
         tm.mutex.lock();
         defer tm.mutex.unlock();
         try self.registerReadLocked(xid, table_page_id, &tm.active_txns);
     }
 
     /// Register a write (for standalone tests - wraps around TM mutex).
-    pub fn registerWrite(self: *SsiTracker, xid: u32, table_page_id: u32, tm: *TransactionManager) !void {
+    pub fn registerWrite(
+        self: *SsiTracker,
+        xid: u32,
+        table_page_id: u32,
+        tm: *TransactionManager,
+    ) !void {
         tm.mutex.lock();
         defer tm.mutex.unlock();
         try self.registerWriteLocked(xid, table_page_id, &tm.active_txns);
     }
 
-    fn addToSet(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32, value: u32) !void {
+    fn addToSet(
+        self: *SsiTracker,
+        map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+        xid: u32,
+        value: u32,
+    ) !void {
         const gop = try map.getOrPut(self.allocator, xid);
         if (!gop.found_existing) {
             gop.value_ptr.* = .{};
@@ -768,14 +801,22 @@ pub const SsiTracker = struct {
         try self.addToSet(&self.rw_in, writer_xid, reader_xid);
     }
 
-    fn removeFromMap(self: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32) void {
+    fn removeFromMap(
+        self: *SsiTracker,
+        map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+        xid: u32,
+    ) void {
         if (map.fetchRemove(xid)) |kv| {
             var set = kv.value;
             set.deinit(self.allocator);
         }
     }
 
-    fn removeFromAllSets(_: *SsiTracker, map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)), xid: u32) void {
+    fn removeFromAllSets(
+        _: *SsiTracker,
+        map: *std.AutoHashMapUnmanaged(u32, std.AutoHashMapUnmanaged(u32, void)),
+        xid: u32,
+    ) void {
         var it = map.iterator();
         while (it.next()) |entry| {
             _ = entry.value_ptr.remove(xid);
@@ -811,7 +852,7 @@ pub const SsiTracker = struct {
     }
 };
 
-// ── Versioned Row Serialization ────────────────────────────────────────
+// ── Versioned Row Serialization ────────────────────
 
 /// Serialize a versioned row: version byte + MVCC header + column data.
 /// Format: [0xAA][TupleHeader 12B][col_count:2][columns...]
@@ -867,7 +908,7 @@ pub fn isVersionedRow(data: []const u8) bool {
     return data[0] == ROW_VERSION_MVCC;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "TupleHeader serialize/deserialize roundtrip" {
     const header = TupleHeader{
@@ -1091,7 +1132,8 @@ test "isTupleVisible — own transaction" {
         try std.testing.expect(!isTupleVisible(h, snap, 5, 1));
     }
 
-    // Own transaction deleted, cid >= current_cid → visible (delete hasn't happened yet for this cmd)
+    // Own transaction deleted, cid >= current_cid → visible (delete hasn't happened yet for
+    // this cmd)
     {
         const h = TupleHeader{
             .xmin = 3,
@@ -1425,7 +1467,7 @@ test "multiple concurrent transactions with visibility" {
     try tm.commit(xid_c);
 }
 
-// ── Stabilization: Edge Case Tests ──────────────────────────────────
+// ── Stabilization: Edge Case Tests ───────────────────
 
 test "isTupleVisible — same-txn insert then delete" {
     const snap = Snapshot.EMPTY;
@@ -1809,11 +1851,17 @@ test "deserializeVersionedRow — data too short" {
 
     // Less than MVCC_ROW_OVERHEAD + 2 bytes
     const short_data = [_]u8{ROW_VERSION_MVCC} ++ [_]u8{0} ** TUPLE_HEADER_SIZE;
-    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &short_data));
+    try std.testing.expectError(
+        error.InvalidRowData,
+        deserializeVersionedRow(allocator, &short_data),
+    );
 
     // Too short even for magic byte check
     const very_short = [_]u8{ROW_VERSION_MVCC} ++ [_]u8{0} ** 5;
-    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &very_short));
+    try std.testing.expectError(
+        error.InvalidRowData,
+        deserializeVersionedRow(allocator, &very_short),
+    );
 
     // Empty data
     try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &[_]u8{}));
@@ -1821,7 +1869,10 @@ test "deserializeVersionedRow — data too short" {
     // Wrong magic byte
     var wrong_magic: [MVCC_ROW_OVERHEAD + 2]u8 = undefined;
     wrong_magic[0] = 0x00; // not ROW_VERSION_MVCC
-    try std.testing.expectError(error.InvalidRowData, deserializeVersionedRow(allocator, &wrong_magic));
+    try std.testing.expectError(
+        error.InvalidRowData,
+        deserializeVersionedRow(allocator, &wrong_magic),
+    );
 }
 
 test "isVersionedRow — detection" {
@@ -2238,7 +2289,7 @@ test "Snapshot.EMPTY — sees nothing as active" {
     try std.testing.expect(snap.isActive(100));
 }
 
-// ── SSI Tracker Tests ────────────────────────────────────────────────
+// ── SSI Tracker Tests ────────────────────────
 
 test "SsiTracker — init and deinit" {
     const allocator = std.testing.allocator;

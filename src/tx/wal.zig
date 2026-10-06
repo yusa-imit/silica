@@ -14,14 +14,14 @@ const checksum_mod = @import("../util/checksum.zig");
 const page_mod = @import("../storage/page.zig");
 const Pager = page_mod.Pager;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 pub const WAL_MAGIC = [4]u8{ 'S', 'L', 'C', 'W' };
 pub const WAL_VERSION: u32 = 1;
 pub const WAL_HEADER_SIZE: u32 = 32;
 pub const WAL_FRAME_HEADER_SIZE: u32 = 24;
 
-// ── WAL Header ─────────────────────────────────────────────────────────
+// ── WAL Header ──────────────────────────
 
 pub const WalHeader = struct {
     magic: [4]u8 = WAL_MAGIC,
@@ -67,7 +67,7 @@ pub const WalHeader = struct {
     }
 };
 
-// ── WAL Frame Header ───────────────────────────────────────────────────
+// ── WAL Frame Header ────────────────────────
 
 pub const WalFrameHeader = struct {
     page_id: u32,
@@ -102,7 +102,7 @@ pub const WalFrameHeader = struct {
     }
 };
 
-// ── LSN (Log Sequence Number) ─────────────────────────────────────────
+// ── LSN (Log Sequence Number) ─────────────────────
 
 /// A replication-stable log sequence number. `checkpoint_seq` matches
 /// `WalHeader.checkpoint_seq` (the epoch); `frame_index` is the frame's
@@ -144,7 +144,7 @@ pub const Lsn = struct {
     }
 };
 
-// ── WAL Manager ────────────────────────────────────────────────────────
+// ── WAL Manager ──────────────────────────
 
 pub const Wal = struct {
     allocator: Allocator,
@@ -173,7 +173,7 @@ pub const Wal = struct {
     /// Opaque context pointer passed to min_retained_lsn_fn.
     min_retained_lsn_ctx: ?*anyopaque = null,
 
-    // ── Lifecycle ──────────────────────────────────────────────
+    // ── Lifecycle ─────────────────────────
 
     pub fn init(allocator: Allocator, db_path: []const u8, page_size: u32) !Wal {
         // Construct WAL path: db_path + "-wal"
@@ -203,7 +203,10 @@ pub const Wal = struct {
         }
 
         // Try to open existing WAL file for recovery
-        const file = std.fs.cwd().openFile(wal_path, .{ .mode = .read_write }) catch |err| switch (err) {
+        const file = std.fs.cwd().openFile(
+            wal_path,
+            .{ .mode = .read_write },
+        ) catch |err| switch (err) {
             error.FileNotFound => {
                 // No WAL file — will be created on first write
                 return wal;
@@ -262,7 +265,7 @@ pub const Wal = struct {
         std.debug.assert(self.min_retained_lsn_ctx == null);
     }
 
-    // ── Write Path ─────────────────────────────────────────────
+    // ── Write Path ─────────────────────────
 
     /// Write a page image as a new WAL frame. Not yet committed.
     pub fn writeFrame(self: *Wal, page_id: u32, page_data: []const u8) !void {
@@ -276,7 +279,8 @@ pub const Wal = struct {
 
         // Build frame header
         var fh_buf: [WAL_FRAME_HEADER_SIZE]u8 = undefined;
-        const frame_cksum = computeFrameChecksum(page_id, self.header.salt_1, self.header.salt_2, page_data);
+        const frame_cksum =
+            computeFrameChecksum(page_id, self.header.salt_1, self.header.salt_2, page_data);
 
         const fh = WalFrameHeader{
             .page_id = page_id,
@@ -410,7 +414,7 @@ pub const Wal = struct {
         }
     }
 
-    // ── Read Path ──────────────────────────────────────────────
+    // ── Read Path ─────────────────────────
 
     /// Check if the WAL contains a version of the given page.
     /// Checks pending (uncommitted) first, then committed.
@@ -433,13 +437,16 @@ pub const Wal = struct {
         return false;
     }
 
-    // ── Replication Read Path ─────────────────────────────────
+    // ── Replication Read Path ─────────────────────
 
     /// Returns the LSN of the current committed write frontier —
     /// (header.checkpoint_seq, committed_frame_count). This is what a
     /// WalSender should treat as "everything up to here is safe to stream."
     pub fn currentLsn(self: *const Wal) Lsn {
-        return .{ .checkpoint_seq = self.header.checkpoint_seq, .frame_index = self.committed_frame_count };
+        return .{
+            .checkpoint_seq = self.header.checkpoint_seq,
+            .frame_index = self.committed_frame_count,
+        };
     }
 
     /// Converts a frame index (within the current checkpoint epoch) to an Lsn.
@@ -497,7 +504,7 @@ pub const Wal = struct {
         };
     }
 
-    // ── Checkpoint ─────────────────────────────────────────────
+    // ── Checkpoint ─────────────────────────
 
     /// Copy all committed WAL pages to the main DB file, then conditionally reset the WAL.
     /// If a retention callback is registered and reports a lagging replica, the flush happens
@@ -565,7 +572,8 @@ pub const Wal = struct {
             pager.sync() catch {};
         }
 
-        // RECLAIM STEP (CONDITIONAL — may be deferred if retention callback reports replica behind)
+        // RECLAIM STEP (CONDITIONAL — may be deferred if retention callback reports replica
+        // behind)
         // Decide whether to truncate the WAL based on retention callback
         var should_reclaim = true;
 
@@ -619,7 +627,7 @@ pub const Wal = struct {
         }
     }
 
-    // ── Recovery ───────────────────────────────────────────────
+    // ── Recovery ─────────────────────────
 
     /// Rebuild page_index from committed transactions in the WAL file.
     fn recover(self: *Wal) !void {
@@ -683,7 +691,8 @@ pub const Wal = struct {
 
         // Truncate any uncommitted trailing frames
         if (self.committed_frame_count < frame_idx) {
-            const committed_end = WAL_HEADER_SIZE + @as(u64, self.committed_frame_count) * frame_size;
+            const committed_end = WAL_HEADER_SIZE +
+                @as(u64, self.committed_frame_count) * frame_size;
             try file.setEndPos(committed_end);
         }
 
@@ -691,7 +700,7 @@ pub const Wal = struct {
         self.header.frame_count = self.committed_frame_count;
     }
 
-    // ── Internal Helpers ───────────────────────────────────────
+    // ── Internal Helpers ───────────────────────
 
     fn frameOffset(self: *const Wal, frame_index: u32) u64 {
         const frame_size = WAL_FRAME_HEADER_SIZE + self.page_size;
@@ -734,7 +743,7 @@ fn computeFrameChecksum(page_id: u32, salt_1: u32, salt_2: u32, page_data: []con
     return checksum_mod.crc32cUpdate(partial, page_data);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -793,8 +802,20 @@ test "WalFrameHeader serialize/deserialize roundtrip" {
 }
 
 test "WalFrameHeader isCommit" {
-    const commit_frame = WalFrameHeader{ .page_id = 1, .db_page_count = 10, .salt_1 = 0, .salt_2 = 0, .frame_checksum = 0 };
-    const non_commit = WalFrameHeader{ .page_id = 1, .db_page_count = 0, .salt_1 = 0, .salt_2 = 0, .frame_checksum = 0 };
+    const commit_frame = WalFrameHeader{
+        .page_id = 1,
+        .db_page_count = 10,
+        .salt_1 = 0,
+        .salt_2 = 0,
+        .frame_checksum = 0,
+    };
+    const non_commit = WalFrameHeader{
+        .page_id = 1,
+        .db_page_count = 0,
+        .salt_1 = 0,
+        .salt_2 = 0,
+        .frame_checksum = 0,
+    };
     try testing.expect(commit_frame.isCommit());
     try testing.expect(!non_commit.isCommit());
 }
@@ -1606,7 +1627,7 @@ test "Wal many frame writes in single commit" {
     }
 }
 
-// ── Lsn and readRawFrames Tests ────────────────────────────────
+// ── Lsn and readRawFrames Tests ────────────────────
 
 test "Lsn ordering: same epoch, different frame indices" {
     const lsn1 = Lsn{ .checkpoint_seq = 5, .frame_index = 10 };
@@ -1718,7 +1739,8 @@ test "readRawFrames round-trip: read all committed frames with recognizable cont
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_roundtrip.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_roundtrip.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1786,7 +1808,8 @@ test "readRawFrames never splits frame across multiple calls" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_no_split.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_no_split.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1824,7 +1847,8 @@ test "readRawFrames returns error.BufferTooSmall if buffer smaller than one fram
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_small_buf.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_small_buf.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1850,7 +1874,8 @@ test "readRawFrames returns zero bytes when already caught up (no new data)" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_caught_up.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_caught_up.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1887,7 +1912,8 @@ test "readRawFrames excludes pending (uncommitted) frames" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_no_pending.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_no_pending.db", .{dir_path});
 
     var wal = try Wal.init(testing.allocator, path, 512);
     defer wal.deinit();
@@ -1920,7 +1946,8 @@ test "readRawFrames rejects LSN from earlier epoch after checkpoint" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_old_epoch.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_read_raw_frames_old_epoch.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2157,7 +2184,7 @@ test "Phase 4: appendRawFrame is purely additive — normal writeFrame/commit un
     try testing.expectEqualSlices(u8, &page_data, &read_buf);
 }
 
-// ── Phase 6: LSN pack/unpack methods (for replication retention) ────────────
+// ── Phase 6: LSN pack/unpack methods (for replication retention) ─────────
 
 test "Lsn.pack() and Lsn.unpack() round-trip" {
     // Test that pack then unpack returns the original Lsn
@@ -2235,7 +2262,7 @@ test "Lsn.order() agrees with pack() comparison across checkpoint boundaries" {
     try testing.expect(packed_epoch1_val < packed_epoch2_val);
 }
 
-// ── Phase 6: Checkpoint vs Replication Retention ────────────────────
+// ── Phase 6: Checkpoint vs Replication Retention ───────────────
 
 /// Context struct for Phase 6 test callbacks (mutable min_retained_lsn value)
 const RetentionCallbackContext = struct {
@@ -2254,7 +2281,8 @@ test "Phase 6: checkpoint with retention callback reporting behind LSN — flush
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_behind.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_behind.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2318,7 +2346,8 @@ test "Phase 6: checkpoint with retention callback catching up — truncation now
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_catchup.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_catchup.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2375,7 +2404,11 @@ test "Phase 6: multiple write/commit rounds with retention deferred, one catch-u
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_retention_multiple_rounds.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase6_retention_multiple_rounds.db",
+        .{dir_path},
+    );
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2456,7 +2489,8 @@ test "Phase 6: regression proof — readRawFrames works on not-yet-truncated epo
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_readrawframes_deferred.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_readrawframes_deferred.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
@@ -2571,7 +2605,8 @@ test "Phase 6: checkpoint with retention callback reporting nothing to retain (n
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_callback_returns_null.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase6_callback_returns_null.db", .{dir_path});
 
     const PageHeader = page_mod.PageHeader;
     const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;

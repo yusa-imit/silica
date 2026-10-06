@@ -15,41 +15,64 @@ pub const Match = struct {
     /// One-past-the-last row index consumed by this match.
     end_exclusive: usize,
     /// variable_per_row[i] is the pattern variable name bound to row (start + i).
-    /// Length is always (end_exclusive - start). Allocated with the `allocator` passed to findMatch;
-    /// caller owns it and must free both the slice and each contained []const u8 is NOT owned
-    /// separately — the strings themselves borrow from the PatternNode's variable names (no need to
-    /// free the individual strings, only the outer slice via `allocator.free(match.variable_per_row)`).
+    /// Length is always (end_exclusive - start). Allocated with the `allocator` passed to
+    /// findMatch; caller owns it and must free both the slice and each contained []const u8 is
+    /// NOT owned separately — the strings themselves borrow from the PatternNode's variable
+    /// names (no need to free the individual strings, only the outer slice via
+    /// `allocator.free(match.variable_per_row)`).
     variable_per_row: []const []const u8,
 };
 
 /// Caller-supplied predicate: "does row `row_idx` satisfy pattern variable `variable`'s DEFINE
 /// condition, given the tentative bindings assigned so far in this in-progress match attempt?"
 /// `bindings_so_far` is indexed by absolute row_idx and covers exactly the rows already tentatively
-/// consumed before `row_idx` in the CURRENT match attempt (i.e. bindings_so_far.len == row_idx - match_start,
+/// consumed before `row_idx` in the CURRENT match attempt (i.e.
+/// bindings_so_far.len == row_idx - match_start,
 /// and bindings_so_far[k] is the variable bound to row (match_start + k)). This lets a real DEFINE
-/// condition implement PREV()/FIRST() by looking at prior tentative bindings, without pattern_match.zig
+/// condition implement PREV()/FIRST() by looking at prior tentative bindings, without
+/// pattern_match.zig
 /// knowing anything about Row/Value/expressions — it just threads this array through.
 /// Returns true if `variable` can match at `row_idx`.
 pub const MatchContext = struct {
     ptr: *anyopaque,
-    tryVariableFn: *const fn (ptr: *anyopaque, variable: []const u8, row_idx: usize, match_start: usize, bindings_so_far: []const []const u8) bool,
+    tryVariableFn: *const fn (
+        ptr: *anyopaque,
+        variable: []const u8,
+        row_idx: usize,
+        match_start: usize,
+        bindings_so_far: []const []const u8,
+    ) bool,
 
-    pub fn tryVariable(self: MatchContext, variable: []const u8, row_idx: usize, match_start: usize, bindings_so_far: []const []const u8) bool {
+    pub fn tryVariable(
+        self: MatchContext,
+        variable: []const u8,
+        row_idx: usize,
+        match_start: usize,
+        bindings_so_far: []const []const u8,
+    ) bool {
         return self.tryVariableFn(self.ptr, variable, row_idx, match_start, bindings_so_far);
     }
 };
 
 /// Attempts to match `pattern` starting exactly at row index `start` (NOT a search over all start
-/// positions — the caller tries successive start positions itself). Rows exist in range [0, row_count).
-/// Semantics: alternation tries branches in listed order, first successful branch wins (no backtracking
-/// into an earlier successful alternative once a later required part of the pattern fails — matches
-/// SQL:2016 "first match" semantics, NOT POSIX leftmost-longest). Quantifiers are greedy: `+`/`*` try
-/// to consume as many repetitions as possible first, then backtrack (give back rows) one at a time if
-/// a later part of the pattern (in a concat) cannot otherwise match. `?` tries one repetition before
-/// zero. Returns the resulting Match on success (allocated with `allocator`), or null if no match is
-/// possible starting at `start` after exhausting all backtracking options. Returns `error.OutOfMemory`
-/// only for allocation failures, never as a "no match" signal.
-pub fn findMatch(allocator: std.mem.Allocator, pattern: *const ast.PatternNode, row_count: usize, start: usize, ctx: MatchContext) std.mem.Allocator.Error!?Match {
+/// positions — the caller tries successive start positions itself). Rows exist in range
+/// [0, row_count).
+/// Semantics: alternation tries branches in listed order, first successful branch wins (no
+/// backtracking into an earlier successful alternative once a later required part of the
+/// pattern fails — matches SQL:2016 "first match" semantics, NOT POSIX leftmost-longest).
+/// Quantifiers are greedy: `+`/`*` try to consume as many repetitions as possible first, then
+/// backtrack (give back rows) one at a time if a later part of the pattern (in a concat)
+/// cannot otherwise match. `?` tries one repetition before zero. Returns the resulting Match
+/// on success (allocated with `allocator`), or null if no match is possible starting at
+/// `start` after exhausting all backtracking options. Returns `error.OutOfMemory` only for
+/// allocation failures, never as a "no match" signal.
+pub fn findMatch(
+    allocator: std.mem.Allocator,
+    pattern: *const ast.PatternNode,
+    row_count: usize,
+    start: usize,
+    ctx: MatchContext,
+) std.mem.Allocator.Error!?Match {
     // Use an arena for temporary state during matching to simplify cleanup on backtracking
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -57,7 +80,15 @@ pub fn findMatch(allocator: std.mem.Allocator, pattern: *const ast.PatternNode, 
 
     var bindings = std.ArrayListUnmanaged([]const u8){};
 
-    if (try tryMatchNode(pattern, start, start, &bindings, row_count, ctx, arena_allocator)) |end_pos| {
+    if (try tryMatchNode(
+        pattern,
+        start,
+        start,
+        &bindings,
+        row_count,
+        ctx,
+        arena_allocator,
+    )) |end_pos| {
         // Match succeeded! Copy the bindings to the caller's allocator
         const variable_per_row = try allocator.dupe([]const u8, bindings.items);
         return Match{
@@ -96,31 +127,79 @@ fn tryMatchNode(
         },
 
         .concat => |children| {
-            return tryMatchConcat(children, 0, pos, match_start, bindings, row_count, ctx, allocator);
+            return tryMatchConcat(
+                children,
+                0,
+                pos,
+                match_start,
+                bindings,
+                row_count,
+                ctx,
+                allocator,
+            );
         },
 
         .alternation => |branches| {
-            for (branches) |branch| {
-                // Try this branch. If it succeeds, we're done (no backtracking to other branches).
-                // If it fails, try the next branch.
-                var bindings_copy = try bindings.clone(allocator);
-                if (try tryMatchNode(branch, pos, match_start, &bindings_copy, row_count, ctx, allocator)) |next_pos| {
-                    // Success! Update the original bindings and return.
-                    bindings.clearRetainingCapacity();
-                    for (bindings_copy.items) |b| {
-                        try bindings.append(allocator, b);
-                    }
-                    return next_pos;
-                }
-                // Branch failed, try next
-            }
-            return null;
+            return tryMatchAlternation(
+                branches,
+                pos,
+                match_start,
+                bindings,
+                row_count,
+                ctx,
+                allocator,
+            );
         },
 
         .quantified => |q| {
-            return tryMatchQuantified(q.node, q.quantifier, pos, match_start, bindings, row_count, ctx, allocator);
+            return tryMatchQuantified(
+                q.node,
+                q.quantifier,
+                pos,
+                match_start,
+                bindings,
+                row_count,
+                ctx,
+                allocator,
+            );
         },
     }
+}
+
+/// Internal: match an alternation. Branches are tried in listed order; the first successful
+/// branch wins and there is no backtracking to later branches.
+fn tryMatchAlternation(
+    branches: []const *const ast.PatternNode,
+    pos: usize,
+    match_start: usize,
+    bindings: *std.ArrayListUnmanaged([]const u8),
+    row_count: usize,
+    ctx: MatchContext,
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!?usize {
+    for (branches) |branch| {
+        // Try this branch. If it succeeds, we're done (no backtracking to other branches).
+        // If it fails, try the next branch.
+        var bindings_copy = try bindings.clone(allocator);
+        if (try tryMatchNode(
+            branch,
+            pos,
+            match_start,
+            &bindings_copy,
+            row_count,
+            ctx,
+            allocator,
+        )) |next_pos| {
+            // Success! Update the original bindings and return.
+            bindings.clearRetainingCapacity();
+            for (bindings_copy.items) |b| {
+                try bindings.append(allocator, b);
+            }
+            return next_pos;
+        }
+        // Branch failed, try next
+    }
+    return null;
 }
 
 /// Internal: match a sequence of concatenated children, starting at child index `child_idx`.
@@ -146,42 +225,101 @@ fn tryMatchConcat(
 
     // Special handling for quantified children: try all possible repetition counts
     if (first_child.* == .quantified) {
-        const q = first_child.quantified;
-        const endpoints = try getAllQuantifierEndpoints(q.node, q.quantifier, pos, match_start, bindings, row_count, ctx, allocator);
-        defer {
-            for (endpoints) |ep| {
-                allocator.free(ep.bindings_snapshot);
-            }
-            allocator.free(endpoints);
-        }
-
-        // Try endpoints in order (greedy first), and for each, try to match the rest of the concat
-        for (endpoints) |endpoint| {
-            var bindings_temp = std.ArrayListUnmanaged([]const u8){};
-            for (endpoint.bindings_snapshot) |b| {
-                try bindings_temp.append(allocator, b);
-            }
-            if (try tryMatchConcat(remaining_children, 0, endpoint.pos, match_start, &bindings_temp, row_count, ctx, allocator)) |final_pos| {
-                // Success! Update the original bindings and return
-                bindings.clearRetainingCapacity();
-                for (bindings_temp.items) |b| {
-                    try bindings.append(allocator, b);
-                }
-                bindings_temp.deinit(allocator);
-                return final_pos;
-            }
-            bindings_temp.deinit(allocator);
-            // This endpoint didn't work, try the next one
-        }
-        return null;
+        return tryMatchConcatQuantified(
+            first_child,
+            remaining_children,
+            pos,
+            match_start,
+            bindings,
+            row_count,
+            ctx,
+            allocator,
+        );
     }
 
     // Non-quantified child: match it normally
-    if (try tryMatchNode(first_child, pos, match_start, bindings, row_count, ctx, allocator)) |next_pos| {
+    if (try tryMatchNode(
+        first_child,
+        pos,
+        match_start,
+        bindings,
+        row_count,
+        ctx,
+        allocator,
+    )) |next_pos| {
         // First child matched, continue with remaining children
-        return tryMatchConcat(remaining_children, 0, next_pos, match_start, bindings, row_count, ctx, allocator);
+        return tryMatchConcat(
+            remaining_children,
+            0,
+            next_pos,
+            match_start,
+            bindings,
+            row_count,
+            ctx,
+            allocator,
+        );
     }
 
+    return null;
+}
+
+/// Internal: match a quantified child inside a concat. Tries every possible repetition count
+/// (greedy first) and for each, tries to match the rest of the concat.
+fn tryMatchConcatQuantified(
+    first_child: *const ast.PatternNode,
+    remaining_children: []const *const ast.PatternNode,
+    pos: usize,
+    match_start: usize,
+    bindings: *std.ArrayListUnmanaged([]const u8),
+    row_count: usize,
+    ctx: MatchContext,
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!?usize {
+    const q = first_child.quantified;
+    const endpoints = try getAllQuantifierEndpoints(
+        q.node,
+        q.quantifier,
+        pos,
+        match_start,
+        bindings,
+        row_count,
+        ctx,
+        allocator,
+    );
+    defer {
+        for (endpoints) |ep| {
+            allocator.free(ep.bindings_snapshot);
+        }
+        allocator.free(endpoints);
+    }
+
+    // Try endpoints in order (greedy first), and for each, try to match the rest of the concat
+    for (endpoints) |endpoint| {
+        var bindings_temp = std.ArrayListUnmanaged([]const u8){};
+        for (endpoint.bindings_snapshot) |b| {
+            try bindings_temp.append(allocator, b);
+        }
+        if (try tryMatchConcat(
+            remaining_children,
+            0,
+            endpoint.pos,
+            match_start,
+            &bindings_temp,
+            row_count,
+            ctx,
+            allocator,
+        )) |final_pos| {
+            // Success! Update the original bindings and return
+            bindings.clearRetainingCapacity();
+            for (bindings_temp.items) |b| {
+                try bindings.append(allocator, b);
+            }
+            bindings_temp.deinit(allocator);
+            return final_pos;
+        }
+        bindings_temp.deinit(allocator);
+        // This endpoint didn't work, try the next one
+    }
     return null;
 }
 
@@ -197,7 +335,16 @@ fn tryMatchQuantified(
     ctx: MatchContext,
     allocator: std.mem.Allocator,
 ) std.mem.Allocator.Error!?usize {
-    const endpoints = try getAllQuantifierEndpoints(node, quantifier, pos, match_start, bindings, row_count, ctx, allocator);
+    const endpoints = try getAllQuantifierEndpoints(
+        node,
+        quantifier,
+        pos,
+        match_start,
+        bindings,
+        row_count,
+        ctx,
+        allocator,
+    );
     defer allocator.free(endpoints);
 
     if (endpoints.len > 0) {
@@ -258,7 +405,15 @@ fn getAllQuantifierEndpoints(
         if (max_one_repetition and count > 0) break;
 
         var bindings_for_attempt = try current_bindings.clone(allocator);
-        if (try tryMatchNode(node, current_pos, match_start, &bindings_for_attempt, row_count, ctx, allocator)) |next_pos| {
+        if (try tryMatchNode(
+            node,
+            current_pos,
+            match_start,
+            &bindings_for_attempt,
+            row_count,
+            ctx,
+            allocator,
+        )) |next_pos| {
             count += 1;
             current_pos = next_pos;
             current_bindings.deinit(allocator);
@@ -277,16 +432,26 @@ fn getAllQuantifierEndpoints(
 
     current_bindings.deinit(allocator);
 
+    return filterEndpointsByMinCount(allocator, endpoints.items, min_count);
+}
+
+/// Internal: keep only endpoints that satisfy the minimum repetition count, in reverse order
+/// (greedy first). Frees the bindings snapshots of the endpoints that are dropped.
+fn filterEndpointsByMinCount(
+    allocator: std.mem.Allocator,
+    endpoints: []const QuantifierEndpoint,
+    min_count: usize,
+) std.mem.Allocator.Error![]QuantifierEndpoint {
     // Filter: keep only endpoints that satisfy the minimum count
     var result = std.ArrayListUnmanaged(QuantifierEndpoint){};
-    var i = endpoints.items.len;
+    var i = endpoints.len;
     while (i > 0) {
         i -= 1;
         if (i >= min_count) {
-            try result.append(allocator, endpoints.items[i]);
+            try result.append(allocator, endpoints[i]);
         } else {
             // Free bindings snapshot that we're not keeping
-            allocator.free(endpoints.items[i].bindings_snapshot);
+            allocator.free(endpoints[i].bindings_snapshot);
         }
     }
 
@@ -299,7 +464,10 @@ fn getAllQuantifierEndpoints(
 
 /// Test helper: construct a PatternNode for a simple variable reference.
 /// Allocates from gpa; caller must free the returned pointer.
-fn testMakeVariable(allocator: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error!*const ast.PatternNode {
+fn testMakeVariable(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+) std.mem.Allocator.Error!*const ast.PatternNode {
     const node = try allocator.create(ast.PatternNode);
     node.* = .{ .variable = name };
     return node;
@@ -307,7 +475,10 @@ fn testMakeVariable(allocator: std.mem.Allocator, name: []const u8) std.mem.Allo
 
 /// Test helper: construct a PatternNode for concatenation of children.
 /// Allocates from gpa; caller must free the result and all children.
-fn testMakeConcat(allocator: std.mem.Allocator, children: []const *const ast.PatternNode) std.mem.Allocator.Error!*const ast.PatternNode {
+fn testMakeConcat(
+    allocator: std.mem.Allocator,
+    children: []const *const ast.PatternNode,
+) std.mem.Allocator.Error!*const ast.PatternNode {
     const node = try allocator.create(ast.PatternNode);
     const children_copy = try allocator.dupe(*const ast.PatternNode, children);
     node.* = .{ .concat = children_copy };
@@ -316,7 +487,10 @@ fn testMakeConcat(allocator: std.mem.Allocator, children: []const *const ast.Pat
 
 /// Test helper: construct a PatternNode for alternation of branches.
 /// Allocates from gpa; caller must free the result and all branches.
-fn testMakeAlternation(allocator: std.mem.Allocator, branches: []const *const ast.PatternNode) std.mem.Allocator.Error!*const ast.PatternNode {
+fn testMakeAlternation(
+    allocator: std.mem.Allocator,
+    branches: []const *const ast.PatternNode,
+) std.mem.Allocator.Error!*const ast.PatternNode {
     const node = try allocator.create(ast.PatternNode);
     const branches_copy = try allocator.dupe(*const ast.PatternNode, branches);
     node.* = .{ .alternation = branches_copy };
@@ -325,14 +499,21 @@ fn testMakeAlternation(allocator: std.mem.Allocator, branches: []const *const as
 
 /// Test helper: construct a PatternNode for a quantified sub-pattern.
 /// Allocates from gpa; caller must free the result.
-fn testMakeQuantified(allocator: std.mem.Allocator, node: *const ast.PatternNode, quantifier: ast.PatternQuantifier) std.mem.Allocator.Error!*const ast.PatternNode {
+fn testMakeQuantified(
+    allocator: std.mem.Allocator,
+    node: *const ast.PatternNode,
+    quantifier: ast.PatternQuantifier,
+) std.mem.Allocator.Error!*const ast.PatternNode {
     const result = try allocator.create(ast.PatternNode);
     result.* = .{ .quantified = .{ .node = node, .quantifier = quantifier } };
     return result;
 }
 
 /// Test helper: construct a PatternNode for a grouped sub-pattern.
-fn testMakeGroup(allocator: std.mem.Allocator, node: *const ast.PatternNode) std.mem.Allocator.Error!*const ast.PatternNode {
+fn testMakeGroup(
+    allocator: std.mem.Allocator,
+    node: *const ast.PatternNode,
+) std.mem.Allocator.Error!*const ast.PatternNode {
     const result = try allocator.create(ast.PatternNode);
     result.* = .{ .group = node };
     return result;
@@ -345,7 +526,13 @@ const TestContext = struct {
     /// If a variable is not in this slice, tryVariable returns false.
     allowed_per_row: []const []const []const u8,
 
-    fn tryVariableImpl(ptr: *anyopaque, variable: []const u8, row_idx: usize, _: usize, _: []const []const u8) bool {
+    fn tryVariableImpl(
+        ptr: *anyopaque,
+        variable: []const u8,
+        row_idx: usize,
+        _: usize,
+        _: []const []const u8,
+    ) bool {
         const self: *TestContext = @ptrCast(@alignCast(ptr));
         if (row_idx >= self.allowed_per_row.len) return false;
         const allowed = self.allowed_per_row[row_idx];

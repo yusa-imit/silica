@@ -22,7 +22,7 @@ const WAL_HEADER_SIZE = wal_mod.WAL_HEADER_SIZE;
 const WAL_FRAME_HEADER_SIZE = wal_mod.WAL_FRAME_HEADER_SIZE;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 
-// ── Test Helpers ─────────────────────────────────────────────────────────
+// ── Test Helpers ─────────────────────────
 
 /// Generate deterministic page data for a given page_id and seed.
 fn makePageData(allocator: std.mem.Allocator, page_id: u32, seed: u32, page_size: u32) ![]u8 {
@@ -54,7 +54,12 @@ fn writeRawWalHeader(file: std.fs.File, header: WalHeader) !void {
 }
 
 /// Write a raw WAL frame header + data directly to a file.
-fn writeRawWalFrame(file: std.fs.File, offset: u64, fh: WalFrameHeader, page_data: []const u8) !void {
+fn writeRawWalFrame(
+    file: std.fs.File,
+    offset: u64,
+    fh: WalFrameHeader,
+    page_data: []const u8,
+) !void {
     var fh_buf: [WAL_FRAME_HEADER_SIZE]u8 = undefined;
     fh.serialize(&fh_buf);
     try file.pwriteAll(&fh_buf, offset);
@@ -72,9 +77,9 @@ fn computeFrameChecksum(page_id: u32, salt_1: u32, salt_2: u32, page_data: []con
     return checksum_mod.crc32cUpdate(partial, page_data);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // 1. Header Corruption Fuzzing (5 tests)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "fuzz: WAL header with random magic bytes rejects invalid magic" {
     const allocator = std.testing.allocator;
@@ -305,9 +310,9 @@ test "fuzz: WAL header with random salts is accepted (salts are opaque)" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // 2. Frame Corruption Fuzzing (5 tests)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "fuzz: WAL frames with random checksums are detected as corrupt" {
     const allocator = std.testing.allocator;
@@ -354,7 +359,8 @@ test "fuzz: WAL frames with random checksums are detected as corrupt" {
                 .frame_checksum = random.int(u32), // Random corrupt checksum
             };
 
-            const offset = WAL_HEADER_SIZE + @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
+            const offset = WAL_HEADER_SIZE +
+                @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
             try writeRawWalFrame(file, offset, fh, page_data);
         }
     }
@@ -412,7 +418,8 @@ test "fuzz: WAL frames with mismatched salts stop recovery" {
                 .frame_checksum = computeFrameChecksum(@intCast(i), salt_1, salt_2, page_data),
             };
 
-            const offset = WAL_HEADER_SIZE + @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
+            const offset = WAL_HEADER_SIZE +
+                @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
             try writeRawWalFrame(file, offset, fh, page_data);
         }
 
@@ -489,13 +496,15 @@ test "fuzz: WAL with partial frames at end is truncated gracefully" {
                     .frame_checksum = computeFrameChecksum(@intCast(i), salt_1, salt_2, page_data),
                 };
 
-                const offset = WAL_HEADER_SIZE + @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
+                const offset = WAL_HEADER_SIZE +
+                    @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
                 try writeRawWalFrame(file, offset, fh, page_data);
             }
 
             // Append partial frame (random number of bytes)
             const offset = WAL_HEADER_SIZE + 3 * (WAL_FRAME_HEADER_SIZE + page_size);
-            const partial_size = random.intRangeAtMost(usize, 1, WAL_FRAME_HEADER_SIZE + page_size - 1);
+            const partial_size =
+                random.intRangeAtMost(usize, 1, WAL_FRAME_HEADER_SIZE + page_size - 1);
             const partial_data = try allocator.alloc(u8, partial_size);
             defer allocator.free(partial_data);
             @memset(partial_data, 0xEE);
@@ -606,9 +615,9 @@ test "fuzz: WAL with interleaved commit and non-commit frames" {
     try std.testing.expectEqual(committed_count, wal.committed_frame_count);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // 3. Crash Recovery Fuzzing (5 tests)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "fuzz: WAL recovery with interrupted writes (partial frame at end)" {
     const allocator = std.testing.allocator;
@@ -823,7 +832,8 @@ test "fuzz: WAL recovery with mixed valid and corrupt frames" {
                     .frame_checksum = computeFrameChecksum(@intCast(i), salt_1, salt_2, page_data),
                 };
 
-                const offset = WAL_HEADER_SIZE + @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
+                const offset = WAL_HEADER_SIZE +
+                    @as(u64, @intCast(i)) * (WAL_FRAME_HEADER_SIZE + page_size);
                 try writeRawWalFrame(file, offset, fh, page_data);
             }
 
@@ -840,7 +850,8 @@ test "fuzz: WAL recovery with mixed valid and corrupt frames" {
                 .frame_checksum = random.int(u32), // Corrupt checksum
             };
 
-            const offset = WAL_HEADER_SIZE + @as(u64, good_frames) * (WAL_FRAME_HEADER_SIZE + page_size);
+            const offset = WAL_HEADER_SIZE +
+                @as(u64, good_frames) * (WAL_FRAME_HEADER_SIZE + page_size);
             try writeRawWalFrame(file, offset, bad_fh, bad_data);
         }
 
@@ -883,9 +894,9 @@ test "fuzz: WAL recovery handles empty WAL file gracefully" {
     try std.testing.expectEqual(@as(u32, 0), wal.committed_frame_count);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // 4. Checkpoint Fuzzing (3 tests)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "fuzz: checkpoint with large WAL files (1000+ frames)" {
     const allocator = std.testing.allocator;
@@ -915,7 +926,8 @@ test "fuzz: checkpoint with large WAL files (1000+ frames)" {
     for (0..100) |tx| {
         for (0..10) |i| {
             const page_id: u32 = @intCast((tx % 100) + 1); // Reuse pages
-            const page_data = try makePageData(allocator, page_id, @intCast(tx * 10 + i), page_size);
+            const page_data =
+                try makePageData(allocator, page_id, @intCast(tx * 10 + i), page_size);
             defer allocator.free(page_data);
             try wal.writeFrame(page_id, page_data);
         }
@@ -942,7 +954,8 @@ test "fuzz: checkpoint does not corrupt with concurrent operations" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_ckpt_concurrent.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_fuzz_wal_ckpt_concurrent.db", .{dir_path});
 
     const page_size: u32 = 512;
 
@@ -1027,9 +1040,9 @@ test "fuzz: checkpoint with pending transaction preserves uncommitted" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // 5. Edge Cases (4 tests)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "fuzz: WAL rejects zero-length page data" {
     // WAL frames must have page_size bytes — this test verifies assertion behavior
@@ -1166,7 +1179,10 @@ test "fuzz: WAL repeated page_id in same transaction (later frame wins)" {
         // Verify it's the last version by checking cell_count in header
         const restored_hdr = try PageHeader.deserialize(buf[0..PAGE_HEADER_SIZE]);
         const expected_cell_count = last_seed % 100;
-        try std.testing.expectEqual(@as(u16, @intCast(expected_cell_count)), restored_hdr.cell_count);
+        try std.testing.expectEqual(
+            @as(u16, @intCast(expected_cell_count)),
+            restored_hdr.cell_count,
+        );
 
         wal.deinit();
         std.fs.cwd().deleteFile(wal_path) catch {};

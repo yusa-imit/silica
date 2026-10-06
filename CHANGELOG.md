@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Line length** (plan 001 tidy part 2, batch 4): wrapped or shortened every line over 100 bytes
+  in 11 files (`server/connection`, `sql/conformance_test`, `sql/parser_fuzz`, `sql/pattern_match`,
+  `sql/tokenizer_fuzz`, `storage/gist_index`, `storage/hash_index`, `tx/jepsen_test`, `tx/mvcc`,
+  `tx/wal`, `tx/wal_fuzz`) and removed their `line_length:` entries from `tidy_baseline.txt`
+  (22 -> 11 files). `sql/pattern_match` gained three private helpers split out of oversized
+  functions; behaviour is unchanged.
 - **Line length** (plan 001 tidy part 2, batch 3): wrapped or shortened every line over 100 bytes
   in 12 files (`config/file`, `replication/transport`, `server/server`, `server/wire`,
   `sql/parser_error_tests`, `sql/selectivity`, `storage/fuzz`, `storage/overflow`,

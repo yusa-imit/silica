@@ -120,7 +120,12 @@ pub const Connection = struct {
     portals: std.StringHashMapUnmanaged(Portal),
     session: SessionState,
 
-    pub fn init(allocator: Allocator, db: *Database, user: []const u8, database: []const u8) !Connection {
+    pub fn init(
+        allocator: Allocator,
+        db: *Database,
+        user: []const u8,
+        database: []const u8,
+    ) !Connection {
         return .{
             .allocator = allocator,
             .db = db,
@@ -487,7 +492,11 @@ pub const Connection = struct {
             return;
         };
 
-        const output_schema = silica.planner.deriveOutputSchema(&plan, self.db.schemaProvider(), self.allocator) catch {
+        const output_schema = silica.planner.deriveOutputSchema(
+            &plan,
+            self.db.schemaProvider(),
+            self.allocator,
+        ) catch {
             try (wire.NoData{}).write(writer);
             return;
         };
@@ -498,7 +507,8 @@ pub const Connection = struct {
             return;
         }
 
-        const fields = try self.allocator.alloc(wire.RowDescription.Field, output_schema.fields.len);
+        const fields =
+            try self.allocator.alloc(wire.RowDescription.Field, output_schema.fields.len);
         defer self.allocator.free(fields);
 
         for (output_schema.fields, 0..) |field, i| {
@@ -677,7 +687,11 @@ pub const Connection = struct {
             .timestamp => |ts| try std.fmt.format(writer, "{d}", .{ts}),
             .interval => |iv| {
                 // Format: "P<months>M<days>DT<seconds>S" or simplified
-                try std.fmt.format(writer, "{d} months {d} days {d} micros", .{ iv.months, iv.days, iv.micros });
+                try std.fmt.format(
+                    writer,
+                    "{d} months {d} days {d} micros",
+                    .{ iv.months, iv.days, iv.micros },
+                );
             },
             .numeric => |n| {
                 // Format numeric value
@@ -695,10 +709,15 @@ pub const Connection = struct {
             },
             .uuid => |u| {
                 // Format: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                try std.fmt.format(writer, "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
-                    u[0], u[1], u[2],  u[3],  u[4],  u[5],  u[6],  u[7],
-                    u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15],
-                });
+                try std.fmt.format(
+                    writer,
+                    "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-" ++
+                        "{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
+                    .{
+                        u[0], u[1], u[2],  u[3],  u[4],  u[5],  u[6],  u[7],
+                        u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15],
+                    },
+                );
             },
             .tsvector, .tsquery => |t| return try self.allocator.dupe(u8, t),
             .array => |arr| {
@@ -765,7 +784,7 @@ pub const Connection = struct {
     }
 };
 
-// ── Tests ──────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "Connection init/deinit" {
     const allocator = std.testing.allocator;
@@ -1203,7 +1222,24 @@ test "valueToText - uuid formatting" {
     var conn = try Connection.init(allocator, &db, "user", "db");
     defer conn.deinit();
 
-    const uuid: [16]u8 = .{ 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
+    const uuid: [16]u8 = .{
+        0x12,
+        0x34,
+        0x56,
+        0x78,
+        0x9A,
+        0xBC,
+        0xDE,
+        0xF0,
+        0x11,
+        0x22,
+        0x33,
+        0x44,
+        0x55,
+        0x66,
+        0x77,
+        0x88,
+    };
     const value = Value{ .uuid = uuid };
     const text = try conn.valueToText(value);
     defer allocator.free(text);
@@ -1674,7 +1710,7 @@ test "SessionState - invalid statement_timeout value" {
     try std.testing.expectError(error.InvalidCharacter, result);
 }
 
-// ── Comprehensive Edge Case Tests ───────────────────────────────────
+// ── Comprehensive Edge Case Tests ────────────────────
 
 test "valueToText - very long text (>1MB)" {
     const allocator = std.testing.allocator;
@@ -1895,7 +1931,8 @@ test "getSQLState - comprehensive error mapping" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sqlstate_comprehensive.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_sqlstate_comprehensive.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -2101,7 +2138,8 @@ test "SessionState - parameter case sensitivity" {
     var session = try SessionState.init(allocator, "user", "db");
     defer session.deinit();
 
-    // All parameters should update (parameter names are currently case-sensitive in our implementation)
+    // All parameters should update (parameter names are currently case-sensitive in our
+    // implementation)
     try session.setParameter("search_path", "public");
     try std.testing.expectEqualStrings("public", session.search_path);
 
@@ -2449,7 +2487,7 @@ test "handleExecute - with parameter binding" {
     try std.testing.expectEqual(@as(usize, 1), row_count);
 }
 
-// ── Type OID Mapping Tests ──────────────────────────────────────────
+// ── Type OID Mapping Tests ──────────────────────
 
 test "typeOidForValue - integer type mapping" {
     const allocator = std.testing.allocator;
@@ -2977,7 +3015,7 @@ test "sendRowDescription with NULL values defaults to TEXT OID" {
     try std.testing.expectEqual(@as(i32, 25), second_oid); // TEXT OID for NULL
 }
 
-// ── Describe Message Tests ─────────────────────────────────────
+// ── Describe Message Tests ──────────────────────
 
 test "handleDescribe - unknown statement (returns error)" {
     const allocator = std.testing.allocator;
@@ -2989,7 +3027,8 @@ test "handleDescribe - unknown statement (returns error)" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_unknown_stmt.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_unknown_stmt.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3017,7 +3056,8 @@ test "handleDescribe - unknown portal (returns error)" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_unknown_portal.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_unknown_portal.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3045,7 +3085,8 @@ test "handleDescribe - statement with parameters" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_stmt_params.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_stmt_params.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3091,7 +3132,8 @@ test "handleDescribe - statement with zero parameters" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_stmt_no_params.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_stmt_no_params.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3135,7 +3177,8 @@ test "handleDescribe - portal with bound parameters" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_portal_bound.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_portal_bound.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3193,7 +3236,8 @@ test "handleDescribe - INSERT without RETURNING returns NoData" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_insert_nodata.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_insert_nodata.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3225,7 +3269,8 @@ test "handleDescribe - INSERT without RETURNING returns NoData" {
     // After ParameterDescription, should see NoData ('n')
     // Find NoData in the buffer (it should follow ParameterDescription)
     const param_desc_len_offset = 1;
-    const param_desc_len = std.mem.readInt(i32, describe_buf.items[param_desc_len_offset..][0..4], .big);
+    const param_desc_len =
+        std.mem.readInt(i32, describe_buf.items[param_desc_len_offset..][0..4], .big);
     // Message layout is [type_byte(1)][length(4 incl. itself)][payload]; the length
     // field already counts itself, so the next message starts right after it.
     const no_data_offset: usize = 1 + @as(usize, @intCast(param_desc_len));
@@ -3245,7 +3290,8 @@ test "handleDescribe - SELECT with columns returns RowDescription" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_select_rowdesc.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_select_rowdesc.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3290,7 +3336,8 @@ test "handleDescribe - SELECT with zero rows still sends RowDescription" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_empty_select.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_empty_select.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3344,7 +3391,8 @@ test "handleBind - error sets awaiting_sync true and does not send ReadyForQuery
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_bind_error_awaiting_sync.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_bind_error_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3383,7 +3431,8 @@ test "handleExecute - error sets awaiting_sync true and does not send ReadyForQu
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_execute_error_awaiting_sync.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_execute_error_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3411,7 +3460,8 @@ test "handleDescribe - error sets awaiting_sync true and does not send ReadyForQ
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_describe_error_awaiting_sync.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_describe_error_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
@@ -3439,7 +3489,8 @@ test "handleSync - resets awaiting_sync and sends ReadyForQuery" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "{s}/test_sync_reset_awaiting_sync.db", .{dir_path});
+    const db_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_sync_reset_awaiting_sync.db", .{dir_path});
 
     var db = try Database.open(allocator, db_path, .{});
     defer db.close();
