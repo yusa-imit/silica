@@ -32,7 +32,7 @@ const PageHeader = page_mod.PageHeader;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 const PageType = page_mod.PageType;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 const ROOT_HEADER_SIZE = PAGE_HEADER_SIZE + 4; // magic(4 bytes) + bucket_count(4 bytes)
 const OVERFLOW_HEADER_SIZE = PAGE_HEADER_SIZE + 4; // next_page_id(4 bytes)
@@ -45,7 +45,7 @@ pub const Error = error{
     ValueTooLarge,
 };
 
-// ── API ────────────────────────────────────────────────────────────────
+// ── API ────────────────────────────
 
 pub const HashIndex = struct {
     pool: *BufferPool,
@@ -65,7 +65,8 @@ pub const HashIndex = struct {
         const root_frame = try fetchOrInitRootPage(self);
         defer self.pool.unpinPage(self.root_page_id, true);
 
-        const bucket_count = std.mem.readInt(u32, root_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+        const bucket_count =
+            std.mem.readInt(u32, root_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
 
         const hash_value = std.hash.Wyhash.hash(0, key);
         const bucket_idx = hash_value % bucket_count;
@@ -92,7 +93,8 @@ pub const HashIndex = struct {
         const root_frame = try fetchOrInitRootPage(self);
         defer self.pool.unpinPage(self.root_page_id, false);
 
-        const bucket_count = std.mem.readInt(u32, root_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+        const bucket_count =
+            std.mem.readInt(u32, root_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
         if (bucket_count == 0) {
             return null;
         }
@@ -101,7 +103,8 @@ pub const HashIndex = struct {
         const bucket_idx = hash_value % bucket_count;
         const bucket_offset = ROOT_HEADER_SIZE + (bucket_idx * BUCKET_SIZE);
 
-        const bucket_page_id = std.mem.readInt(u32, root_frame.data[bucket_offset..][0..4], .little);
+        const bucket_page_id =
+            std.mem.readInt(u32, root_frame.data[bucket_offset..][0..4], .little);
         if (bucket_page_id == 0) {
             return null;
         }
@@ -114,7 +117,8 @@ pub const HashIndex = struct {
         const root_frame = try fetchOrInitRootPage(self);
         defer self.pool.unpinPage(self.root_page_id, false);
 
-        const bucket_count = std.mem.readInt(u32, root_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
+        const bucket_count =
+            std.mem.readInt(u32, root_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
         if (bucket_count == 0) {
             return Error.KeyNotFound;
         }
@@ -123,7 +127,8 @@ pub const HashIndex = struct {
         const bucket_idx = hash_value % bucket_count;
         const bucket_offset = ROOT_HEADER_SIZE + (bucket_idx * BUCKET_SIZE);
 
-        const bucket_page_id = std.mem.readInt(u32, root_frame.data[bucket_offset..][0..4], .little);
+        const bucket_page_id =
+            std.mem.readInt(u32, root_frame.data[bucket_offset..][0..4], .little);
         if (bucket_page_id == 0) {
             return Error.KeyNotFound;
         }
@@ -132,7 +137,7 @@ pub const HashIndex = struct {
     }
 };
 
-// ── Helper Functions ────────────────────────────────────────────────────
+// ── Helper Functions ────────────────────────
 
 fn fetchOrInitRootPage(self: *HashIndex) !*BufferFrame {
     // Check if page is already in the buffer pool
@@ -226,7 +231,10 @@ fn storeValuePages(pool: *BufferPool, value: []const u8) !u32 {
         // Write value data
         const bytes_to_write = @min(max_value_per_page, value.len - offset_in_value);
         const write_offset = PAGE_HEADER_SIZE + 4;
-        @memcpy(frame.data[write_offset .. write_offset + bytes_to_write], value[offset_in_value .. offset_in_value + bytes_to_write]);
+        @memcpy(
+            frame.data[write_offset .. write_offset + bytes_to_write],
+            value[offset_in_value .. offset_in_value + bytes_to_write],
+        );
         frame.markDirty();
 
         offset_in_value += bytes_to_write;
@@ -235,7 +243,12 @@ fn storeValuePages(pool: *BufferPool, value: []const u8) !u32 {
     return page_ids[0];
 }
 
-fn retrieveValuePages(pool: *BufferPool, allocator: std.mem.Allocator, first_page_id: u32, value_len: usize) ![]u8 {
+fn retrieveValuePages(
+    pool: *BufferPool,
+    allocator: std.mem.Allocator,
+    first_page_id: u32,
+    value_len: usize,
+) ![]u8 {
     const result = try allocator.alloc(u8, value_len);
     var offset: usize = 0;
     var current_page_id = first_page_id;
@@ -248,7 +261,10 @@ fn retrieveValuePages(pool: *BufferPool, allocator: std.mem.Allocator, first_pag
         const bytes_to_read = @min(max_value_per_page, value_len - offset);
         const read_offset = PAGE_HEADER_SIZE + 4;
 
-        @memcpy(result[offset .. offset + bytes_to_read], frame.data[read_offset .. read_offset + bytes_to_read]);
+        @memcpy(
+            result[offset .. offset + bytes_to_read],
+            frame.data[read_offset .. read_offset + bytes_to_read],
+        );
         offset += bytes_to_read;
 
         current_page_id = std.mem.readInt(u32, frame.data[PAGE_HEADER_SIZE..][0..4], .little);
@@ -277,7 +293,8 @@ fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value:
         defer pool.unpinPage(current_page_id, false);
 
         // Check if key already exists
-        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
+        const entry_count =
+            std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
         const entries_start = PAGE_HEADER_SIZE + 6;
         var offset: usize = entries_start;
 
@@ -302,7 +319,6 @@ fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value:
 
             offset += if (value_len > 0) value_len else 4; // 4 for page_id if external
         }
-
         // Check if next page exists
         const next_page_id = std.mem.readInt(u32, frame.data[PAGE_HEADER_SIZE..][0..4], .little);
         if (next_page_id == 0) {
@@ -333,7 +349,12 @@ fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value:
     }
 }
 
-fn tryInsertExternalValueEntry(frame: *BufferFrame, key: []const u8, value_len: usize, value_page_id: u32) bool {
+fn tryInsertExternalValueEntry(
+    frame: *BufferFrame,
+    key: []const u8,
+    value_len: usize,
+    value_page_id: u32,
+) bool {
     const page_size = 4096;
     const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
     const entries_start = PAGE_HEADER_SIZE + 6;
@@ -396,7 +417,8 @@ fn tryInsertExternalValueEntry(frame: *BufferFrame, key: []const u8, value_len: 
 fn tryInsertEntry(frame: *BufferFrame, key: []const u8, value: []const u8) bool {
     const page_size = 4096; // Fixed for now (matches test setup)
 
-    // For very large values, we need multiple pages - for now, just allow if it fits in reasonable space
+    // For very large values, we need multiple pages - for now, just allow if it fits in
+    // reasonable space
     if (value.len > page_size - 100) {
         return false; // Too large for single entry
     }
@@ -459,14 +481,20 @@ fn tryInsertEntry(frame: *BufferFrame, key: []const u8, value: []const u8) bool 
     return true;
 }
 
-fn searchChain(pool: *BufferPool, allocator: std.mem.Allocator, head_page_id: u32, key: []const u8) !?[]u8 {
+fn searchChain(
+    pool: *BufferPool,
+    allocator: std.mem.Allocator,
+    head_page_id: u32,
+    key: []const u8,
+) !?[]u8 {
     var current_page_id = head_page_id;
 
     while (current_page_id != 0) {
         const frame = try pool.fetchPage(current_page_id);
         defer pool.unpinPage(current_page_id, false);
 
-        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
+        const entry_count =
+            std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
         const entries_start = PAGE_HEADER_SIZE + 6;
         var offset: usize = entries_start;
 
@@ -516,28 +544,23 @@ fn searchChain(pool: *BufferPool, allocator: std.mem.Allocator, head_page_id: u3
 
 fn deleteFromChain(pool: *BufferPool, head_page_id: u32, key: []const u8) !void {
     var current_page_id = head_page_id;
-
     while (current_page_id != 0) {
         const frame = try pool.fetchPage(current_page_id);
         defer pool.unpinPage(current_page_id, false);
-
-        const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
+        const entry_count =
+            std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
         const entries_start = PAGE_HEADER_SIZE + 6;
         var offset: usize = entries_start;
-
         for (0..entry_count) |_| {
             if (offset + 10 > frame.data.len) break;
-
             const entry_start = offset;
 
             const klen_result = varint.decode(frame.data[offset..]) catch break;
             const key_len = klen_result.value;
             offset += klen_result.bytes_read;
-
             if (offset + key_len > frame.data.len) break;
             const stored_key = frame.data[offset .. offset + key_len];
             offset += key_len;
-
             const vlen_result = varint.decode(frame.data[offset..]) catch break;
             const value_len = vlen_result.value;
             offset += vlen_result.bytes_read;
@@ -563,11 +586,20 @@ fn deleteFromChain(pool: *BufferPool, head_page_id: u32, key: []const u8) !void 
                 // Found it! Remove this entry
                 const remaining = frame.data.len - entry_end;
                 if (remaining > 0) {
-                    std.mem.copyForwards(u8, frame.data[entry_start .. entry_start + remaining], frame.data[entry_end..]);
+                    std.mem.copyForwards(
+                        u8,
+                        frame.data[entry_start .. entry_start + remaining],
+                        frame.data[entry_end..],
+                    );
                 }
 
                 // Update entry count
-                std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], entry_count - 1, .little);
+                std.mem.writeInt(
+                    u16,
+                    frame.data[PAGE_HEADER_SIZE + 4 ..][0..2],
+                    entry_count - 1,
+                    .little,
+                );
                 frame.markDirty();
                 return;
             }
@@ -581,7 +613,7 @@ fn deleteFromChain(pool: *BufferPool, head_page_id: u32, key: []const u8) !void 
     return Error.KeyNotFound;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "hash index init creates valid structure" {
     const allocator = std.testing.allocator;
@@ -617,7 +649,8 @@ test "hash index insert single key-value pair" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_single.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -802,7 +835,8 @@ test "hash index delete non-existent key fails" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete_missing.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete_missing.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -919,7 +953,8 @@ test "hash index insert and delete multiple keys" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_delete_multi.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_insert_delete_multi.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -1138,7 +1173,8 @@ test "hash index get after delete adjacent keys" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete_adjacent.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_delete_adjacent.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -1318,7 +1354,8 @@ test "hash index special characters in keys and values" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_special_chars.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_special_chars.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -1330,8 +1367,20 @@ test "hash index special characters in keys and values" {
 
     var idx = HashIndex.init(&pool, root_id);
 
-    const keys = [_][]const u8{ "key with spaces", "key/with/slashes", "key@with#special$chars", "key\twith\ttabs", "key\nwith\nnewlines" };
-    const values = [_][]const u8{ "value\x00with\x00nulls", "value\twith\ttabs", "value with spaces", "unicode: 你好", "emoji: 🎉" };
+    const keys = [_][]const u8{
+        "key with spaces",
+        "key/with/slashes",
+        "key@with#special$chars",
+        "key\twith\ttabs",
+        "key\nwith\nnewlines",
+    };
+    const values = [_][]const u8{
+        "value\x00with\x00nulls",
+        "value\twith\ttabs",
+        "value with spaces",
+        "unicode: 你好",
+        "emoji: 🎉",
+    };
 
     for (0..5) |i| {
         try idx.insert(keys[i], values[i]);
@@ -1354,7 +1403,8 @@ test "hash index value larger than page size" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_overflow_value.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_overflow_value.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -1390,7 +1440,8 @@ test "hash index single key with multiple colliding keys nearby" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_collision_chain.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_collision_chain.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();
@@ -1428,7 +1479,8 @@ test "hash index ValueTooLarge error on insert exceeding 100-page limit" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/test_hash_value_too_large.db", .{dir_path});
+    const test_path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_hash_value_too_large.db", .{dir_path});
 
     var pager = try Pager.init(allocator, test_path, .{});
     defer pager.deinit();

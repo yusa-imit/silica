@@ -9,10 +9,12 @@
 //!   - same(a, b): are two predicates equal?
 //!
 //! Page layout for internal nodes:
-//!   [PageHeader 16B][child_count u16][reserved 2B][child_0_pred_size u16]...[child_0_page_id u32]... [predicates←]
+//!   [PageHeader 16B][child_count u16][reserved 2B][child_0_pred_size u16]...
+//!   [child_0_page_id u32]... [predicates←]
 //!
 //! Page layout for leaf nodes:
-//!   [PageHeader 16B][entry_count u16][reserved 2B][entry_0_pred_size u16]...[entry_0_tuple_id u32]... [predicates←]
+//!   [PageHeader 16B][entry_count u16][reserved 2B][entry_0_pred_size u16]...
+//!   [entry_0_tuple_id u32]... [predicates←]
 //!
 //! NOT IMPLEMENTED (deferred):
 //!   - Concurrent tree modifications (single-threaded only)
@@ -32,7 +34,7 @@ const PageHeader = page_mod.PageHeader;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 const PageType = page_mod.PageType;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 const GIST_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // page_type + entry_count
 const GIST_ENTRY_HEADER_SIZE: u32 = 2 + 4; // predicate_size(u16) + child_id(u32)
@@ -45,13 +47,24 @@ pub const Error = error{
     ConsistentFailed,
 };
 
-// ── Operator Class Interface ───────────────────────────────────────────
+// ── Operator Class Interface ─────────────────────
 
 /// OpClassFn is the callback type for operator class methods.
-pub const OpClassFn = fn (allocator: std.mem.Allocator, arg1: []const u8, arg2: []const u8) Error!bool;
+pub const OpClassFn = fn (
+    allocator: std.mem.Allocator,
+    arg1: []const u8,
+    arg2: []const u8,
+) Error!bool;
 
 /// OpClass defines the interface for pluggable GiST operators.
-pub const OpClassError = error{ TreeEmpty, EntryNotFound, PageFull, InvalidPredicate, ConsistentFailed, OutOfMemory };
+pub const OpClassError = error{
+    TreeEmpty,
+    EntryNotFound,
+    PageFull,
+    InvalidPredicate,
+    ConsistentFailed,
+    OutOfMemory,
+};
 
 /// Result type for picksplit operation
 pub const PicksplitResult = struct {
@@ -63,32 +76,56 @@ pub const OpClass = struct {
     /// Check if entry predicate matches query with given strategy.
     /// strategy: 0=contains, 1=overlaps, 2=adjacent, etc. (user-defined)
     /// Returns true if entry matches query.
-    consistent: *const fn (allocator: std.mem.Allocator, entry_pred: []const u8, query: []const u8, strategy: u8) OpClassError!bool,
+    consistent: *const fn (
+        allocator: std.mem.Allocator,
+        entry_pred: []const u8,
+        query: []const u8,
+        strategy: u8,
+    ) OpClassError!bool,
 
     /// Compute union predicate of all entries.
     /// Caller owns returned slice.
-    union_fn: *const fn (allocator: std.mem.Allocator, entries: []const []const u8) OpClassError![]u8,
+    union_fn: *const fn (
+        allocator: std.mem.Allocator,
+        entries: []const []const u8,
+    ) OpClassError![]u8,
 
     /// Compute penalty cost of inserting new_pred into subtree with current_pred.
     /// Higher penalty = worse fit. Used in picksplit.
-    penalty: *const fn (allocator: std.mem.Allocator, current_pred: []const u8, new_pred: []const u8) OpClassError!u64,
+    penalty: *const fn (
+        allocator: std.mem.Allocator,
+        current_pred: []const u8,
+        new_pred: []const u8,
+    ) OpClassError!u64,
 
     /// Split entries into two groups. Returns (group_a_indices, group_b_indices).
     /// Caller owns returned arrays.
-    picksplit: *const fn (allocator: std.mem.Allocator, entries: []const []const u8) OpClassError!PicksplitResult,
+    picksplit: *const fn (
+        allocator: std.mem.Allocator,
+        entries: []const []const u8,
+    ) OpClassError!PicksplitResult,
 
     /// Check if two predicates are equal.
-    same: *const fn (allocator: std.mem.Allocator, pred_a: []const u8, pred_b: []const u8) OpClassError!bool,
+    same: *const fn (
+        allocator: std.mem.Allocator,
+        pred_a: []const u8,
+        pred_b: []const u8,
+    ) OpClassError!bool,
 };
 
-// ── Example Operator Class: Int4RangeOpClass ──────────────────────────
+// ── Example Operator Class: Int4RangeOpClass ────────────────
 
 /// Int4RangeOpClass — operator class for integer ranges [lo, hi).
 /// Predicate format: [lo u32 LE][hi u32 LE]
 pub const Int4RangeOpClass = struct {
     /// Consistent: check if range overlaps or contains.
     /// strategy 0: contains, 1: overlaps
-    pub fn consistent(allocator: std.mem.Allocator, entry_pred: []const u8, query: []const u8, strategy: u8) OpClassError!bool {
+    pub fn consistent(
+        allocator: std.mem.Allocator,
+        entry_pred: []const u8,
+        query: []const u8,
+        strategy: u8,
+    ) OpClassError!bool {
         _ = allocator;
         if (entry_pred.len < 8 or query.len < 8) return error.InvalidPredicate;
 
@@ -127,7 +164,11 @@ pub const Int4RangeOpClass = struct {
 
     /// Penalty: compute cost of adding new_pred to subtree with current_pred.
     /// = 0 if new overlaps current, otherwise union_area - current_area
-    pub fn penalty(_: std.mem.Allocator, current_pred: []const u8, new_pred: []const u8) OpClassError!u64 {
+    pub fn penalty(
+        _: std.mem.Allocator,
+        current_pred: []const u8,
+        new_pred: []const u8,
+    ) OpClassError!u64 {
         if (current_pred.len < 8 or new_pred.len < 8) return error.InvalidPredicate;
 
         const curr_lo = std.mem.readInt(u32, current_pred[0..4], .little);
@@ -150,7 +191,10 @@ pub const Int4RangeOpClass = struct {
 
     /// Picksplit: split entries into two groups to minimize union area.
     /// Simple heuristic: find smallest and largest, partition around their midpoint.
-    pub fn picksplit(allocator: std.mem.Allocator, entries: []const []const u8) OpClassError!PicksplitResult {
+    pub fn picksplit(
+        allocator: std.mem.Allocator,
+        entries: []const []const u8,
+    ) OpClassError!PicksplitResult {
         if (entries.len < 2) return error.InvalidPredicate;
 
         var min_idx: usize = 0;
@@ -198,11 +242,18 @@ pub const Int4RangeOpClass = struct {
             _ = group_a.swapRemove(idx);
         }
 
-        return .{ .group_a = try group_a.toOwnedSlice(allocator), .group_b = try group_b.toOwnedSlice(allocator) };
+        return .{
+            .group_a = try group_a.toOwnedSlice(allocator),
+            .group_b = try group_b.toOwnedSlice(allocator),
+        };
     }
 
     /// Same: check if two ranges are equal.
-    pub fn same(allocator: std.mem.Allocator, pred_a: []const u8, pred_b: []const u8) OpClassError!bool {
+    pub fn same(
+        allocator: std.mem.Allocator,
+        pred_a: []const u8,
+        pred_b: []const u8,
+    ) OpClassError!bool {
         _ = allocator;
         if (pred_a.len < 8 or pred_b.len < 8) return error.InvalidPredicate;
         const a_lo = std.mem.readInt(u32, pred_a[0..4], .little);
@@ -223,7 +274,7 @@ pub const Int4RangeOpClass = struct {
     }
 };
 
-// ── GiST Tree Structure ────────────────────────────────────────────────
+// ── GiST Tree Structure ───────────────────────
 
 pub const GiST = struct {
     allocator: std.mem.Allocator,
@@ -233,7 +284,12 @@ pub const GiST = struct {
     max_entries_per_node: u32,
 
     /// Initialize a new GiST tree with the given root page and operator class.
-    pub fn init(allocator: std.mem.Allocator, pool: *BufferPool, root_page_id: u32, opclass: OpClass) !GiST {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        pool: *BufferPool,
+        root_page_id: u32,
+        opclass: OpClass,
+    ) !GiST {
         return .{
             .allocator = allocator,
             .pool = pool,
@@ -279,9 +335,15 @@ pub const GiST = struct {
         }
     }
 
-    // ── Private methods ────────────────────────────────────────────────
+    // ── Private methods ───────────────────────
 
-    fn searchNode(self: *GiST, page_id: u32, query: []const u8, strategy: u8, results: *std.ArrayList(u32)) !void {
+    fn searchNode(
+        self: *GiST,
+        page_id: u32,
+        query: []const u8,
+        strategy: u8,
+        results: *std.ArrayList(u32),
+    ) !void {
         const frame = try self.pool.fetchPage(page_id);
         defer self.pool.unpinPage(page_id, false);
 
@@ -294,7 +356,8 @@ pub const GiST = struct {
             if (pred_offset < frame.data.len and pred_size + pred_offset <= frame.data.len) {
                 const pred = frame.data[pred_offset .. pred_offset + pred_size];
 
-                const is_consistent = try self.opclass.consistent(self.allocator, pred, query, strategy);
+                const is_consistent =
+                    try self.opclass.consistent(self.allocator, pred, query, strategy);
                 if (is_consistent) {
                     if (is_leaf) {
                         const tuple_id = readTupleId(frame.data, i);
@@ -314,7 +377,8 @@ pub const GiST = struct {
 
         var entry_count = readEntryCount(frame.data);
         const needed = GIST_ENTRY_HEADER_SIZE + predicate.len;
-        const available = frame.data.len - GIST_HEADER_SIZE - (entry_count * GIST_ENTRY_HEADER_SIZE);
+        const available = frame.data.len - GIST_HEADER_SIZE -
+            (entry_count * GIST_ENTRY_HEADER_SIZE);
 
         if (needed > available) {
             return error.PageFull;
@@ -390,11 +454,14 @@ pub const GiST = struct {
     }
 };
 
-// ── Page Layout Helpers ────────────────────────────────────────────────
+// ── Page Layout Helpers ───────────────────────
 
 fn calculateMaxEntries(page_size: u32) u32 {
     // Conservative estimate: fit 16 entries + predicates per node
-    return if (page_size > GIST_HEADER_SIZE) ((page_size - GIST_HEADER_SIZE) / (GIST_ENTRY_HEADER_SIZE + 16)) else 1;
+    return if (page_size > GIST_HEADER_SIZE)
+        ((page_size - GIST_HEADER_SIZE) / (GIST_ENTRY_HEADER_SIZE + 16))
+    else
+        1;
 }
 
 fn fetchOrInitRoot(gist: *GiST) !*BufferFrame {
@@ -454,7 +521,7 @@ fn computePredicateOffset(page_len: usize, current_idx: usize, total_entries: us
     return page_len - ((total_entries - current_idx) * 256); // Assume max 256 bytes per predicate
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "GiST init creates valid tree" {
     const allocator = std.testing.allocator;

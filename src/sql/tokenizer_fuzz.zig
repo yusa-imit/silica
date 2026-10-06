@@ -18,7 +18,7 @@ const Tokenizer = tokenizer_mod.Tokenizer;
 const TokenType = tokenizer_mod.TokenType;
 const Token = tokenizer_mod.Token;
 
-// ── Test Helpers ─────────────────────────────────────────────────────────
+// ── Test Helpers ─────────────────────────
 
 /// Generate a random printable ASCII string of given length.
 fn randomPrintableAscii(allocator: std.mem.Allocator, random: std.Random, len: usize) ![]u8 {
@@ -77,7 +77,7 @@ fn fuzzTokenize(allocator: std.mem.Allocator, input: []const u8) !usize {
     return tokens.len;
 }
 
-// ── Fuzz Test 1: Random printable ASCII sequences ───────────────────────
+// ── Fuzz Test 1: Random printable ASCII sequences ──────────────
 
 test "fuzz: random printable ASCII input" {
     const allocator = std.testing.allocator;
@@ -95,7 +95,7 @@ test "fuzz: random printable ASCII input" {
     }
 }
 
-// ── Fuzz Test 2: Invalid UTF-8 sequences ─────────────────────────────────
+// ── Fuzz Test 2: Invalid UTF-8 sequences ─────────────────
 
 test "fuzz: invalid UTF-8 byte sequences" {
     const allocator = std.testing.allocator;
@@ -113,7 +113,7 @@ test "fuzz: invalid UTF-8 byte sequences" {
     }
 }
 
-// ── Fuzz Test 3: Very long identifiers ──────────────────────────────────
+// ── Fuzz Test 3: Very long identifiers ──────────────────
 
 test "fuzz: very long identifiers" {
     const allocator = std.testing.allocator;
@@ -144,7 +144,7 @@ test "fuzz: very long identifiers" {
     }
 }
 
-// ── Fuzz Test 4: Unclosed string literals ───────────────────────────────
+// ── Fuzz Test 4: Unclosed string literals ─────────────────
 
 test "fuzz: unclosed string literals" {
     const allocator = std.testing.allocator;
@@ -170,7 +170,7 @@ test "fuzz: unclosed string literals" {
     }
 }
 
-// ── Fuzz Test 5: Invalid escape sequences ───────────────────────────────
+// ── Fuzz Test 5: Invalid escape sequences ─────────────────
 
 test "fuzz: string literals with random escape sequences" {
     const allocator = std.testing.allocator;
@@ -196,7 +196,7 @@ test "fuzz: string literals with random escape sequences" {
     }
 }
 
-// ── Fuzz Test 6: Very long string literals ──────────────────────────────
+// ── Fuzz Test 6: Very long string literals ─────────────────
 
 test "fuzz: very long string literals" {
     const allocator = std.testing.allocator;
@@ -222,7 +222,7 @@ test "fuzz: very long string literals" {
     }
 }
 
-// ── Fuzz Test 7: Number format edge cases ────────────────────────────────
+// ── Fuzz Test 7: Number format edge cases ─────────────────
 
 test "fuzz: malformed number literals" {
     const allocator = std.testing.allocator;
@@ -272,7 +272,7 @@ test "fuzz: malformed number literals" {
     }
 }
 
-// ── Fuzz Test 8: Unicode identifiers (non-ASCII) ─────────────────────────
+// ── Fuzz Test 8: Unicode identifiers (non-ASCII) ───────────────
 
 test "fuzz: unicode identifiers" {
     const allocator = std.testing.allocator;
@@ -312,7 +312,7 @@ test "fuzz: unicode identifiers" {
     }
 }
 
-// ── Fuzz Test 9: Mixed valid/invalid token sequences ────────────────────
+// ── Fuzz Test 9: Mixed valid/invalid token sequences ─────────────
 
 test "fuzz: mixed valid and invalid tokens" {
     const allocator = std.testing.allocator;
@@ -361,7 +361,7 @@ test "fuzz: mixed valid and invalid tokens" {
     }
 }
 
-// ── Fuzz Test 10: Operator sequences (valid and invalid) ────────────────
+// ── Fuzz Test 10: Operator sequences (valid and invalid) ────────────
 
 test "fuzz: operator sequences" {
     const allocator = std.testing.allocator;
@@ -405,7 +405,7 @@ test "fuzz: operator sequences" {
     }
 }
 
-// ── Fuzz Test 11: Keyword fuzzing (partial/misspelled) ──────────────────
+// ── Fuzz Test 11: Keyword fuzzing (partial/misspelled) ─────────────
 
 test "fuzz: partial and misspelled keywords" {
     const allocator = std.testing.allocator;
@@ -446,7 +446,9 @@ test "fuzz: partial and misspelled keywords" {
         var tokenizer = Tokenizer.init(buf.items);
         const tok = tokenizer.next();
         // Should be either a keyword or identifier, not crash
-        try std.testing.expect(tok.type.isKeyword() or tok.type == .identifier or tok.type == .invalid);
+        try std.testing.expect(tok.type.isKeyword() or
+            tok.type == .identifier or
+            tok.type == .invalid);
     }
 }
 
@@ -487,7 +489,7 @@ test "fuzz: edge case inputs" {
     }
 }
 
-// ── Fuzz Test 13: Deeply nested comments ─────────────────────────────────
+// ── Fuzz Test 13: Deeply nested comments ─────────────────
 
 test "fuzz: deeply nested block comments" {
     const allocator = std.testing.allocator;
@@ -520,7 +522,7 @@ test "fuzz: deeply nested block comments" {
     }
 }
 
-// ── Fuzz Test 14: Random SQL-like statements ─────────────────────────────
+// ── Fuzz Test 14: Random SQL-like statements ────────────────
 
 test "fuzz: random SQL-like statements" {
     const allocator = std.testing.allocator;
@@ -570,7 +572,7 @@ test "fuzz: random SQL-like statements" {
     }
 }
 
-// ── Fuzz Test 15: Quoted identifier edge cases ──────────────────────────
+// ── Fuzz Test 15: Quoted identifier edge cases ───────────────
 
 test "fuzz: quoted identifier edge cases" {
     const allocator = std.testing.allocator;
@@ -604,7 +606,7 @@ test "fuzz: quoted identifier edge cases" {
     }
 }
 
-// ── Fuzz Test 16: Blob literal fuzzing ──────────────────────────────────
+// ── Fuzz Test 16: Blob literal fuzzing ──────────────────
 
 test "fuzz: blob literal edge cases" {
     const allocator = std.testing.allocator;
@@ -629,7 +631,10 @@ test "fuzz: blob literal edge cases" {
             const hex_valid = random.boolean();
             if (hex_valid) {
                 const hex_chars = "0123456789ABCDEFabcdef";
-                try buf.append(allocator, hex_chars[random.intRangeLessThan(usize, 0, hex_chars.len)]);
+                try buf.append(
+                    allocator,
+                    hex_chars[random.intRangeLessThan(usize, 0, hex_chars.len)],
+                );
             } else {
                 // Invalid hex character
                 try buf.append(allocator, 'G' + random.intRangeAtMost(u8, 0, 10));
@@ -648,7 +653,7 @@ test "fuzz: blob literal edge cases" {
     }
 }
 
-// ── Fuzz Test 17: JSON operator fuzzing ─────────────────────────────────
+// ── Fuzz Test 17: JSON operator fuzzing ──────────────────
 
 test "fuzz: JSON operator sequences" {
     const allocator = std.testing.allocator;
@@ -676,7 +681,7 @@ test "fuzz: JSON operator sequences" {
     }
 }
 
-// ── Fuzz Test 18: Large token stream ─────────────────────────────────────
+// ── Fuzz Test 18: Large token stream ───────────────────
 
 test "fuzz: large token stream (1000+ tokens)" {
     const allocator = std.testing.allocator;
@@ -712,7 +717,7 @@ test "fuzz: large token stream (1000+ tokens)" {
     try std.testing.expect(token_count > 500);
 }
 
-// ── Fuzz Test 19: Comment fuzzing (line and block) ──────────────────────
+// ── Fuzz Test 19: Comment fuzzing (line and block) ──────────────
 
 test "fuzz: random comment patterns" {
     const allocator = std.testing.allocator;
@@ -757,7 +762,7 @@ test "fuzz: random comment patterns" {
     }
 }
 
-// ── Fuzz Test 20: Stress test with all patterns combined ────────────────
+// ── Fuzz Test 20: Stress test with all patterns combined ────────────
 
 test "fuzz: combined stress test" {
     const allocator = std.testing.allocator;

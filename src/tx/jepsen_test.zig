@@ -29,9 +29,9 @@ const Value = executor_mod.Value;
 const mvcc_mod = @import("mvcc.zig");
 const IsolationLevel = mvcc_mod.IsolationLevel;
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test Helpers
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 /// Execute SQL and discard result (for DDL/DML).
 fn execSql(db: *Database, sql: []const u8) !void {
@@ -60,7 +60,11 @@ fn execSqlGetInt(db: *Database, sql: []const u8) !i64 {
 }
 
 /// Execute SQL and get all rows.
-fn execSqlGetRows(allocator: std.mem.Allocator, db: *Database, sql: []const u8) !std.ArrayList(Row) {
+fn execSqlGetRows(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    sql: []const u8,
+) !std.ArrayList(Row) {
     var result = try db.exec(sql);
     defer result.close(db.allocator);
 
@@ -115,9 +119,9 @@ fn rollbackTx(db: *Database) !void {
     try execSql(db, "ROLLBACK");
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 1: Bank Transfer Test (Atomicity & Isolation)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Setup: 10 accounts with $100 each (total $1000 invariant)
 // Concurrent operations: 100 random transfers between accounts
@@ -166,7 +170,10 @@ const TransferTask = struct {
                 const balance = execSqlGetInt(&db, balance_sql) catch |err| {
                     rollbackTx(&db) catch {};
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -196,7 +203,10 @@ const TransferTask = struct {
                 execSql(&db, debit_sql) catch |err| {
                     rollbackTx(&db) catch {};
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -206,7 +216,10 @@ const TransferTask = struct {
                 execSql(&db, credit_sql) catch |err| {
                     rollbackTx(&db) catch {};
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -215,7 +228,10 @@ const TransferTask = struct {
 
                 commitTx(&db) catch |err| {
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -266,7 +282,8 @@ fn bankTransferTest(isolation: IsolationLevel) !void {
         try execSql(&db, "CREATE TABLE accounts (id INTEGER, balance INTEGER)");
         var i: i64 = 1;
         while (i <= 10) : (i += 1) {
-            const sql = try std.fmt.allocPrint(allocator, "INSERT INTO accounts VALUES ({d}, 100)", .{i});
+            const sql =
+                try std.fmt.allocPrint(allocator, "INSERT INTO accounts VALUES ({d}, 100)", .{i});
             defer allocator.free(sql);
             try execSql(&db, sql);
         }
@@ -305,9 +322,9 @@ fn bankTransferTest(isolation: IsolationLevel) !void {
     try testing.expectEqual(@as(i64, 1000), total);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 2: Lost Update Prevention (Isolation)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Two concurrent transactions incrementing same counter.
 // Both read initial value, increment, write back.
@@ -334,10 +351,16 @@ const IncrementTask = struct {
                 };
 
                 // Read current counter value
-                const current = execSqlGetInt(&db, "SELECT value FROM counter WHERE id = 1") catch |err| {
+                const current = execSqlGetInt(
+                    &db,
+                    "SELECT value FROM counter WHERE id = 1",
+                ) catch |err| {
                     rollbackTx(&db) catch {};
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -359,7 +382,10 @@ const IncrementTask = struct {
                 execSql(&db, sql) catch |err| {
                     rollbackTx(&db) catch {};
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -368,7 +394,10 @@ const IncrementTask = struct {
 
                 commitTx(&db) catch |err| {
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -457,9 +486,9 @@ fn lostUpdateTest(isolation: IsolationLevel, expect_prevented: bool) !void {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 3: Write Skew Detection (Serializable Isolation)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Setup: Two doctors on-call (at least one must be on-call always).
 // Concurrent transactions: Both doctors try to go off-call simultaneously.
@@ -485,10 +514,16 @@ const DoctorTask = struct {
             };
 
             // Check how many doctors are on-call
-            const on_call_count = execSqlGetInt(&db, "SELECT COUNT(*) FROM doctors WHERE on_call = 1") catch |err| {
+            const on_call_count = execSqlGetInt(
+                &db,
+                "SELECT COUNT(*) FROM doctors WHERE on_call = 1",
+            ) catch |err| {
                 rollbackTx(&db) catch {};
                 // Retry on serialization failures or transaction state errors
-                if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                if (err == error.SerializationFailure or
+                    err == error.TransactionError or
+                    err == error.ExecutionError)
+                {
                     std.Thread.sleep(1_000_000);
                     continue;
                 }
@@ -510,7 +545,10 @@ const DoctorTask = struct {
                 execSql(&db, sql) catch |err| {
                     rollbackTx(&db) catch {};
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -519,7 +557,10 @@ const DoctorTask = struct {
 
                 commitTx(&db) catch |err| {
                     // Retry on serialization failures or transaction state errors
-                    if (err == error.SerializationFailure or err == error.TransactionError or err == error.ExecutionError) {
+                    if (err == error.SerializationFailure or
+                        err == error.TransactionError or
+                        err == error.ExecutionError)
+                    {
                         std.Thread.sleep(1_000_000);
                         continue;
                     }
@@ -610,7 +651,8 @@ fn writeSkewTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         // SERIALIZABLE should prevent write skew (at least one doctor on-call)
         try testing.expect(on_call_count >= 1);
         // Exactly one transaction should have succeeded
-        const success_count = @as(usize, @intFromBool(success1)) + @as(usize, @intFromBool(success2));
+        const success_count =
+            @as(usize, @intFromBool(success1)) + @as(usize, @intFromBool(success2));
         try testing.expect(success_count <= 1);
     } else {
         // Lower isolation levels may allow write skew
@@ -619,9 +661,9 @@ fn writeSkewTest(isolation: IsolationLevel, expect_prevented: bool) !void {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 4: Phantom Read Prevention (Repeatable Read)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Transaction A: COUNT(*) on table
 // Concurrent: Transaction B inserts rows
@@ -645,7 +687,6 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
     const db_path = try getTempDbPath(allocator, "phantom_read");
     defer allocator.free(db_path);
     defer cleanupDbFiles(allocator, db_path);
-
     // Setup: Create table with 5 rows
     {
         var db = try Database.open(allocator, db_path, .{});
@@ -654,12 +695,15 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         try execSql(&db, "CREATE TABLE items (id INTEGER, value INTEGER)");
         var i: i64 = 1;
         while (i <= 5) : (i += 1) {
-            const sql = try std.fmt.allocPrint(allocator, "INSERT INTO items VALUES ({d}, {d})", .{ i, i * 10 });
+            const sql = try std.fmt.allocPrint(
+                allocator,
+                "INSERT INTO items VALUES ({d}, {d})",
+                .{ i, i * 10 },
+            );
             defer allocator.free(sql);
             try execSql(&db, sql);
         }
     }
-
     // Synchronization flags to ensure proper ordering
     var reader_tx_started = std.atomic.Value(bool).init(false);
     var reader_first_count_done = std.atomic.Value(bool).init(false);
@@ -675,14 +719,12 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         tx_started: *std.atomic.Value(bool),
         first_count_done: *std.atomic.Value(bool),
         writer_committed: *std.atomic.Value(bool),
-
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
 
             try beginTx(&db, self.isolation);
             self.tx_started.store(true, .seq_cst);
-
             // First count
             self.count1.* = try execSqlGetInt(&db, "SELECT COUNT(*) FROM items");
             self.first_count_done.store(true, .seq_cst);
@@ -691,14 +733,12 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
             while (!self.writer_committed.load(.seq_cst)) {
                 std.Thread.yield() catch {};
             }
-
             // Second count (should be same under REPEATABLE READ)
             self.count2.* = try execSqlGetInt(&db, "SELECT COUNT(*) FROM items");
 
             try commitTx(&db);
         }
     };
-
     // Writer task
     const WriterTask = struct {
         db_path: []const u8,
@@ -710,7 +750,6 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
-
             // Wait for reader to start transaction and complete first count
             while (!self.tx_started.load(.seq_cst)) {
                 std.Thread.yield() catch {};
@@ -721,11 +760,14 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
 
             // Begin transaction before inserting
             try beginTx(&db, .read_committed);
-
             // Insert new rows within transaction
             var i: i64 = 6;
             while (i <= 10) : (i += 1) {
-                const sql = try std.fmt.allocPrint(self.allocator, "INSERT INTO items VALUES ({d}, {d})", .{ i, i * 10 });
+                const sql = try std.fmt.allocPrint(
+                    self.allocator,
+                    "INSERT INTO items VALUES ({d}, {d})",
+                    .{ i, i * 10 },
+                );
                 defer self.allocator.free(sql);
                 try execSql(&db, sql);
             }
@@ -773,16 +815,17 @@ fn phantomReadTest(isolation: IsolationLevel, expect_prevented: bool) !void {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 5: Dirty Read Prevention (All Levels)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Transaction A writes value, doesn't commit
 // Transaction B tries to read uncommitted value
 // All isolation levels must prevent dirty reads (return old value or block)
 
 test "dirty read prevention (READ COMMITTED)" {
-    // TODO(Milestone 26): Fix MVCC UPDATE visibility — requires multi-version storage or delayed deletion
+    // TODO(Milestone 26): Fix MVCC UPDATE visibility — requires multi-version storage or
+    // delayed deletion
     // Root cause: UPDATE does delete+insert in shared B+Tree, removing old version immediately
     // Concurrent readers see NoRows because old tuple deleted, new tuple has uncommitted xmin
     return error.SkipZigTest;
@@ -882,9 +925,9 @@ fn dirtyReadTest(isolation: IsolationLevel) !void {
     try testing.expectEqual(@as(i64, 100), read_value);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 6: Non-repeatable Read (Read Committed vs Repeatable Read)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Transaction A reads row
 // Concurrent: Transaction B updates and commits
@@ -1010,16 +1053,17 @@ fn nonRepeatableReadTest(isolation: IsolationLevel, expect_allowed: bool) !void 
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 7: Long Fork Test (Snapshot Consistency)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Start long-running transaction T1 (REPEATABLE READ)
 // Spawn 50 concurrent short transactions that modify data
 // T1's snapshot must remain consistent (see database as of T1 start time)
 
 test "long fork: snapshot consistency under concurrent writes" {
-    // TODO(Phase 8 — Client-Server): Multi-connection visibility issue (same as non-repeatable read test).
+    // TODO(Phase 8 — Client-Server): Multi-connection visibility issue (same as
+    // non-repeatable read test).
     // Separate Database instances don't share buffer pool, so concurrent writes not visible
     // until checkpoint. This is an embedded mode limitation, not an MVCC bug.
     return error.SkipZigTest;
@@ -1032,7 +1076,6 @@ fn longForkTestDisabled() !void {
     const db_path = try getTempDbPath(allocator, "long_fork");
     defer allocator.free(db_path);
     defer cleanupDbFiles(allocator, db_path);
-
     // Setup: Create table with 10 rows
     {
         var db = try Database.open(allocator, db_path, .{});
@@ -1041,7 +1084,11 @@ fn longForkTestDisabled() !void {
         try execSql(&db, "CREATE TABLE data (id INTEGER, value INTEGER)");
         var i: i64 = 1;
         while (i <= 10) : (i += 1) {
-            const sql = try std.fmt.allocPrint(allocator, "INSERT INTO data VALUES ({d}, {d})", .{ i, i * 10 });
+            const sql = try std.fmt.allocPrint(
+                allocator,
+                "INSERT INTO data VALUES ({d}, {d})",
+                .{ i, i * 10 },
+            );
             defer allocator.free(sql);
             try execSql(&db, sql);
         }
@@ -1053,7 +1100,6 @@ fn longForkTestDisabled() !void {
         allocator: std.mem.Allocator,
         sum1: *i64,
         sum2: *i64,
-
         fn run(self: *@This()) !void {
             var db = try Database.open(self.allocator, self.db_path, .{});
             defer db.close();
@@ -1062,7 +1108,6 @@ fn longForkTestDisabled() !void {
 
             // First snapshot read
             self.sum1.* = try execSqlGetInt(&db, "SELECT SUM(value) FROM data");
-
             // Wait for concurrent writers
             std.Thread.sleep(100_000_000); // 100ms
 
@@ -1072,7 +1117,6 @@ fn longForkTestDisabled() !void {
             try commitTx(&db);
         }
     };
-
     // Short writer task
     const ShortWriterTask = struct {
         db_path: []const u8,
@@ -1139,9 +1183,9 @@ fn longForkTestDisabled() !void {
     try testing.expectEqual(@as(i64, 550), sum1); // 10+20+30+...+100 = 550
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Test 8: Auto-Commit MVCC Visibility (Regression Tests for Session 78 Bug)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 //
 // Verifies that auto-commit queries correctly filter aborted transactions.
 // Without MVCC filtering in auto-commit mode, aborted data becomes visible.
@@ -1159,7 +1203,11 @@ test "auto-commit: aborted INSERT is invisible" {
     defer tmp.cleanup();
 
     var path_buf: [256]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_abort_insert_{d}.db", .{std.time.milliTimestamp()});
+    const db_path = try std.fmt.bufPrint(
+        &path_buf,
+        "test_autocommit_abort_insert_{d}.db",
+        .{std.time.milliTimestamp()},
+    );
     const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(db_full_path);
 
@@ -1203,12 +1251,20 @@ test "auto-commit: aborted UPDATE is invisible" {
     // defer tmp.cleanup();
     //
     // var path_buf: [256]u8 = undefined;
-    // const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_abort_update_{d}.db", .{std.time.milliTimestamp()});
+    // t db_path = try std.fmt.bufPrint(
+    // &path_buf,
+    // "test_autocommit_abort_update_{d}.db",
+    // .{std.time.milliTimestamp()},
+    //
     // const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
     // defer allocator.free(db_full_path);
     //
     // var full_path_buf: [512]u8 = undefined;
-    // const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+    // t full_path = try std.fmt.bufPrint(
+    // &full_path_buf,
+    // "{s}/{s}",
+    // .{ db_full_path, db_path },
+    //
     //
     // var db = try Database.open(allocator, full_path, .{});
     // defer db.close();
@@ -1239,12 +1295,20 @@ test "auto-commit: aborted DELETE is invisible" {
     // defer tmp.cleanup();
     //
     // var path_buf: [256]u8 = undefined;
-    // const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_abort_delete_{d}.db", .{std.time.milliTimestamp()});
+    // t db_path = try std.fmt.bufPrint(
+    // &path_buf,
+    // "test_autocommit_abort_delete_{d}.db",
+    // .{std.time.milliTimestamp()},
+    //
     // const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
     // defer allocator.free(db_full_path);
     //
     // var full_path_buf: [512]u8 = undefined;
-    // const full_path = try std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ db_full_path, db_path });
+    // t full_path = try std.fmt.bufPrint(
+    // &full_path_buf,
+    // "{s}/{s}",
+    // .{ db_full_path, db_path },
+    //
     //
     // var db = try Database.open(allocator, full_path, .{});
     // defer db.close();
@@ -1274,7 +1338,11 @@ test "auto-commit: mixed committed and aborted rows" {
     defer tmp.cleanup();
 
     var path_buf: [256]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_mixed_{d}.db", .{std.time.milliTimestamp()});
+    const db_path = try std.fmt.bufPrint(
+        &path_buf,
+        "test_autocommit_mixed_{d}.db",
+        .{std.time.milliTimestamp()},
+    );
     const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(db_full_path);
 
@@ -1341,7 +1409,11 @@ test "auto-commit: aggregate functions skip aborted rows" {
     defer tmp.cleanup();
 
     var path_buf: [256]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_aggregates_{d}.db", .{std.time.milliTimestamp()});
+    const db_path = try std.fmt.bufPrint(
+        &path_buf,
+        "test_autocommit_aggregates_{d}.db",
+        .{std.time.milliTimestamp()},
+    );
     const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(db_full_path);
 
@@ -1380,7 +1452,11 @@ test "auto-commit: JOIN does not see aborted rows" {
     defer tmp.cleanup();
 
     var path_buf: [256]u8 = undefined;
-    const db_path = try std.fmt.bufPrint(&path_buf, "test_autocommit_join_{d}.db", .{std.time.milliTimestamp()});
+    const db_path = try std.fmt.bufPrint(
+        &path_buf,
+        "test_autocommit_join_{d}.db",
+        .{std.time.milliTimestamp()},
+    );
     const db_full_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(db_full_path);
 

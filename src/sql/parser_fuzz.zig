@@ -28,7 +28,7 @@ const ast_mod = @import("ast.zig");
 const Parser = parser_mod.Parser;
 const AstArena = ast_mod.AstArena;
 
-// ── Test Helpers ─────────────────────────────────────────────────────────
+// ── Test Helpers ─────────────────────────
 
 /// StringBuilder for constructing SQL strings.
 const StringBuilder = struct {
@@ -80,7 +80,10 @@ fn fuzzParse(allocator: std.mem.Allocator, sql: []const u8) !bool {
 
 /// Generate a random identifier.
 fn randomIdentifier(sb: *StringBuilder, random: std.Random, len: usize) !void {
-    const first_char = if (random.boolean()) 'a' + random.intRangeAtMost(u8, 0, 25) else 'A' + random.intRangeAtMost(u8, 0, 25);
+    const first_char = if (random.boolean())
+        'a' + random.intRangeAtMost(u8, 0, 25)
+    else
+        'A' + random.intRangeAtMost(u8, 0, 25);
     try sb.appendFmt("{c}", .{first_char});
     for (0..len - 1) |_| {
         const ch = random.intRangeAtMost(u8, 0, 2);
@@ -117,7 +120,9 @@ fn randomStringLiteral(sb: *StringBuilder, random: std.Random, max_len: usize) !
 
 /// Generate a random binary operator.
 fn randomBinOp(random: std.Random) []const u8 {
-    const ops = [_][]const u8{ "+", "-", "*", "/", "%", "=", "!=", "<", ">", "<=", ">=", "AND", "OR", "||", "->", "->>" };
+    const ops = [_][]const u8{
+        "+", "-", "*", "/", "%", "=", "!=", "<", ">", "<=", ">=", "AND", "OR", "||", "->", "->>",
+    };
     return ops[random.intRangeLessThan(usize, 0, ops.len)];
 }
 
@@ -153,7 +158,9 @@ fn randomExpr(sb: *StringBuilder, random: std.Random, depth: u32, max_depth: u32
         },
         2 => {
             // Function call
-            const func = [_][]const u8{ "COUNT", "SUM", "AVG", "MIN", "MAX", "LENGTH", "UPPER", "LOWER" };
+            const func = [_][]const u8{
+                "COUNT", "SUM", "AVG", "MIN", "MAX", "LENGTH", "UPPER", "LOWER",
+            };
             try sb.append(func[random.intRangeLessThan(usize, 0, func.len)]);
             try sb.append("(");
             try randomExpr(sb, random, depth + 1, max_depth);
@@ -187,7 +194,7 @@ fn randomExpr(sb: *StringBuilder, random: std.Random, depth: u32, max_depth: u32
     }
 }
 
-// ── Fuzz Test 1: Random SELECT statements ───────────────────────────────
+// ── Fuzz Test 1: Random SELECT statements ─────────────────
 
 test "fuzz: random SELECT statements" {
     const allocator = std.testing.allocator;
@@ -214,7 +221,7 @@ test "fuzz: random SELECT statements" {
     }
 }
 
-// ── Fuzz Test 2: Deeply nested expressions ──────────────────────────────
+// ── Fuzz Test 2: Deeply nested expressions ─────────────────
 
 test "fuzz: deeply nested expressions" {
     const allocator = std.testing.allocator;
@@ -238,7 +245,7 @@ test "fuzz: deeply nested expressions" {
     }
 }
 
-// ── Fuzz Test 3: Complex WHERE clauses ──────────────────────────────────
+// ── Fuzz Test 3: Complex WHERE clauses ──────────────────
 
 test "fuzz: complex WHERE clauses with many AND/OR" {
     const allocator = std.testing.allocator;
@@ -267,7 +274,7 @@ test "fuzz: complex WHERE clauses with many AND/OR" {
     }
 }
 
-// ── Fuzz Test 4: Subqueries at various depths ───────────────────────────
+// ── Fuzz Test 4: Subqueries at various depths ────────────────
 
 test "fuzz: nested subqueries" {
     const allocator = std.testing.allocator;
@@ -299,7 +306,7 @@ test "fuzz: nested subqueries" {
     }
 }
 
-// ── Fuzz Test 5: CTEs (WITH clauses) ─────────────────────────────────────
+// ── Fuzz Test 5: CTEs (WITH clauses) ───────────────────
 
 test "fuzz: Common Table Expressions (WITH clauses)" {
     const allocator = std.testing.allocator;
@@ -331,7 +338,7 @@ test "fuzz: Common Table Expressions (WITH clauses)" {
     }
 }
 
-// ── Fuzz Test 6: JOIN chains ─────────────────────────────────────────────
+// ── Fuzz Test 6: JOIN chains ─────────────────────
 
 test "fuzz: JOIN chains with many tables" {
     const allocator = std.testing.allocator;
@@ -345,12 +352,18 @@ test "fuzz: JOIN chains with many tables" {
         try sb.append("SELECT * FROM t0");
         const join_count = random.intRangeAtMost(usize, 1, 15);
         for (0..join_count) |i| {
-            const join_type = [_][]const u8{ " JOIN ", " LEFT JOIN ", " RIGHT JOIN ", " FULL JOIN ", " CROSS JOIN " };
+            const join_type = [_][]const u8{
+                " JOIN ", " LEFT JOIN ", " RIGHT JOIN ", " FULL JOIN ", " CROSS JOIN ",
+            };
             try sb.append(join_type[random.intRangeLessThan(usize, 0, join_type.len)]);
             try sb.append("t");
             try sb.appendFmt("{d}", .{i + 1});
             // Only add ON clause for non-CROSS joins
-            if (!std.mem.eql(u8, join_type[random.intRangeLessThan(usize, 0, join_type.len - 1)], " CROSS JOIN ")) {
+            if (!std.mem.eql(
+                u8,
+                join_type[random.intRangeLessThan(usize, 0, join_type.len - 1)],
+                " CROSS JOIN ",
+            )) {
                 try sb.append(" ON t0.id = t");
                 try sb.appendFmt("{d}", .{i + 1});
                 try sb.append(".id");
@@ -364,7 +377,7 @@ test "fuzz: JOIN chains with many tables" {
     }
 }
 
-// ── Fuzz Test 7: Window functions ────────────────────────────────────────
+// ── Fuzz Test 7: Window functions ────────────────────
 
 test "fuzz: Window functions with complex PARTITION BY/ORDER BY" {
     const allocator = std.testing.allocator;
@@ -376,7 +389,9 @@ test "fuzz: Window functions with complex PARTITION BY/ORDER BY" {
         defer sb.deinit();
 
         try sb.append("SELECT ");
-        const window_func = [_][]const u8{ "ROW_NUMBER", "RANK", "DENSE_RANK", "SUM", "AVG", "COUNT" };
+        const window_func = [_][]const u8{
+            "ROW_NUMBER", "RANK", "DENSE_RANK", "SUM", "AVG", "COUNT",
+        };
         try sb.append(window_func[random.intRangeLessThan(usize, 0, window_func.len)]);
         try sb.append("(");
         if (random.boolean()) {
@@ -409,7 +424,7 @@ test "fuzz: Window functions with complex PARTITION BY/ORDER BY" {
     }
 }
 
-// ── Fuzz Test 8: JSON path expressions ──────────────────────────────────
+// ── Fuzz Test 8: JSON path expressions ──────────────────
 
 test "fuzz: JSON path expressions" {
     const allocator = std.testing.allocator;
@@ -434,7 +449,7 @@ test "fuzz: JSON path expressions" {
     }
 }
 
-// ── Fuzz Test 9: Array expressions ──────────────────────────────────────
+// ── Fuzz Test 9: Array expressions ───────────────────
 
 test "fuzz: Array expressions" {
     const allocator = std.testing.allocator;
@@ -460,7 +475,7 @@ test "fuzz: Array expressions" {
     }
 }
 
-// ── Fuzz Test 10: CASE expressions with many WHEN clauses ───────────────
+// ── Fuzz Test 10: CASE expressions with many WHEN clauses ────────────
 
 test "fuzz: CASE expressions with many WHEN clauses" {
     const allocator = std.testing.allocator;
@@ -490,7 +505,7 @@ test "fuzz: CASE expressions with many WHEN clauses" {
     }
 }
 
-// ── Fuzz Test 11: Aggregate functions with FILTER/DISTINCT ──────────────
+// ── Fuzz Test 11: Aggregate functions with FILTER/DISTINCT ───────────
 
 test "fuzz: Aggregate functions with FILTER and DISTINCT" {
     const allocator = std.testing.allocator;
@@ -522,7 +537,7 @@ test "fuzz: Aggregate functions with FILTER and DISTINCT" {
     }
 }
 
-// ── Fuzz Test 12: Invalid syntax combinations ───────────────────────────
+// ── Fuzz Test 12: Invalid syntax combinations ────────────────
 
 test "fuzz: Invalid syntax combinations (graceful errors)" {
     const allocator = std.testing.allocator;
@@ -564,7 +579,11 @@ test "fuzz: Invalid syntax combinations (graceful errors)" {
         defer sb.deinit();
 
         const token_count = random.intRangeAtMost(usize, 1, 20);
-        const keywords = [_][]const u8{ "SELECT", "FROM", "WHERE", "JOIN", "ON", "GROUP", "BY", "ORDER", "LIMIT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "TABLE", "INTO", "VALUES", "SET" };
+        const keywords = [_][]const u8{
+            "SELECT", "FROM",  "WHERE", "JOIN",   "ON",     "GROUP",
+            "BY",     "ORDER", "LIMIT", "INSERT", "UPDATE", "DELETE",
+            "CREATE", "DROP",  "TABLE", "INTO",   "VALUES", "SET",
+        };
         for (0..token_count) |i| {
             if (i > 0) try sb.append(" ");
             try sb.append(keywords[random.intRangeLessThan(usize, 0, keywords.len)]);
@@ -577,7 +596,7 @@ test "fuzz: Invalid syntax combinations (graceful errors)" {
     }
 }
 
-// ── Fuzz Test 13: Very long identifier names ────────────────────────────
+// ── Fuzz Test 13: Very long identifier names ────────────────
 
 test "fuzz: Very long identifier names" {
     const allocator = std.testing.allocator;
@@ -601,7 +620,7 @@ test "fuzz: Very long identifier names" {
     }
 }
 
-// ── Fuzz Test 14: Large IN lists ─────────────────────────────────────────
+// ── Fuzz Test 14: Large IN lists ────────────────────
 
 test "fuzz: Large IN lists (200+ values)" {
     const allocator = std.testing.allocator;
@@ -627,7 +646,7 @@ test "fuzz: Large IN lists (200+ values)" {
     }
 }
 
-// ── Fuzz Test 15: Complex GROUP BY/ORDER BY ─────────────────────────────
+// ── Fuzz Test 15: Complex GROUP BY/ORDER BY ────────────────
 
 test "fuzz: Complex GROUP BY/ORDER BY with many columns" {
     const allocator = std.testing.allocator;
@@ -672,7 +691,7 @@ test "fuzz: Complex GROUP BY/ORDER BY with many columns" {
     }
 }
 
-// ── Fuzz Test 16: INSERT statements with many values ────────────────────
+// ── Fuzz Test 16: INSERT statements with many values ─────────────
 
 test "fuzz: INSERT statements with many values" {
     const allocator = std.testing.allocator;
@@ -730,7 +749,9 @@ test "fuzz: CREATE TABLE with many columns and constraints" {
             if (i > 0) try sb.append(", ");
             try randomIdentifier(&sb, random, 8);
             try sb.append(" ");
-            const types = [_][]const u8{ "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "VARCHAR", "TIMESTAMP", "JSON" };
+            const types = [_][]const u8{
+                "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "VARCHAR", "TIMESTAMP", "JSON",
+            };
             try sb.append(types[random.intRangeLessThan(usize, 0, types.len)]);
             if (random.boolean()) {
                 try sb.append(" NOT NULL");
@@ -748,7 +769,7 @@ test "fuzz: CREATE TABLE with many columns and constraints" {
     }
 }
 
-// ── Fuzz Test 18: UPDATE with complex SET and WHERE ─────────────────────
+// ── Fuzz Test 18: UPDATE with complex SET and WHERE ──────────────
 
 test "fuzz: UPDATE with complex SET and WHERE clauses" {
     const allocator = std.testing.allocator;
@@ -779,7 +800,7 @@ test "fuzz: UPDATE with complex SET and WHERE clauses" {
     }
 }
 
-// ── Fuzz Test 19: DELETE with complex WHERE ─────────────────────────────
+// ── Fuzz Test 19: DELETE with complex WHERE ────────────────
 
 test "fuzz: DELETE with complex WHERE clause" {
     const allocator = std.testing.allocator;
@@ -802,7 +823,7 @@ test "fuzz: DELETE with complex WHERE clause" {
     }
 }
 
-// ── Fuzz Test 20: Combined stress test ──────────────────────────────────
+// ── Fuzz Test 20: Combined stress test ──────────────────
 
 test "fuzz: Combined stress test (all patterns)" {
     const allocator = std.testing.allocator;

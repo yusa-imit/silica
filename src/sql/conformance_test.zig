@@ -26,9 +26,9 @@ const Database = engine_mod.Database;
 const executor_mod = @import("executor.zig");
 const Row = executor_mod.Row;
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Helper Functions
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 fn createTestDb(allocator: std.mem.Allocator, path: []const u8) !Database {
     std.fs.cwd().deleteFile(path) catch {};
@@ -37,7 +37,10 @@ fn createTestDb(allocator: std.mem.Allocator, path: []const u8) !Database {
 
 /// Materialize all rows from an iterator into an ArrayList.
 /// Caller owns the returned rows and must call deinit() on each row, then deinit the list.
-fn materializeRows(allocator: std.mem.Allocator, iter: *executor_mod.RowIterator) !std.ArrayList(Row) {
+fn materializeRows(
+    allocator: std.mem.Allocator,
+    iter: *executor_mod.RowIterator,
+) !std.ArrayList(Row) {
     var rows: std.ArrayList(Row) = .{};
     errdefer {
         for (rows.items) |*row| {
@@ -77,9 +80,9 @@ fn expectRowCount(db: *Database, sql: []const u8, expected: usize) !void {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature E021: Basic Data Types
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: E021-01 INTEGER data type" {
     const allocator = std.testing.allocator;
@@ -145,9 +148,9 @@ test "conformance: E021-03 NULL values" {
     try expectRowCount(&db, "SELECT * FROM t1 WHERE val IS NOT NULL", 1);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature E021: Basic DML
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: E021-04 SELECT with WHERE" {
     const allocator = std.testing.allocator;
@@ -218,9 +221,9 @@ test "conformance: E021-06 DELETE statement" {
     try expectRowCount(&db, "SELECT * FROM t1 WHERE id = 2", 0);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature E021: Boolean Operators
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: E021-07 AND operator" {
     const allocator = std.testing.allocator;
@@ -285,9 +288,9 @@ test "conformance: E021-09 NOT operator" {
     try expectRowCount(&db, "SELECT * FROM t1 WHERE NOT (val > 20)", 2);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature F850: ORDER BY
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: F850-01 ORDER BY ASC" {
     const allocator = std.testing.allocator;
@@ -408,9 +411,9 @@ test "conformance: F850-03 ORDER BY multiple columns" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature F851: LIMIT clause
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: F851-01 LIMIT clause" {
     const allocator = std.testing.allocator;
@@ -471,9 +474,9 @@ test "conformance: F851-02 LIMIT with OFFSET" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature F401-F405: Joins
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: F401 INNER JOIN" {
     const allocator = std.testing.allocator;
@@ -519,9 +522,9 @@ test "conformance: F403 LEFT JOIN" {
     try expectRowCount(&db, "SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id", 3);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature T611: Aggregates and GROUP BY
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: T611-01 COUNT aggregate" {
     const allocator = std.testing.allocator;
@@ -753,9 +756,9 @@ test "conformance: T611-06 HAVING clause" {
     // try expectRowCount(&db, "SELECT category FROM t1 GROUP BY category HAVING SUM(val) > 20", 1);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature E061: Subqueries
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: E061-01 Scalar subquery" {
     // SKIP: Scalar subqueries not fully implemented in all expression contexts
@@ -813,12 +816,16 @@ test "conformance: E061-03 EXISTS subquery" {
     // try execSql(&db, "INSERT INTO t1 VALUES (1, 'A'), (2, 'B')");
     // try execSql(&db, "INSERT INTO t2 VALUES (1)");
     //
-    // try expectRowCount(&db, "SELECT * FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.id = t1.id)", 1);
+    // expectRowCount(
+    // &db,
+    // "SELECT * FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.id = t1.id)",
+    // 1,
+    //
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature T121: CTEs (WITH clause)
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: T121-01 Simple CTE" {
     const allocator = std.testing.allocator;
@@ -865,9 +872,9 @@ test "conformance: T121-02 Multiple CTEs" {
     , 2);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature T611: Window Functions
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: T611-07 ROW_NUMBER window function" {
     const allocator = std.testing.allocator;
@@ -886,7 +893,10 @@ test "conformance: T611-07 ROW_NUMBER window function" {
     try execSql(&db, "CREATE TABLE t1 (category TEXT, val INTEGER)");
     try execSql(&db, "INSERT INTO t1 VALUES ('A', 10), ('A', 20), ('B', 5)");
 
-    var result = try db.exec("SELECT category, ROW_NUMBER() OVER (PARTITION BY category ORDER BY val) AS rn FROM t1");
+    var result = try db.exec(
+        "SELECT category, ROW_NUMBER() OVER (PARTITION BY category ORDER BY val) " ++
+            "AS rn FROM t1",
+    );
     defer result.close(db.allocator);
 
     if (result.rows) |*iter| {
@@ -940,9 +950,9 @@ test "conformance: T611-08 RANK window function" {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 // Feature T211: Transactions
-// ══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════
 
 test "conformance: T211-01 COMMIT transaction" {
     const allocator = std.testing.allocator;
