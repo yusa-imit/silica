@@ -64,7 +64,6 @@ function_length:src/config/file.zig:parseConfigFile:181
 debug_print_in_lib:src/server/server.zig:8
 debug_print_in_lib:src/sql/engine.zig:2
 debug_print_in_lib:src/tidy.zig:3
-catch_unreachable_no_safety:src/sql/executor.zig:18
 catch_unreachable_no_safety:src/tidy.zig:1
 std_time_in_lib:src/cli.zig:3
 std_time_in_lib:src/config/file.zig:1

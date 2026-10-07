@@ -3625,21 +3625,21 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         }
         // 4-char patterns
         if (rest.len >= 4 and (std.mem.eql(u8, rest[0..4], "YYYY") or std.mem.eql(u8, rest[0..4], "IYYY"))) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>4}", .{@as(u32, @intCast(dt.year))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 4;
             continue;
         }
         if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH24")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour24))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 4;
             continue;
         }
         if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH12")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 4;
@@ -3677,7 +3677,7 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "YYY")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 1000)}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 3;
@@ -3685,14 +3685,14 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         }
         // 2-char patterns
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MM")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.month}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DD")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.day}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
@@ -3714,35 +3714,35 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "HH")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MI")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(minute))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "SS")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(second))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MS")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@as(u64, @intCast(ms))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "US")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>6}", .{@as(u64, @intCast(us))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
@@ -3759,14 +3759,14 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "YY")) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 100)}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "IW") or std.mem.eql(u8, rest[0..2], "WW"))) {
-            var buf: [10]u8 = undefined;
+            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
             const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u32, @intCast(woy))}) catch unreachable;
             try out.appendSlice(allocator, s);
             i += 2;
@@ -3784,35 +3784,35 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         // 1-char patterns
         switch (rest[0]) {
             'Y' => {
-                var buf: [10]u8 = undefined;
+                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
                 const s = std.fmt.bufPrint(&buf, "{d}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 10)}) catch unreachable;
                 try out.appendSlice(allocator, s);
                 i += 1;
                 continue;
             },
             'D' => {
-                var buf: [10]u8 = undefined;
+                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
                 const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(dow + 1))}) catch unreachable;
                 try out.appendSlice(allocator, s);
                 i += 1;
                 continue;
             },
             'Q' => {
-                var buf: [10]u8 = undefined;
+                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
                 const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(@divFloor(@as(i32, dt.month) - 1, 3) + 1))}) catch unreachable;
                 try out.appendSlice(allocator, s);
                 i += 1;
                 continue;
             },
             'W' => {
-                var buf: [10]u8 = undefined;
+                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
                 const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(wom))}) catch unreachable;
                 try out.appendSlice(allocator, s);
                 i += 1;
                 continue;
             },
             'J' => {
-                var buf: [30]u8 = undefined;
+                var buf: [30]u8 = undefined; // SAFETY: u64 <= 20 chars
                 const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u64, @intCast(ts_days + 2440588))}) catch unreachable;
                 try out.appendSlice(allocator, s);
                 i += 1;
