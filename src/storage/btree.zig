@@ -27,7 +27,7 @@ const PageHeader = page_mod.PageHeader;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 const PageType = page_mod.PageType;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 /// Size of the cell pointer (offset within page, u16).
 const CELL_PTR_SIZE: u16 = 2;
@@ -40,7 +40,7 @@ const LEAF_HEADER_SIZE: u16 = 8;
 /// [right_child: u32] = 4 bytes.
 const INTERNAL_HEADER_SIZE: u16 = 4;
 
-// ── Overflow Value Encoding ────────────────────────────────────────────
+// ── Overflow Value Encoding ──────────────────────
 //
 // Values stored in leaf cells are prefixed with a 1-byte flag:
 //   0x00: Inline value. Remaining bytes are the actual value.
@@ -119,7 +119,11 @@ fn decodeValue(
         const total_len: usize = std.mem.readInt(u32, encoded[1..5], .little);
         const inline_prefix_len = encoded.len - OVERFLOW_ENCODING_OVERHEAD;
         const inline_prefix = encoded[5..][0..inline_prefix_len];
-        const overflow_page_id = std.mem.readInt(u32, encoded[5 + inline_prefix_len ..][0..4], .little);
+        const overflow_page_id = std.mem.readInt(
+            u32,
+            encoded[5 + inline_prefix_len ..][0..4],
+            .little,
+        );
 
         return overflow_mod.readOverflowValue(
             allocator,
@@ -143,7 +147,7 @@ fn getOverflowPageId(encoded: []const u8) u32 {
     return std.mem.readInt(u32, encoded[5 + inline_prefix_len ..][0..4], .little);
 }
 
-// ── Error Types ────────────────────────────────────────────────────────
+// ── Error Types ──────────────────────────
 
 pub const BTreeError = error{
     KeyNotFound,
@@ -160,7 +164,7 @@ pub const BTreeError = error{
 /// with the complex error set from Pager + BufferPool + BTree.
 const InsertError = anyerror;
 
-// ── B+Tree ─────────────────────────────────────────────────────────────
+// ── B+Tree ───────────────────────────
 
 pub const BTree = struct {
     pool: *BufferPool,
@@ -175,7 +179,7 @@ pub const BTree = struct {
         };
     }
 
-    // ── Point Lookup ───────────────────────────────────────────────────
+    // ── Point Lookup ────────────────────────
 
     /// Look up a key and return its value. Caller must free the returned slice.
     /// Transparently handles overflow values by reading overflow page chains.
@@ -190,17 +194,29 @@ pub const BTree = struct {
 
             switch (header.page_type) {
                 .internal => {
-                    page_id = findChildInInternal(frame.data, self.pager.page_size, header.cell_count, key);
+                    page_id = findChildInInternal(
+                        frame.data,
+                        self.pager.page_size,
+                        header.cell_count,
+                        key,
+                    );
                 },
                 .leaf => {
-                    return findInLeafDecoded(allocator, self.pool, frame.data, self.pager.page_size, header.cell_count, key);
+                    return findInLeafDecoded(
+                        allocator,
+                        self.pool,
+                        frame.data,
+                        self.pager.page_size,
+                        header.cell_count,
+                        key,
+                    );
                 },
                 else => return BTreeError.InvalidNodeType,
             }
         }
     }
 
-    // ── Insert ─────────────────────────────────────────────────────────
+    // ── Insert ──────────────────────────
 
     /// Insert a key-value pair. Returns error.DuplicateKey if key already exists.
     /// Transparently handles overflow: large values are split into inline prefix
@@ -224,7 +240,14 @@ pub const BTree = struct {
             setRightChild(frame.data, split.new_page_id);
             // Insert the promoted key with left_child = old root
             // SAFETY: New root is empty, inserting first cell always succeeds
-            insertInternalCell(frame.data, page_size, 0, 0, self.root_page_id, split.promoted_key) catch unreachable;
+            insertInternalCell(
+                frame.data,
+                page_size,
+                0,
+                0,
+                self.root_page_id,
+                split.promoted_key,
+            ) catch unreachable;
 
             self.pool.unpinPage(new_root_id, true);
 
@@ -263,7 +286,12 @@ pub const BTree = struct {
     }
 
     /// Recursive insert. Returns split info if the node was split.
-    fn insertIntoNode(self: *BTree, page_id: u32, key: []const u8, value: []const u8) InsertError!InsertResult {
+    fn insertIntoNode(
+        self: *BTree,
+        page_id: u32,
+        key: []const u8,
+        value: []const u8,
+    ) InsertError!InsertResult {
         const frame = try self.pool.fetchPage(page_id);
         const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
 
@@ -281,7 +309,13 @@ pub const BTree = struct {
         }
     }
 
-    fn insertIntoLeaf(self: *BTree, frame: *BufferFrame, page_id: u32, key: []const u8, value: []const u8) InsertError!InsertResult {
+    fn insertIntoLeaf(
+        self: *BTree,
+        frame: *BufferFrame,
+        page_id: u32,
+        key: []const u8,
+        value: []const u8,
+    ) InsertError!InsertResult {
         const page_size = self.pager.page_size;
         const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const cell_count = header.cell_count;
@@ -314,7 +348,13 @@ pub const BTree = struct {
         return .{ .split = split };
     }
 
-    fn insertIntoInternal(self: *BTree, frame: *BufferFrame, page_id: u32, key: []const u8, value: []const u8) InsertError!InsertResult {
+    fn insertIntoInternal(
+        self: *BTree,
+        frame: *BufferFrame,
+        page_id: u32,
+        key: []const u8,
+        value: []const u8,
+    ) InsertError!InsertResult {
         const page_size = self.pager.page_size;
         const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const cell_count = header.cell_count;
@@ -333,14 +373,32 @@ pub const BTree = struct {
             const re_header = try PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
             const re_count = re_header.cell_count;
 
-            const insert_pos = internalSearchPosition(re_frame.data, page_size, re_count, split.promoted_key);
+            const insert_pos = internalSearchPosition(
+                re_frame.data,
+                page_size,
+                re_count,
+                split.promoted_key,
+            );
 
             const cell_size = internalCellSize(split.promoted_key);
             const free = internalFreeSpace(re_frame.data, page_size, re_count);
 
             if (free >= cell_size + CELL_PTR_SIZE) {
-                updateChildPointer(re_frame.data, page_size, re_count, insert_pos, split.new_page_id);
-                insertInternalCell(re_frame.data, page_size, re_count, insert_pos, child_page_id, split.promoted_key) catch {
+                updateChildPointer(
+                    re_frame.data,
+                    page_size,
+                    re_count,
+                    insert_pos,
+                    split.new_page_id,
+                );
+                insertInternalCell(
+                    re_frame.data,
+                    page_size,
+                    re_count,
+                    insert_pos,
+                    child_page_id,
+                    split.promoted_key,
+                ) catch {
                     self.pool.unpinPage(page_id, false);
                     return BTreeError.PageCorrupt;
                 };
@@ -353,14 +411,21 @@ pub const BTree = struct {
             // repointed to the new right-hand child before snapshotting —
             // otherwise the new page ends up unreferenced and its keys are lost.
             updateChildPointer(re_frame.data, page_size, re_count, insert_pos, split.new_page_id);
-            const internal_split = try self.splitInternal(re_frame, page_id, insert_pos, child_page_id, split.new_page_id, split.promoted_key);
+            const internal_split = try self.splitInternal(
+                re_frame,
+                page_id,
+                insert_pos,
+                child_page_id,
+                split.new_page_id,
+                split.promoted_key,
+            );
             return .{ .split = internal_split };
         }
 
         return .{ .split = null };
     }
 
-    // ── Delete ─────────────────────────────────────────────────────────
+    // ── Delete ──────────────────────────
 
     /// Delete a key. Returns error.KeyNotFound if key does not exist.
     /// Performs leaf and internal node merging/redistribution on underflow.
@@ -394,7 +459,12 @@ pub const BTree = struct {
 
         switch (header.page_type) {
             .leaf => {
-                const pos = leafSearchPosition(frame.data, self.pager.page_size, header.cell_count, key);
+                const pos = leafSearchPosition(
+                    frame.data,
+                    self.pager.page_size,
+                    header.cell_count,
+                    key,
+                );
                 if (!pos.found) {
                     self.pool.unpinPage(page_id, false);
                     return BTreeError.KeyNotFound;
@@ -408,10 +478,21 @@ pub const BTree = struct {
                     try overflow_mod.freeOverflowChain(self.pool, self.pager, overflow_page);
                     // Re-fetch page after overflow free
                     const re_frame = try self.pool.fetchPage(page_id);
-                    const re_header = try PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
-                    deleteLeafCell(re_frame.data, self.pager.page_size, re_header.cell_count, pos.index);
+                    const re_header = try PageHeader.deserialize(
+                        re_frame.data[0..PAGE_HEADER_SIZE],
+                    );
+                    deleteLeafCell(
+                        re_frame.data,
+                        self.pager.page_size,
+                        re_header.cell_count,
+                        pos.index,
+                    );
                     const new_count = re_header.cell_count - 1;
-                    const underflow = isLeafUnderflow(re_frame.data, self.pager.page_size, new_count);
+                    const underflow = isLeafUnderflow(
+                        re_frame.data,
+                        self.pager.page_size,
+                        new_count,
+                    );
                     self.pool.unpinPage(page_id, true);
                     return .{ .underflow = underflow };
                 }
@@ -431,7 +512,12 @@ pub const BTree = struct {
         }
     }
 
-    fn deleteFromInternal(self: *BTree, frame: *BufferFrame, page_id: u32, key: []const u8) anyerror!DeleteResult {
+    fn deleteFromInternal(
+        self: *BTree,
+        frame: *BufferFrame,
+        page_id: u32,
+        key: []const u8,
+    ) anyerror!DeleteResult {
         const page_size = self.pager.page_size;
         const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const cell_count = header.cell_count;
@@ -453,7 +539,11 @@ pub const BTree = struct {
         // Re-check if this internal node itself is underflowing
         const re_frame = try self.pool.fetchPage(page_id);
         const re_header = try PageHeader.deserialize(re_frame.data[0..PAGE_HEADER_SIZE]);
-        const internal_underflow = isInternalUnderflow(re_frame.data, page_size, re_header.cell_count);
+        const internal_underflow = isInternalUnderflow(
+            re_frame.data,
+            page_size,
+            re_header.cell_count,
+        );
         self.pool.unpinPage(page_id, false);
 
         return .{ .underflow = internal_underflow };
@@ -462,7 +552,8 @@ pub const BTree = struct {
     /// Information about which child was found during internal node traversal.
     const ChildInfo = struct {
         child_page_id: u32,
-        /// Index into the internal node's children (0..cell_count for left children, cell_count for right_child)
+        /// Index into the internal node's children (0..cell_count for left children, cell_count for
+        /// right_child)
         child_index: u16,
     };
 
@@ -486,8 +577,14 @@ pub const BTree = struct {
 
     /// Handle underflow in a child of an internal node.
     /// `parent_page_id` is the internal node, `child_page_id` is the underflowing child,
-    /// `child_index` is the child's position (0..cell_count = left children, cell_count = right_child).
-    fn handleChildUnderflow(self: *BTree, parent_page_id: u32, child_page_id: u32, child_index: u16) anyerror!void {
+    /// `child_index` is the child's position (0..cell_count = left children, cell_count =
+    /// right_child).
+    fn handleChildUnderflow(
+        self: *BTree,
+        parent_page_id: u32,
+        child_page_id: u32,
+        child_index: u16,
+    ) anyerror!void {
         const page_size = self.pager.page_size;
 
         // Re-fetch parent to get current state
@@ -524,14 +621,18 @@ pub const BTree = struct {
                 const cell0 = readInternalCell(parent_frame.data, page_size, 0);
                 left_sibling_id = cell0.left_child;
             } else {
-                // child_index-1 is the separator, child at child_index-1's left_child is the left sibling
-                // Actually: in our internal node layout, cell[i].left_child is the child to the left of key[i].
+                // child_index-1 is the separator, child at child_index-1's left_child is the left
+                // sibling
+                // Actually: in our internal node layout, cell[i].left_child is the child to the
+                // left of key[i].
                 // If child_index == i, the child is cell[i].left_child.
                 // The left sibling would be at child_index-1.
-                // For child_index == parent_count (right_child), left sibling is cell[parent_count-1].left_child... no.
+                // For child_index == parent_count (right_child), left sibling is
+                // cell[parent_count-1].left_child... no.
 
                 // Let me think about this more carefully:
-                // Internal node children: cell[0].left_child, cell[1].left_child, ..., cell[n-1].left_child, right_child
+                // Internal node children: cell[0].left_child, cell[1].left_child, ...,
+                // cell[n-1].left_child, right_child
                 // These are n+1 children for n keys.
                 // child_index 0 → cell[0].left_child
                 // child_index 1 → cell[1].left_child
@@ -548,13 +649,23 @@ pub const BTree = struct {
                 //   getChildAtIndex(data, page_size, cell_count, child_index)
                 // The separator between child i and child i+1 is key[i].
 
-                left_sibling_id = getChildAtIndex(parent_frame.data, page_size, parent_count, child_index - 1);
+                left_sibling_id = getChildAtIndex(
+                    parent_frame.data,
+                    page_size,
+                    parent_count,
+                    child_index - 1,
+                );
             }
             separator_index = child_index - 1;
         }
         if (child_index < parent_count) {
             // There is a right sibling
-            right_sibling_id = getChildAtIndex(parent_frame.data, page_size, parent_count, child_index + 1);
+            right_sibling_id = getChildAtIndex(
+                parent_frame.data,
+                page_size,
+                parent_count,
+                child_index + 1,
+            );
         }
 
         self.pool.unpinPage(parent_page_id, false);
@@ -603,7 +714,8 @@ pub const BTree = struct {
         }
     }
 
-    /// Get the child page ID at a given index (0..cell_count = cell[i].left_child, cell_count = right_child).
+    /// Get the child page ID at a given index (0..cell_count = cell[i].left_child, cell_count =
+    /// right_child).
     fn getChildAtIndex(data: []const u8, page_size: u32, cell_count: u16, index: u16) u32 {
         if (index == cell_count) {
             return getRightChild(data);
@@ -641,12 +753,30 @@ pub const BTree = struct {
 
         if (total_data_size <= usable) {
             // Can merge: move all cells from right into left
-            try self.mergeLeaves(left_frame, right_frame, left_id, right_id, left_count, right_count, parent_page_id, sep_index);
+            try self.mergeLeaves(
+                left_frame,
+                right_frame,
+                left_id,
+                right_id,
+                left_count,
+                right_count,
+                parent_page_id,
+                sep_index,
+            );
             return true;
         }
 
         // Cannot merge — redistribute cells between the two leaves
-        try self.redistributeLeaves(left_frame, right_frame, left_id, right_id, left_count, right_count, parent_page_id, sep_index);
+        try self.redistributeLeaves(
+            left_frame,
+            right_frame,
+            left_id,
+            right_id,
+            left_count,
+            right_count,
+            parent_page_id,
+            sep_index,
+        );
         return true;
     }
 
@@ -707,7 +837,14 @@ pub const BTree = struct {
         setNextLeaf(left_frame.data, right_next);
 
         for (0..total) |i| {
-            insertLeafCell(left_frame.data, page_size, @intCast(i), @intCast(i), cells[i].key, cells[i].value) catch {
+            insertLeafCell(
+                left_frame.data,
+                page_size,
+                @intCast(i),
+                @intCast(i),
+                cells[i].key,
+                cells[i].value,
+            ) catch {
                 self.pool.unpinPage(left_id, false);
                 self.pool.unpinPage(right_id, false);
                 return BTreeError.MergeError;
@@ -822,11 +959,25 @@ pub const BTree = struct {
 
         // Write cells
         for (0..split_point) |i| {
-            insertLeafCell(left_frame.data, page_size, @intCast(i), @intCast(i), cells[i].key, cells[i].value) catch break;
+            insertLeafCell(
+                left_frame.data,
+                page_size,
+                @intCast(i),
+                @intCast(i),
+                cells[i].key,
+                cells[i].value,
+            ) catch break;
         }
         for (split_point..total) |i| {
             const j: u16 = @intCast(i - split_point);
-            insertLeafCell(right_frame.data, page_size, j, j, cells[i].key, cells[i].value) catch break;
+            insertLeafCell(
+                right_frame.data,
+                page_size,
+                j,
+                j,
+                cells[i].key,
+                cells[i].value,
+            ) catch break;
         }
 
         self.pool.unpinPage(left_id, true);
@@ -837,7 +988,8 @@ pub const BTree = struct {
         _ = new_right_first;
 
         // Re-read from the frame since we already unpinned... we need the key.
-        // Actually let's use cells[split_point].key which is still valid (references saved_right/saved_left)
+        // Actually let's use cells[split_point].key which is still valid (references
+        // saved_right/saved_left)
         const new_sep_key = cells[split_point].key;
 
         // Update parent's separator key
@@ -848,7 +1000,14 @@ pub const BTree = struct {
         const old_cell = readInternalCell(parent_frame.data, page_size, sep_index);
         const old_left_child = old_cell.left_child;
         deleteInternalCell(parent_frame.data, page_size, parent_header.cell_count, sep_index);
-        insertInternalCell(parent_frame.data, page_size, parent_header.cell_count - 1, sep_index, old_left_child, new_sep_key) catch {
+        insertInternalCell(
+            parent_frame.data,
+            page_size,
+            parent_header.cell_count - 1,
+            sep_index,
+            old_left_child,
+            new_sep_key,
+        ) catch {
             self.pool.unpinPage(parent_page_id, false);
             return;
         };
@@ -905,7 +1064,17 @@ pub const BTree = struct {
 
         if (total_size <= usable) {
             // Can merge
-            try self.mergeInternal(left_frame, right_frame, left_id, right_id, left_count, right_count, parent_page_id, sep_index, sep_key_copy);
+            try self.mergeInternal(
+                left_frame,
+                right_frame,
+                left_id,
+                right_id,
+                left_count,
+                right_count,
+                parent_page_id,
+                sep_index,
+                sep_key_copy,
+            );
             return true;
         }
 
@@ -943,7 +1112,8 @@ pub const BTree = struct {
         defer self.pager.allocator.free(saved_right);
         @memcpy(saved_right, right_frame.data[0..page_size]);
 
-        // Collect all cells: left cells + separator (with left's right_child as left_child) + right cells
+        // Collect all cells: left cells + separator (with left's right_child as left_child) + right
+        // cells
         const total: u32 = @as(u32, left_count) + 1 + @as(u32, right_count);
         var cells = try self.pager.allocator.alloc(InternalCellRef, total);
         defer self.pager.allocator.free(cells);
@@ -968,7 +1138,14 @@ pub const BTree = struct {
         // Reinitialize left page and write all cells
         initInternalPage(left_frame.data, page_size, left_id);
         for (0..total) |i| {
-            insertInternalCell(left_frame.data, page_size, @intCast(i), @intCast(i), cells[i].left_child, cells[i].key) catch {
+            insertInternalCell(
+                left_frame.data,
+                page_size,
+                @intCast(i),
+                @intCast(i),
+                cells[i].left_child,
+                cells[i].key,
+            ) catch {
                 self.pool.unpinPage(left_id, false);
                 self.pool.unpinPage(right_id, false);
                 return BTreeError.MergeError;
@@ -1001,9 +1178,16 @@ pub const BTree = struct {
         self.pool.unpinPage(parent_page_id, true);
     }
 
-    // ── Split Operations ───────────────────────────────────────────────
+    // ── Split Operations ───────────────────────
 
-    fn splitLeaf(self: *BTree, frame: *BufferFrame, page_id: u32, insert_pos: u16, key: []const u8, value: []const u8) InsertError!SplitInfo {
+    fn splitLeaf(
+        self: *BTree,
+        frame: *BufferFrame,
+        page_id: u32,
+        insert_pos: u16,
+        key: []const u8,
+        value: []const u8,
+    ) InsertError!SplitInfo {
         const page_size = self.pager.page_size;
         const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
         const old_count = header.cell_count;
@@ -1052,7 +1236,14 @@ pub const BTree = struct {
         // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (0..split_point) |i| {
             // SAFETY: see loop comment above.
-            insertLeafCell(frame.data, page_size, @intCast(i), @intCast(i), cells[i].key, cells[i].value) catch unreachable;
+            insertLeafCell(
+                frame.data,
+                page_size,
+                @intCast(i),
+                @intCast(i),
+                cells[i].key,
+                cells[i].value,
+            ) catch unreachable;
         }
 
         // Write right half into new page
@@ -1060,7 +1251,14 @@ pub const BTree = struct {
         for (split_point..total) |i| {
             const j: u16 = @intCast(i - split_point);
             // SAFETY: see loop comment above.
-            insertLeafCell(new_frame.data, page_size, j, j, cells[i].key, cells[i].value) catch unreachable;
+            insertLeafCell(
+                new_frame.data,
+                page_size,
+                j,
+                j,
+                cells[i].key,
+                cells[i].value,
+            ) catch unreachable;
         }
 
         // Update sibling pointers: old_prev <-> old -> new -> old_next
@@ -1090,7 +1288,15 @@ pub const BTree = struct {
         };
     }
 
-    fn splitInternal(self: *BTree, frame: *BufferFrame, page_id: u32, insert_pos: u16, left_child: u32, right_child: u32, key: []const u8) InsertError!SplitInfo {
+    fn splitInternal(
+        self: *BTree,
+        frame: *BufferFrame,
+        page_id: u32,
+        insert_pos: u16,
+        left_child: u32,
+        right_child: u32,
+        key: []const u8,
+    ) InsertError!SplitInfo {
         _ = right_child; // already applied via updateChildPointer before this call
         const page_size = self.pager.page_size;
         const header = try PageHeader.deserialize(frame.data[0..PAGE_HEADER_SIZE]);
@@ -1137,7 +1343,14 @@ pub const BTree = struct {
         // SAFETY: Fresh page, cells fit (pre-split page had space for all + 1)
         for (0..split_point) |i| {
             // SAFETY: see loop comment above.
-            insertInternalCell(frame.data, page_size, @intCast(i), @intCast(i), cells[i].left_child, cells[i].key) catch unreachable;
+            insertInternalCell(
+                frame.data,
+                page_size,
+                @intCast(i),
+                @intCast(i),
+                cells[i].left_child,
+                cells[i].key,
+            ) catch unreachable;
         }
         setRightChild(frame.data, old_right_child);
 
@@ -1146,7 +1359,14 @@ pub const BTree = struct {
         for ((split_point + 1)..total) |i| {
             const j: u16 = @intCast(i - split_point - 1);
             // SAFETY: see loop comment above.
-            insertInternalCell(new_frame.data, page_size, j, j, cells[i].left_child, cells[i].key) catch unreachable;
+            insertInternalCell(
+                new_frame.data,
+                page_size,
+                j,
+                j,
+                cells[i].left_child,
+                cells[i].key,
+            ) catch unreachable;
         }
         setRightChild(new_frame.data, original_right_child);
 
@@ -1163,7 +1383,7 @@ pub const BTree = struct {
     }
 };
 
-// ── Range Scan Cursor ─────────────────────────────────────────────────
+// ── Range Scan Cursor ────────────────────────
 
 /// A cursor for iterating over B+Tree entries in key order.
 /// Supports forward and backward traversal using the leaf sibling chain.
@@ -1283,7 +1503,9 @@ pub const Cursor = struct {
                     if (next_id != 0) {
                         const next_frame = try self.tree.pool.fetchPage(next_id);
                         defer self.tree.pool.unpinPage(next_id, false);
-                        const next_header = try PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
+                        const next_header = try PageHeader.deserialize(
+                            next_frame.data[0..PAGE_HEADER_SIZE],
+                        );
                         self.page_id = next_id;
                         self.cell_index = 0;
                         self.cell_count = next_header.cell_count;
@@ -1328,7 +1550,9 @@ pub const Cursor = struct {
             if (next_id != 0) {
                 const next_frame = try self.tree.pool.fetchPage(next_id);
                 defer self.tree.pool.unpinPage(next_id, false);
-                const next_header = try PageHeader.deserialize(next_frame.data[0..PAGE_HEADER_SIZE]);
+                const next_header = try PageHeader.deserialize(
+                    next_frame.data[0..PAGE_HEADER_SIZE],
+                );
                 self.page_id = next_id;
                 self.cell_index = 0;
                 self.cell_count = next_header.cell_count;
@@ -1369,7 +1593,9 @@ pub const Cursor = struct {
             if (prev_id != 0) {
                 const prev_frame = try self.tree.pool.fetchPage(prev_id);
                 defer self.tree.pool.unpinPage(prev_id, false);
-                const prev_header = try PageHeader.deserialize(prev_frame.data[0..PAGE_HEADER_SIZE]);
+                const prev_header = try PageHeader.deserialize(
+                    prev_frame.data[0..PAGE_HEADER_SIZE],
+                );
                 self.page_id = prev_id;
                 self.cell_count = prev_header.cell_count;
                 self.cell_index = if (prev_header.cell_count > 0) prev_header.cell_count - 1 else 0;
@@ -1403,7 +1629,7 @@ pub const Cursor = struct {
     }
 };
 
-// ── Result Types ───────────────────────────────────────────────────────
+// ── Result Types ─────────────────────────
 
 const SplitInfo = struct {
     promoted_key: []const u8,
@@ -1430,7 +1656,7 @@ const SearchResult = struct {
     found: bool,
 };
 
-// ── Page Initialization ────────────────────────────────────────────────
+// ── Page Initialization ───────────────────────
 
 /// Initialize a page buffer as an empty leaf node.
 pub fn initLeafPage(data: []u8, page_size: u32, page_id: u32) void {
@@ -1458,7 +1684,7 @@ pub fn initInternalPage(data: []u8, page_size: u32, page_id: u32) void {
     // right_child = 0 (already zeroed)
 }
 
-// ── Leaf Page Operations ───────────────────────────────────────────────
+// ── Leaf Page Operations ───────────────────────
 
 /// Content area start offset for leaf pages.
 fn leafContentStart() u16 {
@@ -1484,13 +1710,20 @@ fn writeCellPtr(data: []u8, ptr_offset: u16, cell_offset: u16) void {
 fn leafCellSize(key: []const u8, value: []const u8) u16 {
     const key_len_size: u16 = @intCast(varint.encodedLen(key.len));
     const val_len_size: u16 = @intCast(varint.encodedLen(value.len));
-    return key_len_size + @as(u16, @intCast(key.len)) + val_len_size + @as(u16, @intCast(value.len));
+    return key_len_size + @as(u16, @intCast(key.len)) + val_len_size + @as(
+        u16,
+        @intCast(value.len),
+    );
 }
 
 /// Calculate free space in a leaf page.
 pub fn leafFreeSpace(data: []const u8, page_size: u32, cell_count: u16) u16 {
     const ptrs_end = leafCellPtrOffset(cell_count);
-    const cells_start = if (cell_count == 0) @as(u16, @intCast(page_size)) else lowestCellOffset(data, cell_count, true);
+    const cells_start = if (cell_count == 0) @as(u16, @intCast(page_size)) else lowestCellOffset(
+        data,
+        cell_count,
+        true,
+    );
     if (cells_start <= ptrs_end) return 0;
     return cells_start - ptrs_end;
 }
@@ -1537,7 +1770,12 @@ fn readLeafCell(data: []const u8, page_size: u32, index: u16) LeafCell {
 }
 
 /// Binary search for a key in a leaf page. Returns position and whether found.
-fn leafSearchPosition(data: []const u8, page_size: u32, cell_count: u16, key: []const u8) SearchResult {
+fn leafSearchPosition(
+    data: []const u8,
+    page_size: u32,
+    cell_count: u16,
+    key: []const u8,
+) SearchResult {
     if (cell_count == 0) return .{ .index = 0, .found = false };
 
     var low: u16 = 0;
@@ -1558,7 +1796,13 @@ fn leafSearchPosition(data: []const u8, page_size: u32, cell_count: u16, key: []
 }
 
 /// Find a key's value in a leaf page. Returns owned copy or null.
-fn findInLeaf(allocator: std.mem.Allocator, data: []const u8, page_size: u32, cell_count: u16, key: []const u8) !?[]u8 {
+fn findInLeaf(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    page_size: u32,
+    cell_count: u16,
+    key: []const u8,
+) !?[]u8 {
     const pos = leafSearchPosition(data, page_size, cell_count, key);
     if (!pos.found) return null;
 
@@ -1569,7 +1813,14 @@ fn findInLeaf(allocator: std.mem.Allocator, data: []const u8, page_size: u32, ce
 }
 
 /// Like findInLeaf but decodes overflow values. Returns the actual user value.
-fn findInLeafDecoded(allocator: std.mem.Allocator, pool: *BufferPool, data: []const u8, page_size: u32, cell_count: u16, key: []const u8) !?[]u8 {
+fn findInLeafDecoded(
+    allocator: std.mem.Allocator,
+    pool: *BufferPool,
+    data: []const u8,
+    page_size: u32,
+    cell_count: u16,
+    key: []const u8,
+) !?[]u8 {
     const pos = leafSearchPosition(data, page_size, cell_count, key);
     if (!pos.found) return null;
 
@@ -1580,7 +1831,14 @@ fn findInLeafDecoded(allocator: std.mem.Allocator, pool: *BufferPool, data: []co
 
 /// Insert a cell into a leaf page at the given position.
 /// Shifts existing cell pointers right. Does NOT check free space.
-fn insertLeafCell(data: []u8, page_size: u32, cell_count: u16, pos: u16, key: []const u8, value: []const u8) !void {
+fn insertLeafCell(
+    data: []u8,
+    page_size: u32,
+    cell_count: u16,
+    pos: u16,
+    key: []const u8,
+    value: []const u8,
+) !void {
     // Calculate where to write cell data (grow from the end)
     const cell_size = leafCellSize(key, value);
     const cells_bottom = if (cell_count == 0)
@@ -1609,7 +1867,11 @@ fn insertLeafCell(data: []u8, page_size: u32, cell_count: u16, pos: u16, key: []
         const src_start = leafCellPtrOffset(pos);
         const src_end = leafCellPtrOffset(cell_count);
         const dst_start = leafCellPtrOffset(pos + 1);
-        std.mem.copyBackwards(u8, data[dst_start..][0..(src_end - src_start)], data[src_start..][0..(src_end - src_start)]);
+        std.mem.copyBackwards(
+            u8,
+            data[dst_start..][0..(src_end - src_start)],
+            data[src_start..][0..(src_end - src_start)],
+        );
     }
 
     // Write the new cell pointer
@@ -1636,7 +1898,7 @@ fn deleteLeafCell(data: []u8, page_size: u32, cell_count: u16, pos: u16) void {
     std.mem.writeInt(u16, data[2..4], cell_count - 1, .little);
 }
 
-// ── Leaf Sibling Pointers ──────────────────────────────────────────────
+// ── Leaf Sibling Pointers ──────────────────────
 
 fn getPrevLeaf(data: []const u8) u32 {
     return std.mem.readInt(u32, data[PAGE_HEADER_SIZE..][0..4], .little);
@@ -1654,7 +1916,7 @@ fn setNextLeaf(data: []u8, page_id: u32) void {
     std.mem.writeInt(u32, data[PAGE_HEADER_SIZE + 4 ..][0..4], page_id, .little);
 }
 
-// ── Internal Page Operations ───────────────────────────────────────────
+// ── Internal Page Operations ─────────────────────
 
 fn internalContentStart() u16 {
     return PAGE_HEADER_SIZE + INTERNAL_HEADER_SIZE;
@@ -1689,7 +1951,10 @@ pub fn readInternalCell(data: []const u8, page_size: u32, index: u16) InternalCe
     offset += 4;
 
     // Read key
-    const key_dec = varint.decode(data[offset..]) catch return .{ .left_child = left_child, .key = &.{} };
+    const key_dec = varint.decode(data[offset..]) catch return .{
+        .left_child = left_child,
+        .key = &.{},
+    };
     offset += key_dec.bytes_read;
     const key_len: usize = @intCast(key_dec.value);
     const key_data = data[offset..][0..key_len];
@@ -1704,7 +1969,11 @@ fn internalCellSize(key: []const u8) u16 {
 
 fn internalFreeSpace(data: []const u8, page_size: u32, cell_count: u16) u16 {
     const ptrs_end = internalCellPtrOffset(cell_count);
-    const cells_start = if (cell_count == 0) @as(u16, @intCast(page_size)) else lowestCellOffset(data, cell_count, false);
+    const cells_start = if (cell_count == 0) @as(u16, @intCast(page_size)) else lowestCellOffset(
+        data,
+        cell_count,
+        false,
+    );
     if (cells_start <= ptrs_end) return 0;
     return cells_start - ptrs_end;
 }
@@ -1731,7 +2000,12 @@ fn internalSearchPosition(data: []const u8, page_size: u32, cell_count: u16, key
 }
 
 /// Find which child to descend into and return both the child page ID and its index.
-fn findChildWithIndex(data: []const u8, page_size: u32, cell_count: u16, key: []const u8) struct { child_page_id: u32, child_index: u16 } {
+fn findChildWithIndex(
+    data: []const u8,
+    page_size: u32,
+    cell_count: u16,
+    key: []const u8,
+) struct { child_page_id: u32, child_index: u16 } {
     var low: u16 = 0;
     var high: u16 = cell_count;
 
@@ -1781,7 +2055,14 @@ fn findChildInInternal(data: []const u8, page_size: u32, cell_count: u16, key: [
 }
 
 /// Insert a cell into an internal page at the given position.
-fn insertInternalCell(data: []u8, page_size: u32, cell_count: u16, pos: u16, left_child: u32, key: []const u8) !void {
+fn insertInternalCell(
+    data: []u8,
+    page_size: u32,
+    cell_count: u16,
+    pos: u16,
+    left_child: u32,
+    key: []const u8,
+) !void {
     const cell_size = internalCellSize(key);
     const cells_bottom = if (cell_count == 0)
         @as(u16, @intCast(page_size))
@@ -1805,7 +2086,11 @@ fn insertInternalCell(data: []u8, page_size: u32, cell_count: u16, pos: u16, lef
         const src_start = internalCellPtrOffset(pos);
         const src_end = internalCellPtrOffset(cell_count);
         const dst_start = internalCellPtrOffset(pos + 1);
-        std.mem.copyBackwards(u8, data[dst_start..][0..(src_end - src_start)], data[src_start..][0..(src_end - src_start)]);
+        std.mem.copyBackwards(
+            u8,
+            data[dst_start..][0..(src_end - src_start)],
+            data[src_start..][0..(src_end - src_start)],
+        );
     }
 
     // Write cell pointer
@@ -1854,7 +2139,7 @@ fn updateChildPointer(data: []u8, page_size: u32, cell_count: u16, pos: u16, new
     std.mem.writeInt(u32, data[cell_off..][0..4], new_child, .little);
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "leaf page init and basic cell operations" {
     var buf: [4096]u8 = undefined;
@@ -2838,7 +3123,7 @@ test "BTree insert after deletes reuses correct positions" {
     try std.testing.expect(val_c == null);
 }
 
-// ── Merge / Underflow Tests (Milestone 2C) ────────────────────────────
+// ── Merge / Underflow Tests (Milestone 2C) ─────────────────
 
 test "BTree leaf merge on heavy deletion with small pages" {
     const allocator = std.testing.allocator;
@@ -3184,7 +3469,9 @@ test "BTree leaf sibling chain intact after merges" {
 
     // Verify sorted order
     for (0..collected.items.len - 1) |j| {
-        try std.testing.expect(std.mem.order(u8, collected.items[j], collected.items[j + 1]) == .lt);
+        try std.testing.expect(
+            std.mem.order(u8, collected.items[j], collected.items[j + 1]) == .lt,
+        );
     }
 }
 
@@ -3309,7 +3596,7 @@ test "BTree delete from middle of leaf chain" {
     }
 }
 
-// ── Cursor Tests (Milestone 2D) ───────────────────────────────────────
+// ── Cursor Tests (Milestone 2D) ────────────────────
 
 test "Cursor forward scan all keys" {
     const allocator = std.testing.allocator;
@@ -3733,7 +4020,7 @@ test "Cursor single key tree" {
     try std.testing.expect(e4 == null);
 }
 
-// ── Overflow Integration Tests ────────────────────────────────────────
+// ── Overflow Integration Tests ─────────────────────
 
 test "BTree insert and get large value (overflow)" {
     const allocator = std.testing.allocator;
@@ -4124,7 +4411,7 @@ test "BTree empty value with overflow encoding" {
     allocator.free(v.?);
 }
 
-// ── Stabilization: Additional Edge Case Tests ─────────────────────────
+// ── Stabilization: Additional Edge Case Tests ────────────────
 
 test "BTree delete single key from root leaf" {
     const allocator = std.testing.allocator;
@@ -4135,7 +4422,11 @@ test "BTree delete single key from root leaf" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete_root_single.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_btree_delete_root_single.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4183,7 +4474,11 @@ test "BTree cursor forward scan after partial deletion" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_cursor_after_delete.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_btree_cursor_after_delete.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4335,7 +4630,11 @@ test "BTree delete all then reinsert larger dataset" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_delete_reinsert_larger.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_btree_delete_reinsert_larger.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4403,7 +4702,11 @@ test "BTree cursor backward scan after heavy deletion" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_btree_cursor_backward_del.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_btree_cursor_backward_del.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{ .page_size = 512 });
     defer pager.deinit();
@@ -4564,7 +4867,10 @@ test "BTree get on non-existent key in multi-level tree" {
     }
 
     // Look up keys that don't exist (odd numbers, before first, after last)
-    for ([_][]const u8{ "k000001", "k000003", "k000099", "k000199", "a000000", "z999999" }) |missing| {
+    const missing_keys = [_][]const u8{
+        "k000001", "k000003", "k000099", "k000199", "a000000", "z999999",
+    };
+    for (missing_keys) |missing| {
         const val = try tree.get(allocator, missing);
         try std.testing.expect(val == null);
     }
@@ -4576,7 +4882,8 @@ test "BTree get on non-existent key in multi-level tree" {
 // but these are defensive error paths that are difficult to trigger without actual disk corruption.
 // The error is tested implicitly through:
 // 1. Existing split tests verify correct cell insertion
-// 2. MergeError test verifies detection of corrupted cells during merge (removed due to compiler bug)
+// 2. MergeError test verifies detection of corrupted cells during merge (removed due to compiler
+// bug)
 // 3. Real-world corruption would be caught by CRC32 checksums at page read time
 
 test "BTree InvalidNodeType error on get from non-leaf/internal page" {
@@ -4624,7 +4931,8 @@ test "BTree InvalidNodeType error on get from non-leaf/internal page" {
 // due to Zig 0.15.2 compiler bug. The simpler InvalidNodeType test below adequately
 // covers the error path.
 
-// NOTE: MergeError test removed due to Zig 0.15.2 compiler bug (LLVM "Instruction does not dominate")
+// NOTE: MergeError test removed due to Zig 0.15.2 compiler bug (LLVM "Instruction does not
+// dominate")
 // MergeError is tested implicitly through existing merge tests - corruption during merge would
 // trigger the error path in mergeLeaves() when insertLeafCell fails on corrupted data.
 
@@ -4742,10 +5050,16 @@ fn expectAllLeavesSameDepth(pool: *BufferPool, root_id: u32) !void {
             .internal => {
                 for (0..header.cell_count) |idx| {
                     const cell = readInternalCell(frame.data, pool.pager.page_size, @intCast(idx));
-                    try stack.append(std.testing.allocator, .{ .page_id = cell.left_child, .depth = item.depth + 1 });
+                    try stack.append(
+                        std.testing.allocator,
+                        .{ .page_id = cell.left_child, .depth = item.depth + 1 },
+                    );
                 }
                 const right_child = getRightChild(frame.data);
-                try stack.append(std.testing.allocator, .{ .page_id = right_child, .depth = item.depth + 1 });
+                try stack.append(
+                    std.testing.allocator,
+                    .{ .page_id = right_child, .depth = item.depth + 1 },
+                );
             },
             else => return error.InvalidNodeType,
         }

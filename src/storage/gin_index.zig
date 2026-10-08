@@ -15,11 +15,14 @@
 //!   - consistent(posting_lists, query_keys): check if row matches query
 //!
 //! Page layout for entry tree leaf:
-//!   [PageHeader 16B][entry_count u16][reserved 2B][entry_0_key_size u16][entry_0_posting_info u32]...[keys←]
+//!   [PageHeader 16B][entry_count u16][reserved 2B][entry_0_key_size u16][entry_0_posting_info
+//u32]...[keys←]
 //!   posting_info encoding:
-//!     If high bit = 0: inline posting list (lower 31 bits = tuple_count, posting data = fixed u64 tuple IDs)
+//!     If high bit = 0: inline posting list (lower 31 bits = tuple_count, posting data = fixed u64
+//tuple IDs)
 //!     If high bit = 1: posting tree root page (lower 31 bits = page_id)
-//!   Phase 1 simplification: posting lists use fixed u64 tuple IDs (not varint deltas) for correctness
+//!   Phase 1 simplification: posting lists use fixed u64 tuple IDs (not varint deltas) for
+//correctness
 //!
 //! NOT IMPLEMENTED (deferred):
 //!   - Pending list optimization (fast bulk insert)
@@ -39,14 +42,18 @@ const PageHeader = page_mod.PageHeader;
 const PAGE_HEADER_SIZE = page_mod.PAGE_HEADER_SIZE;
 const PageType = page_mod.PageType;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────
 
 const GIN_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 4; // page_type + entry_count + reserved
 const GIN_ENTRY_HEADER_SIZE: u32 = 2 + 4; // key_size(u16) + posting_info(u32)
-const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128; // Bytes before switching to posting tree (128 bytes = 16 u64 tuple IDs)
-const MAX_INLINE_TUPLES: u32 = 16; // With fixed u64 encoding: 128 bytes / 8 bytes per tuple = 16 tuples max
-const POSTING_TREE_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 8; // PageHeader(16) + tuple_count(u32=4) + next_page_id(u32=4)
-const POSTING_TREE_NEXT_PAGE_OFFSET: u32 = PAGE_HEADER_SIZE + 4; // next_page_id field: 0 = no next page
+// Bytes before switching to posting tree (128 bytes = 16 u64 tuple IDs)
+const INLINE_POSTING_LIST_MAX_SIZE: u32 = 128;
+// With fixed u64 encoding: 128 bytes / 8 bytes per tuple = 16 tuples max
+const MAX_INLINE_TUPLES: u32 = 16;
+// PageHeader(16) + tuple_count(u32=4) + next_page_id(u32=4)
+const POSTING_TREE_HEADER_SIZE: u32 = PAGE_HEADER_SIZE + 8;
+// next_page_id field: 0 = no next page
+const POSTING_TREE_NEXT_PAGE_OFFSET: u32 = PAGE_HEADER_SIZE + 4;
 
 /// ItemPointer — (page_id, tuple_offset) uniquely identifying a row.
 pub const ItemPointer = struct {
@@ -73,9 +80,16 @@ pub const Error = error{
     ConsistentFailed,
 };
 
-// ── Operator Class Interface ───────────────────────────────────────────
+// ── Operator Class Interface ─────────────────────
 
-pub const OpClassError = error{ TreeEmpty, EntryNotFound, PageFull, InvalidKey, ConsistentFailed, OutOfMemory };
+pub const OpClassError = error{
+    TreeEmpty,
+    EntryNotFound,
+    PageFull,
+    InvalidKey,
+    ConsistentFailed,
+    OutOfMemory,
+};
 
 /// GIN operator class interface for pluggable key extraction and search.
 pub const OpClass = struct {
@@ -86,20 +100,31 @@ pub const OpClass = struct {
     /// Extract indexed keys from a column value.
     /// Example: ARRAY[1,2,3] → [1, 2, 3] (three separate keys)
     /// Caller owns returned slice and each key slice.
-    extractValue: *const fn (allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8,
+    extractValue: *const fn (
+        allocator: std.mem.Allocator,
+        column_value: []const u8,
+    ) OpClassError![][]const u8,
 
     /// Extract search keys from a query predicate.
     /// Example: WHERE col @> ARRAY[1,2] → [1, 2]
     /// Caller owns returned slice and each key slice.
-    extractQuery: *const fn (allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8,
+    extractQuery: *const fn (
+        allocator: std.mem.Allocator,
+        query_value: []const u8,
+    ) OpClassError![][]const u8,
 
     /// Check if row matches query given posting lists for each search key.
     /// posting_lists[i] corresponds to query_keys[i].
     /// Example for @> (contains): all query_keys must be present (non-empty posting lists).
-    consistent: *const fn (allocator: std.mem.Allocator, posting_lists: []const []const ItemPointer, query_keys: []const []const u8, strategy: u8) OpClassError!bool,
+    consistent: *const fn (
+        allocator: std.mem.Allocator,
+        posting_lists: []const []const ItemPointer,
+        query_keys: []const []const u8,
+        strategy: u8,
+    ) OpClassError!bool,
 };
 
-// ── Example Operator Class: ArrayInt32OpClass ──────────────────────────
+// ── Example Operator Class: ArrayInt32OpClass ────────────────
 
 /// ArrayInt32OpClass — operator class for integer arrays.
 /// Indexed value format: [u32 LE] (single integer)
@@ -117,7 +142,10 @@ pub const ArrayInt32OpClass = struct {
 
     /// Extract value: array → individual elements.
     /// Input format: [count u32][elem0 u32][elem1 u32]...
-    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractValue(
+        allocator: std.mem.Allocator,
+        column_value: []const u8,
+    ) OpClassError![][]const u8 {
         if (column_value.len < 4) return error.InvalidKey;
         const count = std.mem.readInt(u32, column_value[0..4], .little);
         if (column_value.len < 4 + count * 4) return error.InvalidKey;
@@ -133,14 +161,22 @@ pub const ArrayInt32OpClass = struct {
     }
 
     /// Extract query: same format as extractValue.
-    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractQuery(
+        allocator: std.mem.Allocator,
+        query_value: []const u8,
+    ) OpClassError![][]const u8 {
         return extractValue(allocator, query_value);
     }
 
     /// Consistent function for array operators.
     /// Strategy 0 (@>): all query_keys must have non-empty posting lists.
     /// Strategy 1 (&&): at least one query_key must have non-empty posting list.
-    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+    pub fn consistent(
+        _: std.mem.Allocator,
+        posting_lists: []const []const ItemPointer,
+        _: []const []const u8,
+        strategy: u8,
+    ) OpClassError!bool {
         return switch (strategy) {
             0 => blk: { // @> (contains all)
                 for (posting_lists) |list| {
@@ -182,7 +218,7 @@ fn lexCompareKeys(a: []const u8, b: []const u8) i8 {
     };
 }
 
-// ── Real-world Operator Class: ArrayOpsOpClass ─────────────────────────
+// ── Real-world Operator Class: ArrayOpsOpClass ───────────────
 
 /// ArrayOpsOpClass — operator class for `array_ops`: GIN support for SQL
 /// ARRAY columns via `@>` (contains) and `&&` (overlaps).
@@ -267,7 +303,10 @@ pub const ArrayOpsOpClass = struct {
 
     /// Extract one key per array element (the element's own tag+payload
     /// bytes, verbatim). `column_value` must start with the array tag 0x0C.
-    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractValue(
+        allocator: std.mem.Allocator,
+        column_value: []const u8,
+    ) OpClassError![][]const u8 {
         if (column_value.len < 5 or column_value[0] != 0x0C) return error.InvalidKey;
         const count = std.mem.readInt(u32, column_value[1..5], .little);
         // Reject counts that can't possibly fit before allocating `count` key
@@ -296,13 +335,21 @@ pub const ArrayOpsOpClass = struct {
 
     /// Query-side extraction: identical format/semantics to extractValue —
     /// the right-hand side of `@>`/`&&` is serialized the same way.
-    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractQuery(
+        allocator: std.mem.Allocator,
+        query_value: []const u8,
+    ) OpClassError![][]const u8 {
         return extractValue(allocator, query_value);
     }
 
     /// Strategy 0 (@>): every query key's posting list must be non-empty.
     /// Strategy 1 (&&): at least one query key's posting list must be non-empty.
-    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+    pub fn consistent(
+        _: std.mem.Allocator,
+        posting_lists: []const []const ItemPointer,
+        _: []const []const u8,
+        strategy: u8,
+    ) OpClassError!bool {
         return switch (strategy) {
             0 => blk: { // @> (contains all)
                 for (posting_lists) |list| {
@@ -330,7 +377,7 @@ pub const ArrayOpsOpClass = struct {
     }
 };
 
-// ── Real-world Operator Class: JsonbOpsOpClass ─────────────────────────
+// ── Real-world Operator Class: JsonbOpsOpClass ───────────────
 
 /// JsonbOpsOpClass — operator class for `jsonb_ops`: GIN support for the
 /// `@>` (containment) operator on JSON/JSONB columns.
@@ -355,7 +402,8 @@ pub const ArrayOpsOpClass = struct {
 ///   - object key existence, any depth:      0x01 ++ u32 keylen ++ key
 ///   - object key + scalar value, any depth: 0x02 ++ u32 keylen ++ key ++ scalarEncode(value)
 ///   - array scalar element, any depth:      0x03 ++ scalarEncode(value)
-///   - bare scalar document root:            0x03 ++ scalarEncode(value) (same shape as array element — the "this scalar exists" query is identical either way)
+/// - bare scalar document root:            0x03 ++ scalarEncode(value) (same shape as array element
+/// — the "this scalar exists" query is identical either way)
 ///
 /// `scalarEncode` is a local tag+payload scheme (independent of executor.zig's):
 ///   0x00 null, 0x01 bool (1B), 0x02 integer i64 LE (8B), 0x03 float f64-bits LE (8B),
@@ -423,7 +471,11 @@ pub const JsonbOpsOpClass = struct {
     /// the top-level extractValue/extractQuery caller for a bare-scalar
     /// root, is responsible for emitting the leaf's own entry — this keeps
     /// each entry emitted exactly once).
-    fn walk(allocator: std.mem.Allocator, node: std.json.Value, entries: *std.ArrayList([]const u8)) OpClassError!void {
+    fn walk(
+        allocator: std.mem.Allocator,
+        node: std.json.Value,
+        entries: *std.ArrayList([]const u8),
+    ) OpClassError!void {
         switch (node) {
             .object => |obj| {
                 var it = obj.iterator();
@@ -477,7 +529,10 @@ pub const JsonbOpsOpClass = struct {
 
     /// Parse the tag-0x03 wire format and walk the JSON document, producing
     /// one GIN key per entry (see the type doc comment for entry shapes).
-    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractValue(
+        allocator: std.mem.Allocator,
+        column_value: []const u8,
+    ) OpClassError![][]const u8 {
         if (column_value.len < 5 or column_value[0] != 0x03) return error.InvalidKey;
         const len = std.mem.readInt(u32, column_value[1..5], .little);
         if (column_value.len < 5 + @as(usize, len)) return error.InvalidKey;
@@ -485,7 +540,12 @@ pub const JsonbOpsOpClass = struct {
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch return error.InvalidKey;
+        const parsed = std.json.parseFromSlice(
+            std.json.Value,
+            arena.allocator(),
+            json_text,
+            .{},
+        ) catch return error.InvalidKey;
 
         var entries = std.ArrayList([]const u8){};
         errdefer {
@@ -514,7 +574,10 @@ pub const JsonbOpsOpClass = struct {
     /// Query-side extraction: identical format/semantics to extractValue —
     /// the right-hand side of `@>` is serialized the same way and must
     /// share the exact same recursive walker for soundness (see type doc).
-    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractQuery(
+        allocator: std.mem.Allocator,
+        query_value: []const u8,
+    ) OpClassError![][]const u8 {
         return extractValue(allocator, query_value);
     }
 
@@ -522,7 +585,12 @@ pub const JsonbOpsOpClass = struct {
     /// non-empty. No other strategy is supported yet — `?`/`?|`/`?&` need a
     /// plain-text/text-array query wire format the current single-shape
     /// `extractQuery` signature can't cleanly express; deferred.
-    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+    pub fn consistent(
+        _: std.mem.Allocator,
+        posting_lists: []const []const ItemPointer,
+        _: []const []const u8,
+        strategy: u8,
+    ) OpClassError!bool {
         return switch (strategy) {
             0 => blk: {
                 for (posting_lists) |list| {
@@ -544,7 +612,7 @@ pub const JsonbOpsOpClass = struct {
     }
 };
 
-// ── Real-world Operator Class: TsvectorOpsOpClass ──────────────────────
+// ── Real-world Operator Class: TsvectorOpsOpClass ──────────────
 
 /// TsvectorOpsOpClass — operator class for `tsvector_ops`: GIN support for
 /// full-text search with `@@` (match) operator on TSVECTOR columns.
@@ -569,7 +637,10 @@ pub const TsvectorOpsOpClass = struct {
     /// Text format: space-separated lexemes (e.g., "cat dog run")
     /// Returns: slice of duped lexemes, one per GIN key.
     /// Empty text → empty slice (not an error).
-    pub fn extractValue(allocator: std.mem.Allocator, column_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractValue(
+        allocator: std.mem.Allocator,
+        column_value: []const u8,
+    ) OpClassError![][]const u8 {
         // Validate tag and length prefix
         if (column_value.len < 5 or column_value[0] != 0x0F) return error.InvalidKey;
         const len = std.mem.readInt(u32, column_value[1..5], .little);
@@ -638,7 +709,10 @@ pub const TsvectorOpsOpClass = struct {
     /// Text format: space-ampersand-space joined lexemes (e.g., "cat & dog & run")
     /// Returns: slice of duped lexemes, one per GIN key.
     /// Empty text → empty slice (not an error).
-    pub fn extractQuery(allocator: std.mem.Allocator, query_value: []const u8) OpClassError![][]const u8 {
+    pub fn extractQuery(
+        allocator: std.mem.Allocator,
+        query_value: []const u8,
+    ) OpClassError![][]const u8 {
         // Validate tag and length prefix
         if (query_value.len < 5 or query_value[0] != 0x10) return error.InvalidKey;
         const len = std.mem.readInt(u32, query_value[1..5], .little);
@@ -704,7 +778,12 @@ pub const TsvectorOpsOpClass = struct {
 
     /// Strategy 0 (@@, match with AND semantics): all query keys must have
     /// non-empty posting lists. Invalid strategies return error.
-    pub fn consistent(_: std.mem.Allocator, posting_lists: []const []const ItemPointer, _: []const []const u8, strategy: u8) OpClassError!bool {
+    pub fn consistent(
+        _: std.mem.Allocator,
+        posting_lists: []const []const ItemPointer,
+        _: []const []const u8,
+        strategy: u8,
+    ) OpClassError!bool {
         return switch (strategy) {
             0 => blk: {
                 for (posting_lists) |list| {
@@ -726,7 +805,7 @@ pub const TsvectorOpsOpClass = struct {
     }
 };
 
-// ── GIN Tree Structure ─────────────────────────────────────────────────
+// ── GIN Tree Structure ───────────────────────
 
 /// Initialize a GIN entry tree leaf page with the given data buffer.
 /// Used by the engine to native-initialize a GIN index root page directly
@@ -762,7 +841,12 @@ pub const GIN = struct {
 
     /// Initialize a new GIN tree with the given root page and operator class.
     /// The root page is initialized lazily on first access.
-    pub fn init(allocator: std.mem.Allocator, pool: *BufferPool, root_page_id: u32, opclass: OpClass) !GIN {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        pool: *BufferPool,
+        root_page_id: u32,
+        opclass: OpClass,
+    ) !GIN {
         return .{
             .allocator = allocator,
             .pool = pool,
@@ -842,7 +926,12 @@ pub const GIN = struct {
         }
 
         // Call opclass.consistent to filter results
-        const matches = try self.opclass.consistent(self.allocator, posting_lists, query_keys, strategy);
+        const matches = try self.opclass.consistent(
+            self.allocator,
+            posting_lists,
+            query_keys,
+            strategy,
+        );
         if (!matches) {
             return try self.allocator.alloc(ItemPointer, 0);
         }
@@ -861,7 +950,9 @@ pub const GIN = struct {
                 for (list) |item| {
                     var already_present = false;
                     for (result.items) |existing| {
-                        if (item.page_id == existing.page_id and item.tuple_offset == existing.tuple_offset) {
+                        if (item.page_id == existing.page_id and
+                            item.tuple_offset == existing.tuple_offset)
+                        {
                             already_present = true;
                             break;
                         }
@@ -894,7 +985,9 @@ pub const GIN = struct {
 
                 var found = false;
                 for (list) |other_item| {
-                    if (item.page_id == other_item.page_id and item.tuple_offset == other_item.tuple_offset) {
+                    if (item.page_id == other_item.page_id and
+                        item.tuple_offset == other_item.tuple_offset)
+                    {
                         found = true;
                         break;
                     }
@@ -907,7 +1000,7 @@ pub const GIN = struct {
         return try result.toOwnedSlice(self.allocator);
     }
 
-    // ── Diagnostic Functions (for GIN Redesign) ────────────────────────
+    // ── Diagnostic Functions (for GIN Redesign) ───────────────
 
     /// Debug: Dump all entries in the entry tree (for diagnostic purposes).
     /// This walks the entry tree and prints all keys + posting info.
@@ -919,7 +1012,7 @@ pub const GIN = struct {
         _ = entry_count;
     }
 
-    // ── Internal Operations ────────────────────────────────────────────
+    // ── Internal Operations ──────────────────────
 
     /// Insert a single key into the entry tree with associated tuple_id.
     fn insertKey(self: *GIN, key: []const u8, tuple_id: ItemPointer) !void {
@@ -1200,7 +1293,11 @@ pub const GIN = struct {
             if (pages_visited > max_chain_pages) return error.InvalidKey; // cycle or corruption
             const tree_frame = try self.pool.fetchPage(current_page_id);
             const count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
-            const next_page = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
+            const next_page = std.mem.readInt(
+                u32,
+                tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4],
+                .little,
+            );
             const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
             if (count > max_count) {
                 self.pool.unpinPage(current_page_id, false);
@@ -1226,7 +1323,12 @@ pub const GIN = struct {
     }
 
     /// Convert the inline posting list for entry `idx` to a posting tree, inserting `new_tuple_id`.
-    fn convertInlineToTree(self: *GIN, entry_page: []u8, idx: usize, new_tuple_id: ItemPointer) !void {
+    fn convertInlineToTree(
+        self: *GIN,
+        entry_page: []u8,
+        idx: usize,
+        new_tuple_id: ItemPointer,
+    ) !void {
         const inline_tuples = try self.readInlinePostingList(entry_page, idx);
         defer self.allocator.free(inline_tuples);
 
@@ -1268,7 +1370,12 @@ pub const GIN = struct {
             std.mem.writeInt(u64, tree_frame.data[pos..][0..8], new_tid, .little);
         }
 
-        std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(total_count), .little);
+        std.mem.writeInt(
+            u32,
+            tree_frame.data[PAGE_HEADER_SIZE..][0..4],
+            @intCast(total_count),
+            .little,
+        );
 
         // Update entry's posting_info: set high bit, lower 31 bits = tree_page_id
         const new_posting_info: u32 = 0x80000000 | @as(u32, @intCast(tree_page_id));
@@ -1283,8 +1390,16 @@ pub const GIN = struct {
 
         while (true) {
             const tree_frame = try self.pool.fetchPage(current_page_id);
-            const current_count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
-            const next_page_id = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
+            const current_count = std.mem.readInt(
+                u32,
+                tree_frame.data[PAGE_HEADER_SIZE..][0..4],
+                .little,
+            );
+            const next_page_id = std.mem.readInt(
+                u32,
+                tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4],
+                .little,
+            );
             const max_count: u32 = @intCast((tree_frame.data.len - POSTING_TREE_HEADER_SIZE) / 8);
 
             if (current_count < max_count) {
@@ -1313,8 +1428,18 @@ pub const GIN = struct {
                     std.mem.writeInt(u64, tree_frame.data[dst_offset..][0..8], val, .little);
                 }
                 const insert_offset = POSTING_TREE_HEADER_SIZE + (insert_pos * 8);
-                std.mem.writeInt(u64, tree_frame.data[insert_offset..][0..8], new_tuple_id.toU64(), .little);
-                std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(current_count + 1), .little);
+                std.mem.writeInt(
+                    u64,
+                    tree_frame.data[insert_offset..][0..8],
+                    new_tuple_id.toU64(),
+                    .little,
+                );
+                std.mem.writeInt(
+                    u32,
+                    tree_frame.data[PAGE_HEADER_SIZE..][0..4],
+                    @intCast(current_count + 1),
+                    .little,
+                );
                 tree_frame.markDirty();
                 self.pool.unpinPage(current_page_id, true);
                 return;
@@ -1341,14 +1466,31 @@ pub const GIN = struct {
                 .checksum_value = 0,
             };
             new_header.serialize(new_frame.data[0..PAGE_HEADER_SIZE]);
-            std.mem.writeInt(u32, new_frame.data[PAGE_HEADER_SIZE..][0..4], 1, .little); // count = 1
-            std.mem.writeInt(u32, new_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], 0, .little); // no next
-            std.mem.writeInt(u64, new_frame.data[POSTING_TREE_HEADER_SIZE..][0..8], new_tuple_id.toU64(), .little);
+            // count = 1
+            std.mem.writeInt(u32, new_frame.data[PAGE_HEADER_SIZE..][0..4], 1, .little);
+            // no next
+            std.mem.writeInt(
+                u32,
+                new_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4],
+                0,
+                .little,
+            );
+            std.mem.writeInt(
+                u64,
+                new_frame.data[POSTING_TREE_HEADER_SIZE..][0..8],
+                new_tuple_id.toU64(),
+                .little,
+            );
             new_frame.markDirty();
             self.pool.unpinPage(new_page_id, true);
 
             // Link current page to new page
-            std.mem.writeInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], @intCast(new_page_id), .little);
+            std.mem.writeInt(
+                u32,
+                tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4],
+                @intCast(new_page_id),
+                .little,
+            );
             tree_frame.markDirty();
             self.pool.unpinPage(current_page_id, true);
             return;
@@ -1371,7 +1513,12 @@ pub const GIN = struct {
 
     /// Remove tuple_id from an inline posting list at entry index.
     /// Shifts remaining entries left, decrements count.
-    fn removeFromInlinePostingList(self: *GIN, page: []u8, idx: usize, tuple_id: ItemPointer) !void {
+    fn removeFromInlinePostingList(
+        self: *GIN,
+        page: []u8,
+        idx: usize,
+        tuple_id: ItemPointer,
+    ) !void {
         _ = self; // Not needed for inline case
         const posting_info = readPostingInfo(page, idx);
         const tuple_count = posting_info & 0x7FFFFFFF;
@@ -1446,8 +1593,16 @@ pub const GIN = struct {
             const tree_frame = try self.pool.fetchPage(current_page_id);
             var found_idx: ?usize = null;
 
-            const current_count = std.mem.readInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], .little);
-            const next_page_id = std.mem.readInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], .little);
+            const current_count = std.mem.readInt(
+                u32,
+                tree_frame.data[PAGE_HEADER_SIZE..][0..4],
+                .little,
+            );
+            const next_page_id = std.mem.readInt(
+                u32,
+                tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4],
+                .little,
+            );
 
             // Search for tuple_id on this page
             for (0..current_count) |i| {
@@ -1481,7 +1636,12 @@ pub const GIN = struct {
 
                 // Decrement count
                 const new_count = current_count - 1;
-                std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], @intCast(new_count), .little);
+                std.mem.writeInt(
+                    u32,
+                    tree_frame.data[PAGE_HEADER_SIZE..][0..4],
+                    @intCast(new_count),
+                    .little,
+                );
                 tree_frame.markDirty();
                 self.pool.unpinPage(current_page_id, true);
                 return;
@@ -1513,8 +1673,10 @@ pub const GIN = struct {
         // Layout after:  [headers((N+1)*6)][ptrs((N+1)*4)][keys][...free...][posting_data]
 
         // Step 1: Shift keys first (by 10 bytes: 6 for header + 4 for pointer)
-        const old_keys_base = GIN_HEADER_SIZE + (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
-        const new_keys_base = GIN_HEADER_SIZE + ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + ((entry_count + 1) * 4);
+        const old_keys_base = GIN_HEADER_SIZE +
+            (entry_count * GIN_ENTRY_HEADER_SIZE) + (entry_count * 4);
+        const new_keys_base = GIN_HEADER_SIZE +
+            ((entry_count + 1) * GIN_ENTRY_HEADER_SIZE) + ((entry_count + 1) * 4);
         const keys_shift = new_keys_base - old_keys_base; // = 10
 
         var existing_keys_size: u32 = 0;
@@ -1563,7 +1725,12 @@ pub const GIN = struct {
             return error.PageFull;
         }
 
-        std.mem.writeInt(u32, page[data_offset_ptr..][0..4], @intCast(posting_data_offset), .little);
+        std.mem.writeInt(
+            u32,
+            page[data_offset_ptr..][0..4],
+            @intCast(posting_data_offset),
+            .little,
+        );
 
         // Step 5: Write posting data
         const tid = tuple_id.toU64();
@@ -1581,7 +1748,7 @@ pub const GIN = struct {
     }
 };
 
-// ── Page Layout Helpers ────────────────────────────────────────────────
+// ── Page Layout Helpers ───────────────────────
 
 fn calculateMaxEntries(page_size: u32) u32 {
     // Conservative estimate: fit entries with 16-byte average key size
@@ -1617,11 +1784,11 @@ fn isInlinePostingList(posting_info: u32) bool {
     return (posting_info & 0x80000000) == 0;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Operator Class Interface Tests (~15 tests)
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "ArrayInt32OpClass compare equal values" {
     const allocator = std.testing.allocator;
@@ -1840,9 +2007,9 @@ test "ArrayInt32OpClass consistent invalid strategy" {
     try std.testing.expectError(error.InvalidKey, result);
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Operator Class: ArrayOpsOpClass Tests (~18 tests)
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // ArrayOpsOpClass implements array_ops: serialized SQL ARRAY with polymorphic
 // element types (tag+payload wire format). Each array element becomes one key.
 // Comparison is lexicographic (byte-wise). Strategies: 0=@> (contains all),
@@ -1956,7 +2123,8 @@ test "ArrayOpsOpClass extractValue truncated element data" {
     std.mem.writeInt(i64, input[6..14], 10, .little);
     // Missing second element
 
-    const result = ArrayOpsOpClass.extractValue(allocator, input[0..14]); // truncated: only 14 bytes
+    // truncated: only 14 bytes
+    const result = ArrayOpsOpClass.extractValue(allocator, input[0..14]);
     try std.testing.expectError(error.InvalidKey, result);
 }
 
@@ -2216,7 +2384,7 @@ test "ArrayOpsOpClass getOpClass returns valid opclass" {
     try std.testing.expect(consistent_result);
 }
 
-// ── Operator Class: JsonbOpsOpClass Tests ──────────────────────────────
+// ── Operator Class: JsonbOpsOpClass Tests ─────────────────
 // JsonbOpsOpClass implements jsonb_ops: serialized JSON/JSONB with recursive
 // key extraction (object keys + array elements). Supports only strategy 0 (@>).
 // Wire format: tag 0x03 (text) LE u32 length + JSON bytes. Recursive walker
@@ -2291,7 +2459,8 @@ test "JsonbOpsOpClass extractValue simple object with integer and string keys" {
         allocator.free(keys);
     }
 
-    // Expected: key-exists for "a", key-value for "a"(1), key-exists for "b", key-value for "b"("hi")
+    // Expected: key-exists for "a", key-value for "a"(1), key-exists for "b", key-value for
+    // "b"("hi")
     // That's 4 entries total
     try std.testing.expectEqual(@as(usize, 4), keys.len);
 
@@ -2546,12 +2715,17 @@ test "JsonbOpsOpClass getOpClass returns valid opclass" {
     const item = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
     const posting_lists = [_][]const ItemPointer{&item};
     if (query_keys.len > 0) {
-        const consistent_result = try opclass.consistent(allocator, &posting_lists, query_keys[0..1], 0);
+        const consistent_result = try opclass.consistent(
+            allocator,
+            &posting_lists,
+            query_keys[0..1],
+            0,
+        );
         try std.testing.expect(consistent_result);
     }
 }
 
-// ── Operator Class: TsvectorOpsOpClass Tests ───────────────────────────
+// ── Operator Class: TsvectorOpsOpClass Tests ────────────────
 // TsvectorOpsOpClass implements tsvector_ops: full-text search with tsvector
 // column values and tsquery predicates. Supports only strategy 0 (@@).
 // Wire format: tag 0x0F (tsvector) or 0x10 (tsquery), u32 LE len + raw text.
@@ -2945,14 +3119,19 @@ test "TsvectorOpsOpClass getOpClass returns valid opclass" {
     const item = [_]ItemPointer{.{ .page_id = 1, .tuple_offset = 0 }};
     const posting_lists = [_][]const ItemPointer{&item};
     if (query_keys.len > 0) {
-        const consistent_result = try opclass.consistent(allocator, &posting_lists, query_keys[0..1], 0);
+        const consistent_result = try opclass.consistent(
+            allocator,
+            &posting_lists,
+            query_keys[0..1],
+            0,
+        );
         try std.testing.expect(consistent_result);
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // GIN Tree Structure Tests (~10 tests)
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "GIN init creates valid tree" {
     const allocator = std.testing.allocator;
@@ -3109,9 +3288,9 @@ test "GIN isInlinePostingList detects posting tree flag" {
     try std.testing.expect(!isInlinePostingList(tree_info));
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Posting List Unit Tests (Phase 2 — GIN Index Redesign)
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "ItemPointer toU64 and fromU64 round-trip" {
     const original = ItemPointer{ .page_id = 12345, .tuple_offset = 678 };
@@ -3360,9 +3539,9 @@ test "insertNewEntry creates valid posting list structure" {
     try std.testing.expectEqual(tid.tuple_offset, list[0].tuple_offset);
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // CRUD Operations Tests (~8 tests)
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "GIN insert single value with single key" {
     const allocator = std.testing.allocator;
@@ -3636,9 +3815,9 @@ test "GIN search handles empty result set" {
     try std.testing.expectEqual(@as(usize, 0), result.len);
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Advanced Semantics Tests (~5 tests)
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "GIN handles array with many elements" {
     const allocator = std.testing.allocator;
@@ -3929,7 +4108,11 @@ test "GIN search with contains strategy (AND) returns intersection (regression g
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_contains_regression.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_contains_regression.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4047,9 +4230,9 @@ test "GIN ItemPointer encoding round-trip" {
     try std.testing.expectEqual(item.tuple_offset, decoded.tuple_offset);
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Error Path Tests
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "GIN readPostingList reads from posting tree" {
     const allocator = std.testing.allocator;
@@ -4078,15 +4261,26 @@ test "GIN readPostingList reads from posting tree" {
 
     // Initialize tree page: count at PAGE_HEADER_SIZE(16), tuples at POSTING_TREE_HEADER_SIZE(24)
     std.mem.writeInt(u32, tree_frame.data[PAGE_HEADER_SIZE..][0..4], 2, .little); // count = 2
-    std.mem.writeInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], 0, .little); // end of chain
+    // end of chain
+    std.mem.writeInt(u32, tree_frame.data[POSTING_TREE_NEXT_PAGE_OFFSET..][0..4], 0, .little);
 
     // Write tuple 0: page_id=10, tuple_offset=1
     const tuple0 = ItemPointer{ .page_id = 10, .tuple_offset = 1 };
-    std.mem.writeInt(u64, tree_frame.data[POSTING_TREE_HEADER_SIZE..][0..8], tuple0.toU64(), .little);
+    std.mem.writeInt(
+        u64,
+        tree_frame.data[POSTING_TREE_HEADER_SIZE..][0..8],
+        tuple0.toU64(),
+        .little,
+    );
 
     // Write tuple 1: page_id=20, tuple_offset=2
     const tuple1 = ItemPointer{ .page_id = 20, .tuple_offset = 2 };
-    std.mem.writeInt(u64, tree_frame.data[POSTING_TREE_HEADER_SIZE + 8 ..][0..8], tuple1.toU64(), .little);
+    std.mem.writeInt(
+        u64,
+        tree_frame.data[POSTING_TREE_HEADER_SIZE + 8 ..][0..8],
+        tuple1.toU64(),
+        .little,
+    );
 
     tree_frame.markDirty();
     pool.unpinPage(tree_page_id, true);
@@ -4176,7 +4370,11 @@ test "GIN appendToPostingList converts to posting tree when inline list is full"
     try gin.appendToPostingList(root_frame.data, 0, new_tuple);
 
     // Verify high bit is now set in posting_info (indicating tree)
-    const new_posting_info = std.mem.readInt(u32, root_frame.data[posting_info_offset..][0..4], .little);
+    const new_posting_info = std.mem.readInt(
+        u32,
+        root_frame.data[posting_info_offset..][0..4],
+        .little,
+    );
     try std.testing.expect((new_posting_info & 0x80000000) != 0);
 }
 
@@ -4304,7 +4502,12 @@ test "GIN readInlinePostingList handles corrupted tuple_count gracefully" {
     const key_size_offset = GIN_HEADER_SIZE;
     std.mem.writeInt(u16, root_frame.data[key_size_offset..][0..2], 4, .little);
     const posting_info_offset = GIN_HEADER_SIZE + 2;
-    std.mem.writeInt(u32, root_frame.data[posting_info_offset..][0..4], MAX_INLINE_TUPLES + 1, .little);
+    std.mem.writeInt(
+        u32,
+        root_frame.data[posting_info_offset..][0..4],
+        MAX_INLINE_TUPLES + 1,
+        .little,
+    );
 
     const result = gin.readInlinePostingList(root_frame.data, 0);
     try std.testing.expectError(error.InvalidKey, result);
@@ -4384,9 +4587,9 @@ test "GIN posting tree chains multiple pages for very high-cardinality keys" {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Real Deletion Tests for removeFromPostingList
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "GIN delete one tuple from inline posting list with multiple tuples" {
     const allocator = std.testing.allocator;
@@ -4446,7 +4649,9 @@ test "GIN delete one tuple from inline posting list with multiple tuples" {
 
     // Verify the deleted tuple is not in the result
     for (after_result) |tid| {
-        try std.testing.expect(!(tid.page_id == to_delete.page_id and tid.tuple_offset == to_delete.tuple_offset));
+        try std.testing.expect(
+            !(tid.page_id == to_delete.page_id and tid.tuple_offset == to_delete.tuple_offset),
+        );
     }
 
     // Verify remaining tuples are still sorted
@@ -4465,7 +4670,11 @@ test "GIN delete then re-insert tuple in inline posting list maintains consisten
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete_reinsert_inline.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_delete_reinsert_inline.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4598,7 +4807,9 @@ test "GIN delete one tuple from posting tree maintains sortedness" {
 
     // Verify the deleted tuple is gone
     for (after_result) |tid| {
-        try std.testing.expect(!(tid.page_id == to_delete.page_id and tid.tuple_offset == to_delete.tuple_offset));
+        try std.testing.expect(
+            !(tid.page_id == to_delete.page_id and tid.tuple_offset == to_delete.tuple_offset),
+        );
     }
 
     // Verify remaining tuples are sorted
@@ -4617,7 +4828,11 @@ test "GIN delete non-existent tuple_id within existing key's posting list should
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_delete_nonexistent_tuple.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_delete_nonexistent_tuple.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -4659,9 +4874,9 @@ test "GIN delete non-existent tuple_id within existing key's posting list should
     try std.testing.expectError(error.EntryNotFound, result);
 }
 
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Allocation Failure Tests for Opclass Functions
-// ────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "TsvectorOpsOpClass extractValue allocation failure on lexeme dupe" {
     // Use FailingAllocator to trigger allocation failure during lexeme duplication
@@ -4755,7 +4970,8 @@ test "ArrayOpsOpClass extractValue with nested array count exceeding buffer" {
     input[0] = 0x0C; // outer array tag
     std.mem.writeInt(u32, input[1..5], 1, .little); // count = 1 element
     input[5] = 0x0C; // nested array tag
-    std.mem.writeInt(u32, input[6..10], 1000, .little); // nested count claims 1000 elements (impossible)
+    // nested count claims 1000 elements (impossible)
+    std.mem.writeInt(u32, input[6..10], 1000, .little);
 
     const result = ArrayOpsOpClass.extractValue(allocator, &input);
 
