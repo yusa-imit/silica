@@ -20,14 +20,14 @@ const PlanNode = planner_mod.PlanNode;
 const LogicalPlan = planner_mod.LogicalPlan;
 const CostEstimator = cost_mod.CostEstimator;
 
-// ── Required Columns Tracking ─────────────────────────────────────────────────────────
+// ── Required Columns Tracking ─────────────────────
 
 pub const RequiredColumns = struct {
     all: bool = false,
     columns: std.ArrayListUnmanaged([]const u8) = .{},
 };
 
-// ── Optimizer ─────────────────────────────────────────────────────────
+// ── Optimizer ──────────────────────────
 
 pub const Optimizer = struct {
     arena: *ast.AstArena,
@@ -163,9 +163,12 @@ pub const Optimizer = struct {
                     try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
                 }
                 for (a.aggregates) |agg| {
-                    if (agg.arg) |arg| try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
-                    if (agg.arg2) |arg| try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
-                    if (agg.filter_expr) |filt| try self.collectColumnRefsFromExpr(filt, allocator, scan_names, result);
+                    if (agg.arg) |arg|
+                        try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                    if (agg.arg2) |arg|
+                        try self.collectColumnRefsFromExpr(arg, allocator, scan_names, result);
+                    if (agg.filter_expr) |filt|
+                        try self.collectColumnRefsFromExpr(filt, allocator, scan_names, result);
                     for (agg.order_exprs) |expr| {
                         try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
                     }
@@ -196,15 +199,21 @@ pub const Optimizer = struct {
                 // column pruning is ever wired to actually narrow a scan feeding a
                 // MATCH_RECOGNIZE node.
                 try self.collectColumnRefsFromNode(mr.input, allocator, scan_names, result);
-                for (mr.spec.partition_by) |expr| try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
-                for (mr.spec.order_by) |item| try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
-                for (mr.spec.measures) |m| try self.collectColumnRefsFromExpr(m.expr, allocator, scan_names, result);
-                for (mr.spec.define) |d| try self.collectColumnRefsFromExpr(d.condition, allocator, scan_names, result);
+                for (mr.spec.partition_by) |expr|
+                    try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                for (mr.spec.order_by) |item|
+                    try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
+                for (mr.spec.measures) |m|
+                    try self.collectColumnRefsFromExpr(m.expr, allocator, scan_names, result);
+                for (mr.spec.define) |d|
+                    try self.collectColumnRefsFromExpr(d.condition, allocator, scan_names, result);
             },
             .limit => |l| {
                 try self.collectColumnRefsFromNode(l.input, allocator, scan_names, result);
-                if (l.limit_expr) |expr| try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
-                if (l.offset_expr) |expr| try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                if (l.limit_expr) |expr|
+                    try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
+                if (l.offset_expr) |expr|
+                    try self.collectColumnRefsFromExpr(expr, allocator, scan_names, result);
                 for (l.order_by) |item| {
                     try self.collectColumnRefsFromExpr(item.expr, allocator, scan_names, result);
                 }
@@ -232,7 +241,14 @@ pub const Optimizer = struct {
     ) std.mem.Allocator.Error!void {
         switch (expr.*) {
             // Literals and bind parameters — no column refs
-            .integer_literal, .float_literal, .string_literal, .blob_literal, .boolean_literal, .null_literal, .bind_parameter => {},
+            .integer_literal,
+            .float_literal,
+            .string_literal,
+            .blob_literal,
+            .boolean_literal,
+            .null_literal,
+            .bind_parameter,
+            => {},
 
             // Column reference — the core case
             .column_ref => |cr| {
@@ -266,7 +282,11 @@ pub const Optimizer = struct {
                             var iter = result.valueIterator();
                             if (iter.next()) |req| {
                                 if (!req.all) {
-                                    try self.addColumnIfNotPresent(&req.columns, cr.name, allocator);
+                                    try self.addColumnIfNotPresent(
+                                        &req.columns,
+                                        cr.name,
+                                        allocator,
+                                    );
                                 }
                             }
                         } else if (scan_names.count() > 1) {
@@ -281,11 +301,31 @@ pub const Optimizer = struct {
             },
 
             // Single-operand expressions
-            .unary_op => |op| try self.collectColumnRefsFromExpr(op.operand, allocator, scan_names, result),
-            .is_null => |isn| try self.collectColumnRefsFromExpr(isn.expr, allocator, scan_names, result),
-            .is_json => |isj| try self.collectColumnRefsFromExpr(isj.expr, allocator, scan_names, result),
+            .unary_op => |op| try self.collectColumnRefsFromExpr(
+                op.operand,
+                allocator,
+                scan_names,
+                result,
+            ),
+            .is_null => |isn| try self.collectColumnRefsFromExpr(
+                isn.expr,
+                allocator,
+                scan_names,
+                result,
+            ),
+            .is_json => |isj| try self.collectColumnRefsFromExpr(
+                isj.expr,
+                allocator,
+                scan_names,
+                result,
+            ),
             .cast => |c| try self.collectColumnRefsFromExpr(c.expr, allocator, scan_names, result),
-            .paren => |inner| try self.collectColumnRefsFromExpr(inner, allocator, scan_names, result),
+            .paren => |inner| try self.collectColumnRefsFromExpr(
+                inner,
+                allocator,
+                scan_names,
+                result,
+            ),
 
             // Binary operations
             .binary_op => |op| {
@@ -331,12 +371,14 @@ pub const Optimizer = struct {
 
             // CASE expression
             .case_expr => |ce| {
-                if (ce.operand) |op| try self.collectColumnRefsFromExpr(op, allocator, scan_names, result);
+                if (ce.operand) |op|
+                    try self.collectColumnRefsFromExpr(op, allocator, scan_names, result);
                 for (ce.when_clauses) |wc| {
                     try self.collectColumnRefsFromExpr(wc.condition, allocator, scan_names, result);
                     try self.collectColumnRefsFromExpr(wc.result, allocator, scan_names, result);
                 }
-                if (ce.else_expr) |ee| try self.collectColumnRefsFromExpr(ee, allocator, scan_names, result);
+                if (ce.else_expr) |ee|
+                    try self.collectColumnRefsFromExpr(ee, allocator, scan_names, result);
             },
 
             // Subquery and EXISTS — unhandled, conservative bailout
@@ -360,13 +402,33 @@ pub const Optimizer = struct {
                 }
                 if (wf.frame) |frame| {
                     switch (frame.start) {
-                        .expr_preceding => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
-                        .expr_following => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
+                        .expr_preceding => |e| try self.collectColumnRefsFromExpr(
+                            e,
+                            allocator,
+                            scan_names,
+                            result,
+                        ),
+                        .expr_following => |e| try self.collectColumnRefsFromExpr(
+                            e,
+                            allocator,
+                            scan_names,
+                            result,
+                        ),
                         else => {},
                     }
                     switch (frame.end) {
-                        .expr_preceding => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
-                        .expr_following => |e| try self.collectColumnRefsFromExpr(e, allocator, scan_names, result),
+                        .expr_preceding => |e| try self.collectColumnRefsFromExpr(
+                            e,
+                            allocator,
+                            scan_names,
+                            result,
+                        ),
+                        .expr_following => |e| try self.collectColumnRefsFromExpr(
+                            e,
+                            allocator,
+                            scan_names,
+                            result,
+                        ),
                         else => {},
                     }
                 }
@@ -460,7 +522,7 @@ pub const Optimizer = struct {
         };
     }
 
-    // ── Filter Optimization ──────────────────────────────────────────
+    // ── Filter Optimization ──────────────────────
 
     fn optimizeFilter(self: *Optimizer, filter: PlanNode.Filter) !*const PlanNode {
         // First optimize the input
@@ -487,7 +549,11 @@ pub const Optimizer = struct {
         } });
     }
 
-    fn pushFilterIntoJoin(self: *Optimizer, predicate: *const ast.Expr, join: PlanNode.Join) !*const PlanNode {
+    fn pushFilterIntoJoin(
+        self: *Optimizer,
+        predicate: *const ast.Expr,
+        join: PlanNode.Join,
+    ) !*const PlanNode {
         // Check which side of the join the predicate references
         const refs_left = self.exprReferencesTable(predicate, join.left);
         const refs_right = self.exprReferencesTable(predicate, join.right);
@@ -538,7 +604,7 @@ pub const Optimizer = struct {
         return exprMentionsTable(expr, table_name);
     }
 
-    // ── Project Optimization ─────────────────────────────────────────
+    // ── Project Optimization ─────────────────────
 
     fn optimizeProject(self: *Optimizer, project: PlanNode.Project) !*const PlanNode {
         const opt_input = try self.optimizeNode(project.input);
@@ -548,7 +614,7 @@ pub const Optimizer = struct {
         } });
     }
 
-    // ── Scan Optimization ────────────────────────────────────────────
+    // ── Scan Optimization ──────────────────────
 
     fn optimizeScan(self: *Optimizer, scan: PlanNode.Scan) !*const PlanNode {
         if (self.catalog == null or scan.columns.len == 0) {
@@ -601,7 +667,7 @@ pub const Optimizer = struct {
         return filtered.toOwnedSlice(self.arena.allocator()) catch return scan.columns;
     }
 
-    // ── Join Optimization ────────────────────────────────────────────
+    // ── Join Optimization ──────────────────────
 
     fn optimizeJoin(self: *Optimizer, join: PlanNode.Join) !*const PlanNode {
         const opt_left = try self.optimizeNode(join.left);
@@ -735,7 +801,7 @@ pub const Optimizer = struct {
         return 100.0;
     }
 
-    // ── Sort Optimization ────────────────────────────────────────────
+    // ── Sort Optimization ──────────────────────
 
     fn optimizeSort(self: *Optimizer, sort: PlanNode.Sort) !*const PlanNode {
         const opt_input = try self.optimizeNode(sort.input);
@@ -749,7 +815,7 @@ pub const Optimizer = struct {
         } });
     }
 
-    // ── Aggregate Optimization ───────────────────────────────────────
+    // ── Aggregate Optimization ─────────────────────
 
     fn optimizeAggregate(self: *Optimizer, agg: PlanNode.Aggregate) !*const PlanNode {
         const opt_input = try self.optimizeNode(agg.input);
@@ -761,7 +827,7 @@ pub const Optimizer = struct {
         } });
     }
 
-    // ── Limit Optimization ───────────────────────────────────────────
+    // ── Limit Optimization ──────────────────────
 
     fn optimizeLimit(self: *Optimizer, limit: PlanNode.Limit) !*const PlanNode {
         const opt_input = try self.optimizeNode(limit.input);
@@ -782,7 +848,7 @@ pub const Optimizer = struct {
         } });
     }
 
-    // ── Set Operation Optimization ────────────────────────────────────
+    // ── Set Operation Optimization ───────────────────
 
     fn optimizeSetOp(self: *Optimizer, set_op: PlanNode.SetOp) !*const PlanNode {
         const opt_left = try self.optimizeNode(set_op.left);
@@ -803,7 +869,7 @@ pub const Optimizer = struct {
         } });
     }
 
-    // ── Constant Folding ─────────────────────────────────────────────
+    // ── Constant Folding ───────────────────────
 
     /// Check if an expression is always true (e.g., TRUE, 1=1).
     fn isAlwaysTrue(_: *Optimizer, expr: *const ast.Expr) bool {
@@ -819,14 +885,14 @@ pub const Optimizer = struct {
         };
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────
 
     fn createNode(self: *Optimizer, value: PlanNode) !*const PlanNode {
         return self.arena.create(PlanNode, value) catch return error.OutOfMemory;
     }
 };
 
-// ── Free Functions ────────────────────────────────────────────────────
+// ── Free Functions ─────────────────────────
 
 /// Returns true if all columns in scan_cols are covered by an index defined
 /// by key_column and included_cols. Case-insensitive column name matching.
@@ -922,7 +988,7 @@ fn exprsEqual(a: *const ast.Expr, b: *const ast.Expr) bool {
     };
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 const parser_mod = @import("parser.zig");
@@ -931,19 +997,32 @@ const analyzer_mod = @import("analyzer.zig");
 fn testSchema(alloc: Allocator) analyzer_mod.MemorySchema {
     var schema = analyzer_mod.MemorySchema.init(alloc);
     schema.addTable("users", &.{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "age", .column_type = .integer, .flags = .{} },
     });
     schema.addTable("orders", &.{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "user_id", .column_type = .integer, .flags = .{ .not_null = true } },
         .{ .name = "amount", .column_type = .real, .flags = .{} },
     });
     return schema;
 }
 
-fn planAndOptimize(alloc: Allocator, sql: []const u8, arena: *ast.AstArena, schema: *analyzer_mod.MemorySchema) !LogicalPlan {
+fn planAndOptimize(
+    alloc: Allocator,
+    sql: []const u8,
+    arena: *ast.AstArena,
+    schema: *analyzer_mod.MemorySchema,
+) !LogicalPlan {
     var p = try parser_mod.Parser.init(alloc, sql, arena);
     defer p.deinit();
 
@@ -1055,7 +1134,10 @@ test "optimize predicate pushdown: filter into left side of join" {
     const join_on = try arena.create(ast.Expr, .{ .binary_op = .{
         .op = .equal,
         .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "u" } }),
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "o" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "user_id", .prefix = "o" } },
+        ),
     } });
     const join_node = try arena.create(PlanNode, .{ .join = .{
         .left = left_scan,
@@ -1108,7 +1190,10 @@ test "optimize predicate pushdown: filter into right side of join" {
     defer schema.deinit();
 
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users", .alias = "u" } });
-    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders", .alias = "o" } });
+    const right_scan = try arena.create(
+        PlanNode,
+        .{ .scan = .{ .table = "orders", .alias = "o" } },
+    );
     const join_node = try arena.create(PlanNode, .{ .join = .{
         .left = left_scan,
         .right = right_scan,
@@ -1157,7 +1242,10 @@ test "optimize keeps filter above join when referencing both sides" {
     defer schema.deinit();
 
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users", .alias = "u" } });
-    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders", .alias = "o" } });
+    const right_scan = try arena.create(
+        PlanNode,
+        .{ .scan = .{ .table = "orders", .alias = "o" } },
+    );
     const join_node = try arena.create(PlanNode, .{ .join = .{
         .left = left_scan,
         .right = right_scan,
@@ -1168,7 +1256,10 @@ test "optimize keeps filter above join when referencing both sides" {
     const filter_pred = try arena.create(ast.Expr, .{ .binary_op = .{
         .op = .equal,
         .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "u" } }),
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "o" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "user_id", .prefix = "o" } },
+        ),
     } });
     const filter_node = try arena.create(PlanNode, .{ .filter = .{
         .input = join_node,
@@ -1400,7 +1491,7 @@ test "optimize preserves set operation type through optimization" {
     }
 }
 
-// ── Edge Case Tests ──────────────────────────────────────────────────
+// ── Edge Case Tests ────────────────────────
 
 test "optimize eliminates redundant NOT NOT filter" {
     var arena = ast.AstArena.init(testing.allocator);
@@ -1542,7 +1633,10 @@ test "optimize preserves filter above LEFT JOIN" {
 
     // LEFT JOIN: pushdown is unsafe for right-side predicates
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users", .alias = "u" } });
-    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders", .alias = "o" } });
+    const right_scan = try arena.create(
+        PlanNode,
+        .{ .scan = .{ .table = "orders", .alias = "o" } },
+    );
     const join_node = try arena.create(PlanNode, .{ .join = .{
         .left = left_scan,
         .right = right_scan,
@@ -1564,7 +1658,8 @@ test "optimize preserves filter above LEFT JOIN" {
     const optimized = try opt.optimize(.{ .root = filter_node, .plan_type = .select_query });
 
     // Filter should NOT be pushed down into RIGHT side of LEFT JOIN
-    // (optimizer currently doesn't check join type, so it might push — this tests current behavior)
+    // (optimizer currently doesn't check join type, so it might push — this tests current
+    // behavior)
     switch (optimized.root.*) {
         .filter, .join => {},
         else => return error.InvalidPlan,
@@ -1693,7 +1788,10 @@ test "optimize pushdown with column without prefix" {
 
     // Join with filter on column without table prefix (ambiguous)
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users", .alias = "u" } });
-    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders", .alias = "o" } });
+    const right_scan = try arena.create(
+        PlanNode,
+        .{ .scan = .{ .table = "orders", .alias = "o" } },
+    );
     const join_node = try arena.create(PlanNode, .{ .join = .{
         .left = left_scan,
         .right = right_scan,
@@ -1822,7 +1920,7 @@ test "optimize distinct over empty set" {
     }
 }
 
-// ── Join Reordering Tests ────────────────────────────────────────────
+// ── Join Reordering Tests ──────────────────────
 
 test "join reordering: simple two-table INNER join preserves order with equal costs" {
     var arena = ast.AstArena.init(testing.allocator);
@@ -1833,8 +1931,14 @@ test "join reordering: simple two-table INNER join preserves order with equal co
     const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
 
     // Create join condition: users.id = orders.user_id
-    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } });
-    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } });
+    const left_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "id", .prefix = "users" } },
+    );
+    const right_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+    );
     const condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = left_col,
         .op = .equal,
@@ -2058,8 +2162,14 @@ test "join reordering: condition references both tables correctly" {
     const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
 
     // Condition: users.id = orders.user_id
-    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } });
-    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } });
+    const left_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "id", .prefix = "users" } },
+    );
+    const right_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+    );
     const condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = left_col,
         .op = .equal,
@@ -2097,12 +2207,21 @@ test "join reordering: multiple conditions ANDed together" {
     const cond1 = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
         .op = .equal,
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+        ),
     } });
     const cond2 = try arena.create(ast.Expr, .{ .binary_op = .{
-        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "users" } }),
+        .left = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "region", .prefix = "users" } },
+        ),
         .op = .equal,
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "orders" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "region", .prefix = "orders" } },
+        ),
     } });
     const and_condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = cond1,
@@ -2131,7 +2250,7 @@ test "join reordering: multiple conditions ANDed together" {
     }
 }
 
-// ── Join Algorithm Selection Tests ──────────────────────────────────────
+// ── Join Algorithm Selection Tests ───────────────────
 
 test "join algorithm selection: equi-join selects hash join" {
     var arena = ast.AstArena.init(testing.allocator);
@@ -2141,8 +2260,14 @@ test "join algorithm selection: equi-join selects hash join" {
     const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
 
     // Equi-join condition: users.id = orders.user_id
-    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } });
-    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } });
+    const left_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "id", .prefix = "users" } },
+    );
+    const right_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+    );
     const condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = left_col,
         .op = .equal,
@@ -2176,8 +2301,14 @@ test "join algorithm selection: non-equi-join uses nested loop" {
     const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders" } });
 
     // Non-equi-join condition: users.age > orders.quantity
-    const left_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "age", .prefix = "users" } });
-    const right_col = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "quantity", .prefix = "orders" } });
+    const left_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "age", .prefix = "users" } },
+    );
+    const right_col = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "quantity", .prefix = "orders" } },
+    );
     const condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = left_col,
         .op = .greater_than,
@@ -2242,7 +2373,10 @@ test "join algorithm selection: LEFT JOIN with equi-join" {
     const condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
         .op = .equal,
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+        ),
     } });
 
     const join = try arena.create(PlanNode, .{ .join = .{
@@ -2276,12 +2410,21 @@ test "join algorithm selection: complex equi-join with AND" {
     const cond1 = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
         .op = .equal,
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+        ),
     } });
     const cond2 = try arena.create(ast.Expr, .{ .binary_op = .{
-        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "users" } }),
+        .left = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "region", .prefix = "users" } },
+        ),
         .op = .equal,
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "region", .prefix = "orders" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "region", .prefix = "orders" } },
+        ),
     } });
     const and_condition = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = cond1,
@@ -2313,7 +2456,10 @@ test "optimize filter with OR predicate (not pushable)" {
     defer arena.deinit();
 
     const left_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "users", .alias = "u" } });
-    const right_scan = try arena.create(PlanNode, .{ .scan = .{ .table = "orders", .alias = "o" } });
+    const right_scan = try arena.create(
+        PlanNode,
+        .{ .scan = .{ .table = "orders", .alias = "o" } },
+    );
     const join = try arena.create(PlanNode, .{ .join = .{
         .left = left_scan,
         .right = right_scan,
@@ -2366,7 +2512,10 @@ test "optimize multiple filters on same scan" {
 
     // Build: Filter(age > 18) → Filter(active = true) → Scan(users)
     const active_pred = try arena.create(ast.Expr, .{ .binary_op = .{
-        .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "active", .prefix = null } }),
+        .left = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "active", .prefix = null } },
+        ),
         .op = .equal,
         .right = try arena.create(ast.Expr, .{ .boolean_literal = true }),
     } });
@@ -2415,7 +2564,10 @@ test "optimize join reordering preserves join conditions" {
     const join_cond = try arena.create(ast.Expr, .{ .binary_op = .{
         .left = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "id", .prefix = "users" } }),
         .op = .equal,
-        .right = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } }),
+        .right = try arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = "user_id", .prefix = "orders" } },
+        ),
     } });
 
     const join = try arena.create(PlanNode, .{ .join = .{
@@ -2673,7 +2825,7 @@ test "index-only scan optimization: collectRequiredColumns filters scan columns"
     try testing.expect(!has_unused);
 }
 
-// ── collectRequiredColumns tests ─────────────────────────────────────────
+// ── collectRequiredColumns tests ────────────────────
 
 test "collectRequiredColumns: single-table simple case" {
     var arena = ast.AstArena.init(testing.allocator);
@@ -2777,7 +2929,10 @@ test "collectRequiredColumns: qualified wildcard scopes to one table" {
         .on_condition = on_cond,
     } });
 
-    const qual_star = try arena.create(ast.Expr, .{ .column_ref = .{ .name = "*", .prefix = "t" } });
+    const qual_star = try arena.create(
+        ast.Expr,
+        .{ .column_ref = .{ .name = "*", .prefix = "t" } },
+    );
     const proj_col = [_]planner_mod.PlanNode.ProjectColumn{
         .{ .expr = qual_star },
     };

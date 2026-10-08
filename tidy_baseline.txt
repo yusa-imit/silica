@@ -83,13 +83,8 @@ std_time_in_lib:src/tidy.zig:3
 std_time_in_lib:src/tui.zig:3
 std_time_in_lib:src/tx/wal.zig:2
 line_length:src/cli.zig:262
-line_length:src/sql/analyzer.zig:139
 line_length:src/sql/catalog.zig:118
 line_length:src/sql/engine.zig:1186
 line_length:src/sql/executor.zig:598
-line_length:src/sql/optimizer.zig:69
 line_length:src/sql/parser.zig:207
-line_length:src/sql/planner.zig:136
-line_length:src/storage/btree.zig:87
-line_length:src/storage/gin_index.zig:94
 line_length:src/tui.zig:117

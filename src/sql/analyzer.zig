@@ -17,7 +17,7 @@ const ColumnInfo = catalog_mod.ColumnInfo;
 const ColumnType = catalog_mod.ColumnType;
 const TableInfo = catalog_mod.TableInfo;
 
-// ── Analysis Errors ─────────────────────────────────────────────────
+// ── Analysis Errors ────────────────────────
 
 pub const AnalysisError = struct {
     message: []const u8,
@@ -37,7 +37,7 @@ pub const ErrorKind = enum {
     star_not_allowed,
 };
 
-// ── Resolved Column Info ────────────────────────────────────────────
+// ── Resolved Column Info ───────────────────────
 
 /// A column resolved during analysis.
 pub const ResolvedColumn = struct {
@@ -47,7 +47,7 @@ pub const ResolvedColumn = struct {
     index: usize,
 };
 
-// ── Schema Provider ─────────────────────────────────────────────────
+// ── Schema Provider ────────────────────────
 
 /// Abstraction over the schema catalog for testability.
 /// In production, this wraps Catalog; in tests, uses in-memory tables.
@@ -69,7 +69,7 @@ pub const SchemaProvider = struct {
     }
 };
 
-// ── Scope ───────────────────────────────────────────────────────────
+// ── Scope ────────────────────────────
 
 /// A table visible in the current query scope (from FROM/JOIN).
 const ScopeTable = struct {
@@ -81,7 +81,7 @@ const ScopeTable = struct {
     columns: []const ColumnInfo,
 };
 
-// ── Analyzer ────────────────────────────────────────────────────────
+// ── Analyzer ───────────────────────────
 
 pub const Analyzer = struct {
     allocator: Allocator,
@@ -216,15 +216,35 @@ pub const Analyzer = struct {
             }.pick;
 
             if (is_json_each) {
-                cols[0] = .{ .name = col_name_at(tf.column_names, 0, "key"), .column_type = .text, .flags = .{} };
-                cols[1] = .{ .name = col_name_at(tf.column_names, 1, "value"), .column_type = .text, .flags = .{} };
+                cols[0] = .{
+                    .name = col_name_at(tf.column_names, 0, "key"),
+                    .column_type = .text,
+                    .flags = .{},
+                };
+                cols[1] = .{
+                    .name = col_name_at(tf.column_names, 1, "value"),
+                    .column_type = .text,
+                    .flags = .{},
+                };
             } else if (is_json_array_elements) {
-                cols[0] = .{ .name = col_name_at(tf.column_names, 0, "value"), .column_type = .blob, .flags = .{} };
+                cols[0] = .{
+                    .name = col_name_at(tf.column_names, 0, "value"),
+                    .column_type = .blob,
+                    .flags = .{},
+                };
             } else if (std.mem.eql(u8, tf.name, "unnest")) {
-                cols[0] = .{ .name = col_name_at(tf.column_names, 0, "unnest"), .column_type = .blob, .flags = .{} };
+                cols[0] = .{
+                    .name = col_name_at(tf.column_names, 0, "unnest"),
+                    .column_type = .blob,
+                    .flags = .{},
+                };
             } else {
                 // generate_series
-                cols[0] = .{ .name = col_name_at(tf.column_names, 0, "generate_series"), .column_type = .blob, .flags = .{} };
+                cols[0] = .{
+                    .name = col_name_at(tf.column_names, 0, "generate_series"),
+                    .column_type = .blob,
+                    .flags = .{},
+                };
             }
 
             if (tf.with_ordinality) {
@@ -306,7 +326,11 @@ pub const Analyzer = struct {
                             };
                         }
                     }
-                    self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ name.name, prefix });
+                    self.addError(
+                        .column_not_found,
+                        "column '{s}' not found in table '{s}'",
+                        .{ name.name, prefix },
+                    );
                     return null;
                 }
             }
@@ -320,7 +344,11 @@ pub const Analyzer = struct {
             for (st.columns, 0..) |col, i| {
                 if (std.ascii.eqlIgnoreCase(col.name, name.name)) {
                     if (found != null) {
-                        self.addError(.ambiguous_column, "ambiguous column reference: '{s}'", .{name.name});
+                        self.addError(
+                            .ambiguous_column,
+                            "ambiguous column reference: '{s}'",
+                            .{name.name},
+                        );
                         return null;
                     }
                     found = .{
@@ -340,7 +368,7 @@ pub const Analyzer = struct {
         return found;
     }
 
-    // ── Statement Analysis ──────────────────────────────────────────
+    // ── Statement Analysis ──────────────────────
 
     /// Analyze a top-level statement.
     pub fn analyze(self: *Analyzer, stmt: ast.Stmt) void {
@@ -415,7 +443,11 @@ pub const Analyzer = struct {
 
             // Validate column counts match
             if (left_count != right_count and left_count > 0 and right_count > 0) {
-                self.addError(.column_count_mismatch, "set operation requires equal column counts: left has {d}, right has {d}", .{ left_count, right_count });
+                self.addError(
+                    .column_count_mismatch,
+                    "set operation requires equal column counts: left has {d}, right has {d}",
+                    .{ left_count, right_count },
+                );
             }
 
             // Recursively analyze chained set operations on the right side
@@ -469,7 +501,11 @@ pub const Analyzer = struct {
                         }
                     }
                     if (!found) {
-                        self.addError(.table_not_found, "table or alias '{s}' not found for '{s}.*'", .{ tbl, tbl });
+                        self.addError(
+                            .table_not_found,
+                            "table or alias '{s}' not found for '{s}.*'",
+                            .{ tbl, tbl },
+                        );
                     }
                 },
                 .expr => |e| {
@@ -516,7 +552,11 @@ pub const Analyzer = struct {
                                     }
                                 }
                                 if (!found) {
-                                    self.addError(.column_not_found, "window '{s}' not defined", .{win_name});
+                                    self.addError(
+                                        .column_not_found,
+                                        "window '{s}' not defined",
+                                        .{win_name},
+                                    );
                                 }
                             }
                         }
@@ -532,7 +572,11 @@ pub const Analyzer = struct {
         if (stmt.set_operation) |set_op| {
             const right_count = self.countResultColumns(set_op.right);
             if (expected_count != right_count and expected_count > 0 and right_count > 0) {
-                self.addError(.column_count_mismatch, "set operation requires equal column counts: expected {d}, got {d}", .{ expected_count, right_count });
+                self.addError(
+                    .column_count_mismatch,
+                    "set operation requires equal column counts: expected {d}, got {d}",
+                    .{ expected_count, right_count },
+                );
             }
 
             // Clear scope and analyze the chained right side body
@@ -594,14 +638,22 @@ pub const Analyzer = struct {
                     }
                 }
                 if (!found) {
-                    self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ col_name, stmt.table });
+                    self.addError(
+                        .column_not_found,
+                        "column '{s}' not found in table '{s}'",
+                        .{ col_name, stmt.table },
+                    );
                 }
             }
 
             // Validate value row lengths match column count
             for (stmt.values) |row| {
                 if (row.len != cols.len) {
-                    self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ cols.len, row.len });
+                    self.addError(
+                        .column_count_mismatch,
+                        "expected {d} values, got {d}",
+                        .{ cols.len, row.len },
+                    );
                 }
             }
         } else {
@@ -616,7 +668,11 @@ pub const Analyzer = struct {
             };
             for (stmt.values) |row| {
                 if (row.len != table_info.columns.len and row.len != non_auto_count) {
-                    self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ table_info.columns.len, row.len });
+                    self.addError(
+                        .column_count_mismatch,
+                        "expected {d} values, got {d}",
+                        .{ table_info.columns.len, row.len },
+                    );
                 }
             }
         }
@@ -648,7 +704,11 @@ pub const Analyzer = struct {
                 }
             }
             if (!found) {
-                self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ assignment.column, stmt.table });
+                self.addError(
+                    .column_not_found,
+                    "column '{s}' not found in table '{s}'",
+                    .{ assignment.column, stmt.table },
+                );
             }
             self.analyzeExpr(assignment.value);
         }
@@ -702,7 +762,11 @@ pub const Analyzer = struct {
                             }
                         }
                         if (!found) {
-                            self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ assignment.column, stmt.target });
+                            self.addError(
+                                .column_not_found,
+                                "column '{s}' not found in table '{s}'",
+                                .{ assignment.column, stmt.target },
+                            );
                         }
                         self.analyzeExpr(assignment.value);
                     }
@@ -719,14 +783,26 @@ pub const Analyzer = struct {
                                 }
                             }
                             if (!found) {
-                                self.addError(.column_not_found, "column '{s}' not found in table '{s}'", .{ col_name, stmt.target });
+                                self.addError(
+                                    .column_not_found,
+                                    "column '{s}' not found in table '{s}'",
+                                    .{ col_name, stmt.target },
+                                );
                             }
                         }
                         if (ins.values.len != cols.len) {
-                            self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ cols.len, ins.values.len });
+                            self.addError(
+                                .column_count_mismatch,
+                                "expected {d} values, got {d}",
+                                .{ cols.len, ins.values.len },
+                            );
                         }
                     } else if (ins.values.len != target_info.columns.len) {
-                        self.addError(.column_count_mismatch, "expected {d} values, got {d}", .{ target_info.columns.len, ins.values.len });
+                        self.addError(
+                            .column_count_mismatch,
+                            "expected {d} values, got {d}",
+                            .{ target_info.columns.len, ins.values.len },
+                        );
                     }
 
                     for (ins.values) |val| {
@@ -754,14 +830,22 @@ pub const Analyzer = struct {
                 .primary_key => |pk| {
                     for (pk.columns) |pk_col| {
                         if (!columnExistsInDef(stmt.columns, pk_col)) {
-                            self.addError(.column_not_found, "column '{s}' in PRIMARY KEY not found in table definition", .{pk_col});
+                            self.addError(
+                                .column_not_found,
+                                "column '{s}' in PRIMARY KEY not found in table definition",
+                                .{pk_col},
+                            );
                         }
                     }
                 },
                 .unique => |uq| {
                     for (uq.columns) |uq_col| {
                         if (!columnExistsInDef(stmt.columns, uq_col)) {
-                            self.addError(.column_not_found, "column '{s}' in UNIQUE constraint not found in table definition", .{uq_col});
+                            self.addError(
+                                .column_not_found,
+                                "column '{s}' in UNIQUE constraint not found in table definition",
+                                .{uq_col},
+                            );
                         }
                     }
                 },
@@ -773,12 +857,20 @@ pub const Analyzer = struct {
                 .foreign_key => |fk| {
                     for (fk.columns) |fk_col| {
                         if (!columnExistsInDef(stmt.columns, fk_col)) {
-                            self.addError(.column_not_found, "column '{s}' in FOREIGN KEY not found in table definition", .{fk_col});
+                            self.addError(
+                                .column_not_found,
+                                "column '{s}' in FOREIGN KEY not found in table definition",
+                                .{fk_col},
+                            );
                         }
                     }
                     // Validate referenced table exists
                     if (!self.schema.tableExists(fk.ref_table)) {
-                        self.addError(.table_not_found, "referenced table '{s}' not found", .{fk.ref_table});
+                        self.addError(
+                            .table_not_found,
+                            "referenced table '{s}' not found",
+                            .{fk.ref_table},
+                        );
                     }
                 },
             }
@@ -823,7 +915,11 @@ pub const Analyzer = struct {
             }
             for (stmt.parameters[i + 1 ..]) |other| {
                 if (std.ascii.eqlIgnoreCase(param.name, other.name)) {
-                    self.addError(.duplicate_alias, "duplicate parameter name: '{s}'", .{param.name});
+                    self.addError(
+                        .duplicate_alias,
+                        "duplicate parameter name: '{s}'",
+                        .{param.name},
+                    );
                     break;
                 }
             }
@@ -833,16 +929,28 @@ pub const Analyzer = struct {
         switch (stmt.return_type) {
             .table => |cols| {
                 if (cols.len == 0) {
-                    self.addError(.invalid_expression, "RETURNS TABLE must have at least one column", .{});
+                    self.addError(
+                        .invalid_expression,
+                        "RETURNS TABLE must have at least one column",
+                        .{},
+                    );
                 }
                 // Check for duplicate column names in table return type
                 for (cols, 0..) |col, i| {
                     if (col.name.len == 0) {
-                        self.addError(.invalid_expression, "column name cannot be empty in RETURNS TABLE", .{});
+                        self.addError(
+                            .invalid_expression,
+                            "column name cannot be empty in RETURNS TABLE",
+                            .{},
+                        );
                     }
                     for (cols[i + 1 ..]) |other| {
                         if (std.ascii.eqlIgnoreCase(col.name, other.name)) {
-                            self.addError(.duplicate_alias, "duplicate column name in RETURNS TABLE: '{s}'", .{col.name});
+                            self.addError(
+                                .duplicate_alias,
+                                "duplicate column name in RETURNS TABLE: '{s}'",
+                                .{col.name},
+                            );
                             break;
                         }
                     }
@@ -853,7 +961,11 @@ pub const Analyzer = struct {
 
         // Validate language is supported (currently only "sfl")
         if (!std.ascii.eqlIgnoreCase(stmt.language, "sfl")) {
-            self.addError(.invalid_expression, "unsupported language: '{s}' (only 'sfl' is supported)", .{stmt.language});
+            self.addError(
+                .invalid_expression,
+                "unsupported language: '{s}' (only 'sfl' is supported)",
+                .{stmt.language},
+            );
         }
 
         // Validate function body is not empty
@@ -875,7 +987,7 @@ pub const Analyzer = struct {
         // The catalog layer will handle existence checks during execution
     }
 
-    // ── Trigger Analysis ────────────────────────────────────────────
+    // ── Trigger Analysis ───────────────────────
 
     fn analyzeCreateTrigger(self: *Analyzer, stmt: *const ast.CreateTriggerStmt) void {
         // Validate trigger name is not empty
@@ -891,17 +1003,29 @@ pub const Analyzer = struct {
         // Validate UPDATE OF columns (only valid for UPDATE events)
         if (stmt.update_columns.len > 0) {
             if (stmt.event != .update) {
-                self.addError(.invalid_expression, "OF column_list is only allowed for UPDATE triggers", .{});
+                self.addError(
+                    .invalid_expression,
+                    "OF column_list is only allowed for UPDATE triggers",
+                    .{},
+                );
             }
 
             // Check for duplicate column names
             for (stmt.update_columns, 0..) |col, i| {
                 if (col.len == 0) {
-                    self.addError(.invalid_expression, "column name cannot be empty in UPDATE OF clause", .{});
+                    self.addError(
+                        .invalid_expression,
+                        "column name cannot be empty in UPDATE OF clause",
+                        .{},
+                    );
                 }
                 for (stmt.update_columns[i + 1 ..]) |other| {
                     if (std.ascii.eqlIgnoreCase(col, other)) {
-                        self.addError(.duplicate_alias, "duplicate column in UPDATE OF: '{s}'", .{col});
+                        self.addError(
+                            .duplicate_alias,
+                            "duplicate column in UPDATE OF: '{s}'",
+                            .{col},
+                        );
                         break;
                     }
                 }
@@ -939,7 +1063,7 @@ pub const Analyzer = struct {
         // The catalog layer will handle existence checks during execution
     }
 
-    // ── Role Management Validation ──────────────────────────────────
+    // ── Role Management Validation ───────────────────
 
     fn analyzeCreateRole(self: *Analyzer, stmt: *const ast.CreateRoleStmt) void {
         // Validate role name is not empty
@@ -1024,7 +1148,7 @@ pub const Analyzer = struct {
         }
     }
 
-    // ── Row-Level Security Validation ───────────────────────────────
+    // ── Row-Level Security Validation ──────────────────
 
     fn analyzeCreatePolicy(self: *Analyzer, stmt: *const ast.CreatePolicyStmt) void {
         // Validate policy name is not empty
@@ -1042,14 +1166,22 @@ pub const Analyzer = struct {
             .select, .delete => {
                 // SELECT/DELETE can only have USING clause
                 if (stmt.with_check_expr != null) {
-                    self.addError(.invalid_expression, "WITH CHECK clause is not allowed for SELECT/DELETE policies", .{});
+                    self.addError(
+                        .invalid_expression,
+                        "WITH CHECK clause is not allowed for SELECT/DELETE policies",
+                        .{},
+                    );
                 }
                 // USING clause is optional (defaults to true if omitted)
             },
             .insert => {
                 // INSERT can only have WITH CHECK clause
                 if (stmt.using_expr != null) {
-                    self.addError(.invalid_expression, "USING clause is not allowed for INSERT policies", .{});
+                    self.addError(
+                        .invalid_expression,
+                        "USING clause is not allowed for INSERT policies",
+                        .{},
+                    );
                 }
                 // WITH CHECK clause is optional (defaults to true if omitted)
             },
@@ -1092,18 +1224,26 @@ pub const Analyzer = struct {
     fn analyzeAlterTableRLS(self: *Analyzer, stmt: *const ast.AlterTableRLSStmt) void {
         // Validate table name is not empty
         if (stmt.table_name.len == 0) {
-            self.addError(.invalid_expression, "table name cannot be empty for ALTER TABLE RLS", .{});
+            self.addError(
+                .invalid_expression,
+                "table name cannot be empty for ALTER TABLE RLS",
+                .{},
+            );
         }
 
         // Validate logical consistency: FORCE only makes sense with ENABLE
         if (stmt.force and !stmt.enable) {
-            self.addError(.invalid_expression, "FORCE ROW LEVEL SECURITY requires ENABLE ROW LEVEL SECURITY", .{});
+            self.addError(
+                .invalid_expression,
+                "FORCE ROW LEVEL SECURITY requires ENABLE ROW LEVEL SECURITY",
+                .{},
+            );
         }
 
         // Note: Table existence is checked at catalog layer during execution
     }
 
-    // ── CTE Column Inference ────────────────────────────────────────
+    // ── CTE Column Inference ─────────────────────
 
     /// Infer column metadata from a CTE definition.
     /// Uses explicit column names if provided, otherwise derives from SELECT result columns.
@@ -1163,7 +1303,7 @@ pub const Analyzer = struct {
         return cols.toOwnedSlice(a) catch return &.{};
     }
 
-    // ── Table Reference Resolution ──────────────────────────────────
+    // ── Table Reference Resolution ───────────────────
 
     fn resolveTableRef(self: *Analyzer, ref: *const ast.TableRef) void {
         switch (ref.*) {
@@ -1197,13 +1337,19 @@ pub const Analyzer = struct {
                 // column list for var.column qualifier resolution below.
                 const before_len = self.scope_tables.items.len;
                 self.resolveTableRef(mr.source);
-                const source_columns: ?[]const ColumnInfo = if (self.scope_tables.items.len > before_len)
-                    self.scope_tables.items[self.scope_tables.items.len - 1].columns
-                else
-                    null; // e.g. subquery source: not registered in scope, skip column validation
+                const source_columns: ?[]const ColumnInfo =
+                    if (self.scope_tables.items.len > before_len)
+                        self.scope_tables.items[self.scope_tables.items.len - 1].columns
+                    else
+                        // e.g. subquery source: not registered in scope, skip column validation
+                        null;
 
                 if (mr.spec.order_by.len == 0) {
-                    self.addError(.invalid_expression, "MATCH_RECOGNIZE requires an ORDER BY clause", .{});
+                    self.addError(
+                        .invalid_expression,
+                        "MATCH_RECOGNIZE requires an ORDER BY clause",
+                        .{},
+                    );
                 }
 
                 var pattern_vars = std.ArrayListUnmanaged([]const u8){};
@@ -1212,7 +1358,11 @@ pub const Analyzer = struct {
 
                 for (mr.spec.define) |def| {
                     if (!containsIgnoreCase(pattern_vars.items, def.variable)) {
-                        self.addError(.invalid_expression, "DEFINE variable '{s}' does not appear in PATTERN", .{def.variable});
+                        self.addError(
+                            .invalid_expression,
+                            "DEFINE variable '{s}' does not appear in PATTERN",
+                            .{def.variable},
+                        );
                     }
                 }
 
@@ -1242,13 +1392,20 @@ pub const Analyzer = struct {
                     const scope_idx = self.scope_tables.items.len - 1;
                     const existing = self.scope_tables.items[scope_idx].columns;
                     const arena = self.arena.allocator();
-                    const combined = arena.alloc(ColumnInfo, existing.len + mr.spec.measures.len) catch {
+                    const combined = arena.alloc(
+                        ColumnInfo,
+                        existing.len + mr.spec.measures.len,
+                    ) catch {
                         self.addError(.invalid_expression, "out of memory", .{});
                         return;
                     };
                     @memcpy(combined[0..existing.len], existing);
                     for (mr.spec.measures, 0..) |m, i| {
-                        combined[existing.len + i] = .{ .name = m.alias, .column_type = .untyped, .flags = .{} };
+                        combined[existing.len + i] = .{
+                            .name = m.alias,
+                            .column_type = .untyped,
+                            .flags = .{},
+                        };
                     }
                     self.scope_tables.items[scope_idx].columns = combined;
                 }
@@ -1258,7 +1415,11 @@ pub const Analyzer = struct {
 
     /// Walk a MATCH_RECOGNIZE PATTERN tree, collecting the distinct (case-insensitive)
     /// pattern variable names it references.
-    fn collectPatternVariables(self: *Analyzer, node: *const ast.PatternNode, out: *std.ArrayListUnmanaged([]const u8)) void {
+    fn collectPatternVariables(
+        self: *Analyzer,
+        node: *const ast.PatternNode,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) void {
         switch (node.*) {
             .variable => |v| {
                 if (!containsIgnoreCase(out.items, v)) {
@@ -1293,18 +1454,29 @@ pub const Analyzer = struct {
     /// Resolve `name.prefix.?.name` where `name.prefix` is a MATCH_RECOGNIZE
     /// pattern variable (not a table alias) against `mr_source_columns`.
     fn resolveMatchRecognizeColumn(self: *Analyzer, name: ast.Name) void {
-        const cols = self.mr_source_columns orelse return; // unknown schema (e.g. subquery source): accept without validation
+        // unknown schema (e.g. subquery source): accept without validation
+        const cols = self.mr_source_columns orelse return;
         for (cols) |col| {
             if (std.ascii.eqlIgnoreCase(col.name, name.name)) return;
         }
-        self.addError(.column_not_found, "column '{s}' not found in table referenced by pattern variable '{s}'", .{ name.name, name.prefix.? });
+        self.addError(
+            .column_not_found,
+            "column '{s}' not found in table referenced by pattern variable '{s}'",
+            .{ name.name, name.prefix.? },
+        );
     }
 
-    // ── Expression Analysis ─────────────────────────────────────────
+    // ── Expression Analysis ──────────────────────
 
     fn analyzeExpr(self: *Analyzer, expr: *const ast.Expr) void {
         switch (expr.*) {
-            .integer_literal, .float_literal, .string_literal, .blob_literal, .boolean_literal, .null_literal => {},
+            .integer_literal,
+            .float_literal,
+            .string_literal,
+            .blob_literal,
+            .boolean_literal,
+            .null_literal,
+            => {},
             .column_ref => |name| {
                 var resolved_as_pattern_var = false;
                 if (self.mr_pattern_vars) |pvars| {
@@ -1326,11 +1498,16 @@ pub const Analyzer = struct {
             },
             .function_call => |f| {
                 if (isMatchRecognizeNavFunction(f.name) and self.mr_pattern_vars == null) {
-                    self.addError(.invalid_expression, "{s}() can only be used inside a MATCH_RECOGNIZE clause", .{f.name});
+                    self.addError(
+                        .invalid_expression,
+                        "{s}() can only be used inside a MATCH_RECOGNIZE clause",
+                        .{f.name},
+                    );
                 }
                 for (f.args, 0..) |arg, arg_idx| {
                     // Skip resolution for * in aggregate functions like COUNT(*)
-                    if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*")) continue;
+                    if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*"))
+                        continue;
                     // row_to_json/row_to_jsonb: first arg is a table alias, not a column —
                     // skip column resolution if the name matches a known table alias.
                     if (arg_idx == 0 and
@@ -1391,7 +1568,8 @@ pub const Analyzer = struct {
             .window_function => |wf| {
                 // Analyze window function arguments
                 for (wf.args) |arg| {
-                    if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*")) continue;
+                    if (arg.* == .column_ref and std.mem.eql(u8, arg.column_ref.name, "*"))
+                        continue;
                     self.analyzeExpr(arg);
                 }
                 // Analyze PARTITION BY expressions
@@ -1432,7 +1610,7 @@ pub const Analyzer = struct {
         }
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────
 
     fn columnExistsInDef(columns: []const ast.ColumnDef, name: []const u8) bool {
         for (columns) |col| {
@@ -1446,7 +1624,7 @@ pub const Analyzer = struct {
     }
 };
 
-// ── In-Memory Schema Provider for Testing ───────────────────────────
+// ── In-Memory Schema Provider for Testing ─────────────────
 
 pub const MemorySchema = struct {
     tables: std.StringHashMapUnmanaged(TableInfo),
@@ -1492,13 +1670,17 @@ pub const MemorySchema = struct {
     }
 };
 
-// ── Tests ───────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 fn parseAndAnalyze(allocator: Allocator, sql: []const u8, schema: SchemaProvider) !Analyzer {
     var arena = ast.AstArena.init(allocator);
     defer arena.deinit();
 
-    var parser = @import("parser.zig").Parser.init(allocator, sql, &arena) catch return error.ParseFailed;
+    var parser = @import("parser.zig").Parser.init(
+        allocator,
+        sql,
+        &arena,
+    ) catch return error.ParseFailed;
     defer parser.deinit();
 
     const stmt = parser.parseStatement() catch return error.ParseFailed;
@@ -1552,7 +1734,11 @@ test "SELECT with qualified column reference" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT users.id, users.name FROM users;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT users.id, users.name FROM users;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1588,7 +1774,11 @@ test "SELECT with ambiguous column" {
         .{ .name = "total", .column_type = .real, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id FROM users INNER JOIN orders ON users.id = orders.id;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id FROM users INNER JOIN orders ON users.id = orders.id;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -1610,7 +1800,11 @@ test "SELECT with table alias" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT u.id, u.name FROM users u;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT u.id, u.name FROM users u;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1638,7 +1832,11 @@ test "INSERT with correct column count" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "INSERT INTO users VALUES (1, 'alice');", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "INSERT INTO users VALUES (1, 'alice');",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1654,7 +1852,11 @@ test "INSERT with wrong column count" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "INSERT INTO users VALUES (1);", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "INSERT INTO users VALUES (1);",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -1666,7 +1868,11 @@ test "INSERT into non-existent table" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "INSERT INTO ghost VALUES (1);", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "INSERT INTO ghost VALUES (1);",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -1685,12 +1891,20 @@ test "INSERT with named columns" {
     });
 
     // Valid subset
-    var a1 = try parseAndAnalyze(allocator, "INSERT INTO users (id, name) VALUES (1, 'alice');", schema.provider());
+    var a1 = try parseAndAnalyze(
+        allocator,
+        "INSERT INTO users (id, name) VALUES (1, 'alice');",
+        schema.provider(),
+    );
     defer a1.deinit();
     try std.testing.expect(!a1.hasErrors());
 
     // Unknown column
-    var a2 = try parseAndAnalyze(allocator, "INSERT INTO users (id, age) VALUES (1, 25);", schema.provider());
+    var a2 = try parseAndAnalyze(
+        allocator,
+        "INSERT INTO users (id, age) VALUES (1, 25);",
+        schema.provider(),
+    );
     defer a2.deinit();
     try std.testing.expect(a2.hasErrors());
     try std.testing.expectEqual(ErrorKind.column_not_found, a2.errors.items[0].kind);
@@ -1706,7 +1920,11 @@ test "UPDATE with valid columns" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "UPDATE users SET name = 'bob' WHERE id = 1;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "UPDATE users SET name = 'bob' WHERE id = 1;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1737,7 +1955,11 @@ test "DELETE with valid table" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "DELETE FROM users WHERE id = 1;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "DELETE FROM users WHERE id = 1;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1760,7 +1982,11 @@ test "CREATE TABLE duplicate columns" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TABLE t (a INTEGER, b TEXT, a REAL);", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TABLE t (a INTEGER, b TEXT, a REAL);",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -1776,7 +2002,11 @@ test "CREATE TABLE already exists" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TABLE users (id INTEGER);", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TABLE users (id INTEGER);",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -1791,7 +2021,11 @@ test "CREATE TABLE IF NOT EXISTS suppresses error" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TABLE IF NOT EXISTS users (id INTEGER);", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TABLE IF NOT EXISTS users (id INTEGER);",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1831,12 +2065,20 @@ test "SELECT with WHERE column check" {
     });
 
     // Valid WHERE column
-    var a1 = try parseAndAnalyze(allocator, "SELECT name FROM users WHERE id > 5;", schema.provider());
+    var a1 = try parseAndAnalyze(
+        allocator,
+        "SELECT name FROM users WHERE id > 5;",
+        schema.provider(),
+    );
     defer a1.deinit();
     try std.testing.expect(!a1.hasErrors());
 
     // Invalid WHERE column
-    var a2 = try parseAndAnalyze(allocator, "SELECT name FROM users WHERE age > 5;", schema.provider());
+    var a2 = try parseAndAnalyze(
+        allocator,
+        "SELECT name FROM users WHERE age > 5;",
+        schema.provider(),
+    );
     defer a2.deinit();
     try std.testing.expect(a2.hasErrors());
 }
@@ -1856,7 +2098,12 @@ test "SELECT with JOIN" {
         .{ .name = "total", .column_type = .real, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT users.name, orders.total FROM users INNER JOIN orders ON users.id = orders.user_id;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT users.name, orders.total FROM users INNER JOIN orders ON users.id = " ++
+            "orders.user_id;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1913,7 +2160,11 @@ test "SELECT with ORDER BY and LIMIT" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT name FROM users ORDER BY id DESC LIMIT 10;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT name FROM users ORDER BY id DESC LIMIT 10;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1961,14 +2212,18 @@ test "table.* with invalid alias" {
     try std.testing.expectEqual(ErrorKind.table_not_found, analyzer.errors.items[0].kind);
 }
 
-// ── CTE Analysis Tests ──────────────────────────────────────────────
+// ── CTE Analysis Tests ───────────────────────
 
 test "CTE: simple CTE passes analysis" {
     const allocator = std.testing.allocator;
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH vals AS (SELECT 1) SELECT * FROM vals;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH vals AS (SELECT 1) SELECT * FROM vals;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1979,7 +2234,11 @@ test "CTE: CTE with column aliases" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH cte(x, y) AS (SELECT 1, 2) SELECT x, y FROM cte;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH cte(x, y) AS (SELECT 1, 2) SELECT x, y FROM cte;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -1990,7 +2249,11 @@ test "CTE: multiple CTEs" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2006,7 +2269,11 @@ test "CTE: CTE referencing real table" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH active AS (SELECT id, name FROM users) SELECT * FROM active;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH active AS (SELECT id, name FROM users) SELECT * FROM active;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2017,14 +2284,18 @@ test "CTE: non-existent CTE reference fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH a AS (SELECT 1) SELECT * FROM nonexistent;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH a AS (SELECT 1) SELECT * FROM nonexistent;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
     try std.testing.expectEqual(ErrorKind.table_not_found, analyzer.errors.items[0].kind);
 }
 
-// ── Set Operation Analysis Tests ─────────────────────────────────────
+// ── Set Operation Analysis Tests ────────────────────
 
 test "set op: UNION with matching column count passes" {
     const allocator = std.testing.allocator;
@@ -2040,7 +2311,11 @@ test "set op: UNION with matching column count passes" {
         .{ .name = "label", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id, name FROM t1 UNION SELECT id, label FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id, name FROM t1 UNION SELECT id, label FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2058,7 +2333,11 @@ test "set op: UNION ALL passes" {
         .{ .name = "b", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT a FROM t1 UNION ALL SELECT b FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT a FROM t1 UNION ALL SELECT b FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2076,7 +2355,11 @@ test "set op: INTERSECT passes" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id FROM t1 INTERSECT SELECT id FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id FROM t1 INTERSECT SELECT id FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2094,7 +2377,11 @@ test "set op: EXCEPT passes" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id FROM t1 EXCEPT SELECT id FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id FROM t1 EXCEPT SELECT id FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2113,7 +2400,11 @@ test "set op: mismatched column count fails" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id, name FROM t1 UNION SELECT id FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id, name FROM t1 UNION SELECT id FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2129,7 +2420,11 @@ test "set op: with CTE passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH cte AS (SELECT 1 AS x) SELECT x FROM cte UNION SELECT x FROM cte;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH cte AS (SELECT 1 AS x) SELECT x FROM cte UNION SELECT x FROM cte;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2149,7 +2444,11 @@ test "set op: chained UNION passes" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id FROM t1 UNION SELECT id FROM t2 UNION SELECT id FROM t3;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id FROM t1 UNION SELECT id FROM t2 UNION SELECT id FROM t3;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2170,7 +2469,11 @@ test "set op: chained with mismatched columns in third query fails" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id FROM t1 UNION SELECT id FROM t2 UNION SELECT id, name FROM t3;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id FROM t1 UNION SELECT id FROM t2 UNION SELECT id, name FROM t3;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2194,7 +2497,11 @@ test "set op: SELECT * with matching columns passes" {
         .{ .name = "y", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t1 UNION SELECT * FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t1 UNION SELECT * FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2212,7 +2519,11 @@ test "set op: SELECT * with different column counts fails" {
         .{ .name = "x", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t1 UNION SELECT * FROM t2;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t1 UNION SELECT * FROM t2;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2229,7 +2540,11 @@ test "set op: with ORDER BY on compound result passes" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT id FROM t1 UNION SELECT id FROM t2 ORDER BY id;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT id FROM t1 UNION SELECT id FROM t2 ORDER BY id;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2243,7 +2558,11 @@ test "set op: CTE accessible on both sides" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH vals AS (SELECT 1 AS x) SELECT x FROM vals UNION ALL SELECT x FROM vals;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH vals AS (SELECT 1 AS x) SELECT x FROM vals UNION ALL SELECT x FROM vals;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2254,7 +2573,11 @@ test "set op: multiple CTEs with set operation" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) SELECT x FROM a UNION SELECT y FROM b;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) SELECT x FROM a UNION SELECT y FROM b;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2265,7 +2588,12 @@ test "CREATE FUNCTION: valid scalar function passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION add(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x + y;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION add(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x " ++
+            "+ y;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2276,7 +2604,12 @@ test "CREATE FUNCTION: valid table return function passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION get_users() RETURNS TABLE (id INTEGER, name TEXT) LANGUAGE sfl AS 'SELECT id, name FROM users;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION get_users() RETURNS TABLE (id INTEGER, name TEXT) LANGUAGE sfl AS " ++
+            "'SELECT id, name FROM users;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2287,7 +2620,12 @@ test "CREATE FUNCTION: valid setof return function passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION generate_series(start INTEGER, stop INTEGER) RETURNS SETOF INTEGER LANGUAGE sfl AS 'RETURN start;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION generate_series(start INTEGER, stop INTEGER) RETURNS SETOF INTEGER " ++
+            "LANGUAGE sfl AS 'RETURN start;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2298,7 +2636,11 @@ test "CREATE FUNCTION: duplicate parameter names fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION bad(x INTEGER, x TEXT) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION bad(x INTEGER, x TEXT) RETURNS INTEGER LANGUAGE sfl AS 'RETURN x;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2314,7 +2656,11 @@ test "CREATE FUNCTION: empty table return fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION bad() RETURNS TABLE () LANGUAGE sfl AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION bad() RETURNS TABLE () LANGUAGE sfl AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2330,7 +2676,11 @@ test "CREATE FUNCTION: duplicate column names in table return fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION bad() RETURNS TABLE (x INTEGER, x TEXT) LANGUAGE sfl AS 'SELECT 1, 2;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION bad() RETURNS TABLE (x INTEGER, x TEXT) LANGUAGE sfl AS 'SELECT 1, 2;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2346,7 +2696,11 @@ test "CREATE FUNCTION: unsupported language fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE FUNCTION bad() RETURNS INTEGER LANGUAGE plpgsql AS 'BEGIN RETURN 1; END;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE FUNCTION bad() RETURNS INTEGER LANGUAGE plpgsql AS 'BEGIN RETURN 1; END;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2373,13 +2727,17 @@ test "DROP FUNCTION: with overload resolution passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "DROP FUNCTION add(INTEGER, INTEGER);", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "DROP FUNCTION add(INTEGER, INTEGER);",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
 }
 
-// ── Trigger Analysis Tests ───────────────────────────────────────
+// ── Trigger Analysis Tests ──────────────────────
 
 test "CREATE TRIGGER: valid trigger passes" {
     const allocator = std.testing.allocator;
@@ -2391,7 +2749,12 @@ test "CREATE TRIGGER: valid trigger passes" {
         .{ .name = "name", .column_type = .text, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER audit_insert AFTER INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id);';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER audit_insert AFTER INSERT ON users FOR EACH ROW AS 'INSERT INTO " ++
+            "audit VALUES (NEW.id);';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2402,7 +2765,11 @@ test "CREATE TRIGGER: empty trigger name fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER \"\" AFTER INSERT ON users AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER \"\" AFTER INSERT ON users AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2418,7 +2785,11 @@ test "CREATE TRIGGER: empty table name fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER t AFTER INSERT ON \"\" AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER t AFTER INSERT ON \"\" AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2434,7 +2805,11 @@ test "CREATE TRIGGER: valid UPDATE OF passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER t AFTER UPDATE OF name ON users AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER t AFTER UPDATE OF name ON users AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     // This should pass — UPDATE OF is valid for UPDATE events
@@ -2446,7 +2821,11 @@ test "CREATE TRIGGER: empty column in UPDATE OF fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER t AFTER UPDATE OF \"\" ON users AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER t AFTER UPDATE OF \"\" ON users AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2462,7 +2841,11 @@ test "CREATE TRIGGER: duplicate columns in UPDATE OF fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER t AFTER UPDATE OF name, name ON users AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER t AFTER UPDATE OF name, name ON users AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2479,7 +2862,11 @@ test "CREATE TRIGGER: body validation" {
     defer schema.deinit();
 
     // Non-empty body should pass basic validation
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER t AFTER INSERT ON users AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER t AFTER INSERT ON users AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     // Analyzer checks for empty strings, but parser handles empty string literals differently
@@ -2499,7 +2886,11 @@ test "CREATE TRIGGER: WHEN condition basic validation" {
     });
 
     // WHEN condition with simple expression (no NEW/OLD references for now)
-    var analyzer = try parseAndAnalyze(allocator, "CREATE TRIGGER t AFTER INSERT ON users FOR EACH ROW WHEN (1 > 0) AS 'SELECT 1;';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE TRIGGER t AFTER INSERT ON users FOR EACH ROW WHEN (1 > 0) AS 'SELECT 1;';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     // Basic WHEN condition should parse and analyze successfully
@@ -2523,7 +2914,11 @@ test "DROP TRIGGER: with table name passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "DROP TRIGGER audit_insert ON users;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "DROP TRIGGER audit_insert ON users;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2550,7 +2945,11 @@ test "ALTER TRIGGER: ENABLE passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "ALTER TRIGGER audit_insert ENABLE;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "ALTER TRIGGER audit_insert ENABLE;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2561,7 +2960,11 @@ test "ALTER TRIGGER: DISABLE passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "ALTER TRIGGER audit_insert DISABLE;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "ALTER TRIGGER audit_insert DISABLE;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2583,7 +2986,7 @@ test "ALTER TRIGGER: empty name fails" {
     try std.testing.expect(found_invalid);
 }
 
-// ── Role Management Tests ───────────────────────────────────────────
+// ── Role Management Tests ──────────────────────
 
 test "CREATE ROLE: valid role passes" {
     const allocator = std.testing.allocator;
@@ -2601,7 +3004,11 @@ test "CREATE ROLE: valid role with password passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "CREATE ROLE app_user WITH LOGIN PASSWORD 'secret123';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "CREATE ROLE app_user WITH LOGIN PASSWORD 'secret123';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2655,7 +3062,11 @@ test "ALTER ROLE: valid alter passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "ALTER ROLE user1 WITH LOGIN;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "ALTER ROLE user1 WITH LOGIN;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2666,7 +3077,11 @@ test "ALTER ROLE: empty role name fails" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "ALTER ROLE \"\" WITH NOLOGIN;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "ALTER ROLE \"\" WITH NOLOGIN;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -2682,7 +3097,11 @@ test "ALTER ROLE: multiple password specifications" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "ALTER ROLE user1 WITH PASSWORD 'secret1' PASSWORD 'secret2';", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "ALTER ROLE user1 WITH PASSWORD 'secret1' PASSWORD 'secret2';",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     // Multiple passwords should be accepted (last one wins) - parser level validation
@@ -2694,7 +3113,11 @@ test "GRANT: valid grant passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "GRANT SELECT ON TABLE users TO alice;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "GRANT SELECT ON TABLE users TO alice;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2769,7 +3192,11 @@ test "REVOKE: valid revoke passes" {
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
 
-    var analyzer = try parseAndAnalyze(allocator, "REVOKE UPDATE ON TABLE inventory FROM charlie;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "REVOKE UPDATE ON TABLE inventory FROM charlie;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -2835,7 +3262,7 @@ test "REVOKE: empty privileges fails" {
     try std.testing.expect(analyzer.hasErrors());
 }
 
-// ── Row-Level Security (RLS) Tests ────────────────────────────────
+// ── Row-Level Security (RLS) Tests ───────────────────
 
 test "CREATE POLICY: valid permissive SELECT policy passes" {
     const allocator = std.testing.allocator;
@@ -3186,7 +3613,7 @@ test "ALTER TABLE RLS: FORCE without ENABLE fails" {
     try std.testing.expect(analyzer.hasErrors());
 }
 
-// ── MERGE Statement Analysis Tests ──────────────────────────────────
+// ── MERGE Statement Analysis Tests ───────────────────
 
 test "MERGE with nonexistent target table" {
     const allocator = std.testing.allocator;
@@ -3685,7 +4112,7 @@ test "MERGE with subquery source does not crash" {
     _ = analyzer.hasErrors();
 }
 
-// ── MATCH_RECOGNIZE Phase 2 Tests (Semantic Validation) ──────────────────
+// ── MATCH_RECOGNIZE Phase 2 Tests (Semantic Validation) ────────────
 
 test "MATCH_RECOGNIZE: valid full clause with ORDER BY, PATTERN, DEFINE produces no errors" {
     const allocator = std.testing.allocator;
@@ -3697,7 +4124,12 @@ test "MATCH_RECOGNIZE: valid full clause with ORDER BY, PATTERN, DEFINE produces
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id MEASURES price AS m1 PATTERN (A B+) DEFINE B AS B.price > 100) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id MEASURES price AS m1 PATTERN (A B+) " ++
+            "DEFINE B AS B.price > 100) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -3713,7 +4145,12 @@ test "MATCH_RECOGNIZE: missing ORDER BY produces invalid_expression error" {
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (MEASURES price AS m1 PATTERN (A B+) DEFINE B AS B.price > 100) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (MEASURES price AS m1 PATTERN (A B+) DEFINE B AS " ++
+            "B.price > 100) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -3734,7 +4171,12 @@ test "MATCH_RECOGNIZE: DEFINE variable not used in PATTERN produces invalid_expr
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > 100, Z AS Z.price > 50) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > " ++
+            "100, Z AS Z.price > 50) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -3755,13 +4197,18 @@ test "MATCH_RECOGNIZE: PATTERN variable with no DEFINE entry is valid" {
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > 100) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > " ++
+            "100) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
 }
 
-test "MATCH_RECOGNIZE: DEFINE referencing unknown column via pattern variable qualifier produces column_not_found" {
+test "MATCH_RECOGNIZE: DEFINE unknown column via pattern variable qualifier is column_not_found" {
     const allocator = std.testing.allocator;
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
@@ -3771,7 +4218,12 @@ test "MATCH_RECOGNIZE: DEFINE referencing unknown column via pattern variable qu
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.nonexistent_col > 0) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS " ++
+            "B.nonexistent_col > 0) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
@@ -3782,7 +4234,7 @@ test "MATCH_RECOGNIZE: DEFINE referencing unknown column via pattern variable qu
     try std.testing.expect(found_not_found);
 }
 
-test "MATCH_RECOGNIZE: DEFINE referencing valid column via pattern variable qualifier produces no errors" {
+test "MATCH_RECOGNIZE: DEFINE valid column via pattern variable qualifier produces no errors" {
     const allocator = std.testing.allocator;
     var schema = MemorySchema.init(allocator);
     defer schema.deinit();
@@ -3792,7 +4244,12 @@ test "MATCH_RECOGNIZE: DEFINE referencing valid column via pattern variable qual
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > 0) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (ORDER BY id PATTERN (A B+) DEFINE B AS B.price > " ++
+            "0) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(!analyzer.hasErrors());
@@ -3829,7 +4286,12 @@ test "MATCH_RECOGNIZE: PARTITION BY unknown column produces column_not_found" {
         .{ .name = "price", .column_type = .integer, .flags = .{} },
     });
 
-    var analyzer = try parseAndAnalyze(allocator, "SELECT * FROM t MATCH_RECOGNIZE (PARTITION BY nonexistent_col ORDER BY id PATTERN (A+) DEFINE A AS A.price > 0) AS mr;", schema.provider());
+    var analyzer = try parseAndAnalyze(
+        allocator,
+        "SELECT * FROM t MATCH_RECOGNIZE (PARTITION BY nonexistent_col ORDER BY id PATTERN " ++
+            "(A+) DEFINE A AS A.price > 0) AS mr;",
+        schema.provider(),
+    );
     defer analyzer.deinit();
 
     try std.testing.expect(analyzer.hasErrors());
