@@ -68,7 +68,7 @@ pub const Parser = struct {
         return self.arena.allocator();
     }
 
-    // ── Token helpers ─────────────────────────────────────────────
+    // ── Token helpers ────────────────────────
 
     fn peek(self: *const Parser) Token {
         if (self.pos < self.tokens.len) return self.tokens[self.pos];
@@ -111,7 +111,10 @@ pub const Parser = struct {
     }
 
     fn addError(self: *Parser, t: Token, msg: []const u8) Error!void {
-        self.errors.append(self.infra_alloc, .{ .message = msg, .token = t }) catch return error.OutOfMemory;
+        self.errors.append(
+            self.infra_alloc,
+            .{ .message = msg, .token = t },
+        ) catch return error.OutOfMemory;
     }
 
     fn expectedTokenMsg(tt: TokenType) []const u8 {
@@ -181,7 +184,7 @@ pub const Parser = struct {
         return error.ParseFailed;
     }
 
-    // ── Public API ────────────────────────────────────────────────
+    // ── Public API ─────────────────────────
 
     /// Parse a single SQL statement. Returns null if at EOF.
     pub fn parseStatement(self: *Parser) Error!?ast.Stmt {
@@ -230,7 +233,7 @@ pub const Parser = struct {
         return stmt;
     }
 
-    // ── SELECT ────────────────────────────────────────────────────
+    // ── SELECT ──────────────────────────
 
     fn parseSelect(self: *Parser) Error!ast.SelectStmt {
         var stmt = ast.SelectStmt{};
@@ -269,14 +272,20 @@ pub const Parser = struct {
                 const next_op = try self.parseSetOpKeyword();
                 var next_stmt = ast.SelectStmt{};
                 next_stmt = try self.parseSelectBody(next_stmt);
-                const next_right = self.arena.create(ast.SelectStmt, next_stmt) catch return error.OutOfMemory;
+                const next_right = self.arena.create(
+                    ast.SelectStmt,
+                    next_stmt,
+                ) catch return error.OutOfMemory;
                 right_stmt.set_operation = self.arena.create(ast.SetOperation, .{
                     .op = next_op,
                     .right = next_right,
                 }) catch return error.OutOfMemory;
             }
 
-            const right_ptr = self.arena.create(ast.SelectStmt, right_stmt) catch return error.OutOfMemory;
+            const right_ptr = self.arena.create(
+                ast.SelectStmt,
+                right_stmt,
+            ) catch return error.OutOfMemory;
             stmt.set_operation = self.arena.create(ast.SetOperation, .{
                 .op = set_op_type,
                 .right = right_ptr,
@@ -298,7 +307,9 @@ pub const Parser = struct {
 
                 // Parse NULLS FIRST / NULLS LAST
                 var nulls: ?ast.NullsOrder = null;
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls"))
+                {
                     _ = self.advance(); // consume "nulls"
                     if (self.peek().type == .identifier) {
                         const kw = self.lexeme(self.peek());
@@ -312,7 +323,10 @@ pub const Parser = struct {
                     }
                 }
 
-                items.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
+                items.append(
+                    a,
+                    .{ .expr = expr, .direction = dir, .nulls = nulls },
+                ) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
             stmt.order_by = items.toOwnedSlice(a) catch return error.OutOfMemory;
@@ -335,10 +349,17 @@ pub const Parser = struct {
         }
 
         // Parse FETCH [FIRST|NEXT] n [ROW|ROWS] ONLY/WITH TIES (SQL standard LIMIT alternative)
-        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "fetch")) {
+        if (self.peek().type == .identifier and
+            std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "fetch"))
+        {
             _ = self.advance(); // consume "fetch"
             // consume FIRST or NEXT (contextual keywords, tokenized as identifiers)
-            if (self.peek().type == .identifier and (std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "first") or std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next"))) {
+            if (self.peek().type == .identifier and
+                (std.ascii.eqlIgnoreCase(
+                    self.lexeme(self.peek()),
+                    "first",
+                ) or std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next")))
+            {
                 _ = self.advance();
             }
             stmt.limit = try self.parseExpr(0); // parse the count expression
@@ -347,12 +368,16 @@ pub const Parser = struct {
                 _ = self.advance();
             }
             // consume ONLY or WITH TIES
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "only")) {
+            if (self.peek().type == .identifier and
+                std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "only"))
+            {
                 // ONLY is a contextual keyword, tokenized as identifier
                 _ = self.advance(); // consume ONLY
             } else if (self.match(.kw_with)) {
                 // WITH is a real keyword (kw_with)
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ties")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ties"))
+                {
                     _ = self.advance(); // consume TIES
                     stmt.with_ties = true;
                 } else {
@@ -521,13 +546,18 @@ pub const Parser = struct {
                         // Single expression without parentheses
                         set.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
                     }
-                    grouping_sets.append(a, set.toOwnedSlice(a) catch return error.OutOfMemory) catch return error.OutOfMemory;
+                    grouping_sets.append(
+                        a,
+                        set.toOwnedSlice(a) catch return error.OutOfMemory,
+                    ) catch return error.OutOfMemory;
                     if (!self.match(.comma)) break;
                 }
                 _ = try self.expect(.right_paren);
 
                 const spec = try a.create(ast.GroupBySpec);
-                spec.* = .{ .grouping_sets = grouping_sets.toOwnedSlice(a) catch return error.OutOfMemory };
+                spec.* = .{
+                    .grouping_sets = grouping_sets.toOwnedSlice(a) catch return error.OutOfMemory,
+                };
                 stmt.group_by_spec = spec;
             } else {
                 // Regular GROUP BY
@@ -557,7 +587,10 @@ pub const Parser = struct {
                 if (self.match(.kw_partition)) {
                     _ = try self.expect(.kw_by);
                     while (true) {
-                        partition_by.append(a, try self.parseExpr(0)) catch return error.OutOfMemory;
+                        partition_by.append(
+                            a,
+                            try self.parseExpr(0),
+                        ) catch return error.OutOfMemory;
                         if (!self.match(.comma)) break;
                     }
                 }
@@ -574,7 +607,10 @@ pub const Parser = struct {
                         } else {
                             _ = self.match(.kw_asc);
                         }
-                        order_by.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+                        order_by.append(
+                            a,
+                            .{ .expr = expr, .direction = dir },
+                        ) catch return error.OutOfMemory;
                         if (!self.match(.comma)) break;
                     }
                 }
@@ -735,7 +771,10 @@ pub const Parser = struct {
                         }
                     }
                     _ = try self.expect(.right_paren);
-                    rows.append(a, row_exprs.toOwnedSlice(a) catch return error.OutOfMemory) catch return error.OutOfMemory;
+                    rows.append(
+                        a,
+                        row_exprs.toOwnedSlice(a) catch return error.OutOfMemory,
+                    ) catch return error.OutOfMemory;
                     if (!self.match(.comma)) break;
                 }
 
@@ -779,7 +818,10 @@ pub const Parser = struct {
                 _ = try self.expect(.right_paren);
                 _ = self.match(.kw_as);
                 const alias = try self.expectIdentifier();
-                const sel_ptr = self.arena.create(ast.SelectStmt, select) catch return error.OutOfMemory;
+                const sel_ptr = self.arena.create(
+                    ast.SelectStmt,
+                    select,
+                ) catch return error.OutOfMemory;
                 const subquery_ref = self.arena.create(ast.TableRef, .{
                     .subquery = .{ .select = sel_ptr, .alias = alias, .is_lateral = is_lateral },
                 }) catch return error.OutOfMemory;
@@ -900,7 +942,10 @@ pub const Parser = struct {
         const method: ast.SampleMethod = blk: {
             if (std.ascii.eqlIgnoreCase(method_name, "bernoulli")) break :blk .bernoulli;
             if (std.ascii.eqlIgnoreCase(method_name, "system")) break :blk .system;
-            try self.addError(self.peek(), "unknown TABLESAMPLE method; expected BERNOULLI or SYSTEM");
+            try self.addError(
+                self.peek(),
+                "unknown TABLESAMPLE method; expected BERNOULLI or SYSTEM",
+            );
             return error.ParseFailed;
         };
         _ = try self.expect(.left_paren);
@@ -935,7 +980,8 @@ pub const Parser = struct {
         return .{ .method = method, .percent = percent, .seed = seed };
     }
 
-    /// Parse MATCH_RECOGNIZE clause: (PARTITION BY ... ORDER BY ... MEASURES ... PATTERN ... DEFINE ...)
+    /// Parse MATCH_RECOGNIZE clause: (PARTITION BY ... ORDER BY ... MEASURES ... PATTERN ... DEFINE
+    /// ...)
     fn parseMatchRecognize(self: *Parser, source: *const ast.TableRef) Error!*const ast.TableRef {
         const a = self.alloc();
         _ = try self.expect(.left_paren);
@@ -958,7 +1004,10 @@ pub const Parser = struct {
         var after_match_skip: ast.AfterMatchSkip = .past_last_row;
 
         // Parse optional clauses until we reach PATTERN
-        while (!(self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "pattern"))) {
+        while (!(self.peek().type == .identifier and std.ascii.eqlIgnoreCase(
+            self.lexeme(self.peek()),
+            "pattern",
+        ))) {
             if (self.match(.kw_order)) {
                 _ = try self.expect(.kw_by);
                 while (true) {
@@ -971,7 +1020,9 @@ pub const Parser = struct {
                     }
 
                     var nulls: ?ast.NullsOrder = null;
-                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                    if (self.peek().type == .identifier and
+                        std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls"))
+                    {
                         _ = self.advance();
                         if (self.peek().type == .identifier) {
                             const kw = self.lexeme(self.peek());
@@ -985,10 +1036,15 @@ pub const Parser = struct {
                         }
                     }
 
-                    order_by.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
+                    order_by.append(
+                        a,
+                        .{ .expr = expr, .direction = dir, .nulls = nulls },
+                    ) catch return error.OutOfMemory;
                     if (!self.match(.comma)) break;
                 }
-            } else if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "measures")) {
+            } else if (self.peek().type == .identifier and
+                std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "measures"))
+            {
                 _ = self.advance(); // consume "measures"
                 while (true) {
                     // Optionally consume RUNNING or FINAL keyword (soft keywords)
@@ -1006,58 +1062,89 @@ pub const Parser = struct {
                     const expr = try self.parseExpr(0);
                     _ = try self.expect(.kw_as);
                     const alias = try self.expectIdentifier();
-                    measures.append(a, .{ .expr = expr, .alias = alias, .semantics = semantics }) catch return error.OutOfMemory;
+                    measures.append(
+                        a,
+                        .{ .expr = expr, .alias = alias, .semantics = semantics },
+                    ) catch return error.OutOfMemory;
                     if (!self.match(.comma)) break;
                 }
             } else if (self.match(.kw_all)) {
                 _ = try self.expect(.kw_rows);
                 rows_per_match = .all_rows;
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per"))
+                {
                     _ = self.advance();
-                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                    if (self.peek().type == .identifier and
+                        std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match"))
+                    {
                         _ = self.advance();
                     }
                 }
-            } else if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "one")) {
+            } else if (self.peek().type == .identifier and
+                std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "one"))
+            {
                 _ = self.advance();
                 _ = try self.expect(.kw_row);
                 rows_per_match = .one_row;
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "per"))
+                {
                     _ = self.advance();
-                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                    if (self.peek().type == .identifier and
+                        std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match"))
+                    {
                         _ = self.advance();
                     }
                 }
             } else if (self.match(.kw_after)) {
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "match"))
+                {
                     _ = self.advance();
                 }
                 _ = try self.expect(.kw_skip);
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "past")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "past"))
+                {
                     _ = self.advance();
-                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "last")) {
+                    if (self.peek().type == .identifier and
+                        std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "last"))
+                    {
                         _ = self.advance();
                     }
                     _ = try self.expect(.kw_row);
                     after_match_skip = .past_last_row;
                 } else if (self.match(.kw_to)) {
-                    if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next")) {
+                    if (self.peek().type == .identifier and
+                        std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "next"))
+                    {
                         _ = self.advance();
                     }
                     _ = try self.expect(.kw_row);
                     after_match_skip = .to_next_row;
                 } else {
-                    try self.addError(self.peek(), "expected PAST LAST ROW or TO NEXT ROW after AFTER MATCH SKIP");
+                    try self.addError(
+                        self.peek(),
+                        "expected PAST LAST ROW or TO NEXT ROW after AFTER MATCH SKIP",
+                    );
                     return error.ParseFailed;
                 }
             } else {
-                try self.addError(self.peek(), "expected ORDER BY, MEASURES, ALL/ONE ROWS PER MATCH, AFTER MATCH SKIP, or PATTERN in MATCH_RECOGNIZE");
+                try self.addError(
+                    self.peek(),
+                    "expected ORDER BY, MEASURES, ALL/ONE ROWS PER MATCH, AFTER MATCH SKIP, " ++
+                        "or PATTERN in MATCH_RECOGNIZE",
+                );
                 return error.ParseFailed;
             }
         }
 
         // Parse PATTERN (required)
-        if (!(self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "pattern"))) {
+        if (!(self.peek().type == .identifier and std.ascii.eqlIgnoreCase(
+            self.lexeme(self.peek()),
+            "pattern",
+        ))) {
             try self.addError(self.peek(), "expected PATTERN clause in MATCH_RECOGNIZE");
             return error.ParseFailed;
         }
@@ -1069,13 +1156,18 @@ pub const Parser = struct {
 
         // Parse DEFINE (optional)
         var define = std.ArrayListUnmanaged(ast.DefineItem){};
-        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "define")) {
+        if (self.peek().type == .identifier and
+            std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "define"))
+        {
             _ = self.advance(); // consume "define"
             while (true) {
                 const variable = try self.expectIdentifier();
                 _ = try self.expect(.kw_as);
                 const condition = try self.parseExpr(0);
-                define.append(a, .{ .variable = variable, .condition = condition }) catch return error.OutOfMemory;
+                define.append(
+                    a,
+                    .{ .variable = variable, .condition = condition },
+                ) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
         }
@@ -1247,7 +1339,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── INSERT ────────────────────────────────────────────────────
+    // ── INSERT ──────────────────────────
 
     fn parseInsert(self: *Parser) Error!ast.InsertStmt {
         const a = self.alloc();
@@ -1278,7 +1370,10 @@ pub const Parser = struct {
                 if (!self.match(.comma)) break;
             }
             _ = try self.expect(.right_paren);
-            rows.append(a, vals.toOwnedSlice(a) catch return error.OutOfMemory) catch return error.OutOfMemory;
+            rows.append(
+                a,
+                vals.toOwnedSlice(a) catch return error.OutOfMemory,
+            ) catch return error.OutOfMemory;
             if (!self.match(.comma)) break;
         }
 
@@ -1290,7 +1385,10 @@ pub const Parser = struct {
             if (self.match(.left_paren)) {
                 var target_cols = std.ArrayListUnmanaged([]const u8){};
                 while (true) {
-                    target_cols.append(a, try self.expectIdentifier()) catch return error.OutOfMemory;
+                    target_cols.append(
+                        a,
+                        try self.expectIdentifier(),
+                    ) catch return error.OutOfMemory;
                     if (!self.match(.comma)) break;
                 }
                 _ = try self.expect(.right_paren);
@@ -1313,7 +1411,10 @@ pub const Parser = struct {
                     const col = try self.expectIdentifier();
                     _ = try self.expect(.equals);
                     const val = try self.parseExpr(0);
-                    assign_list.append(a, .{ .column = col, .value = val }) catch return error.OutOfMemory;
+                    assign_list.append(
+                        a,
+                        .{ .column = col, .value = val },
+                    ) catch return error.OutOfMemory;
                     if (!self.match(.comma)) break;
                 }
                 action = .update;
@@ -1343,7 +1444,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── UPDATE ────────────────────────────────────────────────────
+    // ── UPDATE ──────────────────────────
 
     fn parseUpdate(self: *Parser) Error!ast.UpdateStmt {
         const a = self.alloc();
@@ -1378,7 +1479,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── DELETE ────────────────────────────────────────────────────
+    // ── DELETE ──────────────────────────
 
     fn parseDelete(self: *Parser) Error!ast.DeleteStmt {
         _ = try self.expect(.kw_delete);
@@ -1398,7 +1499,7 @@ pub const Parser = struct {
         return .{ .table = table, .where = where, .returning = returning };
     }
 
-    // ── MERGE ─────────────────────────────────────────────────────
+    // ── MERGE ──────────────────────────
 
     fn parseMerge(self: *Parser) Error!ast.MergeStmt {
         const a = self.alloc();
@@ -1547,7 +1648,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── CREATE ────────────────────────────────────────────────────
+    // ── CREATE ──────────────────────────
 
     fn parseCreate(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_create);
@@ -1567,7 +1668,10 @@ pub const Parser = struct {
             if (self.checkAhead(.kw_role, 2)) {
                 return .{ .create_role = try self.parseCreateRole(true) };
             }
-            try self.addError(self.peek(), "expected VIEW, FUNCTION, TRIGGER, or ROLE after CREATE OR REPLACE");
+            try self.addError(
+                self.peek(),
+                "expected VIEW, FUNCTION, TRIGGER, or ROLE after CREATE OR REPLACE",
+            );
             return error.ParseFailed;
         }
         if (self.check(.kw_view)) {
@@ -1601,7 +1705,11 @@ pub const Parser = struct {
             return .{ .create_policy = try self.parseCreatePolicy() };
         }
 
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY after CREATE");
+        try self.addError(
+            self.peek(),
+            "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY " ++
+                "after CREATE",
+        );
         return error.ParseFailed;
     }
 
@@ -1649,7 +1757,10 @@ pub const Parser = struct {
                 self.check(.kw_check) or self.check(.kw_foreign) or
                 self.check(.kw_constraint))
             {
-                table_constraints.append(a, try self.parseTableConstraint()) catch return error.OutOfMemory;
+                table_constraints.append(
+                    a,
+                    try self.parseTableConstraint(),
+                ) catch return error.OutOfMemory;
             } else {
                 columns.append(a, try self.parseColumnDef()) catch return error.OutOfMemory;
             }
@@ -1697,10 +1808,14 @@ pub const Parser = struct {
 
         // Check for GENERATED ALWAYS AS (expr) STORED
         var generated_expr_sql: ?[]const u8 = null;
-        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "generated")) {
+        if (self.peek().type == .identifier and
+            std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "generated"))
+        {
             _ = self.advance(); // consume "generated"
             // Consume "ALWAYS"
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "always")) {
+            if (self.peek().type == .identifier and
+                std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "always"))
+            {
                 _ = self.advance();
             }
             // Expect AS
@@ -1711,13 +1826,16 @@ pub const Parser = struct {
             const expr_start = self.tokens[self.pos].start;
             // Parse the expression
             _ = try self.parseExpr(0);
-            // Extract source text — expr_end is the start of the current token (which should be ))
+            // Extract source text — expr_end is the start of the current token (which should be
+            // ))
             const expr_end = self.tokens[self.pos].start;
             generated_expr_sql = self.source[expr_start..expr_end];
             // Expect )
             _ = try self.expect(.right_paren);
             // Consume "STORED"
-            if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "stored")) {
+            if (self.peek().type == .identifier and
+                std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "stored"))
+            {
                 _ = self.advance();
             }
         }
@@ -2046,7 +2164,11 @@ pub const Parser = struct {
             for (included_cols.items, 0..) |col1, i| {
                 for (included_cols.items[i + 1 ..]) |col2| {
                     if (std.mem.eql(u8, col1, col2)) {
-                        const msg = try std.fmt.allocPrint(a, "duplicate column in INCLUDE: {s}", .{col1});
+                        const msg = try std.fmt.allocPrint(
+                            a,
+                            "duplicate column in INCLUDE: {s}",
+                            .{col1},
+                        );
                         try self.addError(self.peek(), msg);
                         return error.ParseFailed;
                     }
@@ -2061,7 +2183,11 @@ pub const Parser = struct {
                     const idx_col_name = idx_item.expr.column_ref.name;
                     for (included_cols.items) |inc_col| {
                         if (std.mem.eql(u8, idx_col_name, inc_col)) {
-                            const msg = try std.fmt.allocPrint(a, "column {s} appears in both index and INCLUDE", .{inc_col});
+                            const msg = try std.fmt.allocPrint(
+                                a,
+                                "column {s} appears in both index and INCLUDE",
+                                .{inc_col},
+                            );
                             try self.addError(self.peek(), msg);
                             return error.ParseFailed;
                         }
@@ -2106,7 +2232,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── DROP ──────────────────────────────────────────────────────
+    // ── DROP ───────────────────────────
 
     fn parseDrop(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_drop);
@@ -2119,7 +2245,11 @@ pub const Parser = struct {
         if (self.check(.kw_trigger)) return .{ .drop_trigger = try self.parseDropTrigger() };
         if (self.check(.kw_role)) return .{ .drop_role = try self.parseDropRole() };
         if (self.check(.kw_policy)) return .{ .drop_policy = try self.parseDropPolicy() };
-        try self.addError(self.peek(), "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY after DROP");
+        try self.addError(
+            self.peek(),
+            "expected TABLE, VIEW, INDEX, TYPE, DOMAIN, FUNCTION, TRIGGER, ROLE, or POLICY " ++
+                "after DROP",
+        );
         return error.ParseFailed;
     }
 
@@ -2155,7 +2285,7 @@ pub const Parser = struct {
         return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
     }
 
-    // ── ALTER ─────────────────────────────────────────────────────
+    // ── ALTER ──────────────────────────
 
     fn parseAlter(self: *Parser) Error!ast.Stmt {
         _ = try self.expect(.kw_alter);
@@ -2194,7 +2324,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── CREATE ROLE / DROP ROLE / ALTER ROLE ──────────────────────────────────
+    // ── CREATE ROLE / DROP ROLE / ALTER ROLE ────────────────
 
     fn parseCreateRole(self: *Parser, or_kw_seen: bool) Error!ast.CreateRoleStmt {
         var or_replace = false;
@@ -2312,7 +2442,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── GRANT / REVOKE ────────────────────────────────────────────
+    // ── GRANT / REVOKE ───────────────────────
 
     fn parseGrant(self: *Parser) Error!ast.Stmt {
         const a = self.alloc();
@@ -2351,7 +2481,10 @@ pub const Parser = struct {
                 else if (self.match(.kw_delete))
                     .delete
                 else {
-                    try self.addError(self.peek(), "expected SELECT, INSERT, UPDATE, DELETE, or ALL");
+                    try self.addError(
+                        self.peek(),
+                        "expected SELECT, INSERT, UPDATE, DELETE, or ALL",
+                    );
                     return error.ParseFailed;
                 };
                 privileges.append(a, priv) catch return error.OutOfMemory;
@@ -2457,7 +2590,10 @@ pub const Parser = struct {
                 else if (self.match(.kw_delete))
                     .delete
                 else {
-                    try self.addError(self.peek(), "expected SELECT, INSERT, UPDATE, DELETE, or ALL");
+                    try self.addError(
+                        self.peek(),
+                        "expected SELECT, INSERT, UPDATE, DELETE, or ALL",
+                    );
                     return error.ParseFailed;
                 };
                 privileges.append(a, priv) catch return error.OutOfMemory;
@@ -2555,7 +2691,10 @@ pub const Parser = struct {
             } else if (self.match(.kw_delete)) {
                 command = .delete;
             } else {
-                try self.addError(self.peek(), "expected ALL, SELECT, INSERT, UPDATE, or DELETE after FOR");
+                try self.addError(
+                    self.peek(),
+                    "expected ALL, SELECT, INSERT, UPDATE, or DELETE after FOR",
+                );
                 return error.ParseFailed;
             }
         }
@@ -2583,7 +2722,11 @@ pub const Parser = struct {
             const expr = try self.parseExpr(0);
             with_check_expr = expr.*;
             const with_check_end = self.peek().start; // position of closing ')'
-            with_check_expr_sql = std.mem.trim(u8, self.source[with_check_start..with_check_end], " \t\n\r");
+            with_check_expr_sql = std.mem.trim(
+                u8,
+                self.source[with_check_start..with_check_end],
+                " \t\n\r",
+            );
             _ = try self.expect(.right_paren);
         }
 
@@ -2761,7 +2904,10 @@ pub const Parser = struct {
                         } },
                     } };
                 }
-                try self.addError(self.peek(), "expected DEFAULT or NOT NULL after SET in ALTER COLUMN");
+                try self.addError(
+                    self.peek(),
+                    "expected DEFAULT or NOT NULL after SET in ALTER COLUMN",
+                );
                 return error.ParseFailed;
             } else if (self.match(.kw_drop)) {
                 if (self.match(.kw_default)) {
@@ -2782,14 +2928,20 @@ pub const Parser = struct {
                         } },
                     } };
                 }
-                try self.addError(self.peek(), "expected DEFAULT or NOT NULL after DROP in ALTER COLUMN");
+                try self.addError(
+                    self.peek(),
+                    "expected DEFAULT or NOT NULL after DROP in ALTER COLUMN",
+                );
                 return error.ParseFailed;
             }
             try self.addError(self.peek(), "expected SET or DROP after ALTER COLUMN col_name");
             return error.ParseFailed;
         }
 
-        try self.addError(self.peek(), "expected ADD, DROP, RENAME, ALTER, ENABLE, DISABLE, FORCE, or NO after ALTER TABLE");
+        try self.addError(
+            self.peek(),
+            "expected ADD, DROP, RENAME, ALTER, ENABLE, DISABLE, FORCE, or NO after ALTER TABLE",
+        );
         return error.ParseFailed;
     }
 
@@ -2812,7 +2964,7 @@ pub const Parser = struct {
         } };
     }
 
-    // ── CREATE VIEW / DROP VIEW ──────────────────────────────────
+    // ── CREATE VIEW / DROP VIEW ────────────────────
 
     fn parseCreateView(self: *Parser, or_kw_seen: bool) Error!ast.CreateViewStmt {
         const a = self.alloc();
@@ -2893,7 +3045,7 @@ pub const Parser = struct {
         return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
     }
 
-    // ── CREATE TYPE / DROP TYPE ───────────────────────────────────
+    // ── CREATE TYPE / DROP TYPE ────────────────────
 
     fn parseCreateType(self: *Parser) Error!ast.CreateTypeStmt {
         const a = self.alloc();
@@ -2962,7 +3114,7 @@ pub const Parser = struct {
         return .{ .if_exists = if_exists, .name = try self.expectIdentifier() };
     }
 
-    // ── CREATE FUNCTION / DROP FUNCTION ──────────────────────────
+    // ── CREATE FUNCTION / DROP FUNCTION ──────────────────
 
     fn parseCreateFunction(self: *Parser, or_kw_seen: bool) Error!ast.CreateFunctionStmt {
         const a = self.alloc();
@@ -2988,7 +3140,10 @@ pub const Parser = struct {
                 try self.addError(self.peek(), "expected data type for parameter");
                 return error.ParseFailed;
             };
-            params.append(a, .{ .name = param_name, .data_type = param_type }) catch return error.OutOfMemory;
+            params.append(
+                a,
+                .{ .name = param_name, .data_type = param_type },
+            ) catch return error.OutOfMemory;
             if (!self.match(.comma)) break;
         }
         _ = try self.expect(.right_paren);
@@ -3111,7 +3266,7 @@ pub const Parser = struct {
         return self.lexeme(t);
     }
 
-    // ── CREATE TRIGGER / DROP TRIGGER ───────────────────────────────
+    // ── CREATE TRIGGER / DROP TRIGGER ──────────────────
 
     fn parseCreateTrigger(self: *Parser, or_kw_seen: bool) Error!ast.CreateTriggerStmt {
         const a = self.alloc();
@@ -3238,7 +3393,7 @@ pub const Parser = struct {
         };
     }
 
-    // ── Transaction ───────────────────────────────────────────────
+    // ── Transaction ────────────────────────
 
     fn parseBegin(self: *Parser) Error!ast.TransactionStmt {
         _ = try self.expect(.kw_begin);
@@ -3265,7 +3420,10 @@ pub const Parser = struct {
             } else if (self.match(.kw_serializable)) {
                 isolation_level = .serializable;
             } else {
-                try self.addError(self.peek(), "Expected READ COMMITTED, REPEATABLE READ, or SERIALIZABLE");
+                try self.addError(
+                    self.peek(),
+                    "Expected READ COMMITTED, REPEATABLE READ, or SERIALIZABLE",
+                );
                 return Error.ParseFailed;
             }
         }
@@ -3300,7 +3458,7 @@ pub const Parser = struct {
         return .{ .release = try self.expectIdentifier() };
     }
 
-    // ── EXPLAIN ───────────────────────────────────────────────────
+    // ── EXPLAIN ──────────────────────────
 
     fn parseExplain(self: *Parser) Error!ast.ExplainStmt {
         _ = try self.expect(.kw_explain);
@@ -3316,7 +3474,7 @@ pub const Parser = struct {
         return .{ .stmt = stmt_ptr, .analyze = analyze };
     }
 
-    // ── VACUUM ────────────────────────────────────────────────────
+    // ── VACUUM ──────────────────────────
 
     fn parseVacuum(self: *Parser) ast.VacuumStmt {
         _ = self.advance(); // consume VACUUM keyword
@@ -3365,7 +3523,7 @@ pub const Parser = struct {
         }
     }
 
-    // ── Configuration statements ──────────────────────────────────
+    // ── Configuration statements ────────────────────
 
     fn parseSet(self: *Parser) Error!ast.SetStmt {
         _ = self.advance(); // consume SET keyword
@@ -3619,30 +3777,48 @@ pub const Parser = struct {
             .integer_literal => {
                 _ = self.advance();
                 const val = std.fmt.parseInt(i64, self.lexeme(t), 10) catch 0;
-                return self.arena.create(ast.Expr, .{ .integer_literal = val }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .integer_literal = val },
+                ) catch return error.OutOfMemory;
             },
             .float_literal => {
                 _ = self.advance();
                 const val = std.fmt.parseFloat(f64, self.lexeme(t)) catch 0.0;
-                return self.arena.create(ast.Expr, .{ .float_literal = val }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .float_literal = val },
+                ) catch return error.OutOfMemory;
             },
             .string_literal => {
                 _ = self.advance();
                 const text = self.lexeme(t);
                 const inner = if (text.len >= 2) text[1 .. text.len - 1] else text;
-                return self.arena.create(ast.Expr, .{ .string_literal = inner }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .string_literal = inner },
+                ) catch return error.OutOfMemory;
             },
             .blob_literal => {
                 _ = self.advance();
-                return self.arena.create(ast.Expr, .{ .blob_literal = self.lexeme(t) }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .blob_literal = self.lexeme(t) },
+                ) catch return error.OutOfMemory;
             },
             .kw_true => {
                 _ = self.advance();
-                return self.arena.create(ast.Expr, .{ .boolean_literal = true }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .boolean_literal = true },
+                ) catch return error.OutOfMemory;
             },
             .kw_false => {
                 _ = self.advance();
-                return self.arena.create(ast.Expr, .{ .boolean_literal = false }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .boolean_literal = false },
+                ) catch return error.OutOfMemory;
             },
             .kw_null => {
                 _ = self.advance();
@@ -3657,7 +3833,10 @@ pub const Parser = struct {
                 _ = self.advance();
                 const idx = self.bind_param_index;
                 self.bind_param_index += 1;
-                return self.arena.create(ast.Expr, .{ .bind_parameter = idx }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .bind_parameter = idx },
+                ) catch return error.OutOfMemory;
             },
             .numbered_placeholder => {
                 // PostgreSQL-style numbered parameter: $1, $2, etc.
@@ -3679,7 +3858,10 @@ pub const Parser = struct {
                 self.uses_numbered_params = true;
                 const idx = n - 1; // 0-based internally
                 _ = self.advance();
-                return self.arena.create(ast.Expr, .{ .bind_parameter = idx }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .bind_parameter = idx },
+                ) catch return error.OutOfMemory;
             },
             .minus => {
                 _ = self.advance();
@@ -3702,7 +3884,10 @@ pub const Parser = struct {
                     _ = try self.expect(.left_paren);
                     const sel = try self.parseSelect();
                     _ = try self.expect(.right_paren);
-                    const sel_ptr = self.arena.create(ast.SelectStmt, sel) catch return error.OutOfMemory;
+                    const sel_ptr = self.arena.create(
+                        ast.SelectStmt,
+                        sel,
+                    ) catch return error.OutOfMemory;
                     return self.arena.create(ast.Expr, .{ .exists = .{
                         .subquery = sel_ptr,
                         .negated = true,
@@ -3727,7 +3912,10 @@ pub const Parser = struct {
                 _ = try self.expect(.left_paren);
                 const sel = try self.parseSelect();
                 _ = try self.expect(.right_paren);
-                const sel_ptr = self.arena.create(ast.SelectStmt, sel) catch return error.OutOfMemory;
+                const sel_ptr = self.arena.create(
+                    ast.SelectStmt,
+                    sel,
+                ) catch return error.OutOfMemory;
                 return self.arena.create(ast.Expr, .{ .exists = .{
                     .subquery = sel_ptr,
                     .negated = false,
@@ -3738,8 +3926,14 @@ pub const Parser = struct {
                 if (self.check(.kw_select)) {
                     const sel = try self.parseSelect();
                     _ = try self.expect(.right_paren);
-                    const sel_ptr = self.arena.create(ast.SelectStmt, sel) catch return error.OutOfMemory;
-                    return self.arena.create(ast.Expr, .{ .subquery = sel_ptr }) catch return error.OutOfMemory;
+                    const sel_ptr = self.arena.create(
+                        ast.SelectStmt,
+                        sel,
+                    ) catch return error.OutOfMemory;
+                    return self.arena.create(
+                        ast.Expr,
+                        .{ .subquery = sel_ptr },
+                    ) catch return error.OutOfMemory;
                 }
                 const inner = try self.parseExpr(0);
                 // (e1, e2, ...) → row_constructor; (e) → paren
@@ -3753,10 +3947,16 @@ pub const Parser = struct {
                     }
                     _ = try self.expect(.right_paren);
                     const slice = elems.toOwnedSlice(a) catch return error.OutOfMemory;
-                    return self.arena.create(ast.Expr, .{ .row_constructor = slice }) catch return error.OutOfMemory;
+                    return self.arena.create(
+                        ast.Expr,
+                        .{ .row_constructor = slice },
+                    ) catch return error.OutOfMemory;
                 }
                 _ = try self.expect(.right_paren);
-                return self.arena.create(ast.Expr, .{ .paren = inner }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .paren = inner },
+                ) catch return error.OutOfMemory;
             },
             .kw_row => {
                 _ = self.advance();
@@ -3771,7 +3971,10 @@ pub const Parser = struct {
                 }
                 _ = try self.expect(.right_paren);
                 const slice = elems.toOwnedSlice(a) catch return error.OutOfMemory;
-                return self.arena.create(ast.Expr, .{ .row_constructor = slice }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .row_constructor = slice },
+                ) catch return error.OutOfMemory;
             },
             .kw_array => return self.parseArrayConstructor(),
             .kw_case => return self.parseCaseExpr(),
@@ -3791,21 +3994,28 @@ pub const Parser = struct {
             .kw_cume_dist,
             => return self.parseFunctionCall(),
             .identifier, .quoted_identifier => {
-                if (self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .left_paren) {
+                if (self.pos + 1 < self.tokens.len and
+                    self.tokens[self.pos + 1].type == .left_paren)
+                {
                     return self.parseFunctionCall();
                 }
                 return self.parseColumnRef();
             },
             .star => {
                 _ = self.advance();
-                return self.arena.create(ast.Expr, .{ .column_ref = .{ .name = "*" } }) catch return error.OutOfMemory;
+                return self.arena.create(
+                    ast.Expr,
+                    .{ .column_ref = .{ .name = "*" } },
+                ) catch return error.OutOfMemory;
             },
             else => {
                 // Allow SQL keywords to be used as column names / identifiers
                 // (e.g., "temp", "name", "type", "key", "value" are common column names
                 // that happen to be SQL keywords).
                 if (t.type.isKeyword()) {
-                    if (self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .left_paren) {
+                    if (self.pos + 1 < self.tokens.len and
+                        self.tokens[self.pos + 1].type == .left_paren)
+                    {
                         return self.parseFunctionCall();
                     }
                     return self.parseColumnRef();
@@ -3835,7 +4045,10 @@ pub const Parser = struct {
             } }) catch return error.OutOfMemory;
         }
 
-        return self.arena.create(ast.Expr, .{ .column_ref = .{ .name = name_text } }) catch return error.OutOfMemory;
+        return self.arena.create(
+            ast.Expr,
+            .{ .column_ref = .{ .name = name_text } },
+        ) catch return error.OutOfMemory;
     }
 
     fn parseFunctionCall(self: *Parser) Error!*const ast.Expr {
@@ -3850,7 +4063,10 @@ pub const Parser = struct {
         var agg_order_by = std.ArrayListUnmanaged(ast.OrderByItem){};
 
         if (self.match(.star)) {
-            const star_expr = self.arena.create(ast.Expr, .{ .column_ref = .{ .name = "*" } }) catch return error.OutOfMemory;
+            const star_expr = self.arena.create(
+                ast.Expr,
+                .{ .column_ref = .{ .name = "*" } },
+            ) catch return error.OutOfMemory;
             args.append(a, star_expr) catch return error.OutOfMemory;
         } else if (!self.check(.right_paren)) {
             if (self.match(.kw_distinct)) {
@@ -3865,13 +4081,16 @@ pub const Parser = struct {
                     _ = self.advance(); // consume BY
                     while (true) {
                         const ob_expr = try self.parseExpr(0);
-                        const ob_dir: ast.OrderDirection = if (self.match(.kw_desc)) .desc else blk: {
-                            _ = self.match(.kw_asc);
-                            break :blk .asc;
-                        };
+                        const ob_dir: ast.OrderDirection =
+                            if (self.match(.kw_desc)) .desc else blk: {
+                                _ = self.match(.kw_asc);
+                                break :blk .asc;
+                            };
                         // NULLS FIRST / NULLS LAST (identifier-based, not keywords)
                         var ob_nulls: ?ast.NullsOrder = null;
-                        if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                        if (self.peek().type == .identifier and
+                            std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls"))
+                        {
                             _ = self.advance();
                             if (self.peek().type == .identifier) {
                                 const kw = self.lexeme(self.peek());
@@ -3884,7 +4103,10 @@ pub const Parser = struct {
                                 }
                             }
                         }
-                        agg_order_by.append(a, .{ .expr = ob_expr, .direction = ob_dir, .nulls = ob_nulls }) catch return error.OutOfMemory;
+                        agg_order_by.append(
+                            a,
+                            .{ .expr = ob_expr, .direction = ob_dir, .nulls = ob_nulls },
+                        ) catch return error.OutOfMemory;
                         // ORDER BY items separated by commas, but stop before `)`
                         if (self.check(.right_paren)) break;
                         if (!self.match(.comma)) break;
@@ -3910,7 +4132,10 @@ pub const Parser = struct {
                     _ = self.match(.kw_asc);
                     break :blk .asc;
                 };
-                order_by.append(a, .{ .expr = expr, .direction = dir }) catch return error.OutOfMemory;
+                order_by.append(
+                    a,
+                    .{ .expr = expr, .direction = dir },
+                ) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
             _ = try self.expect(.right_paren);
@@ -3932,7 +4157,11 @@ pub const Parser = struct {
 
         // Check for OVER clause — converts to window function
         if (self.check(.kw_over)) {
-            return self.parseWindowSpec(name, args.toOwnedSlice(a) catch return error.OutOfMemory, distinct);
+            return self.parseWindowSpec(
+                name,
+                args.toOwnedSlice(a) catch return error.OutOfMemory,
+                distinct,
+            );
         }
 
         return self.arena.create(ast.Expr, .{ .function_call = .{
@@ -3945,7 +4174,12 @@ pub const Parser = struct {
     }
 
     /// Parse OVER (...) or OVER window_name after a function call.
-    fn parseWindowSpec(self: *Parser, name: []const u8, func_args: []const *const ast.Expr, distinct: bool) Error!*const ast.Expr {
+    fn parseWindowSpec(
+        self: *Parser,
+        name: []const u8,
+        func_args: []const *const ast.Expr,
+        distinct: bool,
+    ) Error!*const ast.Expr {
         const a = self.alloc();
         _ = try self.expect(.kw_over);
 
@@ -3987,7 +4221,9 @@ pub const Parser = struct {
 
                 // Parse NULLS FIRST / NULLS LAST
                 var nulls: ?ast.NullsOrder = null;
-                if (self.peek().type == .identifier and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls")) {
+                if (self.peek().type == .identifier and
+                    std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "nulls"))
+                {
                     _ = self.advance(); // consume "nulls"
                     if (self.peek().type == .identifier) {
                         const kw = self.lexeme(self.peek());
@@ -4001,7 +4237,10 @@ pub const Parser = struct {
                     }
                 }
 
-                order_by.append(a, .{ .expr = expr, .direction = dir, .nulls = nulls }) catch return error.OutOfMemory;
+                order_by.append(
+                    a,
+                    .{ .expr = expr, .direction = dir, .nulls = nulls },
+                ) catch return error.OutOfMemory;
                 if (!self.match(.comma)) break;
             }
         }
@@ -4056,14 +4295,19 @@ pub const Parser = struct {
                 break :blk .current_row;
             } else if (self.match(.kw_group)) {
                 break :blk .group;
-            } else if (self.check(.identifier) and std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ties")) {
+            } else if (self.check(.identifier) and
+                std.ascii.eqlIgnoreCase(self.lexeme(self.peek()), "ties"))
+            {
                 _ = self.advance();
                 break :blk .ties;
             } else if (self.match(.kw_no)) {
                 _ = try self.expect(.kw_others);
                 break :blk .no_others;
             } else {
-                try self.addError(self.peek(), "expected CURRENT ROW, GROUP, TIES, or NO OTHERS after EXCLUDE");
+                try self.addError(
+                    self.peek(),
+                    "expected CURRENT ROW, GROUP, TIES, or NO OTHERS after EXCLUDE",
+                );
                 return error.ParseFailed;
             }
         } else .no_others;
@@ -4076,7 +4320,8 @@ pub const Parser = struct {
         }) catch return error.OutOfMemory;
     }
 
-    /// Parse a single frame bound: UNBOUNDED PRECEDING/FOLLOWING, CURRENT ROW, or <expr> PRECEDING/FOLLOWING.
+    /// Parse a single frame bound: UNBOUNDED PRECEDING/FOLLOWING, CURRENT ROW, or <expr>
+    /// PRECEDING/FOLLOWING.
     fn parseFrameBound(self: *Parser) Error!ast.WindowFrameBound {
         if (self.match(.kw_unbounded)) {
             if (self.match(.kw_preceding)) return .unbounded_preceding;
@@ -4113,7 +4358,10 @@ pub const Parser = struct {
             const condition = try self.parseExpr(0);
             _ = try self.expect(.kw_then);
             const result = try self.parseExpr(0);
-            when_clauses.append(a, .{ .condition = condition, .result = result }) catch return error.OutOfMemory;
+            when_clauses.append(
+                a,
+                .{ .condition = condition, .result = result },
+            ) catch return error.OutOfMemory;
         }
 
         var else_expr: ?*const ast.Expr = null;
@@ -4147,7 +4395,10 @@ pub const Parser = struct {
         _ = try self.expect(.right_bracket);
 
         const elems = elements.toOwnedSlice(a) catch return error.OutOfMemory;
-        return self.arena.create(ast.Expr, .{ .array_constructor = elems }) catch return error.OutOfMemory;
+        return self.arena.create(
+            ast.Expr,
+            .{ .array_constructor = elems },
+        ) catch return error.OutOfMemory;
     }
 
     fn parseCastExpr(self: *Parser) Error!*const ast.Expr {
@@ -4226,7 +4477,8 @@ pub const Parser = struct {
     fn peekNot(self: *const Parser) bool {
         if (self.pos + 1 >= self.tokens.len) return false;
         const next = self.tokens[self.pos + 1].type;
-        return next == .kw_between or next == .kw_in or next == .kw_like or next == .kw_ilike or next == .kw_similar;
+        return next == .kw_between or next == .kw_in or next == .kw_like or
+            next == .kw_ilike or next == .kw_similar;
     }
 
     fn parseNotInfix(self: *Parser, left: *const ast.Expr) Error!*const ast.Expr {
@@ -4236,7 +4488,10 @@ pub const Parser = struct {
         if (self.check(.kw_like)) return self.parseLikeExpr(left, true);
         if (self.check(.kw_ilike)) return self.parseIlikeExpr(left, true);
         if (self.check(.kw_similar)) return self.parseSimilarToExpr(left, true);
-        try self.addError(self.peek(), "expected BETWEEN, IN, LIKE, ILIKE, or SIMILAR TO after NOT");
+        try self.addError(
+            self.peek(),
+            "expected BETWEEN, IN, LIKE, ILIKE, or SIMILAR TO after NOT",
+        );
         return error.ParseFailed;
     }
 
@@ -4264,7 +4519,10 @@ pub const Parser = struct {
             _ = try self.expect(.right_paren);
             const sel_ptr = try self.arena.create(ast.SelectStmt, sel);
             const subq_expr = try self.arena.create(ast.Expr, .{ .subquery = sel_ptr });
-            const list_slice = try self.arena.dupeSlice(*const ast.Expr, &[_]*const ast.Expr{subq_expr});
+            const list_slice = try self.arena.dupeSlice(
+                *const ast.Expr,
+                &[_]*const ast.Expr{subq_expr},
+            );
             return self.arena.create(ast.Expr, .{ .in_list = .{
                 .expr = expr,
                 .list = list_slice,
@@ -4309,7 +4567,11 @@ pub const Parser = struct {
         } }) catch return error.OutOfMemory;
     }
 
-    fn parseSimilarToExpr(self: *Parser, expr: *const ast.Expr, negated: bool) Error!*const ast.Expr {
+    fn parseSimilarToExpr(
+        self: *Parser,
+        expr: *const ast.Expr,
+        negated: bool,
+    ) Error!*const ast.Expr {
         _ = try self.expect(.kw_similar);
         _ = try self.expect(.kw_to);
         const pattern = try self.parseExpr(0);
@@ -4321,7 +4583,7 @@ pub const Parser = struct {
         } }) catch return error.OutOfMemory;
     }
 
-    // ── Operator precedence ───────────────────────────────────────
+    // ── Operator precedence ──────────────────────
 
     fn currentPrecedence(self: *const Parser) u8 {
         const t = self.peek().type;
@@ -4331,7 +4593,13 @@ pub const Parser = struct {
             .kw_not => if (self.peekNot()) 3 else 0,
             .kw_is => 4,
             .kw_between, .kw_in, .kw_like, .kw_ilike, .kw_glob, .kw_similar => 4,
-            .equals, .not_equals, .less_than, .greater_than, .less_than_or_equal, .greater_than_or_equal => 5,
+            .equals,
+            .not_equals,
+            .less_than,
+            .greater_than,
+            .less_than_or_equal,
+            .greater_than_or_equal,
+            => 5,
             .bitwise_and, .bitwise_or => 6,
             .left_shift, .right_shift => 7,
             .plus, .minus => 8,
@@ -4387,9 +4655,9 @@ pub const Parser = struct {
     }
 };
 
-// ══════════════════════════════════════════════════════════════
+// ═══════════════════════════════
 // Tests
-// ══════════════════════════════════════════════════════════════
+// ═══════════════════════════════
 
 const TestParseResult = struct {
     stmt: ast.Stmt,
@@ -4413,7 +4681,7 @@ fn testParseWithArena(sql: []const u8) !TestParseResult {
     return .{ .stmt = stmt, .arena = ast_arena, .parser = p };
 }
 
-// ── SELECT tests ──────────────────────────────────────────────
+// ── SELECT tests ─────────────────────────
 
 test "parse simple SELECT *" {
     var r = try testParseWithArena("SELECT * FROM users");
@@ -4447,7 +4715,9 @@ test "parse SELECT DISTINCT" {
 }
 
 test "parse SELECT DISTINCT ON single column" {
-    var r = try testParseWithArena("SELECT DISTINCT ON (category) category, name, price FROM products");
+    var r = try testParseWithArena(
+        "SELECT DISTINCT ON (category) category, name, price FROM products",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt.select.distinct);
     try std.testing.expectEqual(@as(usize, 1), r.stmt.select.distinct_on.len);
@@ -4456,7 +4726,9 @@ test "parse SELECT DISTINCT ON single column" {
 }
 
 test "parse SELECT DISTINCT ON multiple columns" {
-    var r = try testParseWithArena("SELECT DISTINCT ON (dept, role) * FROM employees ORDER BY dept, role, salary DESC");
+    var r = try testParseWithArena(
+        "SELECT DISTINCT ON (dept, role) * FROM employees ORDER BY dept, role, salary DESC",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt.select.distinct);
     try std.testing.expectEqual(@as(usize, 2), r.stmt.select.distinct_on.len);
@@ -4489,14 +4761,18 @@ test "parse SELECT with LIMIT and OFFSET" {
 }
 
 test "parse SELECT with GROUP BY and HAVING" {
-    var r = try testParseWithArena("SELECT department, COUNT(*) FROM employees GROUP BY department HAVING COUNT(*) > 5");
+    var r = try testParseWithArena(
+        "SELECT department, COUNT(*) FROM employees GROUP BY department HAVING COUNT(*) > 5",
+    );
     defer r.deinit();
     try std.testing.expectEqual(@as(usize, 1), r.stmt.select.group_by.len);
     try std.testing.expect(r.stmt.select.having != null);
 }
 
 test "parse SELECT with JOIN" {
-    var r = try testParseWithArena("SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id");
+    var r = try testParseWithArena(
+        "SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id",
+    );
     defer r.deinit();
     try std.testing.expectEqual(@as(usize, 1), r.stmt.select.joins.len);
     try std.testing.expectEqual(ast.JoinType.inner, r.stmt.select.joins[0].join_type);
@@ -4529,7 +4805,7 @@ test "parse SELECT table.*" {
     try std.testing.expectEqualStrings("t", r.stmt.select.columns[0].table_all_columns);
 }
 
-// ── INSERT tests ──────────────────────────────────────────────
+// ── INSERT tests ─────────────────────────
 
 test "parse INSERT with columns" {
     var r = try testParseWithArena("INSERT INTO users (id, name) VALUES (1, 'Alice')");
@@ -4554,7 +4830,7 @@ test "parse INSERT multiple rows" {
     try std.testing.expectEqual(@as(usize, 3), r.stmt.insert.values.len);
 }
 
-// ── UPDATE tests ──────────────────────────────────────────────
+// ── UPDATE tests ─────────────────────────
 
 test "parse UPDATE" {
     var r = try testParseWithArena("UPDATE users SET name = 'Charlie' WHERE id = 1");
@@ -4571,7 +4847,7 @@ test "parse UPDATE multiple assignments" {
     try std.testing.expectEqual(@as(usize, 3), r.stmt.update.assignments.len);
 }
 
-// ── DELETE tests ──────────────────────────────────────────────
+// ── DELETE tests ─────────────────────────
 
 test "parse DELETE" {
     var r = try testParseWithArena("DELETE FROM users WHERE id = 1");
@@ -4586,7 +4862,7 @@ test "parse DELETE without WHERE" {
     try std.testing.expect(r.stmt.delete.where == null);
 }
 
-// ── CREATE TABLE tests ────────────────────────────────────────
+// ── CREATE TABLE tests ───────────────────────
 
 test "parse CREATE TABLE" {
     var r = try testParseWithArena(
@@ -4661,7 +4937,7 @@ test "parse CREATE TABLE with FOREIGN KEY" {
     try std.testing.expectEqual(ast.ForeignKeyAction.cascade, fk.on_delete.?);
 }
 
-// ── DROP tests ────────────────────────────────────────────────
+// ── DROP tests ──────────────────────────
 
 test "parse DROP TABLE" {
     var r = try testParseWithArena("DROP TABLE users");
@@ -4682,7 +4958,7 @@ test "parse DROP INDEX" {
     try std.testing.expectEqualStrings("idx_name", r.stmt.drop_index.name);
 }
 
-// ── CREATE INDEX tests ────────────────────────────────────────
+// ── CREATE INDEX tests ───────────────────────
 
 test "parse CREATE INDEX" {
     var r = try testParseWithArena("CREATE INDEX idx_email ON users (email)");
@@ -4703,7 +4979,9 @@ test "parse CREATE UNIQUE INDEX" {
 }
 
 test "parse CREATE INDEX with INCLUDE clause" {
-    var r = try testParseWithArena("CREATE INDEX idx_name ON users (name) INCLUDE (email, created_at)");
+    var r = try testParseWithArena(
+        "CREATE INDEX idx_name ON users (name) INCLUDE (email, created_at)",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expectEqualStrings("idx_name", ci.name);
@@ -4715,7 +4993,9 @@ test "parse CREATE INDEX with INCLUDE clause" {
 }
 
 test "parse CREATE UNIQUE INDEX with INCLUDE clause" {
-    var r = try testParseWithArena("CREATE UNIQUE INDEX idx_user_email ON users (email) INCLUDE (name)");
+    var r = try testParseWithArena(
+        "CREATE UNIQUE INDEX idx_user_email ON users (email) INCLUDE (name)",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expect(ci.unique);
@@ -4725,7 +5005,10 @@ test "parse CREATE UNIQUE INDEX with INCLUDE clause" {
 }
 
 test "parse CREATE INDEX INCLUDE with multiple columns" {
-    var r = try testParseWithArena("CREATE INDEX idx_composite ON orders (user_id, created_at DESC) INCLUDE (total, status, notes)");
+    var r = try testParseWithArena(
+        "CREATE INDEX idx_composite ON orders (user_id, created_at DESC) INCLUDE (total, " ++
+            "status, notes)",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expectEqual(@as(usize, 2), ci.columns.len);
@@ -4750,7 +5033,7 @@ test "parse CREATE INDEX with duplicate across index and INCLUDE should fail" {
     try std.testing.expectError(error.ParseFailed, r);
 }
 
-// ── CREATE INDEX CONCURRENTLY tests ────────────────────────────
+// ── CREATE INDEX CONCURRENTLY tests ───────────────────
 
 test "parse CREATE INDEX CONCURRENTLY" {
     var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_email ON users (email)");
@@ -4771,7 +5054,9 @@ test "parse CREATE UNIQUE INDEX CONCURRENTLY" {
 }
 
 test "parse CREATE INDEX CONCURRENTLY with multiple columns" {
-    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_composite ON orders (user_id, created_at DESC)");
+    var r = try testParseWithArena(
+        "CREATE INDEX CONCURRENTLY idx_composite ON orders (user_id, created_at DESC)",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expect(ci.concurrently);
@@ -4787,7 +5072,9 @@ test "parse CREATE INDEX CONCURRENTLY IF NOT EXISTS" {
 }
 
 test "parse CREATE INDEX CONCURRENTLY with USING clause" {
-    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_hash ON users (email) USING hash");
+    var r = try testParseWithArena(
+        "CREATE INDEX CONCURRENTLY idx_hash ON users (email) USING hash",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expect(ci.concurrently);
@@ -4795,7 +5082,9 @@ test "parse CREATE INDEX CONCURRENTLY with USING clause" {
 }
 
 test "parse CREATE INDEX CONCURRENTLY with INCLUDE clause" {
-    var r = try testParseWithArena("CREATE INDEX CONCURRENTLY idx_name ON users (name) INCLUDE (email)");
+    var r = try testParseWithArena(
+        "CREATE INDEX CONCURRENTLY idx_name ON users (name) INCLUDE (email)",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expect(ci.concurrently);
@@ -4804,7 +5093,9 @@ test "parse CREATE INDEX CONCURRENTLY with INCLUDE clause" {
 }
 
 test "parse CREATE UNIQUE INDEX CONCURRENTLY with INCLUDE and USING" {
-    var r = try testParseWithArena("CREATE UNIQUE INDEX CONCURRENTLY idx_u ON users (email) INCLUDE (name) USING btree");
+    var r = try testParseWithArena(
+        "CREATE UNIQUE INDEX CONCURRENTLY idx_u ON users (email) INCLUDE (name) USING btree",
+    );
     defer r.deinit();
     const ci = r.stmt.create_index;
     try std.testing.expect(ci.unique);
@@ -4828,7 +5119,7 @@ test "parse CREATE INDEX CONCURRENTLY with btree type" {
     try std.testing.expectEqualStrings("btree", ci.index_type.?);
 }
 
-// ── Transaction tests ─────────────────────────────────────────
+// ── Transaction tests ────────────────────────
 
 test "parse BEGIN" {
     var r = try testParseWithArena("BEGIN");
@@ -4872,7 +5163,7 @@ test "parse RELEASE" {
     try std.testing.expectEqualStrings("sp1", r.stmt.transaction.release);
 }
 
-// ── Expression tests ──────────────────────────────────────────
+// ── Expression tests ────────────────────────
 
 test "parse arithmetic precedence" {
     var r = try testParseWithArena("SELECT 1 + 2 * 3");
@@ -4929,7 +5220,10 @@ test "parse LIKE" {
     var r = try testParseWithArena("SELECT * FROM t WHERE name LIKE '%alice%'");
     defer r.deinit();
     try std.testing.expect(r.stmt.select.where.?.* == .like);
-    try std.testing.expectEqualStrings("%alice%", r.stmt.select.where.?.like.pattern.string_literal);
+    try std.testing.expectEqualStrings(
+        "%alice%",
+        r.stmt.select.where.?.like.pattern.string_literal,
+    );
 }
 
 test "parse NOT LIKE" {
@@ -4939,7 +5233,9 @@ test "parse NOT LIKE" {
 }
 
 test "parse CASE expression" {
-    var r = try testParseWithArena("SELECT CASE WHEN x > 0 THEN 'positive' ELSE 'negative' END FROM t");
+    var r = try testParseWithArena(
+        "SELECT CASE WHEN x > 0 THEN 'positive' ELSE 'negative' END FROM t",
+    );
     defer r.deinit();
     const expr = r.stmt.select.columns[0].expr.value;
     try std.testing.expect(expr.* == .case_expr);
@@ -4980,7 +5276,10 @@ test "parse negative number" {
 test "parse string literal" {
     var r = try testParseWithArena("SELECT 'hello world'");
     defer r.deinit();
-    try std.testing.expectEqualStrings("hello world", r.stmt.select.columns[0].expr.value.string_literal);
+    try std.testing.expectEqualStrings(
+        "hello world",
+        r.stmt.select.columns[0].expr.value.string_literal,
+    );
 }
 
 test "parse boolean literals" {
@@ -5065,7 +5364,9 @@ test "parse NOT IN" {
 }
 
 test "parse multiple JOINs" {
-    var r = try testParseWithArena("SELECT * FROM a JOIN b ON a.id = b.a_id LEFT JOIN c ON b.id = c.b_id");
+    var r = try testParseWithArena(
+        "SELECT * FROM a JOIN b ON a.id = b.a_id LEFT JOIN c ON b.id = c.b_id",
+    );
     defer r.deinit();
     try std.testing.expectEqual(@as(usize, 2), r.stmt.select.joins.len);
     try std.testing.expectEqual(ast.JoinType.inner, r.stmt.select.joins[0].join_type);
@@ -5081,7 +5382,7 @@ test "parse nested function calls" {
     try std.testing.expectEqualStrings("ABS", inner.name);
 }
 
-// ── Stabilization: Parser Error & Edge Case Tests ─────────────────────
+// ── Stabilization: Parser Error & Edge Case Tests ──────────────
 
 test "parse error on empty string" {
     var ast_arena = ast.AstArena.init(std.testing.allocator);
@@ -5148,7 +5449,8 @@ test "parse deeply nested parentheses" {
 
 test "parse SELECT with all clause types combined" {
     var r = try testParseWithArena(
-        "SELECT DISTINCT a, COUNT(b) FROM t1 INNER JOIN t2 ON t1.id = t2.fk WHERE a > 5 GROUP BY a HAVING COUNT(b) > 1 ORDER BY a DESC LIMIT 10 OFFSET 20",
+        "SELECT DISTINCT a, COUNT(b) FROM t1 INNER JOIN t2 ON t1.id = t2.fk WHERE a > 5 " ++
+            "GROUP BY a HAVING COUNT(b) > 1 ORDER BY a DESC LIMIT 10 OFFSET 20",
     );
     defer r.deinit();
     const sel = r.stmt.select;
@@ -5182,7 +5484,8 @@ test "parse multiple column aliases" {
 
 test "parse CREATE TABLE with multiple constraints" {
     var r = try testParseWithArena(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY NOT NULL, customer_id INTEGER NOT NULL, amount REAL DEFAULT 0.0, status TEXT DEFAULT 'pending')",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY NOT NULL, customer_id INTEGER NOT NULL, " ++
+            "amount REAL DEFAULT 0.0, status TEXT DEFAULT 'pending')",
     );
     defer r.deinit();
     const create = r.stmt.create_table;
@@ -5217,7 +5520,7 @@ test "parse complex WHERE with mixed operators" {
     try std.testing.expect(r.stmt.select.where.?.binary_op.op == .@"or");
 }
 
-// ── CTE (WITH ... AS) tests ──────────────────────────────────
+// ── CTE (WITH ... AS) tests ──────────────────────
 
 test "parse simple CTE" {
     var r = try testParseWithArena(
@@ -5283,7 +5586,7 @@ test "parse CTE without FROM" {
     try std.testing.expect(sel.ctes[0].select.from == null);
 }
 
-// ── Set operation tests ──────────────────────────────────────
+// ── Set operation tests ───────────────────────
 
 test "parse UNION" {
     var r = try testParseWithArena(
@@ -5377,7 +5680,7 @@ test "parse set operation with CTE" {
     try std.testing.expect(sel.set_operation != null);
 }
 
-// ── CREATE VIEW / DROP VIEW tests ────────────────────────────
+// ── CREATE VIEW / DROP VIEW tests ────────────────────
 
 test "parse CREATE VIEW" {
     var r = try testParseWithArena("CREATE VIEW user_names AS SELECT id, name FROM users");
@@ -5448,7 +5751,9 @@ test "parse DROP VIEW IF EXISTS" {
 }
 
 test "parse CREATE VIEW WITH CHECK OPTION (default cascaded)" {
-    var r = try testParseWithArena("CREATE VIEW v AS SELECT * FROM t WHERE x > 0 WITH CHECK OPTION");
+    var r = try testParseWithArena(
+        "CREATE VIEW v AS SELECT * FROM t WHERE x > 0 WITH CHECK OPTION",
+    );
     defer r.deinit();
     const cv = r.stmt.create_view;
     try std.testing.expectEqualStrings("v", cv.name);
@@ -5477,10 +5782,12 @@ test "parse CREATE VIEW without CHECK OPTION" {
     try std.testing.expectEqual(ast.CheckOption.none, cv.check_option);
 }
 
-// ── Window Function tests ─────────────────────────────────────
+// ── Window Function tests ──────────────────────
 
 test "parse ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)" {
-    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp");
+    var r = try testParseWithArena(
+        "SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp",
+    );
     defer r.deinit();
     const sel = r.stmt.select;
     try std.testing.expectEqual(@as(usize, 1), sel.columns.len);
@@ -5495,7 +5802,9 @@ test "parse ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)" {
 }
 
 test "parse SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expectEqualStrings("SUM", wf.name);
@@ -5516,7 +5825,9 @@ test "parse RANK() OVER (ORDER BY score)" {
 }
 
 test "parse LAG(salary, 1) OVER (PARTITION BY dept ORDER BY id)" {
-    var r = try testParseWithArena("SELECT LAG(salary, 1) OVER (PARTITION BY dept ORDER BY id) FROM emp");
+    var r = try testParseWithArena(
+        "SELECT LAG(salary, 1) OVER (PARTITION BY dept ORDER BY id) FROM emp",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expectEqualStrings("LAG", wf.name);
@@ -5525,7 +5836,9 @@ test "parse LAG(salary, 1) OVER (PARTITION BY dept ORDER BY id)" {
 }
 
 test "parse ROWS BETWEEN N PRECEDING AND N FOLLOWING" {
-    var r = try testParseWithArena("SELECT AVG(val) OVER (ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) FROM t");
+    var r = try testParseWithArena(
+        "SELECT AVG(val) OVER (ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     const frame = wf.frame.?;
@@ -5541,7 +5854,9 @@ test "parse ROWS BETWEEN N PRECEDING AND N FOLLOWING" {
 }
 
 test "parse RANGE UNBOUNDED PRECEDING (short form)" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY id RANGE UNBOUNDED PRECEDING) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ORDER BY id RANGE UNBOUNDED PRECEDING) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     const frame = wf.frame.?;
@@ -5569,7 +5884,9 @@ test "parse aggregate as window function: COUNT(*) OVER ()" {
 }
 
 test "parse multiple window functions in SELECT" {
-    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER (ORDER BY id), RANK() OVER (ORDER BY score) FROM t");
+    var r = try testParseWithArena(
+        "SELECT ROW_NUMBER() OVER (ORDER BY id), RANK() OVER (ORDER BY score) FROM t",
+    );
     defer r.deinit();
     const sel = r.stmt.select;
     try std.testing.expectEqual(@as(usize, 2), sel.columns.len);
@@ -5580,14 +5897,18 @@ test "parse multiple window functions in SELECT" {
 }
 
 test "parse GROUPS frame mode" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY id GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ORDER BY id GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t",
+    );
     defer r.deinit();
     const frame = r.stmt.select.columns[0].expr.value.window_function.frame.?;
     try std.testing.expectEqual(ast.WindowFrameMode.groups, frame.mode);
 }
 
 test "parse WINDOW clause with named window definition" {
-    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER w FROM t WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)");
+    var r = try testParseWithArena(
+        "SELECT ROW_NUMBER() OVER w FROM t WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)",
+    );
     defer r.deinit();
     const sel = r.stmt.select;
     // Check window function references named window
@@ -5604,12 +5925,21 @@ test "parse WINDOW clause with named window definition" {
 }
 
 test "parse WINDOW clause with multiple named windows" {
-    var r = try testParseWithArena("SELECT ROW_NUMBER() OVER w1, SUM(x) OVER w2 FROM t WINDOW w1 AS (ORDER BY id), w2 AS (PARTITION BY dept)");
+    var r = try testParseWithArena(
+        "SELECT ROW_NUMBER() OVER w1, SUM(x) OVER w2 FROM t WINDOW w1 AS (ORDER BY id), w2 " ++
+            "AS (PARTITION BY dept)",
+    );
     defer r.deinit();
     const sel = r.stmt.select;
     // Two window functions referencing different named windows
-    try std.testing.expectEqualStrings("w1", sel.columns[0].expr.value.window_function.window_name.?);
-    try std.testing.expectEqualStrings("w2", sel.columns[1].expr.value.window_function.window_name.?);
+    try std.testing.expectEqualStrings(
+        "w1",
+        sel.columns[0].expr.value.window_function.window_name.?,
+    );
+    try std.testing.expectEqualStrings(
+        "w2",
+        sel.columns[1].expr.value.window_function.window_name.?,
+    );
     // Two window definitions
     try std.testing.expectEqual(@as(usize, 2), sel.window_defs.len);
     try std.testing.expectEqualStrings("w1", sel.window_defs[0].name);
@@ -5617,7 +5947,10 @@ test "parse WINDOW clause with multiple named windows" {
 }
 
 test "parse WINDOW clause with frame spec" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER w FROM t WINDOW w AS (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER w FROM t WINDOW w AS (ORDER BY id ROWS BETWEEN UNBOUNDED " ++
+            "PRECEDING AND CURRENT ROW)",
+    );
     defer r.deinit();
     const def = r.stmt.select.window_defs[0];
     try std.testing.expect(def.frame != null);
@@ -5754,7 +6087,7 @@ test "parse ANY with column array" {
     try std.testing.expectEqualStrings("tags", any_expr.array.column_ref.name);
 }
 
-// ── ENUM type tests ───────────────────────────────────────────
+// ── ENUM type tests ────────────────────────
 
 test "parse CREATE TYPE AS ENUM" {
     var r = try testParseWithArena("CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')");
@@ -5792,7 +6125,7 @@ test "parse DROP TYPE IF EXISTS" {
     try std.testing.expect(dt.if_exists);
 }
 
-// ── JSON type tests ───────────────────────────────────────────
+// ── JSON type tests ────────────────────────
 
 test "parse CREATE TABLE with JSON column" {
     var r = try testParseWithArena("CREATE TABLE t (data JSON)");
@@ -5920,7 +6253,7 @@ test "parse chained JSON operators" {
     try std.testing.expectEqual(ast.BinaryOp.json_extract, expr.binary_op.left.binary_op.op);
 }
 
-// ── CREATE FUNCTION / DROP FUNCTION tests ────────────────────────
+// ── CREATE FUNCTION / DROP FUNCTION tests ─────────────────
 
 test "parse CREATE FUNCTION with scalar return" {
     var r = try testParseWithArena(
@@ -6087,7 +6420,10 @@ test "parse DROP FUNCTION IF EXISTS with parameter types" {
 }
 
 test "parse CREATE TRIGGER AFTER INSERT" {
-    var r = try testParseWithArena("CREATE TRIGGER audit_log AFTER INSERT ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (NEW.id)'");
+    var r = try testParseWithArena(
+        "CREATE TRIGGER audit_log AFTER INSERT ON users FOR EACH ROW AS 'INSERT INTO audit " ++
+            "VALUES (NEW.id)'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6100,7 +6436,10 @@ test "parse CREATE TRIGGER AFTER INSERT" {
 }
 
 test "parse CREATE TRIGGER BEFORE UPDATE OF columns" {
-    var r = try testParseWithArena("CREATE TRIGGER validate_email BEFORE UPDATE OF email, name ON users FOR EACH ROW AS 'SELECT check_email(NEW.email)'");
+    var r = try testParseWithArena(
+        "CREATE TRIGGER validate_email BEFORE UPDATE OF email, name ON users FOR EACH ROW AS " ++
+            "'SELECT check_email(NEW.email)'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6112,7 +6451,10 @@ test "parse CREATE TRIGGER BEFORE UPDATE OF columns" {
 }
 
 test "parse CREATE TRIGGER INSTEAD OF for views" {
-    var r = try testParseWithArena("CREATE TRIGGER view_insert INSTEAD OF INSERT ON user_view FOR EACH ROW AS 'INSERT INTO users VALUES (NEW.id, NEW.name)'");
+    var r = try testParseWithArena(
+        "CREATE TRIGGER view_insert INSTEAD OF INSERT ON user_view FOR EACH ROW AS 'INSERT " ++
+            "INTO users VALUES (NEW.id, NEW.name)'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6121,7 +6463,10 @@ test "parse CREATE TRIGGER INSTEAD OF for views" {
 }
 
 test "parse CREATE TRIGGER with WHEN condition" {
-    var r = try testParseWithArena("CREATE TRIGGER check_balance BEFORE UPDATE ON accounts FOR EACH ROW WHEN (NEW.balance < 0) AS 'SELECT RAISE(ABORT)'");
+    var r = try testParseWithArena(
+        "CREATE TRIGGER check_balance BEFORE UPDATE ON accounts FOR EACH ROW WHEN " ++
+            "(NEW.balance < 0) AS 'SELECT RAISE(ABORT)'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6129,7 +6474,10 @@ test "parse CREATE TRIGGER with WHEN condition" {
 }
 
 test "parse CREATE OR REPLACE TRIGGER" {
-    var r = try testParseWithArena("CREATE OR REPLACE TRIGGER audit_update AFTER UPDATE ON users FOR EACH ROW AS 'INSERT INTO audit VALUES (OLD.id, NEW.id)'");
+    var r = try testParseWithArena(
+        "CREATE OR REPLACE TRIGGER audit_update AFTER UPDATE ON users FOR EACH ROW AS " ++
+            "'INSERT INTO audit VALUES (OLD.id, NEW.id)'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6137,7 +6485,10 @@ test "parse CREATE OR REPLACE TRIGGER" {
 }
 
 test "parse CREATE TRIGGER FOR EACH STATEMENT" {
-    var r = try testParseWithArena("CREATE TRIGGER cascade_delete AFTER DELETE ON departments FOR EACH STATEMENT AS 'DELETE FROM employees WHERE dept_id = OLD.id'");
+    var r = try testParseWithArena(
+        "CREATE TRIGGER cascade_delete AFTER DELETE ON departments FOR EACH STATEMENT AS " ++
+            "'DELETE FROM employees WHERE dept_id = OLD.id'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6164,7 +6515,10 @@ test "parse DROP TRIGGER IF EXISTS with table name" {
 }
 
 test "parse CREATE TRIGGER TRUNCATE event" {
-    var r = try testParseWithArena("CREATE TRIGGER log_truncate AFTER TRUNCATE ON sensitive_data FOR EACH STATEMENT AS 'INSERT INTO security_log VALUES (NOW())'");
+    var r = try testParseWithArena(
+        "CREATE TRIGGER log_truncate AFTER TRUNCATE ON sensitive_data FOR EACH STATEMENT AS " ++
+            "'INSERT INTO security_log VALUES (NOW())'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_trigger);
     const trig = r.stmt.create_trigger;
@@ -6270,7 +6624,10 @@ test "parse CREATE ROLE with VALID UNTIL" {
 }
 
 test "parse CREATE ROLE with all options" {
-    var r = try testParseWithArena("CREATE ROLE full_role WITH LOGIN SUPERUSER CREATEDB CREATEROLE INHERIT PASSWORD 'pass' VALID UNTIL '2026-01-01'");
+    var r = try testParseWithArena(
+        "CREATE ROLE full_role WITH LOGIN SUPERUSER CREATEDB CREATEROLE INHERIT PASSWORD " ++
+            "'pass' VALID UNTIL '2026-01-01'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_role);
     const role = r.stmt.create_role;
@@ -6285,7 +6642,9 @@ test "parse CREATE ROLE with all options" {
 }
 
 test "parse CREATE ROLE with negative options" {
-    var r = try testParseWithArena("CREATE ROLE restricted WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT");
+    var r = try testParseWithArena(
+        "CREATE ROLE restricted WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_role);
     const role = r.stmt.create_role;
@@ -6434,7 +6793,7 @@ test "parse REVOKE multiple privileges" {
     try std.testing.expectEqual(ast.Privilege.delete, revoke.privileges[2]);
 }
 
-// ── GRANT/REVOKE Role Membership ─────────────────────────────────
+// ── GRANT/REVOKE Role Membership ────────────────────
 
 test "parse GRANT role to single member" {
     var r = try testParseWithArena("GRANT manager TO alice");
@@ -6505,7 +6864,7 @@ test "parse REVOKE role from multiple members" {
     try std.testing.expectEqualStrings("charlie", revoke.members[2]);
 }
 
-// ── Row-Level Security Tests ──────────────────────────────────
+// ── Row-Level Security Tests ─────────────────────
 
 test "parse CREATE POLICY simple" {
     var r = try testParseWithArena("CREATE POLICY policy1 ON users");
@@ -6587,7 +6946,9 @@ test "parse CREATE POLICY with WITH CHECK" {
 }
 
 test "parse CREATE POLICY with USING and WITH CHECK" {
-    var r = try testParseWithArena("CREATE POLICY p1 ON t1 USING (user_id = 1) WITH CHECK (role = 'admin')");
+    var r = try testParseWithArena(
+        "CREATE POLICY p1 ON t1 USING (user_id = 1) WITH CHECK (role = 'admin')",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_policy);
     const policy = r.stmt.create_policy;
@@ -6596,7 +6957,10 @@ test "parse CREATE POLICY with USING and WITH CHECK" {
 }
 
 test "parse CREATE POLICY full syntax" {
-    var r = try testParseWithArena("CREATE POLICY admin_policy ON documents AS RESTRICTIVE FOR SELECT USING (owner_id = current_user_id())");
+    var r = try testParseWithArena(
+        "CREATE POLICY admin_policy ON documents AS RESTRICTIVE FOR SELECT USING (owner_id = " ++
+            "current_user_id())",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_policy);
     const policy = r.stmt.create_policy;
@@ -6677,10 +7041,12 @@ test "parse ALTER TABLE NO FORCE ROW LEVEL SECURITY" {
     try std.testing.expect(!alter.force);
 }
 
-// ── RLS Parser Edge Cases ───────────────────────────────────────────────
+// ── RLS Parser Edge Cases ──────────────────────
 
 test "parse CREATE POLICY with complex USING expression" {
-    var r = try testParseWithArena("CREATE POLICY complex ON t USING (a > 10 AND b < 20 OR c = 'value')");
+    var r = try testParseWithArena(
+        "CREATE POLICY complex ON t USING (a > 10 AND b < 20 OR c = 'value')",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_policy);
     const policy = r.stmt.create_policy;
@@ -6690,7 +7056,9 @@ test "parse CREATE POLICY with complex USING expression" {
 }
 
 test "parse CREATE POLICY with nested function calls in WITH CHECK" {
-    var r = try testParseWithArena("CREATE POLICY func_check ON t WITH CHECK (validate(user_id, get_role()))");
+    var r = try testParseWithArena(
+        "CREATE POLICY func_check ON t WITH CHECK (validate(user_id, get_role()))",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_policy);
     const policy = r.stmt.create_policy;
@@ -6698,7 +7066,10 @@ test "parse CREATE POLICY with nested function calls in WITH CHECK" {
 }
 
 test "parse CREATE POLICY with all clauses combined" {
-    var r = try testParseWithArena("CREATE POLICY full ON t AS PERMISSIVE FOR UPDATE USING (owner = me()) WITH CHECK (status IN ('active', 'pending'))");
+    var r = try testParseWithArena(
+        "CREATE POLICY full ON t AS PERMISSIVE FOR UPDATE USING (owner = me()) WITH CHECK " ++
+            "(status IN ('active', 'pending'))",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .create_policy);
     const policy = r.stmt.create_policy;
@@ -6767,7 +7138,8 @@ test "parse CREATE POLICY with subquery in USING" {
     // See: src/sql/ast.zig (no in_subquery node), src/sql/parser.zig:2900 (parseInExpr)
     return error.SkipZigTest;
 
-    // var r = try testParseWithArena("CREATE POLICY sub ON t USING (user_id IN (SELECT id FROM allowed))");
+    // var r = try testParseWithArena("CREATE POLICY sub ON t USING (user_id IN (SELECT id FROM
+    // allowed))");
     // defer r.deinit();
     // try std.testing.expect(r.stmt == .create_policy);
     // const policy = r.stmt.create_policy;
@@ -6854,7 +7226,9 @@ test "parse REINDEX TABLE without name should fail" {
 }
 
 test "parse EXISTS subquery in WHERE" {
-    var r = try testParseWithArena("SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)");
+    var r = try testParseWithArena(
+        "SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6866,7 +7240,10 @@ test "parse EXISTS subquery in WHERE" {
 }
 
 test "parse NOT EXISTS subquery in WHERE" {
-    var r = try testParseWithArena("SELECT * FROM users WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)");
+    var r = try testParseWithArena(
+        "SELECT * FROM users WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.user_id = " ++
+            "users.id)",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6876,7 +7253,10 @@ test "parse NOT EXISTS subquery in WHERE" {
 }
 
 test "parse EXISTS with complex subquery" {
-    var r = try testParseWithArena("SELECT name FROM products WHERE EXISTS (SELECT * FROM reviews WHERE reviews.product_id = products.id AND rating > 4)");
+    var r = try testParseWithArena(
+        "SELECT name FROM products WHERE EXISTS (SELECT * FROM reviews WHERE " ++
+            "reviews.product_id = products.id AND rating > 4)",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6886,7 +7266,10 @@ test "parse EXISTS with complex subquery" {
 }
 
 test "parse EXISTS in SELECT list" {
-    var r = try testParseWithArena("SELECT id, EXISTS (SELECT 1 FROM orders WHERE user_id = users.id) AS has_orders FROM users");
+    var r = try testParseWithArena(
+        "SELECT id, EXISTS (SELECT 1 FROM orders WHERE user_id = users.id) AS has_orders " ++
+            "FROM users",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6897,7 +7280,10 @@ test "parse EXISTS in SELECT list" {
 }
 
 test "parse multiple EXISTS in WHERE with AND" {
-    var r = try testParseWithArena("SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders) AND NOT EXISTS (SELECT 1 FROM reviews)");
+    var r = try testParseWithArena(
+        "SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders) AND NOT EXISTS (SELECT 1 " ++
+            "FROM reviews)",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6905,7 +7291,7 @@ test "parse multiple EXISTS in WHERE with AND" {
     try std.testing.expect(select_stmt.where.?.* == .binary_op);
 }
 
-// ── pg_stat_activity (monitoring views) tests ──────────────────────
+// ── pg_stat_activity (monitoring views) tests ────────────────
 
 test "parse SELECT * FROM pg_stat_activity" {
     var r = try testParseWithArena("SELECT * FROM pg_stat_activity");
@@ -6925,7 +7311,10 @@ test "parse SELECT specific columns FROM pg_stat_activity" {
     const select_stmt = r.stmt.select;
     try std.testing.expectEqual(@as(usize, 3), select_stmt.columns.len);
     try std.testing.expectEqualStrings("pid", select_stmt.columns[0].expr.value.column_ref.name);
-    try std.testing.expectEqualStrings("usename", select_stmt.columns[1].expr.value.column_ref.name);
+    try std.testing.expectEqualStrings(
+        "usename",
+        select_stmt.columns[1].expr.value.column_ref.name,
+    );
     try std.testing.expectEqualStrings("query", select_stmt.columns[2].expr.value.column_ref.name);
 }
 
@@ -6941,7 +7330,9 @@ test "parse SELECT FROM pg_stat_activity with WHERE state = 'active'" {
 }
 
 test "parse SELECT FROM pg_stat_activity with WHERE usename = 'postgres'" {
-    var r = try testParseWithArena("SELECT pid, query FROM pg_stat_activity WHERE usename = 'postgres'");
+    var r = try testParseWithArena(
+        "SELECT pid, query FROM pg_stat_activity WHERE usename = 'postgres'",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6951,7 +7342,9 @@ test "parse SELECT FROM pg_stat_activity with WHERE usename = 'postgres'" {
 }
 
 test "parse SELECT FROM pg_stat_activity with complex WHERE" {
-    var r = try testParseWithArena("SELECT * FROM pg_stat_activity WHERE state = 'active' AND query IS NOT NULL");
+    var r = try testParseWithArena(
+        "SELECT * FROM pg_stat_activity WHERE state = 'active' AND query IS NOT NULL",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6976,7 +7369,9 @@ test "parse SELECT FROM pg_stat_activity with LIMIT" {
 }
 
 test "parse SELECT pid AS connection_id FROM pg_stat_activity" {
-    var r = try testParseWithArena("SELECT pid AS connection_id, state AS status FROM pg_stat_activity");
+    var r = try testParseWithArena(
+        "SELECT pid AS connection_id, state AS status FROM pg_stat_activity",
+    );
     defer r.deinit();
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
@@ -6985,7 +7380,7 @@ test "parse SELECT pid AS connection_id FROM pg_stat_activity" {
     try std.testing.expectEqualStrings("status", select_stmt.columns[1].expr.alias.?);
 }
 
-// ── pg_locks (lock monitoring view) tests ──────────────────────
+// ── pg_locks (lock monitoring view) tests ─────────────────
 
 test "parse SELECT * FROM pg_locks" {
     var r = try testParseWithArena("SELECT * FROM pg_locks");
@@ -7004,7 +7399,10 @@ test "parse SELECT specific columns FROM pg_locks" {
     try std.testing.expect(r.stmt == .select);
     const select_stmt = r.stmt.select;
     try std.testing.expectEqual(@as(usize, 3), select_stmt.columns.len);
-    try std.testing.expectEqualStrings("locktype", select_stmt.columns[0].expr.value.column_ref.name);
+    try std.testing.expectEqualStrings(
+        "locktype",
+        select_stmt.columns[0].expr.value.column_ref.name,
+    );
     try std.testing.expectEqualStrings("mode", select_stmt.columns[1].expr.value.column_ref.name);
     try std.testing.expectEqualStrings("pid", select_stmt.columns[2].expr.value.column_ref.name);
 }
@@ -7035,7 +7433,7 @@ test "parse SELECT FROM pg_locks with LIMIT" {
     try std.testing.expect(select_stmt.limit != null);
 }
 
-// ── Configuration System Parser Tests ────────────────────────────────
+// ── Configuration System Parser Tests ──────────────────
 
 test "parse SET with equals syntax" {
     var r = try testParseWithArena("SET work_mem = '4MB'");
@@ -7172,7 +7570,7 @@ test "parse RESET without parameter fails" {
     try std.testing.expectError(error.ParseFailed, result);
 }
 
-// ── Extended SET/SHOW/RESET Parser Tests ──────────────────────────────
+// ── Extended SET/SHOW/RESET Parser Tests ─────────────────
 
 test "parse SET with size value (4MB)" {
     var r = try testParseWithArena("SET work_mem = '4MB'");
@@ -7490,7 +7888,10 @@ test "SHOW parameter name is correctly stored" {
     switch (r.stmt) {
         .show => |s| {
             try std.testing.expect(s.parameter != null);
-            try std.testing.expectEqualStrings("idle_in_transaction_session_timeout", s.parameter.?);
+            try std.testing.expectEqualStrings(
+                "idle_in_transaction_session_timeout",
+                s.parameter.?,
+            );
         },
         else => return error.TestUnexpectedStmtType,
     }
@@ -7503,7 +7904,10 @@ test "RESET parameter name is correctly stored" {
     switch (r.stmt) {
         .reset => |s| {
             try std.testing.expect(s.parameter != null);
-            try std.testing.expectEqualStrings("idle_in_transaction_session_timeout", s.parameter.?);
+            try std.testing.expectEqualStrings(
+                "idle_in_transaction_session_timeout",
+                s.parameter.?,
+            );
         },
         else => return error.TestUnexpectedStmtType,
     }
@@ -7618,7 +8022,10 @@ test "bind parameters reset between statements" {
 }
 
 test "parse EXCLUDE CURRENT ROW in window frame" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW " ++
+            "EXCLUDE CURRENT ROW) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expect(wf.frame != null);
@@ -7626,7 +8033,9 @@ test "parse EXCLUDE CURRENT ROW in window frame" {
 }
 
 test "parse EXCLUDE GROUP in window frame" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS UNBOUNDED PRECEDING EXCLUDE GROUP) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ORDER BY x ROWS UNBOUNDED PRECEDING EXCLUDE GROUP) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expect(wf.frame != null);
@@ -7634,7 +8043,10 @@ test "parse EXCLUDE GROUP in window frame" {
 }
 
 test "parse EXCLUDE TIES in window frame" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE TIES) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW " ++
+            "EXCLUDE TIES) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expect(wf.frame != null);
@@ -7642,7 +8054,9 @@ test "parse EXCLUDE TIES in window frame" {
 }
 
 test "parse EXCLUDE NO OTHERS in window frame" {
-    var r = try testParseWithArena("SELECT SUM(x) OVER (ORDER BY x ROWS UNBOUNDED PRECEDING EXCLUDE NO OTHERS) FROM t");
+    var r = try testParseWithArena(
+        "SELECT SUM(x) OVER (ORDER BY x ROWS UNBOUNDED PRECEDING EXCLUDE NO OTHERS) FROM t",
+    );
     defer r.deinit();
     const wf = r.stmt.select.columns[0].expr.value.window_function;
     try std.testing.expect(wf.frame != null);
@@ -7657,7 +8071,7 @@ test "parse window frame without EXCLUDE defaults to no_others" {
     try std.testing.expectEqual(ast.FrameExclusion.no_others, wf.frame.?.exclusion);
 }
 
-// ── ROW constructor tests ──────────────────────────────────────────────
+// ── ROW constructor tests ──────────────────────
 
 test "parser: row constructor (a, b) = (1, 2) parses to binary_op with row_constructor" {
     var r = try testParseWithArena("SELECT * FROM t WHERE (a, b) = (1, 2)");
@@ -7831,7 +8245,7 @@ test "parse CYCLE clause without CYCLE (no cycle field)" {
     try std.testing.expect(sel.ctes[0].cycle == null);
 }
 
-// ── MATCH_RECOGNIZE tests (SQL:2016 row pattern matching) ──────────────────────────
+// ── MATCH_RECOGNIZE tests (SQL:2016 row pattern matching) ────────────
 
 test "MATCH_RECOGNIZE: full clause parses into TableRef.match_recognize" {
     var r = try testParseWithArena(
