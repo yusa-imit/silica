@@ -40,7 +40,7 @@ const SCHEMA_ROOT_PAGE_ID = page_mod.SCHEMA_ROOT_PAGE_ID;
 pub const TableStats = stats_mod.TableStats;
 pub const ColumnStats = stats_mod.ColumnStats;
 
-// ── Index Types ──────────────────────────────────────────────────────────
+// ── Index Types ──────────────────────────
 
 /// Index data structure type (1-byte tag).
 pub const IndexType = enum(u8) {
@@ -71,7 +71,7 @@ pub const IndexState = enum(u8) {
     invalid = 2,
 };
 
-// ── Data Types ──────────────────────────────────────────────────────────
+// ── Data Types ──────────────────────────
 
 /// Column data type stored in the catalog (1-byte tag).
 pub const ColumnType = enum(u8) {
@@ -119,7 +119,7 @@ pub fn columnTypeFromAst(dt: ?ast.DataType) ColumnType {
     };
 }
 
-// ── Constraint Flags ────────────────────────────────────────────────────
+// ── Constraint Flags ────────────────────────
 
 /// Bitfield for column-level constraints.
 pub const ConstraintFlags = packed struct(u8) {
@@ -154,7 +154,7 @@ pub fn constraintFlagsFromAst(constraints: []const ast.ColumnConstraint) Constra
     return flags;
 }
 
-// ── Schema Info Structures ──────────────────────────────────────────────
+// ── Schema Info Structures ──────────────────────
 
 /// Column metadata stored in the catalog.
 pub const ColumnInfo = struct {
@@ -193,11 +193,15 @@ pub const IndexInfo = struct {
     gin_opclass: GinOpClass = .none,
     /// Whether this index's B+Tree leaf entries carry a covering payload (row_key + TupleHeader +
     /// included_columns values, via src/sql/index_entry.zig) instead of a bare row_key. Defaults to
-    /// false for indexes serialized before this field existed — that, not `included_columns.len > 0`,
-    /// is what gates index-only scan selection, since a legacy INCLUDE index still has row_key-only leaves.
+    /// false for indexes serialized before this field existed — that, not `included_columns.len >
+    /// 0`,
+    /// is what gates index-only scan selection, since a legacy INCLUDE index still has row_key-only
+    /// leaves.
     covering_storage: bool = false,
-    /// Whether this index's B+Tree keys are composite (encoded_value ++ row_key) for non-unique indexes
-    /// to allow duplicate values, or bare encoded_value keys (current format). Composite keys enable
+    /// Whether this index's B+Tree keys are composite (encoded_value ++ row_key) for non-unique
+    /// indexes
+    /// to allow duplicate values, or bare encoded_value keys (current format). Composite keys
+    /// enable
     /// duplicate values within the same index. Defaults to false for indexes serialized before this
     /// field existed — meaning leaf entries use bare encoded_value keys.
     composite_key: bool = false,
@@ -253,19 +257,27 @@ pub const TableInfo = struct {
     }
 };
 
-// ── Serialization ───────────────────────────────────────────────────────
+// ── Serialization ─────────────────────────
 
 /// Serialize a table definition into bytes for B+Tree storage.
 /// Format: [data_root_page_id: u32][column_count: u16][columns...]
 ///         [table_constraint_count: u16][constraints...]
 ///         [index_count: u16][indexes...]
-pub fn serializeTable(allocator: Allocator, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, data_root_page_id: u32) ![]u8 {
+pub fn serializeTable(
+    allocator: Allocator,
+    columns: []const ColumnInfo,
+    table_constraints: []const TableConstraintInfo,
+    data_root_page_id: u32,
+) ![]u8 {
     return serializeTableFull(allocator, columns, table_constraints, &.{}, data_root_page_id);
 }
 
-/// Serialize a table definition with index information.
-pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, indexes: []const IndexInfo, data_root_page_id: u32) ![]u8 {
-    // Calculate total size
+/// Compute the exact serialized byte size of a table definition.
+fn serializedTableSize(
+    columns: []const ColumnInfo,
+    table_constraints: []const TableConstraintInfo,
+    indexes: []const IndexInfo,
+) usize {
     var size: usize = 4 + 2; // data_root_page_id: u32 + column_count: u16
     for (columns) |col| {
         size += 2 + col.name.len + 1 + 1; // name_len + name + type + flags
@@ -297,6 +309,18 @@ pub fn serializeTableFull(allocator: Allocator, columns: []const ColumnInfo, tab
         size += 1; // covering_storage: u8
         size += 1; // composite_key: u8
     }
+    return size;
+}
+
+/// Serialize a table definition with index information.
+pub fn serializeTableFull(
+    allocator: Allocator,
+    columns: []const ColumnInfo,
+    table_constraints: []const TableConstraintInfo,
+    indexes: []const IndexInfo,
+    data_root_page_id: u32,
+) ![]u8 {
+    const size = serializedTableSize(columns, table_constraints, indexes);
 
     const buf = try allocator.alloc(u8, size);
     errdefer allocator.free(buf);
@@ -586,7 +610,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                     idx.gin_opclass = @enumFromInt(data[pos]);
                     pos += 1;
                 } else {
-                    idx.gin_opclass = .none; // Backward compatibility: old DBs have no native GIN support
+                    idx.gin_opclass = .none; // Backward compat: old DBs have no native GIN
                 }
 
                 // covering_storage (optional — backward compatible, defaults to false)
@@ -594,7 +618,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                     idx.covering_storage = data[pos] != 0;
                     pos += 1;
                 } else {
-                    idx.covering_storage = false; // Backward compatibility: old DBs have row_key-only leaves
+                    idx.covering_storage = false; // Backward compat: row_key-only leaves
                 }
 
                 // composite_key (optional — backward compatible, defaults to false)
@@ -602,7 +626,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
                     idx.composite_key = data[pos] != 0;
                     pos += 1;
                 } else {
-                    idx.composite_key = false; // Backward compatibility: old DBs don't use composite keys
+                    idx.composite_key = false; // Backward compat: old DBs lack composite keys
                 }
 
                 idxs_initialized += 1;
@@ -622,7 +646,7 @@ pub fn deserializeTable(allocator: Allocator, name: []const u8, data: []const u8
     };
 }
 
-// ── Schema Catalog ──────────────────────────────────────────────────────
+// ── Schema Catalog ─────────────────────────
 
 pub const CatalogError = error{
     TableAlreadyExists,
@@ -675,12 +699,31 @@ pub const Catalog = struct {
     /// Create a new table in the catalog.
     /// Returns error.TableAlreadyExists if a table with the same name exists.
     /// `data_root_page_id` is the B+Tree root page for this table's row data.
-    pub fn createTable(self: *Catalog, name: []const u8, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, data_root_page_id: u32) !void {
-        return self.createTableWithIndexes(name, columns, table_constraints, &.{}, data_root_page_id);
+    pub fn createTable(
+        self: *Catalog,
+        name: []const u8,
+        columns: []const ColumnInfo,
+        table_constraints: []const TableConstraintInfo,
+        data_root_page_id: u32,
+    ) !void {
+        return self.createTableWithIndexes(
+            name,
+            columns,
+            table_constraints,
+            &.{},
+            data_root_page_id,
+        );
     }
 
     /// Create a new table in the catalog with secondary indexes.
-    pub fn createTableWithIndexes(self: *Catalog, name: []const u8, columns: []const ColumnInfo, table_constraints: []const TableConstraintInfo, indexes: []const IndexInfo, data_root_page_id: u32) !void {
+    pub fn createTableWithIndexes(
+        self: *Catalog,
+        name: []const u8,
+        columns: []const ColumnInfo,
+        table_constraints: []const TableConstraintInfo,
+        indexes: []const IndexInfo,
+        data_root_page_id: u32,
+    ) !void {
         // Check if table already exists
         const existing = try self.tree.get(self.allocator, name);
         if (existing) |v| {
@@ -689,7 +732,13 @@ pub const Catalog = struct {
         }
 
         // Serialize and store
-        const value = try serializeTableFull(self.allocator, columns, table_constraints, indexes, data_root_page_id);
+        const value = try serializeTableFull(
+            self.allocator,
+            columns,
+            table_constraints,
+            indexes,
+            data_root_page_id,
+        );
         defer self.allocator.free(value);
 
         self.tree.insert(name, value) catch |err| {
@@ -855,7 +904,13 @@ pub const Catalog = struct {
             }
         }
 
-        try self.createTableWithIndexes(stmt.name, columns, tc_list.items, idx_list.items, data_root_id);
+        try self.createTableWithIndexes(
+            stmt.name,
+            columns,
+            tc_list.items,
+            idx_list.items,
+            data_root_id,
+        );
 
         // Store generated column expressions in catalog
         for (stmt.columns) |col_def| {
@@ -897,7 +952,12 @@ pub const Catalog = struct {
     }
 
     /// Add a column to an existing table.
-    pub fn addColumn(self: *Catalog, table_name: []const u8, col: ColumnInfo, default_expr: ?[]const u8) !void {
+    pub fn addColumn(
+        self: *Catalog,
+        table_name: []const u8,
+        col: ColumnInfo,
+        default_expr: ?[]const u8,
+    ) !void {
         var table_info = try self.getTable(table_name);
 
         // Build new columns slice = old columns + new col
@@ -913,7 +973,13 @@ pub const Catalog = struct {
         try self.tree.delete(table_name);
 
         // Re-insert with new schema (must do this before deinit)
-        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        const value = try serializeTableFull(
+            self.allocator,
+            new_cols,
+            table_info.table_constraints,
+            table_info.indexes,
+            table_info.data_root_page_id,
+        );
         defer self.allocator.free(value);
 
         try self.tree.insert(table_name, value);
@@ -928,7 +994,12 @@ pub const Catalog = struct {
     }
 
     /// Drop a column from an existing table.
-    pub fn dropColumn(self: *Catalog, table_name: []const u8, col_name: []const u8, if_exists: bool) !void {
+    pub fn dropColumn(
+        self: *Catalog,
+        table_name: []const u8,
+        col_name: []const u8,
+        if_exists: bool,
+    ) !void {
         var table_info = try self.getTable(table_name);
 
         // Find column index (case-insensitive)
@@ -964,7 +1035,13 @@ pub const Catalog = struct {
         try self.tree.delete(table_name);
 
         // Re-insert with new schema (must do this before deinit)
-        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        const value = try serializeTableFull(
+            self.allocator,
+            new_cols,
+            table_info.table_constraints,
+            table_info.indexes,
+            table_info.data_root_page_id,
+        );
         defer self.allocator.free(value);
 
         try self.tree.insert(table_name, value);
@@ -991,7 +1068,12 @@ pub const Catalog = struct {
     }
 
     /// Rename a column in an existing table.
-    pub fn renameColumn(self: *Catalog, table_name: []const u8, old_name: []const u8, new_name: []const u8) !void {
+    pub fn renameColumn(
+        self: *Catalog,
+        table_name: []const u8,
+        old_name: []const u8,
+        new_name: []const u8,
+    ) !void {
         var table_info = try self.getTable(table_name);
 
         // Find old column (case-insensitive)
@@ -1027,7 +1109,13 @@ pub const Catalog = struct {
         try self.tree.delete(table_name);
 
         // Re-insert with new schema (must do this before deinit)
-        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        const value = try serializeTableFull(
+            self.allocator,
+            new_cols,
+            table_info.table_constraints,
+            table_info.indexes,
+            table_info.data_root_page_id,
+        );
         defer self.allocator.free(value);
 
         try self.tree.insert(table_name, value);
@@ -1121,7 +1209,13 @@ pub const Catalog = struct {
         try self.tree.delete(table_name);
 
         // Re-insert with updated schema
-        const value = try serializeTableFull(self.allocator, new_cols, table_info.table_constraints, table_info.indexes, table_info.data_root_page_id);
+        const value = try serializeTableFull(
+            self.allocator,
+            new_cols,
+            table_info.table_constraints,
+            table_info.indexes,
+            table_info.data_root_page_id,
+        );
         defer self.allocator.free(value);
 
         try self.tree.insert(table_name, value);
@@ -1274,7 +1368,11 @@ pub const Catalog = struct {
     }
 
     /// Find a column by name in a table. Returns the column index and info.
-    pub fn findColumn(self: *Catalog, table_name: []const u8, column_name: []const u8) !struct { index: usize, info: ColumnInfo } {
+    pub fn findColumn(
+        self: *Catalog,
+        table_name: []const u8,
+        column_name: []const u8,
+    ) !struct { index: usize, info: ColumnInfo } {
         const table = try self.getTable(table_name);
         defer table.deinit(self.allocator);
 
@@ -1293,7 +1391,7 @@ pub const Catalog = struct {
         return error.ColumnNotFound;
     }
 
-    // ── View Catalog ────────────────────────────────────────────────────
+    // ── View Catalog ────────────────────────
 
     const VIEW_KEY_PREFIX = "\x00view\x00";
 
@@ -1521,13 +1619,18 @@ pub const Catalog = struct {
         return names.toOwnedSlice(allocator);
     }
 
-    // ── Generated Columns ────────────────────────────────────────────────
+    // ── Generated Columns ──────────────────────
 
     fn makeGeneratedKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
         return std.fmt.allocPrint(self.allocator, "generated:{s}:{s}", .{ table, col });
     }
 
-    pub fn storeGeneratedExpr(self: *Catalog, table: []const u8, col: []const u8, expr_sql: []const u8) !void {
+    pub fn storeGeneratedExpr(
+        self: *Catalog,
+        table: []const u8,
+        col: []const u8,
+        expr_sql: []const u8,
+    ) !void {
         const key = try self.makeGeneratedKey(table, col);
         defer self.allocator.free(key);
         // tree.insert copies the value, so we don't need to dupe it
@@ -1546,13 +1649,18 @@ pub const Catalog = struct {
         // TODO: implement when DROP TABLE is implemented with generated cols
     }
 
-    // ── DEFAULT Values ──────────────────────────────────────────────────
+    // ── DEFAULT Values ───────────────────────
 
     fn makeDefaultKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
         return std.fmt.allocPrint(self.allocator, "default:{s}:{s}", .{ table, col });
     }
 
-    pub fn storeDefaultExpr(self: *Catalog, table: []const u8, col: []const u8, expr_sql: []const u8) !void {
+    pub fn storeDefaultExpr(
+        self: *Catalog,
+        table: []const u8,
+        col: []const u8,
+        expr_sql: []const u8,
+    ) !void {
         const key = try self.makeDefaultKey(table, col);
         defer self.allocator.free(key);
         try self.tree.insert(key, expr_sql);
@@ -1564,13 +1672,18 @@ pub const Catalog = struct {
         return self.tree.get(self.allocator, key);
     }
 
-    // ── CHECK Constraints ────────────────────────────────────────────────
+    // ── CHECK Constraints ──────────────────────
 
     fn makeCheckKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
         return std.fmt.allocPrint(self.allocator, "check:{s}:{s}", .{ table, col });
     }
 
-    pub fn storeCheckExpr(self: *Catalog, table: []const u8, col: []const u8, expr_sql: []const u8) !void {
+    pub fn storeCheckExpr(
+        self: *Catalog,
+        table: []const u8,
+        col: []const u8,
+        expr_sql: []const u8,
+    ) !void {
         const key = try self.makeCheckKey(table, col);
         defer self.allocator.free(key);
         try self.tree.insert(key, expr_sql);
@@ -1582,7 +1695,7 @@ pub const Catalog = struct {
         return self.tree.get(self.allocator, key);
     }
 
-    // ── Sequences (SERIAL / BIGSERIAL) ──────────────────────────────────
+    // ── Sequences (SERIAL / BIGSERIAL) ──────────────────
 
     fn makeSeqKey(self: *Catalog, table: []const u8, col: []const u8) ![]u8 {
         return std.fmt.allocPrint(self.allocator, "seq:{s}:{s}", .{ table, col });
@@ -1626,7 +1739,7 @@ pub const Catalog = struct {
         }
     }
 
-    // ── ENUM Types ──────────────────────────────────────────────────────
+    // ── ENUM Types ─────────────────────────
 
     fn makeTypeKey(self: *Catalog, name: []const u8) ![]u8 {
         const prefix = "type:";
@@ -1886,7 +1999,7 @@ pub const Catalog = struct {
         return false;
     }
 
-    // ── Stored Functions ────────────────────────────────────────────────
+    // ── Stored Functions ───────────────────────
 
     /// Function metadata stored in catalog.
     pub const FunctionInfo = struct {
@@ -2001,7 +2114,8 @@ pub const Catalog = struct {
             .table => |cols| {
                 total_size += 2; // col_count
                 for (cols) |col| {
-                    total_size += 2 + col.name.len + 1 + 1; // name_len + name + has_type + data_type
+                    // name_len + name + has_type + data_type
+                    total_size += 2 + col.name.len + 1 + 1;
                 }
             },
         }
@@ -2264,7 +2378,7 @@ pub const Catalog = struct {
         return names.toOwnedSlice(allocator);
     }
 
-    // ── Triggers ──────────────────────────────────────────────────────────
+    // ── Triggers ─────────────────────────
 
     /// Trigger metadata stored in catalog.
     pub const TriggerInfo = struct {
@@ -2726,7 +2840,7 @@ pub const Catalog = struct {
         return triggers.toOwnedSlice(allocator);
     }
 
-    // ── Row-Level Security Policy Management ───────────────────────────
+    // ── Row-Level Security Policy Management ────────────────
 
     /// RLS policy metadata stored in catalog.
     pub const PolicyInfo = struct {
@@ -2922,7 +3036,12 @@ pub const Catalog = struct {
     }
 
     /// Drop an RLS policy.
-    pub fn dropPolicy(self: *Catalog, table_name: []const u8, policy_name: []const u8, if_exists: bool) !void {
+    pub fn dropPolicy(
+        self: *Catalog,
+        table_name: []const u8,
+        policy_name: []const u8,
+        if_exists: bool,
+    ) !void {
         const key = try self.makePolicyKey(table_name, policy_name);
         defer self.allocator.free(key);
 
@@ -2949,7 +3068,11 @@ pub const Catalog = struct {
     }
 
     /// List all RLS policies for a specific table.
-    pub fn listPoliciesForTable(self: *Catalog, allocator: Allocator, table_name: []const u8) ![][]const u8 {
+    pub fn listPoliciesForTable(
+        self: *Catalog,
+        allocator: Allocator,
+        table_name: []const u8,
+    ) ![][]const u8 {
         var cursor = Cursor.init(allocator, &self.tree);
         defer cursor.deinit();
 
@@ -2990,8 +3113,15 @@ pub const Catalog = struct {
     }
 
     /// Enable RLS for a specific table.
-    pub fn enableRLS(self: *Catalog, table_name: []const u8) error{ OutOfMemory, StorageError }!void {
-        const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
+    pub fn enableRLS(
+        self: *Catalog,
+        table_name: []const u8,
+    ) error{ OutOfMemory, StorageError }!void {
+        const key = std.fmt.allocPrint(
+            self.allocator,
+            "rls_enabled:{s}",
+            .{table_name},
+        ) catch return error.OutOfMemory;
         defer self.allocator.free(key);
 
         // Delete existing value first (upsert)
@@ -3006,8 +3136,15 @@ pub const Catalog = struct {
     }
 
     /// Disable RLS for a specific table.
-    pub fn disableRLS(self: *Catalog, table_name: []const u8) error{ OutOfMemory, StorageError }!void {
-        const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
+    pub fn disableRLS(
+        self: *Catalog,
+        table_name: []const u8,
+    ) error{ OutOfMemory, StorageError }!void {
+        const key = std.fmt.allocPrint(
+            self.allocator,
+            "rls_enabled:{s}",
+            .{table_name},
+        ) catch return error.OutOfMemory;
         defer self.allocator.free(key);
 
         const existing = self.tree.get(self.allocator, key) catch return error.StorageError;
@@ -3018,8 +3155,15 @@ pub const Catalog = struct {
     }
 
     /// Check if RLS is enabled for a specific table.
-    pub fn isRLSEnabled(self: *Catalog, table_name: []const u8) error{ OutOfMemory, StorageError }!bool {
-        const key = std.fmt.allocPrint(self.allocator, "rls_enabled:{s}", .{table_name}) catch return error.OutOfMemory;
+    pub fn isRLSEnabled(
+        self: *Catalog,
+        table_name: []const u8,
+    ) error{ OutOfMemory, StorageError }!bool {
+        const key = std.fmt.allocPrint(
+            self.allocator,
+            "rls_enabled:{s}",
+            .{table_name},
+        ) catch return error.OutOfMemory;
         defer self.allocator.free(key);
 
         const value = self.tree.get(self.allocator, key) catch return error.StorageError;
@@ -3030,7 +3174,7 @@ pub const Catalog = struct {
         return false;
     }
 
-    // ── Statistics Catalog ──────────────────────────────────────────────
+    // ── Statistics Catalog ──────────────────────
 
     const STATS_KEY_PREFIX = "stats:";
 
@@ -3042,7 +3186,10 @@ pub const Catalog = struct {
     }
 
     fn makeColumnStatsKey(self: *Catalog, table_name: []const u8, column_name: []const u8) ![]u8 {
-        const key = try self.allocator.alloc(u8, STATS_KEY_PREFIX.len + table_name.len + 1 + column_name.len);
+        const key = try self.allocator.alloc(
+            u8,
+            STATS_KEY_PREFIX.len + table_name.len + 1 + column_name.len,
+        );
         @memcpy(key[0..STATS_KEY_PREFIX.len], STATS_KEY_PREFIX);
         @memcpy(key[STATS_KEY_PREFIX.len..][0..table_name.len], table_name);
         key[STATS_KEY_PREFIX.len + table_name.len] = ':';
@@ -3164,7 +3311,7 @@ pub const Catalog = struct {
         return false;
     }
 
-    // ── Role Management ─────────────────────────────────────────────────
+    // ── Role Management ───────────────────────
 
     /// Role metadata stored in catalog.
     pub const RoleInfo = struct {
@@ -3514,7 +3661,7 @@ pub const Catalog = struct {
         return names.toOwnedSlice(allocator);
     }
 
-    // ── ROLE MEMBERSHIP ───────────────────────────────────────────
+    // ── ROLE MEMBERSHIP ───────────────────────
 
     /// Create a catalog key for a role membership entry.
     /// Format: "rolemember:{role}:{member}"
@@ -3675,12 +3822,18 @@ pub const Catalog = struct {
         return roles.toOwnedSlice(allocator);
     }
 
-    // ── PERMISSIONS (GRANT/REVOKE) ───────────────────────────────
+    // ── PERMISSIONS (GRANT/REVOKE) ───────────────────
 
     /// Create a catalog key for a permission entry.
     /// Format: "perm:{object_type_char}:{object_name}:{grantee}"
-    /// object_type_char: 't' for table, 's' for schema, 'f' for function, 'q' for sequence, 'd' for database
-    fn makePermissionKey(self: *Catalog, object_type: ast.ObjectType, object_name: []const u8, grantee: []const u8) ![]u8 {
+    /// object_type_char: 't' for table, 's' for schema, 'f' for function, 'q' for sequence, 'd' for
+    /// database
+    fn makePermissionKey(
+        self: *Catalog,
+        object_type: ast.ObjectType,
+        object_name: []const u8,
+        grantee: []const u8,
+    ) ![]u8 {
         const type_char: u8 = switch (object_type) {
             .table => 't',
             .schema => 's',
@@ -3795,7 +3948,7 @@ pub const Catalog = struct {
     }
 };
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "ColumnType from AST DataType" {
     try std.testing.expectEqual(ColumnType.integer, columnTypeFromAst(.type_integer));
@@ -3847,7 +4000,11 @@ test "serialize and deserialize table" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "email", .column_type = .text, .flags = .{} },
         .{ .name = "age", .column_type = .integer, .flags = .{} },
@@ -3904,14 +4061,21 @@ test "deserialize invalid data" {
 
     // Too short (needs at least 6 bytes: 4 for page_id + 2 for col_count)
     try std.testing.expectError(error.InvalidSchemaData, deserializeTable(allocator, "bad", &.{}));
-    try std.testing.expectError(error.InvalidSchemaData, deserializeTable(allocator, "bad", &.{ 0, 0, 0, 0, 0 }));
+    try std.testing.expectError(
+        error.InvalidSchemaData,
+        deserializeTable(allocator, "bad", &.{ 0, 0, 0, 0, 0 }),
+    );
 }
 
 test "serialize and deserialize JSON/JSONB columns" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "data", .column_type = .json, .flags = .{} },
         .{ .name = "metadata", .column_type = .jsonb, .flags = .{ .not_null = true } },
         .{ .name = "config", .column_type = .json, .flags = .{} },
@@ -3947,7 +4111,11 @@ test "serialize and deserialize index with INCLUDE columns" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "email", .column_type = .text, .flags = .{} },
         .{ .name = "phone", .column_type = .text, .flags = .{} },
@@ -3989,7 +4157,11 @@ test "serialize and deserialize hash index" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "email", .column_type = .text, .flags = .{ .not_null = true } },
     };
 
@@ -4024,7 +4196,11 @@ test "serialize and deserialize unique hash index" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "username", .column_type = .text, .flags = .{ .not_null = true } },
     };
 
@@ -4056,7 +4232,11 @@ test "serialize and deserialize unique btree index" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "ssn", .column_type = .text, .flags = .{ .not_null = true } },
     };
 
@@ -4088,8 +4268,11 @@ test "backward compatibility: deserialize old format without is_unique and index
     const allocator = std.testing.allocator;
 
     // Manually construct old format data (without is_unique and index_type bytes)
-    // Format: [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
-    // Old index format: [index_name_len:u16][index_name...][col_name_len:u16][col_name...][col_index:u16][root_page_id:u32]
+    // Format:
+    // [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
+    // Old index format:
+    // [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
+    // [col_index:u16][root_page_id:u32]
     // Missing: is_unique (1 byte) and index_type (1 byte) and included_columns
 
     var buf = std.ArrayListUnmanaged(u8){};
@@ -4105,7 +4288,10 @@ test "backward compatibility: deserialize old format without is_unique and index
     try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
     try buf.appendSlice(allocator, "id");
     try buf.append(allocator, @intFromEnum(ColumnType.integer));
-    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+    try buf.append(
+        allocator,
+        @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })),
+    );
 
     // Column 2: "name", text, not_null
     try buf.writer(allocator).writeInt(u16, 4, .little); // name_len
@@ -4148,7 +4334,11 @@ test "round-trip: multiple indexes with mixed types" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "email", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "age", .column_type = .integer, .flags = .{} },
         .{ .name = "city", .column_type = .text, .flags = .{} },
@@ -4209,7 +4399,11 @@ test "hash index with INCLUDE columns" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "username", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "email", .column_type = .text, .flags = .{} },
         .{ .name = "phone", .column_type = .text, .flags = .{} },
@@ -4248,7 +4442,11 @@ test "edge case: empty index name" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "data", .column_type = .text, .flags = .{} },
     };
 
@@ -4322,7 +4520,11 @@ test "Catalog create and get table" {
     defer tc.teardown(allocator);
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
     };
 
@@ -4506,7 +4708,11 @@ test "Catalog findColumn" {
     defer tc.teardown(allocator);
 
     try tc.catalog.createTable("users", &.{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "email", .column_type = .text, .flags = .{} },
     }, &.{}, 0);
@@ -4520,7 +4726,10 @@ test "Catalog findColumn" {
     try std.testing.expect(result.info.flags.not_null);
 
     // Column not found
-    try std.testing.expectError(error.ColumnNotFound, tc.catalog.findColumn("users", "nonexistent"));
+    try std.testing.expectError(
+        error.ColumnNotFound,
+        tc.catalog.findColumn("users", "nonexistent"),
+    );
 
     // Table not found
     try std.testing.expectError(CatalogError.TableNotFound, tc.catalog.findColumn("ghost", "id"));
@@ -4542,7 +4751,11 @@ test "Catalog multiple tables with constraints" {
 
     // Table with unique constraint
     try tc.catalog.createTable("products", &.{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "sku", .column_type = .text, .flags = .{ .not_null = true } },
         .{ .name = "name", .column_type = .text, .flags = .{} },
     }, &.{
@@ -4603,7 +4816,7 @@ test "Catalog drop and recreate table" {
     try std.testing.expectEqual(ColumnType.real, table.columns[1].column_type);
 }
 
-// ── View Catalog Tests ──────────────────────────────────────────────────
+// ── View Catalog Tests ───────────────────────
 
 test "Catalog createView and getView" {
     const allocator = std.testing.allocator;
@@ -4642,7 +4855,10 @@ test "Catalog createView duplicate error" {
     defer tc.teardown(allocator);
 
     try tc.catalog.createView("v1", "SELECT 1", false, false, &.{}, 0);
-    try std.testing.expectError(CatalogError.ViewAlreadyExists, tc.catalog.createView("v1", "SELECT 2", false, false, &.{}, 0));
+    try std.testing.expectError(
+        CatalogError.ViewAlreadyExists,
+        tc.catalog.createView("v1", "SELECT 2", false, false, &.{}, 0),
+    );
 }
 
 test "Catalog createView OR REPLACE overwrites" {
@@ -4680,7 +4896,10 @@ test "Catalog createView name collision with table" {
         .{ .name = "id", .column_type = .integer, .flags = .{} },
     }, &.{}, 0);
 
-    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createView("t1", "SELECT 1", false, false, &.{}, 0));
+    try std.testing.expectError(
+        CatalogError.TableAlreadyExists,
+        tc.catalog.createView("t1", "SELECT 1", false, false, &.{}, 0),
+    );
 }
 
 test "Catalog dropView" {
@@ -4794,7 +5013,7 @@ test "Catalog view serialization roundtrip with many columns" {
     try std.testing.expectEqualStrings(sql, info.sql);
 }
 
-// ── ENUM Type Tests ─────────────────────────────────────────────────────
+// ── ENUM Type Tests ────────────────────────
 
 test "Catalog createEnumType and getEnumType" {
     const allocator = std.testing.allocator;
@@ -4821,7 +5040,10 @@ test "Catalog createEnumType duplicate error" {
 
     const values = [_][]const u8{"'active'"};
     try tc.catalog.createEnumType("status", &values);
-    try std.testing.expectError(CatalogError.TypeAlreadyExists, tc.catalog.createEnumType("status", &values));
+    try std.testing.expectError(
+        CatalogError.TypeAlreadyExists,
+        tc.catalog.createEnumType("status", &values),
+    );
 }
 
 test "Catalog dropEnumType" {
@@ -4893,7 +5115,10 @@ test "Catalog createEnumType name collision with table" {
     }, &.{}, 0);
 
     const values = [_][]const u8{"'active'"};
-    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createEnumType("t1", &values));
+    try std.testing.expectError(
+        CatalogError.TableAlreadyExists,
+        tc.catalog.createEnumType("t1", &values),
+    );
 }
 
 test "Catalog createEnumType with empty values array" {
@@ -5015,7 +5240,13 @@ test "Catalog createEnumType with special characters" {
     var tc = try TestCatalog.setup(allocator, "test_catalog_enum_special.db");
     defer tc.teardown(allocator);
 
-    const values = [_][]const u8{ "hello\nworld", "tab\there", "emoji😀", "quote\"here", "null\x00byte" };
+    const values = [_][]const u8{
+        "hello\nworld",
+        "tab\there",
+        "emoji😀",
+        "quote\"here",
+        "null\x00byte",
+    };
     try tc.catalog.createEnumType("special_enum", &values);
 
     const info = try tc.catalog.getEnumType("special_enum");
@@ -5068,7 +5299,8 @@ test "Catalog getEnumType with corrupted data - truncated value data" {
     const key = try tc.catalog.makeTypeKey("corrupt3");
     defer allocator.free(key);
 
-    const bad_data = [_]u8{ 0x01, 0x00, 0x0A, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 }; // count=1, len=10, but only 5 bytes
+    // count=1, len=10, but only 5 bytes
+    const bad_data = [_]u8{ 0x01, 0x00, 0x0A, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
     try tc.catalog.tree.insert(key, &bad_data);
 
     try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getEnumType("corrupt3"));
@@ -5147,7 +5379,10 @@ test "Catalog createDomain duplicate error" {
     defer tc.teardown(allocator);
 
     try tc.catalog.createDomain("my_domain", .type_integer, null);
-    try std.testing.expectError(CatalogError.TypeAlreadyExists, tc.catalog.createDomain("my_domain", .type_text, null));
+    try std.testing.expectError(
+        CatalogError.TypeAlreadyExists,
+        tc.catalog.createDomain("my_domain", .type_text, null),
+    );
 }
 
 test "Catalog createDomain conflicts with table" {
@@ -5158,7 +5393,10 @@ test "Catalog createDomain conflicts with table" {
     const cols = [_]ColumnInfo{.{ .name = "id", .column_type = .integer, .flags = .{} }};
     try tc.catalog.createTable("users", &cols, &[_]TableConstraintInfo{}, 0);
 
-    try std.testing.expectError(CatalogError.TableAlreadyExists, tc.catalog.createDomain("users", .type_integer, null));
+    try std.testing.expectError(
+        CatalogError.TableAlreadyExists,
+        tc.catalog.createDomain("users", .type_integer, null),
+    );
 }
 
 test "Catalog createDomain conflicts with enum" {
@@ -5169,7 +5407,10 @@ test "Catalog createDomain conflicts with enum" {
     const values = [_][]const u8{ "a", "b" };
     try tc.catalog.createEnumType("status", &values);
 
-    try std.testing.expectError(CatalogError.TypeAlreadyExists, tc.catalog.createDomain("status", .type_text, null));
+    try std.testing.expectError(
+        CatalogError.TypeAlreadyExists,
+        tc.catalog.createDomain("status", .type_text, null),
+    );
 }
 
 test "Catalog dropDomain basic" {
@@ -5193,7 +5434,10 @@ test "Catalog dropDomain if_exists" {
     try tc.catalog.dropDomain("nonexistent", true);
 
     // Should error when if_exists=false and domain doesn't exist
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropDomain("nonexistent", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.dropDomain("nonexistent", false),
+    );
 }
 
 test "Catalog domainExists" {
@@ -5245,10 +5489,13 @@ test "Catalog getDomain with constraint length overflow" {
     const bad_data = [_]u8{ 0x01, 0x01, 0x64, 0x00 }; // constraint_len=100 but no data
     try tc.catalog.tree.insert(key, &bad_data);
 
-    try std.testing.expectError(CatalogError.InvalidSchemaData, tc.catalog.getDomain("corrupt_len"));
+    try std.testing.expectError(
+        CatalogError.InvalidSchemaData,
+        tc.catalog.getDomain("corrupt_len"),
+    );
 }
 
-// ── Function Catalog Tests ──────────────────────────────────────────────
+// ── Function Catalog Tests ──────────────────────
 
 test "Catalog createFunction and getFunction — scalar return" {
     const allocator = std.testing.allocator;
@@ -5426,7 +5673,10 @@ test "Catalog dropFunction — not exists error" {
     var tc = try TestCatalog.setup(allocator, "test_catalog_func_drop_notfound.db");
     defer tc.teardown(allocator);
 
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropFunction("nonexistent", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.dropFunction("nonexistent", false),
+    );
 }
 
 test "Catalog dropFunction IF EXISTS" {
@@ -5771,7 +6021,10 @@ test "Catalog dropTrigger IF EXISTS" {
     try tc.catalog.dropTrigger("nonexistent", true);
 
     // Should error when trigger doesn't exist without IF EXISTS
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropTrigger("nonexistent", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.dropTrigger("nonexistent", false),
+    );
 }
 
 test "Catalog alterTrigger — ENABLE" {
@@ -6095,7 +6348,7 @@ test "Catalog listTriggersForTable — filter by table/event/timing" {
     try std.testing.expectEqual(@as(usize, 0), t1_update.len);
 }
 
-// ── RLS Policy Catalog Tests ────────────────────────────────────────────
+// ── RLS Policy Catalog Tests ─────────────────────
 
 test "Catalog createPolicy — basic SELECT policy" {
     const allocator = std.testing.allocator;
@@ -6255,7 +6508,10 @@ test "Catalog dropPolicy — nonexistent without IF EXISTS" {
     defer tc.teardown(allocator);
 
     // Should error without IF EXISTS
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropPolicy("users", "nonexistent", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.dropPolicy("users", "nonexistent", false),
+    );
 }
 
 test "Catalog policyExists — existing and nonexistent" {
@@ -6370,7 +6626,10 @@ test "Catalog getPolicy — nonexistent policy" {
     var tc = try TestCatalog.setup(allocator, "test_catalog_policy_get_nonexistent.db");
     defer tc.teardown(allocator);
 
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.getPolicy("users", "nonexistent"));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.getPolicy("users", "nonexistent"),
+    );
 }
 
 test "Catalog createPolicy — DELETE policy" {
@@ -6505,7 +6764,7 @@ test "Catalog createPolicy — both USING and WITH CHECK expressions stored" {
     try std.testing.expectEqualStrings("is_published = false", info.with_check_expr.?);
 }
 
-// ── Role Catalog Tests ──────────────────────────────────────────────────
+// ── Role Catalog Tests ───────────────────────
 
 test "Catalog createRole — basic role with defaults" {
     const allocator = std.testing.allocator;
@@ -6661,7 +6920,10 @@ test "Catalog dropRole — IF EXISTS on nonexistent role" {
     try tc.catalog.dropRole("nonexistent", true);
 
     // Should fail without IF EXISTS
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.dropRole("nonexistent", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.dropRole("nonexistent", false),
+    );
 }
 
 test "Catalog roleExists" {
@@ -6754,7 +7016,10 @@ test "Catalog alterRole — nonexistent role" {
     defer tc.teardown(allocator);
 
     const alter_opts = ast.RoleOptions{ .superuser = true };
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.alterRole("nonexistent", alter_opts));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.alterRole("nonexistent", alter_opts),
+    );
 }
 
 test "Catalog listRoles" {
@@ -6869,10 +7134,16 @@ test "Catalog grantRole — role does not exist" {
     try tc.catalog.createRole(user_stmt);
 
     // Try to grant nonexistent role
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.grantRole("ghost", "user1", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.grantRole("ghost", "user1", false),
+    );
 
     // Try to grant to nonexistent member
-    try std.testing.expectError(CatalogError.TypeNotFound, tc.catalog.grantRole("user1", "ghost", false));
+    try std.testing.expectError(
+        CatalogError.TypeNotFound,
+        tc.catalog.grantRole("user1", "ghost", false),
+    );
 }
 
 test "Catalog revokeRole — existing membership" {
@@ -7191,7 +7462,9 @@ test "Catalog grantPermission — with_grant_option true" {
     try tc.catalog.grantPermission(stmt);
 
     // Verify permission exists (with_grant_option is stored but not checked by hasPermission)
-    try std.testing.expect(try tc.catalog.hasPermission(.table, "shared_table", "delegator", .select));
+    try std.testing.expect(
+        try tc.catalog.hasPermission(.table, "shared_table", "delegator", .select),
+    );
 
     // Verify with_grant_option is stored (retrieve raw data)
     const key = try tc.catalog.makePermissionKey(.table, "shared_table", "delegator");
@@ -7295,7 +7568,7 @@ test "Catalog hasPermission — different grantees isolated" {
     try std.testing.expect(try tc.catalog.hasPermission(.table, "data", "bob", .insert));
 }
 
-// ── Statistics Catalog Tests ────────────────────────────────────────────
+// ── Statistics Catalog Tests ─────────────────────
 
 test "Catalog createTableStats and getTableStats" {
     const allocator = std.testing.allocator;
@@ -7458,7 +7731,7 @@ test "Catalog column stats with MCVs and histogram" {
     try std.testing.expectEqual(@as(u64, 100), retrieved.?.histogram_buckets[0].count);
 }
 
-// ── Comprehensive Edge Case Tests for Statistics ───────────────────────
+// ── Comprehensive Edge Case Tests for Statistics ───────────────
 
 // Re-enabled: bug #1 fixed on 2026-03-02
 test "Catalog update existing table stats" {
@@ -7724,7 +7997,7 @@ test "Catalog serialize and deserialize index with INCLUDE columns" {
     try std.testing.expectEqual(@as(usize, 2), idx.included_columns.len);
 }
 
-// ── INDEX STATE TESTS (CREATE INDEX CONCURRENTLY) ──────────────────────
+// ── INDEX STATE TESTS (CREATE INDEX CONCURRENTLY) ──────────────
 
 test "IndexState enum has correct values" {
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(IndexState.building));
@@ -8159,7 +8432,7 @@ test "Index state persists through serialization/deserialization" {
     try std.testing.expectEqual(IndexType.btree, idx_restored.index_type);
 }
 
-// ── GIN OPCLASS TESTS (GIN INDEX NATIVE STORAGE) ──────────────────────────
+// ── GIN OPCLASS TESTS (GIN INDEX NATIVE STORAGE) ───────────────
 
 test "GinOpClass enum has correct values" {
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(GinOpClass.none));
@@ -8172,7 +8445,11 @@ test "serialize and deserialize IndexInfo with gin_opclass jsonb_ops" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "data", .column_type = .jsonb, .flags = .{} },
     };
 
@@ -8211,7 +8488,11 @@ test "serialize and deserialize IndexInfo with gin_opclass array_ops" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "tags", .column_type = .array, .flags = .{} },
     };
 
@@ -8250,9 +8531,12 @@ test "backward compatibility: deserialize old format without gin_opclass default
     const allocator = std.testing.allocator;
 
     // Manually construct old format data (without gin_opclass byte at the end)
-    // Format: [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
-    // Old index format (with state): [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
-    //                                  [col_index:u16][root_page_id:u32][is_unique:u8][index_type:u8][state:u8][included_count:u16][...]
+    // Format:
+    // [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
+    // Old index format (with state):
+    // [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
+    // [col_index:u16][root_page_id:u32][is_unique:u8][index_type:u8][state:u8]
+    // [included_count:u16][...]
     // Missing: gin_opclass (1 byte) at the very end
 
     var buf = std.ArrayListUnmanaged(u8){};
@@ -8268,7 +8552,10 @@ test "backward compatibility: deserialize old format without gin_opclass default
     try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
     try buf.appendSlice(allocator, "id");
     try buf.append(allocator, @intFromEnum(ColumnType.integer));
-    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+    try buf.append(
+        allocator,
+        @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })),
+    );
 
     // Column 2: "data", jsonb
     try buf.writer(allocator).writeInt(u16, 4, .little); // name_len
@@ -8320,7 +8607,11 @@ test "serialize and deserialize IndexInfo with covering_storage = true" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "data", .column_type = .jsonb, .flags = .{} },
     };
 
@@ -8364,7 +8655,11 @@ test "serialize and deserialize IndexInfo with covering_storage = false" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{} },
     };
 
@@ -8406,9 +8701,12 @@ test "backward compatibility: deserialize old format without covering_storage de
     const allocator = std.testing.allocator;
 
     // Manually construct old format data (without covering_storage byte at the end)
-    // Format: [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
-    // Old index format (with gin_opclass): [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
-    //                                        [col_index:u16][root_page_id:u32][is_unique:u8][index_type:u8][state:u8][included_count:u16][...][gin_opclass:u8]
+    // Format:
+    // [data_root_page_id:u32][col_count:u16][cols...][tc_count:u16][idx_count:u16][index...]
+    // Old index format (with gin_opclass):
+    // [index_name_len:u16][index_name...][col_name_len:u16][col_name...]
+    // [col_index:u16][root_page_id:u32][is_unique:u8][index_type:u8][state:u8]
+    // [included_count:u16][...][gin_opclass:u8]
     // Missing: covering_storage (1 byte) at the very end
 
     var buf = std.ArrayListUnmanaged(u8){};
@@ -8424,7 +8722,10 @@ test "backward compatibility: deserialize old format without covering_storage de
     try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
     try buf.appendSlice(allocator, "id");
     try buf.append(allocator, @intFromEnum(ColumnType.integer));
-    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+    try buf.append(
+        allocator,
+        @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })),
+    );
 
     // Column 2: "name", text
     try buf.writer(allocator).writeInt(u16, 4, .little); // name_len
@@ -8479,7 +8780,11 @@ test "serialize and deserialize IndexInfo with composite_key = true" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "email", .column_type = .text, .flags = .{} },
     };
 
@@ -8523,7 +8828,11 @@ test "serialize and deserialize IndexInfo with composite_key = false" {
     const allocator = std.testing.allocator;
 
     const columns = [_]ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "status", .column_type = .text, .flags = .{} },
     };
 
@@ -8584,7 +8893,10 @@ test "backward compatibility: deserialize old format without composite_key defau
     try buf.writer(allocator).writeInt(u16, 2, .little); // name_len
     try buf.appendSlice(allocator, "id");
     try buf.append(allocator, @intFromEnum(ColumnType.integer));
-    try buf.append(allocator, @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })));
+    try buf.append(
+        allocator,
+        @as(u8, @bitCast(ConstraintFlags{ .primary_key = true, .not_null = true })),
+    );
 
     // Column 2: "value", text
     try buf.writer(allocator).writeInt(u16, 5, .little); // name_len
