@@ -82,7 +82,5 @@ std_time_in_lib:src/sql/stats.zig:1
 std_time_in_lib:src/tidy.zig:3
 std_time_in_lib:src/tui.zig:3
 std_time_in_lib:src/tx/wal.zig:2
-line_length:src/cli.zig:262
 line_length:src/sql/engine.zig:1186
 line_length:src/sql/executor.zig:598
-line_length:src/tui.zig:117

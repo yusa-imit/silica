@@ -152,25 +152,25 @@ fn sqlContains(sql: []const u8, keyword: []const u8) bool {
     return false;
 }
 
-// ── Focus Pane ───────────────────────────────────────────────────────
+// ── Focus Pane ──────────────────────────
 
 const Pane = enum { schema, results, input };
 
-// ── Ring Menu Items ──────────────────────────────────────────────────
+// ── Ring Menu Items ────────────────────────
 
 const RING_MENU_ITEMS = [_][]const u8{ "Execute", "Schema", "Results", "Refresh", "Clear", "Quit" };
 
-// ── Query History KanbanBoard ────────────────────────────────────────
+// ── Query History KanbanBoard ─────────────────────
 
 const QUERY_HISTORY_MAX = 16;
 const QUERY_TITLE_MAX = 48;
 
-// ── Activity Feed Audit Log ──────────────────────────────────────────
+// ── Activity Feed Audit Log ──────────────────────
 
 const ACTIVITY_LOG_MAX = 64;
 const ACTIVITY_EVENT_MAX = 60;
 
-// ── FlowChart Query Pipeline ─────────────────────────────────────────
+// ── FlowChart Query Pipeline ─────────────────────
 
 const FLOW_NODE_COUNT: usize = 6;
 
@@ -198,24 +198,24 @@ const QueryHistoryEntry = struct {
     duration_ms: u64 = 0,
 };
 
-// ── RadarChart Query Stats ───────────────────────────────────────────
+// ── RadarChart Query Stats ──────────────────────
 
 const RADAR_SERIES_COUNT: usize = 2;
 
 const RADAR_AXES = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL", "Error" };
 
-// ── Treemap Table Space ──────────────────────────────────────────────
+// ── Treemap Table Space ───────────────────────
 
 const MAX_TREEMAP_ITEMS: usize = 64;
 
-// ── MatrixView Query Metrics ─────────────────────────────────────────
+// ── MatrixView Query Metrics ─────────────────────
 
 const MATRIX_ROW_HEADERS = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL", "Error" };
 const MATRIX_COL_HEADERS = [_][]const u8{ "Count", "Avg ms", "Max ms" };
 const MATRIX_ROWS: usize = 6;
 const MATRIX_COLS: usize = 3;
 
-// ── SankeyDiagram SQL Data Flow ──────────────────────────────────────
+// ── SankeyDiagram SQL Data Flow ────────────────────
 
 const SANKEY_NODE_COUNT: usize = 6;
 
@@ -228,48 +228,72 @@ const SANKEY_NODES = [SANKEY_NODE_COUNT]sailor.tui.widgets.SankeyNode{
     .{ .label = "Error", .column = 2, .style = .{ .fg = .red } },
 };
 
-// ── ChordDiagram SQL Operation Flow ──────────────────────────────────
+// ── ChordDiagram SQL Operation Flow ───────────────────
 
 const CHORD_NODE_COUNT: usize = 5;
 const CHORD_NODES = [CHORD_NODE_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
 
 const WATERFALL_BAR_COUNT: usize = 6;
 
-// ── FunnelChart SQL Query Pipeline ──────────────────────────────────────────
+// ── FunnelChart SQL Query Pipeline ───────────────────
 
 const FUNNEL_STAGE_COUNT: usize = 4;
 
-// ── DotPlot Query Duration Per-Type ─────────────────────────────────────────
+// ── DotPlot Query Duration Per-Type ───────────────────
 
 const DOTPLOT_ITEM_COUNT: usize = 5;
 
-// ── RadialBar Database Health Metrics ────────────────────────────────────────
+// ── RadialBar Database Health Metrics ──────────────────
 
 const RADIALBAR_ARC_COUNT: usize = 4;
 
-// ── StreamGraph Query Type Volume Over Time ──────────────────────────────────
+// ── StreamGraph Query Type Volume Over Time ────────────────
 
 const STREAMGRAPH_LAYER_COUNT: usize = 5;
-const STREAMGRAPH_LAYER_LABELS = [STREAMGRAPH_LAYER_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+const STREAMGRAPH_LAYER_LABELS = [STREAMGRAPH_LAYER_COUNT][]const u8{
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DDL",
+};
 
-// ── ViolinPlot Query Duration Distribution by Type ───────────────────────────
+// ── ViolinPlot Query Duration Distribution by Type ──────────────
 
 const VIOLIN_SERIES_COUNT: usize = 5;
-const VIOLIN_SERIES_LABELS = [VIOLIN_SERIES_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+const VIOLIN_SERIES_LABELS = [VIOLIN_SERIES_COUNT][]const u8{
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DDL",
+};
 
-// ── SunburstChart Query Type & Duration Breakdown ────────────────────────────
+// ── SunburstChart Query Type & Duration Breakdown ──────────────
 
 const SUNBURST_NODE_COUNT: usize = 5;
-const SUNBURST_NODE_LABELS = [SUNBURST_NODE_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+const SUNBURST_NODE_LABELS = [SUNBURST_NODE_COUNT][]const u8{
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DDL",
+};
 const SUNBURST_BUCKET_COUNT: usize = 3;
 const SUNBURST_BUCKET_LABELS = [SUNBURST_BUCKET_COUNT][]const u8{ "Fast", "Medium", "Slow" };
 
-// ── BoxPlot Query Duration Distribution by Type ────────────────────────────
+// ── BoxPlot Query Duration Distribution by Type ───────────────
 
 const BOXPLOT_SERIES_COUNT: usize = 5;
-const BOXPLOT_SERIES_LABELS = [BOXPLOT_SERIES_COUNT][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE", "DDL" };
+const BOXPLOT_SERIES_LABELS = [BOXPLOT_SERIES_COUNT][]const u8{
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DDL",
+};
 
-// ── Application State ────────────────────────────────────────────────
+// ── Application State ────────────────────────
 
 const App = struct {
     allocator: std.mem.Allocator,
@@ -279,8 +303,10 @@ const App = struct {
     focus: Pane = .input,
 
     // Schema tree (flat list with indented columns)
-    schema_items: std.ArrayListUnmanaged([]const u8) = .{}, // display items (table names + indented columns)
-    schema_table_indices: std.ArrayListUnmanaged(usize) = .{}, // indices into schema_items that are table names
+    // display items (table names + indented columns)
+    schema_items: std.ArrayListUnmanaged([]const u8) = .{},
+    // indices into schema_items that are table names
+    schema_table_indices: std.ArrayListUnmanaged(usize) = .{},
     schema_selected: usize = 0,
     schema_offset: usize = 0,
 
@@ -328,7 +354,9 @@ const App = struct {
     kanban_visible: bool = false,
     kanban_focused_col: usize = 0,
     kanban_focused_card: usize = 0,
-    query_history: [QUERY_HISTORY_MAX]QueryHistoryEntry = std.mem.zeroes([QUERY_HISTORY_MAX]QueryHistoryEntry),
+    query_history: [QUERY_HISTORY_MAX]QueryHistoryEntry = std.mem.zeroes(
+        [QUERY_HISTORY_MAX]QueryHistoryEntry,
+    ),
     query_history_count: usize = 0,
 
     // BracketViewer SQL plan overlay
@@ -341,8 +369,12 @@ const App = struct {
     // Activity feed audit log overlay
     activity_visible: bool = false,
     activity_focused: usize = 0,
-    activity_log: [ACTIVITY_LOG_MAX]sailor.activity_feed.Activity = std.mem.zeroes([ACTIVITY_LOG_MAX]sailor.activity_feed.Activity),
-    activity_event_bufs: [ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8 = std.mem.zeroes([ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8),
+    activity_log: [ACTIVITY_LOG_MAX]sailor.activity_feed.Activity = std.mem.zeroes(
+        [ACTIVITY_LOG_MAX]sailor.activity_feed.Activity,
+    ),
+    activity_event_bufs: [ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8 = std.mem.zeroes(
+        [ACTIVITY_LOG_MAX][ACTIVITY_EVENT_MAX]u8,
+    ),
     activity_count: usize = 0,
 
     // GanttChart query timeline overlay
@@ -485,14 +517,16 @@ const App = struct {
         self.clearCompletions();
 
         const sql_keywords = [_][]const u8{
-            "SELECT",  "FROM",       "WHERE",   "INSERT",  "INTO",     "VALUES",  "UPDATE",  "SET",
-            "DELETE",  "CREATE",     "TABLE",   "INDEX",   "DROP",     "ALTER",   "PRIMARY", "KEY",
-            "FOREIGN", "REFERENCES", "UNIQUE",  "NOT",     "NULL",     "DEFAULT", "CHECK",   "AND",
-            "OR",      "IN",         "LIKE",    "BETWEEN", "IS",       "AS",      "ON",      "JOIN",
-            "LEFT",    "RIGHT",      "INNER",   "OUTER",   "GROUP",    "BY",      "HAVING",  "ORDER",
-            "ASC",     "DESC",       "LIMIT",   "OFFSET",  "DISTINCT", "COUNT",   "SUM",     "AVG",
-            "MIN",     "MAX",        "INTEGER", "REAL",    "TEXT",     "BLOB",    "BOOLEAN", "DATE",
-            "TIME",    "TIMESTAMP",
+            "SELECT",  "FROM",   "WHERE",    "INSERT",    "INTO",    "VALUES",
+            "UPDATE",  "SET",    "DELETE",   "CREATE",    "TABLE",   "INDEX",
+            "DROP",    "ALTER",  "PRIMARY",  "KEY",       "FOREIGN", "REFERENCES",
+            "UNIQUE",  "NOT",    "NULL",     "DEFAULT",   "CHECK",   "AND",
+            "OR",      "IN",     "LIKE",     "BETWEEN",   "IS",      "AS",
+            "ON",      "JOIN",   "LEFT",     "RIGHT",     "INNER",   "OUTER",
+            "GROUP",   "BY",     "HAVING",   "ORDER",     "ASC",     "DESC",
+            "LIMIT",   "OFFSET", "DISTINCT", "COUNT",     "SUM",     "AVG",
+            "MIN",     "MAX",    "INTEGER",  "REAL",      "TEXT",    "BLOB",
+            "BOOLEAN", "DATE",   "TIME",     "TIMESTAMP",
         };
 
         // Filter keywords by prefix
@@ -561,7 +595,10 @@ const App = struct {
 
         for (tables) |table_name| {
             // Record that this index is a table name
-            self.schema_table_indices.append(self.allocator, self.schema_items.items.len) catch continue;
+            self.schema_table_indices.append(
+                self.allocator,
+                self.schema_items.items.len,
+            ) catch continue;
 
             const name = self.allocator.dupe(u8, table_name) catch continue;
             self.schema_items.append(self.allocator, name) catch {
@@ -598,7 +635,12 @@ const App = struct {
         const is_ddl = std.ascii.startsWithIgnoreCase(trimmed, "CREATE") or
             std.ascii.startsWithIgnoreCase(trimmed, "DROP") or
             std.ascii.startsWithIgnoreCase(trimmed, "ALTER");
-        const kind: sailor.activity_feed.Kind = if (is_ddl) .action else if (success) .success else .error_kind;
+        const kind: sailor.activity_feed.Kind = if (is_ddl)
+            .action
+        else if (success)
+            .success
+        else
+            .error_kind;
         const idx = self.activity_count % ACTIVITY_LOG_MAX;
         const copy_len = @min(trimmed.len, ACTIVITY_EVENT_MAX);
         @memcpy(self.activity_event_bufs[idx][0..copy_len], trimmed[0..copy_len]);
@@ -701,7 +743,11 @@ const App = struct {
                 } else break;
             }
 
-            self.result_message = std.fmt.allocPrint(self.allocator, "{d} row(s) returned", .{row_count}) catch "";
+            self.result_message = std.fmt.allocPrint(
+                self.allocator,
+                "{d} row(s) returned",
+                .{row_count},
+            ) catch "";
         } else if (result.message.len > 0) {
             self.result_message = self.allocator.dupe(u8, result.message) catch "";
             // Refresh schema after DDL
@@ -710,7 +756,11 @@ const App = struct {
 
         if (result.rows_affected > 0) {
             if (self.result_message.len > 0) self.allocator.free(self.result_message);
-            self.result_message = std.fmt.allocPrint(self.allocator, "{d} row(s) affected", .{result.rows_affected}) catch "";
+            self.result_message = std.fmt.allocPrint(
+                self.allocator,
+                "{d} row(s) affected",
+                .{result.rows_affected},
+            ) catch "";
             // Refresh schema after DML
             self.refreshSchema();
         }
@@ -727,7 +777,11 @@ const App = struct {
 
         if (self.status_right.len > 0) self.allocator.free(self.status_right);
         if (self.result_message.len > 0) {
-            self.status_right = std.fmt.allocPrint(self.allocator, "{s} ", .{self.result_message}) catch "";
+            self.status_right = std.fmt.allocPrint(
+                self.allocator,
+                "{s} ",
+                .{self.result_message},
+            ) catch "";
         } else {
             self.status_right = self.allocator.dupe(u8, "Ready ") catch "";
         }
@@ -979,7 +1033,8 @@ const App = struct {
             return;
         }
 
-        // 'y' key toggles stream graph query type volume over time overlay (not while editing input)
+        // 'y' key toggles stream graph query type volume over time overlay (not while editing
+        // input)
         if (byte == 121 and self.focus != .input) {
             if (self.streamgraph_visible) {
                 self.streamgraph_visible = false;
@@ -990,7 +1045,8 @@ const App = struct {
             return;
         }
 
-        // 'k' key toggles sunburst chart query type & duration breakdown overlay (not while editing input)
+        // 'k' key toggles sunburst chart query type & duration breakdown overlay (not while editing
+        // input)
         if (byte == 107 and self.focus != .input) {
             if (self.sunburst_visible) {
                 self.sunburst_visible = false;
@@ -1623,14 +1679,18 @@ const App = struct {
                 if (b3.? == 'A') { // Up
                     if (self.schema_selected > 0) self.schema_selected -= 1;
                 } else if (b3.? == 'B') { // Down
-                    if (self.schema_selected + 1 < self.schema_items.items.len) self.schema_selected += 1;
+                    if (self.schema_selected + 1 < self.schema_items.items.len) {
+                        self.schema_selected += 1;
+                    }
                 }
             },
             .results => {
                 if (b3.? == 'A') { // Up
                     if (self.result_selected > 0) self.result_selected -= 1;
                 } else if (b3.? == 'B') { // Down
-                    if (self.result_selected + 1 < self.result_rows.items.len) self.result_selected += 1;
+                    if (self.result_selected + 1 < self.result_rows.items.len) {
+                        self.result_selected += 1;
+                    }
                 }
             },
             .input => {
@@ -1658,11 +1718,19 @@ const App = struct {
     fn handleSchemaKey(self: *App, byte: u8) void {
         if (byte == '\r' or byte == '\n') {
             // Enter: find which table the selected index belongs to
-            const table = schemaTableForIndex(self.schema_table_indices.items, self.schema_items.items, self.schema_selected);
+            const table = schemaTableForIndex(
+                self.schema_table_indices.items,
+                self.schema_items.items,
+                self.schema_selected,
+            );
             if (table) |table_name| {
                 self.input_text.clearRetainingCapacity();
                 self.input_cursor = 0;
-                const sql = std.fmt.allocPrint(self.allocator, "SELECT * FROM {s} LIMIT 100;", .{table_name}) catch return;
+                const sql = std.fmt.allocPrint(
+                    self.allocator,
+                    "SELECT * FROM {s} LIMIT 100;",
+                    .{table_name},
+                ) catch return;
                 defer self.allocator.free(sql);
                 self.input_text.appendSlice(self.allocator, sql) catch return;
                 self.input_cursor = self.input_text.items.len;
@@ -1724,14 +1792,20 @@ const App = struct {
 
                         // Remove prefix characters
                         var i: usize = 0;
-                        while (i < prefix_len and cursor_start < self.input_text.items.len) : (i += 1) {
+                        while (i < prefix_len and
+                            cursor_start < self.input_text.items.len) : (i += 1)
+                        {
                             _ = self.input_text.orderedRemove(cursor_start);
                         }
                         self.input_cursor = cursor_start;
 
                         // Insert completion text
                         for (item.text) |ch| {
-                            self.input_text.insert(self.allocator, self.input_cursor, ch) catch break;
+                            self.input_text.insert(
+                                self.allocator,
+                                self.input_cursor,
+                                ch,
+                            ) catch break;
                             self.input_cursor += 1;
                         }
                     }
@@ -1807,14 +1881,18 @@ const App = struct {
     }
 };
 
-// ── Schema Helpers ───────────────────────────────────────────────────
+// ── Schema Helpers ─────────────────────────
 
 const ColumnInfo = silica.catalog.ColumnInfo;
 const ColumnType = silica.catalog.ColumnType;
 
 /// Find the table name for a given flat-list index.
 /// Uses schema_table_indices to find the nearest table header at or before `idx`.
-fn schemaTableForIndex(table_indices: []const usize, items: []const []const u8, idx: usize) ?[]const u8 {
+fn schemaTableForIndex(
+    table_indices: []const usize,
+    items: []const []const u8,
+    idx: usize,
+) ?[]const u8 {
     if (table_indices.len == 0 or items.len == 0) return null;
     if (idx >= items.len) return null;
 
@@ -1876,13 +1954,17 @@ fn formatColumnLabel(allocator: std.mem.Allocator, col: ColumnInfo) ![]const u8 
     }
 
     if (type_str.len > 0) {
-        return std.fmt.allocPrint(allocator, "  {s} {s}{s}", .{ col.name, type_str, suffix_buf[0..suffix_len] });
+        return std.fmt.allocPrint(
+            allocator,
+            "  {s} {s}{s}",
+            .{ col.name, type_str, suffix_buf[0..suffix_len] },
+        );
     } else {
         return std.fmt.allocPrint(allocator, "  {s}{s}", .{ col.name, suffix_buf[0..suffix_len] });
     }
 }
 
-// ── Value Conversion ─────────────────────────────────────────────────
+// ── Value Conversion ────────────────────────
 
 fn valueToString(allocator: std.mem.Allocator, val: Value) ![]const u8 {
     return switch (val) {
@@ -1916,7 +1998,7 @@ fn valueToString(allocator: std.mem.Allocator, val: Value) ![]const u8 {
     };
 }
 
-// ── Rendering ────────────────────────────────────────────────────────
+// ── Rendering ──────────────────────────
 
 fn renderUI(app: *App, buf: *tui.Buffer, area: tui.Rect) !void {
     const allocator = app.allocator;
@@ -2170,7 +2252,11 @@ fn renderSchemaTree(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         // Clear the row first
         var cx: u16 = 0;
         while (cx < inner.width) : (cx += 1) {
-            buf.set(inner.x + cx, inner.y + row, tui.Cell.init(' ', if (is_selected) item_style else .{}));
+            buf.set(
+                inner.x + cx,
+                inner.y + row,
+                tui.Cell.init(' ', if (is_selected) item_style else .{}),
+            );
         }
 
         // Render the item text
@@ -2198,7 +2284,10 @@ fn renderResultsTable(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         block.render(buf, area);
         const inner = block.inner(area);
         if (inner.width > 0 and inner.height > 0) {
-            const msg = if (app.result_message.len > 0) app.result_message else "Execute a query to see results";
+            const msg = if (app.result_message.len > 0)
+                app.result_message
+            else
+                "Execute a query to see results";
             buf.setString(inner.x, inner.y, msg, .{ .fg = .bright_black });
         }
         return;
@@ -2246,7 +2335,10 @@ fn renderSQLInput(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
 
     // Determine display text and style
     const has_text = app.input_text.items.len > 0;
-    const display_text = if (has_text) app.input_text.items else "Type SQL here, press Enter to execute...";
+    const display_text = if (has_text)
+        app.input_text.items
+    else
+        "Type SQL here, press Enter to execute...";
     const display_style: tui.Style = if (has_text) .{} else .{ .fg = .bright_black };
 
     // Render text
@@ -2345,37 +2437,7 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
         if (row >= inner.height) break;
 
         const is_selected = (i == app.completion_selected);
-        const item_style: tui.Style = if (is_selected)
-            .{ .fg = .cyan, .reverse = true }
-        else
-            .{};
-
-        // Clear the row
-        var cx: u16 = 0;
-        while (cx < inner.width) : (cx += 1) {
-            buf.set(inner.x + cx, inner.y + row, tui.Cell.init(' ', if (is_selected) item_style else .{}));
-        }
-
-        // Render item text
-        var x: u16 = 0;
-        for (item.text) |c| {
-            if (x >= inner.width) break;
-            buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, item_style));
-            x += 1;
-        }
-
-        // Render description if present
-        if (item.description) |desc| {
-            if (x + 3 < inner.width) {
-                buf.setString(inner.x + x, inner.y + row, " - ", .{ .fg = .bright_black });
-                x += 3;
-                for (desc) |c| {
-                    if (x >= inner.width) break;
-                    buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, .{ .fg = .bright_black }));
-                    x += 1;
-                }
-            }
-        }
+        renderCompletionRow(buf, inner, row, item, is_selected);
 
         // If this is the selected item, store its area and check for help text
         if (is_selected) {
@@ -2417,6 +2479,52 @@ fn renderCompletionPopup(app: *App, buf: *tui.Buffer, cursor_x: u16, cursor_y: u
     }
 }
 
+fn renderCompletionRow(
+    buf: *tui.Buffer,
+    inner: tui.Rect,
+    row: u16,
+    item: CompletionItem,
+    is_selected: bool,
+) void {
+    std.debug.assert(row < inner.height);
+    std.debug.assert(inner.width > 0);
+    const item_style: tui.Style = if (is_selected)
+        .{ .fg = .cyan, .reverse = true }
+    else
+        .{};
+
+    // Clear the row
+    var cx: u16 = 0;
+    while (cx < inner.width) : (cx += 1) {
+        buf.set(
+            inner.x + cx,
+            inner.y + row,
+            tui.Cell.init(' ', if (is_selected) item_style else .{}),
+        );
+    }
+
+    // Render item text
+    var x: u16 = 0;
+    for (item.text) |c| {
+        if (x >= inner.width) break;
+        buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, item_style));
+        x += 1;
+    }
+
+    // Render description if present
+    if (item.description) |desc| {
+        if (x + 3 < inner.width) {
+            buf.setString(inner.x + x, inner.y + row, " - ", .{ .fg = .bright_black });
+            x += 3;
+            for (desc) |c| {
+                if (x >= inner.width) break;
+                buf.set(inner.x + x, inner.y + row, tui.Cell.init(c, .{ .fg = .bright_black }));
+                x += 1;
+            }
+        }
+    }
+}
+
 fn renderDetailOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (app.result_rows.items.len == 0 or app.result_columns.items.len == 0) return;
 
@@ -2450,7 +2558,11 @@ fn renderDetailOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     }
     const entries = entries_buf[0..num];
 
-    const row_label = std.fmt.allocPrint(app.allocator, "Row {d}", .{app.result_selected + 1}) catch "Row Detail";
+    const row_label = std.fmt.allocPrint(
+        app.allocator,
+        "Row {d}",
+        .{app.result_selected + 1},
+    ) catch "Row Detail";
     defer app.allocator.free(row_label);
 
     // Auto-scroll detail_offset to keep detail_selected visible
@@ -2545,17 +2657,25 @@ fn renderTimerOverlay(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     sw.render(buf, popup_area);
 }
 
-fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
-    if (!app.kanban_visible) return;
-
-    // Centered overlay: ~80% width, ~70% height
-    const ow: u16 = @min(area.width * 4 / 5, area.width);
-    const oh: u16 = @min(area.height * 7 / 10, area.height);
+/// Compute a centered overlay rect (fractions of `area`) and blank it to a black background.
+fn clearOverlay(
+    buf: *tui.Buffer,
+    area: tui.Rect,
+    w_num: u16,
+    w_den: u16,
+    h_num: u16,
+    h_den: u16,
+) tui.Rect {
+    std.debug.assert(w_den > 0);
+    std.debug.assert(h_den > 0);
+    std.debug.assert(w_num <= w_den);
+    std.debug.assert(h_num <= h_den);
+    const ow: u16 = @min(area.width * w_num / w_den, area.width);
+    const oh: u16 = @min(area.height * h_num / h_den, area.height);
     const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
     const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
     const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
 
-    // Clear background
     var py: u16 = oy;
     while (py < oy + oh) : (py += 1) {
         var px: u16 = ox;
@@ -2563,6 +2683,14 @@ fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
             buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
         }
     }
+    return popup_area;
+}
+
+fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.kanban_visible) return;
+
+    // Centered overlay: ~80% width, ~70% height
+    const popup_area = clearOverlay(buf, area, 4, 5, 7, 10);
 
     // Build success and error card arrays
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
@@ -2586,7 +2714,11 @@ fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
 
         // Build duration tag
         const tag_idx = success_count + error_count;
-        const tag_written = std.fmt.bufPrint(&tag_bufs[tag_idx], "#{d}ms", .{entry.duration_ms}) catch "#?ms";
+        const tag_written = std.fmt.bufPrint(
+            &tag_bufs[tag_idx],
+            "#{d}ms",
+            .{entry.duration_ms},
+        ) catch "#?ms";
         tag_strs[tag_idx] = tag_written;
         tag_slices[tag_idx] = .{tag_strs[tag_idx]};
 
@@ -2617,7 +2749,8 @@ fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedColumn(app.kanban_focused_col)
         .withFocusedCard(app.kanban_focused_card)
         .withBlock((tui.widgets.Block{
-        .title = " Query History (b/Esc:close  \xe2\x86\x90\xe2\x86\x92:col  \xe2\x86\x91\xe2\x86\x93:card) ",
+        .title = " Query History (b/Esc:close  \xe2\x86\x90\xe2\x86\x92:col  " ++
+            "\xe2\x86\x91\xe2\x86\x93:card) ",
         .borders = .all,
     }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
@@ -2628,20 +2761,7 @@ fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.bracket_visible) return;
 
     // Centered overlay: ~80% width, ~70% height
-    const ow: u16 = @min(area.width * 4 / 5, area.width);
-    const oh: u16 = @min(area.height * 7 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 4, 5, 7, 10);
 
     // Build rounds from SQL
     const sql = app.plan_sql_buf[0..app.plan_sql_len];
@@ -2662,7 +2782,10 @@ fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .winner = filter_winner,
     };
 
-    const aggregate_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "GROUP BY")) .b else .a;
+    const aggregate_winner: sailor.bracket_viewer.Winner = if (sqlContains(
+        sql,
+        "GROUP BY",
+    )) .b else .a;
     const aggregate_match = sailor.bracket_viewer.Match{
         .team_a = "Project",
         .team_b = "Aggregate",
@@ -2670,7 +2793,10 @@ fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     };
 
     // Round 3 "Output": 1 match [Project vs Sort]
-    const output_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "ORDER BY")) .b else .a;
+    const output_winner: sailor.bracket_viewer.Winner = if (sqlContains(
+        sql,
+        "ORDER BY",
+    )) .b else .a;
     const output_match = sailor.bracket_viewer.Match{
         .team_a = "Project",
         .team_b = "Sort",
@@ -2711,20 +2837,7 @@ fn renderActivityFeed(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const count = @min(app.activity_count, ACTIVITY_LOG_MAX);
 
     // Centered overlay: ~70% width, ~70% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 7 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 7, 10);
 
     const feed = sailor.ActivityFeed.init()
         .withItems(app.activity_log[0..count])
@@ -2751,7 +2864,10 @@ fn renderGanttChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
 
     // Centered overlay: ~80% width, ~70% height
     const ow: u16 = @min(area.width * 4 / 5, area.width);
-    const oh: u16 = @min(@as(u16, @intCast(actual_count + 2)), @min(area.height * 7 / 10, area.height));
+    const oh: u16 = @min(
+        @as(u16, @intCast(actual_count + 2)),
+        @min(area.height * 7 / 10, area.height),
+    );
     const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
     const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
     const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
@@ -2802,20 +2918,7 @@ fn renderFlowChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.flow_visible) return;
 
     // Centered overlay: ~60% width, ~90% height (to show all 6 nodes)
-    const ow: u16 = @min(area.width * 3 / 5, area.width);
-    const oh: u16 = @min(area.height * 9 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 3, 5, 9, 10);
 
     const chart = sailor.FlowChart.init()
         .withNodes(&FLOW_NODES)
@@ -2839,20 +2942,7 @@ fn renderMindMap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.mind_visible) return;
 
     // Centered overlay: ~70% width, ~80% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 8 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 8, 10);
 
     // Build nodes: root = db basename, children = table names
     const MindNode = sailor.widgets.mindmap.MindNode;
@@ -2865,7 +2955,10 @@ fn renderMindMap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     node_count = 1;
 
     // Level 1: table names
-    const table_count = @min(app.schema_table_indices.items.len, sailor.widgets.MindMap.MAX_NODES - 1);
+    const table_count = @min(
+        app.schema_table_indices.items.len,
+        sailor.widgets.MindMap.MAX_NODES - 1,
+    );
     for (app.schema_table_indices.items[0..table_count]) |table_idx| {
         nodes[node_count] = .{ .label = app.schema_items.items[table_idx], .parent = 0 };
         node_count += 1;
@@ -2892,20 +2985,7 @@ fn renderRadarChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.radar_visible) return;
 
     // Centered overlay: ~60% width, ~75% height
-    const ow: u16 = @min(area.width * 6 / 10, area.width);
-    const oh: u16 = @min(area.height * 3 / 4, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 6, 10, 3, 4);
 
     // Build series from query history
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
@@ -2924,11 +3004,17 @@ fn renderRadarChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         const upper = entry.title[0..@min(entry.title_len, 6)];
         if (std.mem.startsWith(u8, upper, "SELECT") or std.mem.startsWith(u8, upper, "select")) {
             n_select += 1;
-        } else if (std.mem.startsWith(u8, upper, "INSERT") or std.mem.startsWith(u8, upper, "insert")) {
+        } else if (std.mem.startsWith(u8, upper, "INSERT") or
+            std.mem.startsWith(u8, upper, "insert"))
+        {
             n_insert += 1;
-        } else if (std.mem.startsWith(u8, upper, "UPDATE") or std.mem.startsWith(u8, upper, "update")) {
+        } else if (std.mem.startsWith(u8, upper, "UPDATE") or
+            std.mem.startsWith(u8, upper, "update"))
+        {
             n_update += 1;
-        } else if (std.mem.startsWith(u8, upper, "DELETE") or std.mem.startsWith(u8, upper, "delete")) {
+        } else if (std.mem.startsWith(u8, upper, "DELETE") or
+            std.mem.startsWith(u8, upper, "delete"))
+        {
             n_delete += 1;
         } else {
             n_ddl += 1;
@@ -2973,20 +3059,7 @@ fn renderHexEditor(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.hex_visible) return;
 
     // Centered overlay: ~70% width, ~80% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 4 / 5, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 4, 5);
 
     const data_slice: []const u8 = if (app.hex_data_len > 0)
         app.hex_data[0..app.hex_data_len]
@@ -3013,20 +3086,7 @@ fn renderTreemap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.treemap_visible) return;
 
     // Centered overlay: ~80% width, ~85% height
-    const ow: u16 = @min(area.width * 4 / 5, area.width);
-    const oh: u16 = @min(area.height * 17 / 20, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 4, 5, 17, 20);
 
     // Build treemap items from table stats
     var items: [MAX_TREEMAP_ITEMS]sailor.TreemapItem = undefined;
@@ -3077,7 +3137,8 @@ fn renderTreemap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withFocusedStyle(.{ .bold = true })
         .withLabelStyle(.{ .bold = true })
         .withBlock((tui.widgets.Block{
-        .title = " Table Space (\xe2\x86\x91\xe2\x86\x93\xe2\x86\x90\xe2\x86\x92:navigate  w/Esc:close) ",
+        .title = " Table Space (\xe2\x86\x91\xe2\x86\x93\xe2\x86\x90\xe2\x86\x92:navigate  " ++
+            "w/Esc:close) ",
         .borders = .all,
     }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
@@ -3088,20 +3149,7 @@ fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.matrix_visible) return;
 
     // Centered overlay: 70% width, 60% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 3 / 5, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 3, 5);
 
     // Compute metrics from query history
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
@@ -3113,10 +3161,14 @@ fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     for (app.query_history[0..actual_count]) |entry| {
         const row_idx: usize = if (!entry.success) 5 else blk: {
             const upper = entry.title[0..@min(entry.title_len, 6)];
-            if (std.mem.startsWith(u8, upper, "SELECT") or std.mem.startsWith(u8, upper, "select")) break :blk 0;
-            if (std.mem.startsWith(u8, upper, "INSERT") or std.mem.startsWith(u8, upper, "insert")) break :blk 1;
-            if (std.mem.startsWith(u8, upper, "UPDATE") or std.mem.startsWith(u8, upper, "update")) break :blk 2;
-            if (std.mem.startsWith(u8, upper, "DELETE") or std.mem.startsWith(u8, upper, "delete")) break :blk 3;
+            if (std.mem.startsWith(u8, upper, "SELECT") or
+                std.mem.startsWith(u8, upper, "select")) break :blk 0;
+            if (std.mem.startsWith(u8, upper, "INSERT") or
+                std.mem.startsWith(u8, upper, "insert")) break :blk 1;
+            if (std.mem.startsWith(u8, upper, "UPDATE") or
+                std.mem.startsWith(u8, upper, "update")) break :blk 2;
+            if (std.mem.startsWith(u8, upper, "DELETE") or
+                std.mem.startsWith(u8, upper, "delete")) break :blk 3;
             break :blk 4; // DDL
         };
         counts[row_idx] += 1;
@@ -3169,8 +3221,33 @@ fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
 fn renderSankeyDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.sankey_visible) return;
 
+    const flows = buildSankeyFlows(app);
+
+    // Centered overlay: ~70% width, ~60% height
+    const popup_area = clearOverlay(buf, area, 7, 10, 6, 10);
+
+    const sk = sailor.tui.widgets.SankeyDiagram.init()
+        .withNodes(&SANKEY_NODES)
+        .withFlows(&flows)
+        .withFocused(app.sankey_focused)
+        .withNodeWidth(3)
+        .withColGap(10)
+        .withNodeStyle(.{ .fg = .white })
+        .withFlowStyle(.{ .fg = .bright_black })
+        .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
+        .withBlock((tui.widgets.Block{
+        .title = " SQL Data Flow (s/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .borders = .all,
+    }).withBorderStyle(tui.Style{ .fg = .magenta }));
+
+    sk.render(buf, popup_area);
+}
+
+fn buildSankeyFlows(app: *App) [5]sailor.tui.widgets.SankeyFlow {
+    std.debug.assert(QUERY_HISTORY_MAX > 0);
     // Count query types from query_history
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+    std.debug.assert(actual_count <= app.query_history.len);
     var select_count: f32 = 0;
     var dml_count: f32 = 0;
     var ddl_count: f32 = 0;
@@ -3203,45 +3280,38 @@ fn renderSankeyDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
 
     // Use placeholder flows when no data yet
     const has_data = actual_count > 0;
-    const flows = [5]sailor.tui.widgets.SankeyFlow{
-        .{ .source = 0, .target = 3, .value = if (has_data) select_count else 2.0, .style = .{ .fg = .cyan } },
-        .{ .source = 1, .target = 3, .value = if (has_data) dml_count else 1.0, .style = .{ .fg = .green } },
-        .{ .source = 2, .target = 3, .value = if (has_data) ddl_count else 1.0, .style = .{ .fg = .yellow } },
-        .{ .source = 3, .target = 4, .value = if (has_data) success_count else 3.0, .style = .{ .fg = .bright_green } },
-        .{ .source = 3, .target = 5, .value = if (has_data) error_count else 1.0, .style = .{ .fg = .red } },
+    return [5]sailor.tui.widgets.SankeyFlow{
+        .{
+            .source = 0,
+            .target = 3,
+            .value = if (has_data) select_count else 2.0,
+            .style = .{ .fg = .cyan },
+        },
+        .{
+            .source = 1,
+            .target = 3,
+            .value = if (has_data) dml_count else 1.0,
+            .style = .{ .fg = .green },
+        },
+        .{
+            .source = 2,
+            .target = 3,
+            .value = if (has_data) ddl_count else 1.0,
+            .style = .{ .fg = .yellow },
+        },
+        .{
+            .source = 3,
+            .target = 4,
+            .value = if (has_data) success_count else 3.0,
+            .style = .{ .fg = .bright_green },
+        },
+        .{
+            .source = 3,
+            .target = 5,
+            .value = if (has_data) error_count else 1.0,
+            .style = .{ .fg = .red },
+        },
     };
-
-    // Centered overlay: ~70% width, ~60% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 6 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
-
-    const sk = sailor.tui.widgets.SankeyDiagram.init()
-        .withNodes(&SANKEY_NODES)
-        .withFlows(&flows)
-        .withFocused(app.sankey_focused)
-        .withNodeWidth(3)
-        .withColGap(10)
-        .withNodeStyle(.{ .fg = .white })
-        .withFlowStyle(.{ .fg = .bright_black })
-        .withFocusedStyle(.{ .fg = .black, .bg = .magenta, .bold = true })
-        .withBlock((tui.widgets.Block{
-        .title = " SQL Data Flow (s/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
-        .borders = .all,
-    }).withBorderStyle(tui.Style{ .fg = .magenta }));
-
-    sk.render(buf, popup_area);
 }
 
 fn renderBubbleChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
@@ -3271,7 +3341,10 @@ fn renderBubbleChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         for (app.query_history[0..actual_count], 0..) |entry, i| {
             const x_val: f32 = @floatFromInt(i);
             const y_val: f32 = @floatFromInt(entry.duration_ms);
-            const size: f32 = @as(f32, @floatFromInt(entry.duration_ms)) / @as(f32, @floatFromInt(max_duration));
+            const size: f32 = @as(
+                f32,
+                @floatFromInt(entry.duration_ms),
+            ) / @as(f32, @floatFromInt(max_duration));
             const style: tui.Style = if (entry.success) .{ .fg = .green } else .{ .fg = .red };
             bubbles[i] = sailor.Bubble{
                 .label = "",
@@ -3285,20 +3358,7 @@ fn renderBubbleChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     }
 
     // Centered overlay: ~70% width, ~60% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 6 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 6, 10);
 
     const x_max_val: f32 = if (actual_count > 1) @as(f32, @floatFromInt(actual_count - 1)) else 1.0;
     const y_max_val: f32 = @floatFromInt(max_duration);
@@ -3329,7 +3389,9 @@ fn renderChordDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
 
     // Build 5x5 co-occurrence matrix from consecutive query type pairs
-    var matrix: [CHORD_NODE_COUNT][CHORD_NODE_COUNT]f32 = std.mem.zeroes([CHORD_NODE_COUNT][CHORD_NODE_COUNT]f32);
+    var matrix: [CHORD_NODE_COUNT][CHORD_NODE_COUNT]f32 = std.mem.zeroes(
+        [CHORD_NODE_COUNT][CHORD_NODE_COUNT]f32,
+    );
 
     if (actual_count < 2) {
         // Placeholder: typical DB usage pattern
@@ -3357,20 +3419,7 @@ fn renderChordDiagram(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const node_slices: []const []const u8 = &CHORD_NODES;
 
     // Centered overlay: ~70% width, ~70% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 7 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 7, 10);
 
     const cd = sailor.ChordDiagram.init()
         .withNodes(node_slices)
@@ -3419,20 +3468,7 @@ fn renderWaterfallChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     };
 
     // Centered overlay: ~70% width, ~70% height
-    const ow: u16 = @min(area.width * 7 / 10, area.width);
-    const oh: u16 = @min(area.height * 7 / 10, area.height);
-    const ox: u16 = if (area.width > ow) (area.width - ow) / 2 else 0;
-    const oy: u16 = if (area.height > oh) (area.height - oh) / 2 else 0;
-    const popup_area = tui.Rect{ .x = ox, .y = oy, .width = ow, .height = oh };
-
-    // Clear background
-    var py: u16 = oy;
-    while (py < oy + oh) : (py += 1) {
-        var px: u16 = ox;
-        while (px < ox + ow) : (px += 1) {
-            buf.set(px, py, tui.Cell.init(' ', .{ .bg = .black }));
-        }
-    }
+    const popup_area = clearOverlay(buf, area, 7, 10, 7, 10);
 
     const bar_slices: []const sailor.WaterfallBar = &bars;
     const wc = sailor.WaterfallChart.init()
@@ -3527,7 +3563,8 @@ fn renderDotPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
 
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
 
-    // Accumulate total duration and count per query type (0=SELECT 1=INSERT 2=UPDATE 3=DELETE 4=DDL)
+    // Accumulate total duration and count per query type (0=SELECT 1=INSERT 2=UPDATE 3=DELETE
+    // 4=DDL)
     var total_duration: [DOTPLOT_ITEM_COUNT]u64 = .{0} ** DOTPLOT_ITEM_COUNT;
     var type_count: [DOTPLOT_ITEM_COUNT]u64 = .{0} ** DOTPLOT_ITEM_COUNT;
     var avg_duration: [DOTPLOT_ITEM_COUNT]f32 = .{0.0} ** DOTPLOT_ITEM_COUNT;
@@ -3656,7 +3693,9 @@ fn renderStreamGraph(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const point_count = @max(actual_count, 1);
 
     // Per-layer duration_ms series over query history (time axis), bucketed by query type
-    var values: [STREAMGRAPH_LAYER_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes([STREAMGRAPH_LAYER_COUNT][QUERY_HISTORY_MAX]f32);
+    var values: [STREAMGRAPH_LAYER_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes(
+        [STREAMGRAPH_LAYER_COUNT][QUERY_HISTORY_MAX]f32,
+    );
     for (app.query_history[0..actual_count], 0..) |entry, i| {
         const qt = classifyQueryType(&entry);
         values[qt][i] = @floatFromInt(entry.duration_ms);
@@ -3697,7 +3736,9 @@ fn renderViolinPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
 
     // Duration_ms samples per query type — the full distribution, not just the average
-    var values: [VIOLIN_SERIES_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes([VIOLIN_SERIES_COUNT][QUERY_HISTORY_MAX]f32);
+    var values: [VIOLIN_SERIES_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes(
+        [VIOLIN_SERIES_COUNT][QUERY_HISTORY_MAX]f32,
+    );
     var counts: [VIOLIN_SERIES_COUNT]usize = .{0} ** VIOLIN_SERIES_COUNT;
 
     if (actual_count == 0) {
@@ -3735,21 +3776,21 @@ fn renderViolinPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowLabels(true)
         .withFocused(app.violin_focused)
         .withBlock((tui.widgets.Block{
-        .title = " Query Duration Distribution by Type (j/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .title = " Query Duration Distribution by Type (j/Esc:close  " ++
+            "\xe2\x86\x91\xe2\x86\x93:navigate) ",
         .borders = .all,
     }).withBorderStyle(tui.Style{ .fg = .magenta }));
 
     vp.render(buf, popup_area);
 }
 
-fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
-    if (!app.sunburst_visible) return;
-
-    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
-
-    // Count of queries per (query type, duration bucket): Fast <10ms, Medium 10-100ms, Slow >=100ms
-    var bucket_counts: [SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32 = std.mem.zeroes([SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32);
-
+fn fillSunburstBuckets(
+    app: *App,
+    actual_count: usize,
+    bucket_counts: *[SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32,
+) void {
+    std.debug.assert(actual_count <= QUERY_HISTORY_MAX);
+    std.debug.assert(app.query_history_count >= actual_count);
     if (actual_count == 0) {
         // Placeholder data when no queries yet
         bucket_counts[0] = .{ 3.0, 1.0, 0.0 };
@@ -3765,6 +3806,19 @@ fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
             bucket_counts[t][bucket] += 1.0;
         }
     }
+}
+
+fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
+    if (!app.sunburst_visible) return;
+
+    const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
+
+    // Count of queries per (query type, duration bucket): Fast <10ms, Medium 10-100ms, Slow >=100ms
+    var bucket_counts: [SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32 = std.mem.zeroes(
+        [SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]f32,
+    );
+
+    fillSunburstBuckets(app, actual_count, &bucket_counts);
 
     var children: [SUNBURST_NODE_COUNT][SUNBURST_BUCKET_COUNT]sailor.SunburstNode = undefined;
     var nodes: [SUNBURST_NODE_COUNT]sailor.SunburstNode = undefined;
@@ -3772,13 +3826,20 @@ fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         var child_count: usize = 0;
         for (0..SUNBURST_BUCKET_COUNT) |b| {
             if (bucket_counts[i][b] > 0) {
-                children[i][child_count] = .{ .label = SUNBURST_BUCKET_LABELS[b], .value = bucket_counts[i][b] };
+                children[i][child_count] = .{
+                    .label = SUNBURST_BUCKET_LABELS[b],
+                    .value = bucket_counts[i][b],
+                };
                 child_count += 1;
             }
         }
         var total: f32 = 0.0;
         for (0..SUNBURST_BUCKET_COUNT) |b| total += bucket_counts[i][b];
-        nodes[i] = .{ .label = SUNBURST_NODE_LABELS[i], .value = total, .children = children[i][0..child_count] };
+        nodes[i] = .{
+            .label = SUNBURST_NODE_LABELS[i],
+            .value = total,
+            .children = children[i][0..child_count],
+        };
     }
     const node_slices: []const sailor.SunburstNode = &nodes;
 
@@ -3799,7 +3860,8 @@ fn renderSunburstChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         .withShowValues(true)
         .withFocused(app.sunburst_focused)
         .withBlock((tui.widgets.Block{
-        .title = " Query Type & Duration Breakdown (k/Esc:close  \xe2\x86\x91\xe2\x86\x93:navigate) ",
+        .title = " Query Type & Duration Breakdown (k/Esc:close  " ++
+            "\xe2\x86\x91\xe2\x86\x93:navigate) ",
         .borders = .all,
     }).withBorderStyle(tui.Style{ .fg = .yellow }));
 
@@ -3812,7 +3874,9 @@ fn renderBoxPlot(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
 
     // Duration_ms samples per query type — the full distribution, not just the average
-    var values: [BOXPLOT_SERIES_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes([BOXPLOT_SERIES_COUNT][QUERY_HISTORY_MAX]f32);
+    var values: [BOXPLOT_SERIES_COUNT][QUERY_HISTORY_MAX]f32 = std.mem.zeroes(
+        [BOXPLOT_SERIES_COUNT][QUERY_HISTORY_MAX]f32,
+    );
     var counts: [BOXPLOT_SERIES_COUNT]usize = .{0} ** BOXPLOT_SERIES_COUNT;
 
     if (actual_count == 0) {
@@ -3904,8 +3968,23 @@ fn renderStatusBar(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
         }
     }
 
-    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health y:stream j:violin k:sunburst o:boxplot Ctrl+C:quit
-    const center_text = "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  k:sunburst  o:boxplot  Ctrl+C:quit";
+    renderStatusBarCenter(app, buf, area, bar_style);
+}
+
+fn renderStatusBarCenter(
+    app: *App,
+    buf: *tui.Buffer,
+    area: tui.Rect,
+    bar_style: tui.Style,
+) void {
+    // Center: Tab:switch Enter:exec t:timer b:board p:plan a:feed g:gantt f:flow n:schema r:radar
+    // x:hex w:treemap v:matrix s:sankey u:bubble c:chord e:waterfall l:funnel d:dotplot h:health
+    // y:stream j:violin k:sunburst o:boxplot Ctrl+C:quit
+    const center_text =
+        "Tab:switch  Enter:exec  t:timer  b:board  p:plan  a:feed  g:gantt  f:flow  " ++
+        "n:schema  r:radar  x:hex  w:treemap  v:matrix  s:sankey  u:bubble  " ++
+        "c:chord  e:waterfall  l:funnel  d:dotplot  h:health  y:stream  j:violin  " ++
+        "k:sunburst  o:boxplot  Ctrl+C:quit";
     const center_start = if (area.width > center_text.len)
         area.x + (area.width - @as(u16, @intCast(center_text.len))) / 2
     else
@@ -4108,7 +4187,7 @@ fn localRenderDiff(diff_ops: []const tui.buffer.DiffOp, writer: anytype) !void {
     }
 }
 
-// ── Public Entry Point ───────────────────────────────────────────────
+// ── Public Entry Point ───────────────────────
 
 pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !void {
     const builtin = @import("builtin");
@@ -4184,7 +4263,7 @@ pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !vo
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "App init and deinit" {
     // App.init doesn't require a real database - test basic struct creation
@@ -4552,8 +4631,15 @@ test "backspace at position 0 does nothing" {
 }
 
 test "schemaTableForIndex finds correct table" {
-    // Flat list: [0]="users", [1]="  id INTEGER PK", [2]="  name TEXT", [3]="orders", [4]="  total REAL"
-    const items = [_][]const u8{ "users", "  id INTEGER PK", "  name TEXT", "orders", "  total REAL" };
+    // Flat list: [0]="users", [1]="  id INTEGER PK", [2]="  name TEXT", [3]="orders", [4]="  total
+    // REAL"
+    const items = [_][]const u8{
+        "users",
+        "  id INTEGER PK",
+        "  name TEXT",
+        "orders",
+        "  total REAL",
+    };
     const table_indices = [_]usize{ 0, 3 };
 
     // Index 0 → "users" (table header itself)
@@ -4576,19 +4662,31 @@ test "formatColumnLabel basic types and constraints" {
     const allocator = std.testing.allocator;
 
     {
-        const col = ColumnInfo{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true } };
+        const col = ColumnInfo{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true },
+        };
         const label = try formatColumnLabel(allocator, col);
         defer allocator.free(label);
         try std.testing.expectEqualStrings("  id INTEGER PK", label);
     }
     {
-        const col = ColumnInfo{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } };
+        const col = ColumnInfo{
+            .name = "name",
+            .column_type = .text,
+            .flags = .{ .not_null = true },
+        };
         const label = try formatColumnLabel(allocator, col);
         defer allocator.free(label);
         try std.testing.expectEqualStrings("  name TEXT NN", label);
     }
     {
-        const col = ColumnInfo{ .name = "email", .column_type = .text, .flags = .{ .not_null = true, .unique = true } };
+        const col = ColumnInfo{
+            .name = "email",
+            .column_type = .text,
+            .flags = .{ .not_null = true, .unique = true },
+        };
         const label = try formatColumnLabel(allocator, col);
         defer allocator.free(label);
         try std.testing.expectEqualStrings("  email TEXT NN UQ", label);
@@ -4606,7 +4704,11 @@ test "formatColumnLabel basic types and constraints" {
         try std.testing.expectEqualStrings("  config JSON", label);
     }
     {
-        const col = ColumnInfo{ .name = "metadata", .column_type = .jsonb, .flags = .{ .not_null = true } };
+        const col = ColumnInfo{
+            .name = "metadata",
+            .column_type = .jsonb,
+            .flags = .{ .not_null = true },
+        };
         const label = try formatColumnLabel(allocator, col);
         defer allocator.free(label);
         try std.testing.expectEqualStrings("  metadata JSONB NN", label);
@@ -4625,12 +4727,24 @@ test "getSqlKeywordHelp returns help for known keywords" {
     try std.testing.expectEqualStrings("Remove rows from a table", getSqlKeywordHelp("DELETE").?);
     try std.testing.expectEqualStrings("Specify source table(s)", getSqlKeywordHelp("FROM").?);
     try std.testing.expectEqualStrings("Filter rows with conditions", getSqlKeywordHelp("WHERE").?);
-    try std.testing.expectEqualStrings("Combine rows from multiple tables", getSqlKeywordHelp("JOIN").?);
-    try std.testing.expectEqualStrings("Return matching rows from both tables", getSqlKeywordHelp("INNER").?);
-    try std.testing.expectEqualStrings("Return all left table rows + matches", getSqlKeywordHelp("LEFT").?);
+    try std.testing.expectEqualStrings(
+        "Combine rows from multiple tables",
+        getSqlKeywordHelp("JOIN").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Return matching rows from both tables",
+        getSqlKeywordHelp("INNER").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Return all left table rows + matches",
+        getSqlKeywordHelp("LEFT").?,
+    );
     try std.testing.expectEqualStrings("Sort result rows", getSqlKeywordHelp("ORDER").?);
     try std.testing.expectEqualStrings("Specify sort/group column(s)", getSqlKeywordHelp("BY").?);
-    try std.testing.expectEqualStrings("Restrict number of rows returned", getSqlKeywordHelp("LIMIT").?);
+    try std.testing.expectEqualStrings(
+        "Restrict number of rows returned",
+        getSqlKeywordHelp("LIMIT").?,
+    );
     try std.testing.expectEqualStrings("Remove duplicate rows", getSqlKeywordHelp("DISTINCT").?);
 }
 
@@ -4643,17 +4757,35 @@ test "getSqlKeywordHelp returns null for unknown keywords" {
 test "getSqlKeywordHelp covers transaction keywords" {
     try std.testing.expectEqualStrings("Start transaction", getSqlKeywordHelp("BEGIN").?);
     try std.testing.expectEqualStrings("Save transaction changes", getSqlKeywordHelp("COMMIT").?);
-    try std.testing.expectEqualStrings("Discard transaction changes", getSqlKeywordHelp("ROLLBACK").?);
-    try std.testing.expectEqualStrings("Create rollback point within transaction", getSqlKeywordHelp("SAVEPOINT").?);
+    try std.testing.expectEqualStrings(
+        "Discard transaction changes",
+        getSqlKeywordHelp("ROLLBACK").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Create rollback point within transaction",
+        getSqlKeywordHelp("SAVEPOINT").?,
+    );
 }
 
 test "getSqlKeywordHelp covers advanced SQL features" {
-    try std.testing.expectEqualStrings("Define CTE (Common Table Expression)", getSqlKeywordHelp("WITH").?);
+    try std.testing.expectEqualStrings(
+        "Define CTE (Common Table Expression)",
+        getSqlKeywordHelp("WITH").?,
+    );
     try std.testing.expectEqualStrings("Enable recursive CTE", getSqlKeywordHelp("RECURSIVE").?);
-    try std.testing.expectEqualStrings("Define window for window function", getSqlKeywordHelp("OVER").?);
-    try std.testing.expectEqualStrings("Collect table statistics for optimizer", getSqlKeywordHelp("ANALYZE").?);
+    try std.testing.expectEqualStrings(
+        "Define window for window function",
+        getSqlKeywordHelp("OVER").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Collect table statistics for optimizer",
+        getSqlKeywordHelp("ANALYZE").?,
+    );
     try std.testing.expectEqualStrings("Show query execution plan", getSqlKeywordHelp("EXPLAIN").?);
-    try std.testing.expectEqualStrings("Reclaim storage and optimize database", getSqlKeywordHelp("VACUUM").?);
+    try std.testing.expectEqualStrings(
+        "Reclaim storage and optimize database",
+        getSqlKeywordHelp("VACUUM").?,
+    );
 }
 
 test "getTableHelp shows table metadata tooltip" {
@@ -4719,7 +4851,9 @@ test "getTableHelp truncates long column lists" {
     defer db.close();
 
     // Create table with more than 3 columns
-    _ = try db.execSQL("CREATE TABLE products (id INTEGER, name TEXT, price REAL, stock INTEGER, category TEXT)");
+    _ = try db.execSQL(
+        "CREATE TABLE products (id INTEGER, name TEXT, price REAL, stock INTEGER, category TEXT)",
+    );
 
     // Get tooltip
     const help = getTableHelp(&db, "products");
@@ -5890,9 +6024,9 @@ test "bracket up arrow clamps at 0" {
     try std.testing.expectEqual(@as(usize, 0), app.bracket_focused_match);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // ActivityFeed Overlay Tests
-// ─────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "App handleKey 'a' from results focus opens activity overlay" {
     const allocator = std.testing.allocator;
@@ -6105,9 +6239,9 @@ test "activity log: ring buffer wraps at ACTIVITY_LOG_MAX" {
     try std.testing.expectEqual(expected_kind, app.activity_log[oldest_idx].kind);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // GanttChart Query Timeline Overlay Tests
-// ─────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "gantt: 'g' key toggles gantt_visible when not in input focus" {
     const allocator = std.testing.allocator;
@@ -6314,9 +6448,9 @@ test "gantt: closing via 'g' key hides overlay" {
     try std.testing.expect(app.gantt_visible == false);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // FlowChart SQL Pipeline Overlay Tests
-// ─────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "flow: 'f' key toggles flow_visible when not in input focus" {
     const allocator = std.testing.allocator;
@@ -6880,7 +7014,7 @@ test "radar: left arrow clamps at 0" {
     try std.testing.expectEqual(@as(usize, 0), app.radar_focused);
 }
 
-// ── HexEditor Page Viewer Tests ──────────────────────────────────────
+// ── HexEditor Page Viewer Tests ────────────────────
 
 test "hex: hex_visible starts false" {
     const allocator = std.testing.allocator;
@@ -7043,7 +7177,7 @@ test "hex: hex_cursor clamps at data boundary" {
     try std.testing.expectEqual(@as(usize, 63), app.hex_cursor);
 }
 
-// ── Treemap Table Hierarchy Overlay Tests ───────────────────────────────
+// ── Treemap Table Hierarchy Overlay Tests ─────────────────
 
 test "treemap: treemap_visible starts false" {
     const allocator = std.testing.allocator;
@@ -7221,7 +7355,7 @@ test "treemap: treemap_focused clamps at 0" {
     try std.testing.expectEqual(@as(usize, 0), app.treemap_focused);
 }
 
-// ── MatrixView Query Metrics Overlay Tests ───────────────────────────
+// ── MatrixView Query Metrics Overlay Tests ─────────────────
 
 test "matrix: matrix_visible starts false" {
     const allocator = std.testing.allocator;
@@ -7586,7 +7720,7 @@ test "sankey: opening sankey does not affect other overlays" {
     try std.testing.expectEqual(@as(usize, 3), app.matrix_focused_row);
 }
 
-// ── BubbleChart Query Performance Tests ──────────────────────────────────
+// ── BubbleChart Query Performance Tests ──────────────────
 
 test "bubble: bubble_visible starts false" {
     const allocator = std.testing.allocator;
@@ -7753,7 +7887,7 @@ test "bubble: down arrow clamps at QUERY_HISTORY_MAX - 1" {
     try std.testing.expectEqual(@as(usize, 15), app.bubble_focused);
 }
 
-// ── ChordDiagram SQL Operation Flow Tests ──────────────────────────────────
+// ── ChordDiagram SQL Operation Flow Tests ─────────────────
 
 test "chord: chord_visible starts false" {
     const allocator = std.testing.allocator;
@@ -7920,7 +8054,7 @@ test "chord: down arrow clamps at CHORD_NODE_COUNT - 1" {
     try std.testing.expectEqual(@as(usize, 4), app.chord_focused);
 }
 
-// ── WaterfallChart SQL Operation Breakdown Tests ────────────────────────────
+// ── WaterfallChart SQL Operation Breakdown Tests ───────────────
 
 test "waterfall: waterfall_visible starts false" {
     const allocator = std.testing.allocator;
@@ -8087,7 +8221,7 @@ test "waterfall: down arrow does not exceed WATERFALL_BAR_COUNT - 1" {
     try std.testing.expectEqual(@as(usize, 5), app.waterfall_focused);
 }
 
-// ── FunnelChart SQL Query Success Funnel Tests ───────────────────────────────
+// ── FunnelChart SQL Query Success Funnel Tests ───────────────
 
 test "funnel: funnel_visible starts false" {
     const allocator = std.testing.allocator;
@@ -8441,7 +8575,7 @@ test "dotplot: dotplot_focused starts at 0" {
     try std.testing.expectEqual(@as(usize, 0), app.dotplot_focused);
 }
 
-// ── RadialBar Tests ─────────────────────────────────────────────────────────────
+// ── RadialBar Tests ────────────────────────
 
 test "radialbar: 'h' key toggles radialbar_visible to true when focus != .input" {
     const allocator = std.testing.allocator;
@@ -8790,7 +8924,8 @@ test "streamgraph: ESC closes streamgraph overlay" {
     app.handleEscapeSequence(null, null); // ESC (b2=null, b3=null)
 
     try std.testing.expect(!app.streamgraph_visible);
-    try std.testing.expectEqual(@as(usize, 2), app.streamgraph_focused); // focused not reset on close
+    // focused not reset on close
+    try std.testing.expectEqual(@as(usize, 2), app.streamgraph_focused);
 }
 
 test "streamgraph: streamgraph_focused resets to 0 when toggled open again" {
