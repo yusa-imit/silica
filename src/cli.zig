@@ -16,7 +16,7 @@ const Row = executor.Row;
 const Database = silica.engine.Database;
 const QueryResult = silica.engine.QueryResult;
 
-// ── Output Mode ───────────────────────────────────────────────────────
+// ── Output Mode ──────────────────────────
 
 pub const OutputMode = enum {
     table,
@@ -26,22 +26,32 @@ pub const OutputMode = enum {
     plain,
 };
 
-// ── CLI Flags ──────────────────────────────────────────────────────────
+// ── CLI Flags ──────────────────────────
 
 const CliFlags = [_]sailor.arg.FlagDef{
     .{ .name = "help", .short = 'h', .type = .bool, .help = "Show this help message" },
     .{ .name = "version", .short = 'v', .type = .bool, .help = "Show version information" },
-    .{ .name = "header", .type = .bool, .help = "Show column headers in output", .default = "true" },
+    .{
+        .name = "header",
+        .type = .bool,
+        .help = "Show column headers in output",
+        .default = "true",
+    },
     .{ .name = "csv", .type = .bool, .help = "Output in CSV format" },
     .{ .name = "json", .type = .bool, .help = "Output in JSON format" },
-    .{ .name = "mode", .short = 'm', .type = .string, .help = "Output mode: table, csv, json, jsonl, plain" },
+    .{
+        .name = "mode",
+        .short = 'm',
+        .type = .string,
+        .help = "Output mode: table, csv, json, jsonl, plain",
+    },
     .{ .name = "tui", .short = 't', .type = .bool, .help = "Launch TUI database browser" },
     .{ .name = "host", .type = .string, .help = "Server host (default: 127.0.0.1)" },
     .{ .name = "port", .short = 'p', .type = .string, .help = "Server port (default: 5433)" },
     .{ .name = "max-connections", .type = .string, .help = "Maximum connections (default: 100)" },
 };
 
-// ── Server Mode ───────────────────────────────────────────────────────
+// ── Server Mode ──────────────────────────
 
 fn runServer(
     allocator: std.mem.Allocator,
@@ -161,20 +171,7 @@ pub fn main() !void {
 
     var db_path = first_arg;
 
-    // Determine initial output mode from flags
-    var mode: OutputMode = .table;
-    const mode_str = arg_parser.getString("mode", "");
-    if (mode_str.len > 0) {
-        mode = parseModeString(mode_str) orelse {
-            printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
-            stderr.flush() catch {};
-            std.process.exit(1);
-        };
-    } else if (arg_parser.getBool("csv", false)) {
-        mode = .csv;
-    } else if (arg_parser.getBool("json", false)) {
-        mode = .json;
-    }
+    var mode = initialMode(&arg_parser, stderr);
 
     // Open database
     var db = Database.open(allocator, db_path, .{}) catch {
@@ -257,31 +254,35 @@ pub fn main() !void {
 
         // Handle dot-commands (only on first line, not continuation)
         if (!is_continuation and trimmed[0] == '.') {
-            const result = handleDotCommand(allocator, &db, db_path, trimmed, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, stdout, stderr);
+            const result = handleDotCommand(
+                allocator,
+                &db,
+                db_path,
+                trimmed,
+                &mode,
+                &show_timer,
+                &show_headers,
+                &csv_separator,
+                &null_display,
+                &output_file,
+                &once_file,
+                &last_rows_affected,
+                &bail_on_error,
+                &log_file,
+                &show_stats,
+                &show_eqp,
+                &main_prompt,
+                &continue_prompt,
+                stdout,
+                stderr,
+            );
             stdout.flush() catch {};
             stderr.flush() catch {};
             switch (result) {
                 .quit => break,
                 .reopen => |new_path| {
                     defer allocator.free(new_path);
-                    // Close current database
-                    db.close();
-                    // Try to open new database
-                    db = Database.open(allocator, new_path, .{}) catch {
-                        printError(stderr, "Failed to open database. Reopening original database.");
-                        stderr.flush() catch {};
-                        // Reopen original database on failure
-                        db = Database.open(allocator, db_path, .{}) catch {
-                            printError(stderr, "Failed to reopen original database. Exiting.");
-                            stderr.flush() catch {};
-                            std.process.exit(1);
-                        };
-                        continue;
-                    };
-                    // Update db_path reference
-                    db_path = new_path;
-                    stdout.print("Opened database: {s}\n", .{db_path}) catch {};
-                    stdout.flush() catch {};
+                    reopenDatabase(allocator, &db, &db_path, new_path, stdout, stderr);
                 },
                 .ok => {},
             }
@@ -305,72 +306,186 @@ pub fn main() !void {
 
         // Execute SQL via engine
         // Priority: once_file > output_file > stdout
-        if (once_file) |f| {
-            // Use once_file for this query only
-            var file_writer = f.writer(&once_file_buf);
-            const file_out = &file_writer.interface;
-            _ = execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_stats, show_headers, csv_separator, null_display, &last_rows_affected, log_file, show_eqp, file_out, stderr);
-            file_out.flush() catch {};
-            // Close and reset once_file after use
-            f.close();
-            once_file = null;
-        } else if (output_file) |f| {
-            var file_writer = f.writer(&output_file_buf);
-            const file_out = &file_writer.interface;
-            _ = execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_stats, show_headers, csv_separator, null_display, &last_rows_affected, log_file, show_eqp, file_out, stderr);
-            file_out.flush() catch {};
-        } else {
-            _ = execAndDisplay(allocator, &db, input_buf.items, mode, show_timer, show_stats, show_headers, csv_separator, null_display, &last_rows_affected, log_file, show_eqp, stdout, stderr);
-            stdout.flush() catch {};
-        }
+        const route = ExecRoute{
+            .once_file = &once_file,
+            .once_buf = &once_file_buf,
+            .output_file = output_file,
+            .output_buf = &output_file_buf,
+        };
+        execRouted(
+            allocator,
+            &db,
+            input_buf.items,
+            mode,
+            show_timer,
+            show_stats,
+            show_headers,
+            csv_separator,
+            null_display,
+            &last_rows_affected,
+            log_file,
+            show_eqp,
+            route,
+            stdout,
+            stderr,
+        );
         stderr.flush() catch {};
         input_buf.clearRetainingCapacity();
         is_continuation = false;
     }
 }
 
-// ── SQL Execution ──────────────────────────────────────────────────────
+/// Determine the initial output mode from --mode / --csv / --json flags.
+fn initialMode(arg_parser: anytype, stderr: anytype) OutputMode {
+    const mode_str = arg_parser.getString("mode", "");
+    if (mode_str.len > 0) {
+        return parseModeString(mode_str) orelse {
+            printError(stderr, "Invalid mode. Use: table, csv, json, jsonl, plain");
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+    }
+    if (arg_parser.getBool("csv", false)) return .csv;
+    if (arg_parser.getBool("json", false)) return .json;
+    return .table;
+}
+
+/// Replace the open database with `new_path`; on failure reopen `db_path.*`.
+fn reopenDatabase(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    db_path: *[]const u8,
+    new_path: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    std.debug.assert(new_path.len > 0);
+    std.debug.assert(db_path.len > 0);
+    // Close current database
+    db.close();
+    // Try to open new database
+    db.* = Database.open(allocator, new_path, .{}) catch {
+        printError(stderr, "Failed to open database. Reopening original database.");
+        stderr.flush() catch {};
+        // Reopen original database on failure
+        db.* = Database.open(allocator, db_path.*, .{}) catch {
+            printError(stderr, "Failed to reopen original database. Exiting.");
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        return;
+    };
+    // Update db_path reference
+    db_path.* = new_path;
+    stdout.print("Opened database: {s}\n", .{db_path.*}) catch {};
+    stdout.flush() catch {};
+}
+
+/// Output redirection targets for one SQL execution.
+const ExecRoute = struct {
+    once_file: *?std.fs.File,
+    once_buf: []u8,
+    output_file: ?std.fs.File,
+    output_buf: []u8,
+};
+
+/// Execute SQL, sending output to the .once file, the .output file, or stdout.
+fn execRouted(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    sql: []const u8,
+    mode: OutputMode,
+    show_timer: bool,
+    show_stats: bool,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    last_rows_affected: *u64,
+    log_file: ?std.fs.File,
+    show_eqp: bool,
+    route: ExecRoute,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    std.debug.assert(sql.len > 0);
+    std.debug.assert(route.once_buf.len > 0);
+    const target: ?std.fs.File = route.once_file.* orelse route.output_file;
+    const buf = if (route.once_file.* != null) route.once_buf else route.output_buf;
+    var file_writer = if (target) |f| f.writer(buf) else undefined;
+    const out = if (target != null) &file_writer.interface else stdout;
+    _ = execAndDisplay(
+        allocator,
+        db,
+        sql,
+        mode,
+        show_timer,
+        show_stats,
+        show_headers,
+        csv_separator,
+        null_display,
+        last_rows_affected,
+        log_file,
+        show_eqp,
+        out,
+        stderr,
+    );
+    out.flush() catch {};
+    // Close and reset once_file after use
+    if (route.once_file.*) |f| {
+        f.close();
+        route.once_file.* = null;
+    }
+}
+
+// ── SQL Execution ─────────────────────────
 
 /// Execute SQL via the Database engine and display results.
 /// Returns true on success, false on error.
-fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_timer: bool, show_stats: bool, show_headers: bool, csv_separator: []const u8, null_display: []const u8, last_rows_affected: *u64, log_file: ?std.fs.File, show_eqp: bool, stdout: anytype, stderr: anytype) bool {
+fn execAndDisplay(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    sql: []const u8,
+    mode: OutputMode,
+    show_timer: bool,
+    show_stats: bool,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    last_rows_affected: *u64,
+    log_file: ?std.fs.File,
+    show_eqp: bool,
+    stdout: anytype,
+    stderr: anytype,
+) bool {
     // Prepend EXPLAIN if .eqp is enabled and query is not already EXPLAIN
-    var sql_to_execute = sql;
     var explain_buf: [16384]u8 = undefined;
-    const explain_allocated = false;
-    if (show_eqp and !std.ascii.startsWithIgnoreCase(sql, "EXPLAIN")) {
-        const explain_sql = std.fmt.bufPrint(&explain_buf, "EXPLAIN {s}", .{sql}) catch sql;
-        sql_to_execute = explain_sql;
-    }
-    defer if (explain_allocated) allocator.free(sql_to_execute);
+    const sql_to_execute = explainPrefixed(&explain_buf, sql, show_eqp);
 
     // Start timer for query execution (if enabled)
     var timer = if (show_timer or show_stats) std.time.Timer.start() catch {
         // If timer fails, continue without timing
-        return execAndDisplayWithoutTiming(allocator, db, sql_to_execute, mode, show_stats, show_headers, csv_separator, null_display, last_rows_affected, log_file, show_eqp, stdout, stderr);
+        return execAndDisplayWithoutTiming(
+            allocator,
+            db,
+            sql_to_execute,
+            mode,
+            show_stats,
+            show_headers,
+            csv_separator,
+            null_display,
+            last_rows_affected,
+            log_file,
+            show_eqp,
+            stdout,
+            stderr,
+        );
     } else null;
 
     // Log query if logging is enabled
-    if (log_file) |f| {
-        const timestamp = std.time.timestamp();
-        var log_buf: [256]u8 = undefined;
-        var log_writer = f.writer(&log_buf);
-        log_writer.interface.print("[{d}] {s}\n", .{ timestamp, sql }) catch {};
-        log_writer.interface.flush() catch {};
-    }
+    if (log_file) |f| logQuery(f, sql);
 
     var result = db.exec(sql_to_execute) catch |err| {
-        const msg = switch (err) {
-            error.ParseError => "SQL parse error.",
-            error.AnalysisError => "Semantic analysis error.",
-            error.PlanError => "Query planning error.",
-            error.ExecutionError => "Execution error.",
-            error.TableNotFound => "Table not found.",
-            error.TableAlreadyExists => "Table already exists.",
-            error.InvalidData => "Invalid data.",
-            else => "Database error.",
-        };
-        printError(stderr, msg);
+        printError(stderr, execErrorMessage(err));
         return false;
     };
     defer result.close(allocator);
@@ -378,9 +493,67 @@ fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, 
     // Save rows_affected for .changes command
     last_rows_affected.* = result.rows_affected;
 
+    displayResult(
+        allocator,
+        &result,
+        mode,
+        show_headers,
+        csv_separator,
+        null_display,
+        stdout,
+        stderr,
+    );
+
+    if (timer) |*t| {
+        printTimings(stdout, t.read(), show_timer, show_stats, result.rows_affected);
+    }
+
+    return true;
+}
+
+/// Print query time and/or execution statistics for an elapsed duration.
+fn printTimings(
+    stdout: anytype,
+    elapsed_ns: u64,
+    show_timer: bool,
+    show_stats: bool,
+    rows_affected: u64,
+) void {
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+    if (show_timer) {
+        stdout.print("Query time: {d:.3} ms\n", .{elapsed_ms}) catch {};
+    }
+    if (show_stats) {
+        stdout.writeAll("─── Stats ───\n") catch {};
+        stdout.print("Execution time: {d:.3} ms\n", .{elapsed_ms}) catch {};
+        if (rows_affected > 0) {
+            stdout.print("Rows changed:   {d}\n", .{rows_affected}) catch {};
+        }
+    }
+}
+
+/// Display SELECT rows or the command message, then the affected-row count.
+fn displayResult(
+    allocator: std.mem.Allocator,
+    result: *QueryResult,
+    mode: OutputMode,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     if (result.rows != null) {
-        // SELECT — format rows
-        displayRows(allocator, &result, mode, show_headers, csv_separator, null_display, stdout, stderr);
+        displayRows(
+            allocator,
+            result,
+            mode,
+            show_headers,
+            csv_separator,
+            null_display,
+            stdout,
+            stderr,
+        );
     } else if (result.message.len > 0) {
         stdout.writeAll(result.message) catch {};
         stdout.writeByte('\n') catch {};
@@ -389,68 +562,43 @@ fn execAndDisplay(allocator: std.mem.Allocator, db: *Database, sql: []const u8, 
     if (result.rows_affected > 0) {
         stdout.print("Rows affected: {d}\n", .{result.rows_affected}) catch {};
     }
+}
 
-    // Display query execution time (if timer enabled)
-    if (timer) |*t| {
-        const elapsed_ns = t.read();
-        const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-        if (show_timer) {
-            stdout.print("Query time: {d:.3} ms\n", .{elapsed_ms}) catch {};
-        }
+/// Wrap `sql` in EXPLAIN when `.eqp` is on and it is not already an EXPLAIN.
+fn explainPrefixed(buf: *[16384]u8, sql: []const u8, show_eqp: bool) []const u8 {
+    if (show_eqp and !std.ascii.startsWithIgnoreCase(sql, "EXPLAIN")) {
+        return std.fmt.bufPrint(buf, "EXPLAIN {s}", .{sql}) catch sql;
     }
-
-    // Display execution statistics (if stats enabled)
-    if (show_stats) {
-        if (timer) |*t| {
-            const elapsed_ns = t.read();
-            const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-            stdout.writeAll("─── Stats ───\n") catch {};
-            stdout.print("Execution time: {d:.3} ms\n", .{elapsed_ms}) catch {};
-            if (result.rows_affected > 0) {
-                stdout.print("Rows changed:   {d}\n", .{result.rows_affected}) catch {};
-            }
-        }
-    }
-
-    return true;
+    return sql;
 }
 
 /// Fallback for when timer is unavailable (executes without timing).
 /// Returns true on success, false on error.
-fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql: []const u8, mode: OutputMode, show_stats: bool, show_headers: bool, csv_separator: []const u8, null_display: []const u8, last_rows_affected: *u64, log_file: ?std.fs.File, show_eqp: bool, stdout: anytype, stderr: anytype) bool {
+fn execAndDisplayWithoutTiming(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    sql: []const u8,
+    mode: OutputMode,
+    show_stats: bool,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    last_rows_affected: *u64,
+    log_file: ?std.fs.File,
+    show_eqp: bool,
+    stdout: anytype,
+    stderr: anytype,
+) bool {
     _ = show_stats; // Stats require timer, so ignored in this path
 
-    // Prepend EXPLAIN if .eqp is enabled and query is not already EXPLAIN
-    var sql_to_execute = sql;
     var explain_buf: [16384]u8 = undefined;
-    const explain_allocated = false;
-    if (show_eqp and !std.ascii.startsWithIgnoreCase(sql, "EXPLAIN")) {
-        const explain_sql = std.fmt.bufPrint(&explain_buf, "EXPLAIN {s}", .{sql}) catch sql;
-        sql_to_execute = explain_sql;
-    }
-    defer if (explain_allocated) allocator.free(sql_to_execute);
+    const sql_to_execute = explainPrefixed(&explain_buf, sql, show_eqp);
 
     // Log query if logging is enabled
-    if (log_file) |f| {
-        const timestamp = std.time.timestamp();
-        var log_buf: [256]u8 = undefined;
-        var log_writer = f.writer(&log_buf);
-        log_writer.interface.print("[{d}] {s}\n", .{ timestamp, sql }) catch {};
-        log_writer.interface.flush() catch {};
-    }
+    if (log_file) |f| logQuery(f, sql);
 
     var result = db.exec(sql_to_execute) catch |err| {
-        const msg = switch (err) {
-            error.ParseError => "SQL parse error.",
-            error.AnalysisError => "Semantic analysis error.",
-            error.PlanError => "Query planning error.",
-            error.ExecutionError => "Execution error.",
-            error.TableNotFound => "Table not found.",
-            error.TableAlreadyExists => "Table already exists.",
-            error.InvalidData => "Invalid data.",
-            else => "Database error.",
-        };
-        printError(stderr, msg);
+        printError(stderr, execErrorMessage(err));
         return false;
     };
     defer result.close(allocator);
@@ -458,23 +606,52 @@ fn execAndDisplayWithoutTiming(allocator: std.mem.Allocator, db: *Database, sql:
     // Save rows_affected for .changes command
     last_rows_affected.* = result.rows_affected;
 
-    if (result.rows != null) {
-        // SELECT — format rows
-        displayRows(allocator, &result, mode, show_headers, csv_separator, null_display, stdout, stderr);
-    } else if (result.message.len > 0) {
-        stdout.writeAll(result.message) catch {};
-        stdout.writeByte('\n') catch {};
-    }
-
-    if (result.rows_affected > 0) {
-        stdout.print("Rows affected: {d}\n", .{result.rows_affected}) catch {};
-    }
+    displayResult(
+        allocator,
+        &result,
+        mode,
+        show_headers,
+        csv_separator,
+        null_display,
+        stdout,
+        stderr,
+    );
 
     return true;
 }
 
+fn logQuery(f: std.fs.File, sql: []const u8) void {
+    const timestamp = std.time.timestamp();
+    var log_buf: [256]u8 = undefined;
+    var log_writer = f.writer(&log_buf);
+    log_writer.interface.print("[{d}] {s}\n", .{ timestamp, sql }) catch {};
+    log_writer.interface.flush() catch {};
+}
+
+fn execErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ParseError => "SQL parse error.",
+        error.AnalysisError => "Semantic analysis error.",
+        error.PlanError => "Query planning error.",
+        error.ExecutionError => "Execution error.",
+        error.TableNotFound => "Table not found.",
+        error.TableAlreadyExists => "Table already exists.",
+        error.InvalidData => "Invalid data.",
+        else => "Database error.",
+    };
+}
+
 /// Drain all rows from a QueryResult and display them in the given output mode.
-fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputMode, show_headers: bool, csv_separator: []const u8, null_display: []const u8, stdout: anytype, stderr: anytype) void {
+fn displayRows(
+    allocator: std.mem.Allocator,
+    result: *QueryResult,
+    mode: OutputMode,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     _ = stderr;
 
     // Collect all rows (we need them all for table mode column widths)
@@ -513,16 +690,62 @@ fn displayRows(allocator: std.mem.Allocator, result: *QueryResult, mode: OutputM
     if (col_names == null) return;
     const headers = col_names.?;
 
+    formatRows(
+        allocator,
+        mode,
+        headers,
+        all_rows.items,
+        show_headers,
+        csv_separator,
+        null_display,
+        stdout,
+    );
+}
+
+fn formatRows(
+    allocator: std.mem.Allocator,
+    mode: OutputMode,
+    headers: []const []const u8,
+    rows: []Row,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    stdout: anytype,
+) void {
+    std.debug.assert(headers.len > 0);
+
     switch (mode) {
-        .table => formatTable(allocator, headers, all_rows.items, show_headers, null_display, stdout),
-        .csv => formatCsv(headers, all_rows.items, allocator, show_headers, csv_separator, null_display, stdout),
-        .json => formatJson(headers, all_rows.items, allocator, stdout),
-        .jsonl => formatJsonl(headers, all_rows.items, allocator, stdout),
-        .plain => formatPlain(headers, all_rows.items, allocator, show_headers, null_display, stdout),
+        .table => formatTable(
+            allocator,
+            headers,
+            rows,
+            show_headers,
+            null_display,
+            stdout,
+        ),
+        .csv => formatCsv(
+            headers,
+            rows,
+            allocator,
+            show_headers,
+            csv_separator,
+            null_display,
+            stdout,
+        ),
+        .json => formatJson(headers, rows, allocator, stdout),
+        .jsonl => formatJsonl(headers, rows, allocator, stdout),
+        .plain => formatPlain(
+            headers,
+            rows,
+            allocator,
+            show_headers,
+            null_display,
+            stdout,
+        ),
     }
 }
 
-// ── Value Formatting ───────────────────────────────────────────────────
+// ── Value Formatting ────────────────────────
 
 /// Convert a Value to its display string. Caller owns returned memory.
 fn valueToText(allocator: std.mem.Allocator, val: Value, null_display: []const u8) ?[]const u8 {
@@ -558,9 +781,16 @@ fn valueToText(allocator: std.mem.Allocator, val: Value, null_display: []const u
     };
 }
 
-// ── Table Format ───────────────────────────────────────────────────────
+// ── Table Format ─────────────────────────
 
-fn formatTable(allocator: std.mem.Allocator, headers: []const []const u8, rows: []Row, show_headers: bool, null_display: []const u8, writer: anytype) void {
+fn formatTable(
+    allocator: std.mem.Allocator,
+    headers: []const []const u8,
+    rows: []Row,
+    show_headers: bool,
+    null_display: []const u8,
+    writer: anytype,
+) void {
     if (show_headers) {
         // Use sailor.fmt.Table with headers
         var table = sailor.fmt.Table.init(allocator, headers, .{}) catch return;
@@ -618,9 +848,17 @@ fn formatTable(allocator: std.mem.Allocator, headers: []const []const u8, rows: 
     }
 }
 
-// ── CSV Format ────────────────────────────────────────────────────────
+// ── CSV Format ──────────────────────────
 
-fn formatCsv(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, show_headers: bool, separator: []const u8, null_display: []const u8, writer: anytype) void {
+fn formatCsv(
+    headers: []const []const u8,
+    rows: []Row,
+    allocator: std.mem.Allocator,
+    show_headers: bool,
+    separator: []const u8,
+    null_display: []const u8,
+    writer: anytype,
+) void {
     // Write headers (if enabled)
     if (show_headers) {
         for (headers, 0..) |h, i| {
@@ -661,9 +899,14 @@ fn writeCsvField(writer: anytype, field: []const u8) !void {
     }
 }
 
-// ── JSON Format ────────────────────────────────────────────────────────
+// ── JSON Format ──────────────────────────
 
-fn formatJson(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+fn formatJson(
+    headers: []const []const u8,
+    rows: []Row,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+) void {
     const WriterType = @TypeOf(writer);
     var arr = sailor.fmt.JsonArray(WriterType).init(writer) catch return;
 
@@ -681,7 +924,12 @@ fn formatJson(headers: []const []const u8, rows: []Row, allocator: std.mem.Alloc
     writer.writeByte('\n') catch {};
 }
 
-fn formatJsonl(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, writer: anytype) void {
+fn formatJsonl(
+    headers: []const []const u8,
+    rows: []Row,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+) void {
     const WriterType = @TypeOf(writer);
     for (rows) |row| {
         var obj = sailor.fmt.JsonObject(WriterType).init(writer) catch return;
@@ -753,15 +1001,26 @@ fn writeJsonValue(obj: anytype, key: []const u8, val: Value, allocator: std.mem.
     }
 }
 
-// ── Plain Format ──────────────────────────────────────────────────────
+// ── Plain Format ─────────────────────────
 
-fn formatPlain(headers: []const []const u8, rows: []Row, allocator: std.mem.Allocator, show_headers: bool, null_display: []const u8, writer: anytype) void {
+fn formatPlain(
+    headers: []const []const u8,
+    rows: []Row,
+    allocator: std.mem.Allocator,
+    show_headers: bool,
+    null_display: []const u8,
+    writer: anytype,
+) void {
     if (show_headers) {
         // Show headers as "column = value" format
         for (rows) |row| {
             for (headers, 0..) |h, i| {
                 if (i < row.values.len) {
-                    const text = valueToText(allocator, row.values[i], null_display) orelse null_display;
+                    const text = valueToText(
+                        allocator,
+                        row.values[i],
+                        null_display,
+                    ) orelse null_display;
                     defer if (text.ptr != null_display.ptr) allocator.free(text);
                     writer.print("{s} = {s}\n", .{ h, text }) catch {};
                 }
@@ -781,7 +1040,7 @@ fn formatPlain(headers: []const []const u8, rows: []Row, allocator: std.mem.Allo
     }
 }
 
-// ── Parse Mode String ──────────────────────────────────────────────────
+// ── Parse Mode String ────────────────────────
 
 fn parseModeString(s: []const u8) ?OutputMode {
     if (std.mem.eql(u8, s, "table")) return .table;
@@ -792,9 +1051,14 @@ fn parseModeString(s: []const u8) ?OutputMode {
     return null;
 }
 
-// ── Process SQL (parse-only, for testing without a DB) ──────────────
+// ── Process SQL (parse-only, for testing without a DB) ─────────────
 
-fn processSQL(allocator: std.mem.Allocator, sql: []const u8, stdout: anytype, stderr: anytype) void {
+fn processSQL(
+    allocator: std.mem.Allocator,
+    sql: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     var arena = silica.ast.AstArena.init(allocator);
     defer arena.deinit();
 
@@ -838,16 +1102,25 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             writer.writeAll(")\n") catch {};
         },
         .insert => |s| {
-            writer.print("Parsed: INSERT INTO {s} ({d} row(s))\n", .{ s.table, s.values.len }) catch {};
+            writer.print(
+                "Parsed: INSERT INTO {s} ({d} row(s))\n",
+                .{ s.table, s.values.len },
+            ) catch {};
         },
         .update => |s| {
-            writer.print("Parsed: UPDATE {s} ({d} assignment(s))\n", .{ s.table, s.assignments.len }) catch {};
+            writer.print(
+                "Parsed: UPDATE {s} ({d} assignment(s))\n",
+                .{ s.table, s.assignments.len },
+            ) catch {};
         },
         .delete => |s| {
             writer.print("Parsed: DELETE FROM {s}\n", .{s.table}) catch {};
         },
         .create_table => |s| {
-            writer.print("Parsed: CREATE TABLE {s} ({d} columns)\n", .{ s.name, s.columns.len }) catch {};
+            writer.print(
+                "Parsed: CREATE TABLE {s} ({d} columns)\n",
+                .{ s.name, s.columns.len },
+            ) catch {};
         },
         .drop_table => |s| {
             writer.print("Parsed: DROP TABLE {s}\n", .{s.name}) catch {};
@@ -882,6 +1155,13 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
                 writer.writeAll("Parsed: ANALYZE\n") catch {};
             }
         },
+        else => printStmtInfoObjects(writer, stmt),
+    }
+}
+
+/// Print info for view, type, domain, function and trigger statements.
+fn printStmtInfoObjects(writer: anytype, stmt: silica.ast.Stmt) void {
+    switch (stmt) {
         .create_view => |v| {
             writer.print("Parsed: CREATE VIEW {s}\n", .{v.name}) catch {};
         },
@@ -889,7 +1169,10 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             writer.print("Parsed: DROP VIEW {s}\n", .{v.name}) catch {};
         },
         .create_type => |t| {
-            writer.print("Parsed: CREATE TYPE {s} AS ENUM ({d} values)\n", .{ t.name, t.values.len }) catch {};
+            writer.print(
+                "Parsed: CREATE TYPE {s} AS ENUM ({d} values)\n",
+                .{ t.name, t.values.len },
+            ) catch {};
         },
         .drop_type => |t| {
             writer.print("Parsed: DROP TYPE {s}\n", .{t.name}) catch {};
@@ -901,7 +1184,10 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             writer.print("Parsed: DROP DOMAIN {s}\n", .{d.name}) catch {};
         },
         .create_function => |f| {
-            writer.print("Parsed: CREATE FUNCTION {s} ({d} params)\n", .{ f.name, f.parameters.len }) catch {};
+            writer.print(
+                "Parsed: CREATE FUNCTION {s} ({d} params)\n",
+                .{ f.name, f.parameters.len },
+            ) catch {};
         },
         .drop_function => |f| {
             writer.print("Parsed: DROP FUNCTION {s}\n", .{f.name}) catch {};
@@ -915,6 +1201,13 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .alter_trigger => |t| {
             writer.print("Parsed: ALTER TRIGGER {s}\n", .{t.name}) catch {};
         },
+        else => printStmtInfoAccess(writer, stmt),
+    }
+}
+
+/// Print info for role, grant, policy and ALTER TABLE statements.
+fn printStmtInfoAccess(writer: anytype, stmt: silica.ast.Stmt) void {
+    switch (stmt) {
         .create_role => |r| {
             writer.print("Parsed: CREATE ROLE {s}\n", .{r.name}) catch {};
         },
@@ -925,22 +1218,40 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             writer.print("Parsed: ALTER ROLE {s}\n", .{r.name}) catch {};
         },
         .grant => |g| {
-            writer.print("Parsed: GRANT {d} privilege(s) ON {s} TO {s}\n", .{ g.privileges.len, g.object_name, g.grantee }) catch {};
+            writer.print(
+                "Parsed: GRANT {d} privilege(s) ON {s} TO {s}\n",
+                .{ g.privileges.len, g.object_name, g.grantee },
+            ) catch {};
         },
         .revoke => |r| {
-            writer.print("Parsed: REVOKE {d} privilege(s) ON {s} FROM {s}\n", .{ r.privileges.len, r.object_name, r.grantee }) catch {};
+            writer.print(
+                "Parsed: REVOKE {d} privilege(s) ON {s} FROM {s}\n",
+                .{ r.privileges.len, r.object_name, r.grantee },
+            ) catch {};
         },
         .grant_role => |g| {
-            writer.print("Parsed: GRANT {s} TO {d} member(s)\n", .{ g.role, g.members.len }) catch {};
+            writer.print(
+                "Parsed: GRANT {s} TO {d} member(s)\n",
+                .{ g.role, g.members.len },
+            ) catch {};
         },
         .revoke_role => |r| {
-            writer.print("Parsed: REVOKE {s} FROM {d} member(s)\n", .{ r.role, r.members.len }) catch {};
+            writer.print(
+                "Parsed: REVOKE {s} FROM {d} member(s)\n",
+                .{ r.role, r.members.len },
+            ) catch {};
         },
         .create_policy => |p| {
-            writer.print("Parsed: CREATE POLICY {s} ON {s}\n", .{ p.policy_name, p.table_name }) catch {};
+            writer.print(
+                "Parsed: CREATE POLICY {s} ON {s}\n",
+                .{ p.policy_name, p.table_name },
+            ) catch {};
         },
         .drop_policy => |p| {
-            writer.print("Parsed: DROP POLICY {s} ON {s}\n", .{ p.policy_name, p.table_name }) catch {};
+            writer.print(
+                "Parsed: DROP POLICY {s} ON {s}\n",
+                .{ p.policy_name, p.table_name },
+            ) catch {};
         },
         .alter_table_rls => |a| {
             writer.print("Parsed: ALTER TABLE {s} (RLS)\n", .{a.table_name}) catch {};
@@ -948,6 +1259,13 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .alter_table => |a| {
             writer.print("Parsed: ALTER TABLE {s}\n", .{a.table_name}) catch {};
         },
+        else => printStmtInfoSession(writer, stmt),
+    }
+}
+
+/// Print info for reindex, session, merge, copy and truncate statements.
+fn printStmtInfoSession(writer: anytype, stmt: silica.ast.Stmt) void {
+    switch (stmt) {
         .reindex => |r| {
             switch (r) {
                 .index => |idx| writer.print("Parsed: REINDEX INDEX {s}\n", .{idx}) catch {},
@@ -973,10 +1291,14 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
             }
         },
         .merge => |m| {
-            writer.print("Parsed: MERGE INTO {s} USING {s} ({d} WHEN clause(s))\n", .{ m.target, (switch (m.source) {
+            const source_name = switch (m.source) {
                 .table => |t| t.name,
                 .subquery => "subquery",
-            }), m.when_clauses.len }) catch {};
+            };
+            writer.print(
+                "Parsed: MERGE INTO {s} USING {s} ({d} WHEN clause(s))\n",
+                .{ m.target, source_name, m.when_clauses.len },
+            ) catch {};
         },
         .copy => |c| {
             const dir_str = switch (c.direction) {
@@ -992,10 +1314,11 @@ fn printStmtInfo(writer: anytype, stmt: silica.ast.Stmt) void {
         .truncate => |tr| {
             writer.print("Parsed: TRUNCATE ({d} table(s))\n", .{tr.names.len}) catch {};
         },
+        else => unreachable, // routed here only for session/reindex/merge/copy kinds
     }
 }
 
-// ── Error Formatting ───────────────────────────────────────────────────
+// ── Error Formatting ────────────────────────
 
 fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError) void {
     var line_num: usize = 1;
@@ -1031,7 +1354,7 @@ fn printSQLError(writer: anytype, sql: []const u8, err: silica.parser.ParseError
     }
 }
 
-// ── Dot Commands ───────────────────────────────────────────────────────
+// ── Dot Commands ─────────────────────────
 
 /// List all tables in the database
 /// List all open database connections
@@ -1056,10 +1379,6 @@ fn showDbInfo(db: *Database, db_path: []const u8, stdout: anytype, stderr: anyty
         return;
     };
 
-    // Calculate free pages by traversing freelist
-    var free_page_count: u32 = 0;
-    var freelist_current = pager.freelist_head;
-
     // Allocate buffer for reading freelist pages
     const page_buf = pager.allocPageBuf() catch {
         printError(stderr, "Out of memory.");
@@ -1067,24 +1386,7 @@ fn showDbInfo(db: *Database, db_path: []const u8, stdout: anytype, stderr: anyty
     };
     defer pager.freePageBuf(page_buf);
 
-    // Traverse freelist to count free pages (limit to avoid infinite loops)
-    const max_freelist_depth: u32 = 10000;
-    while (freelist_current != 0 and free_page_count < max_freelist_depth) {
-        free_page_count += 1;
-
-        // Read the free page to get next pointer
-        pager.readPage(freelist_current, page_buf) catch break;
-
-        // For free pages, the next free page ID is stored at offset PAGE_HEADER_SIZE
-        if (page_buf.len >= silica.page.PAGE_HEADER_SIZE + 4) {
-            freelist_current = std.mem.readInt(u32, page_buf[silica.page.PAGE_HEADER_SIZE..][0..4], .little);
-        } else {
-            break;
-        }
-
-        // Sanity check to avoid infinite loops
-        if (freelist_current >= pager.page_count) break;
-    }
+    const free_page_count = countFreePages(pager, page_buf);
 
     // Display database information (SQLite-compatible format)
     stdout.writeAll("database page size:  ") catch {};
@@ -1116,6 +1418,37 @@ fn showDbInfo(db: *Database, db_path: []const u8, stdout: anytype, stderr: anyty
 
     stdout.writeAll("database path:       ") catch {};
     stdout.print("{s}\n", .{db_path}) catch {};
+}
+
+/// Count pages on the freelist by walking it (bounded to avoid infinite loops).
+fn countFreePages(pager: anytype, page_buf: []u8) u32 {
+    std.debug.assert(page_buf.len > 0);
+    var free_page_count: u32 = 0;
+    var freelist_current = pager.freelist_head;
+
+    // Traverse freelist to count free pages (limit to avoid infinite loops)
+    const max_freelist_depth: u32 = 10000;
+    while (freelist_current != 0 and free_page_count < max_freelist_depth) {
+        free_page_count += 1;
+
+        // Read the free page to get next pointer
+        pager.readPage(freelist_current, page_buf) catch break;
+
+        // For free pages, the next free page ID is stored at offset PAGE_HEADER_SIZE
+        if (page_buf.len >= silica.page.PAGE_HEADER_SIZE + 4) {
+            freelist_current = std.mem.readInt(
+                u32,
+                page_buf[silica.page.PAGE_HEADER_SIZE..][0..4],
+                .little,
+            );
+        } else {
+            break;
+        }
+
+        // Sanity check to avoid infinite loops
+        if (freelist_current >= pager.page_count) break;
+    }
+    return free_page_count;
 }
 
 fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
@@ -1152,7 +1485,13 @@ fn listTables(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stde
 }
 
 /// Show indexes for all tables or a specific table
-fn showIndexes(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const u8, stdout: anytype, stderr: anytype) void {
+fn showIndexes(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    table_name: ?[]const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     var catalog = &db.catalog;
 
     if (table_name) |name| {
@@ -1179,35 +1518,7 @@ fn showIndexes(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const
             return;
         }
 
-        for (table_info.indexes) |idx| {
-            const index_type = @tagName(idx.index_type);
-            const unique_str = if (idx.is_unique) " UNIQUE" else "";
-            const state_str = switch (idx.state) {
-                .valid => "",
-                .building => " (BUILDING)",
-                .invalid => " (INVALID)",
-            };
-
-            if (idx.index_name.len > 0) {
-                stdout.print("{s} ({s}{s} on {s}.{s}){s}\n", .{
-                    idx.index_name,
-                    index_type,
-                    unique_str,
-                    trimmed,
-                    idx.column_name,
-                    state_str,
-                }) catch {};
-            } else {
-                // Auto-generated index (e.g., from PRIMARY KEY or UNIQUE constraint)
-                stdout.print("(auto) ({s}{s} on {s}.{s}){s}\n", .{
-                    index_type,
-                    unique_str,
-                    trimmed,
-                    idx.column_name,
-                    state_str,
-                }) catch {};
-            }
-        }
+        for (table_info.indexes) |idx| printIndexLine(stdout, trimmed, idx);
     } else {
         // Show indexes for all tables
         const names = catalog.listTables(allocator) catch |err| {
@@ -1243,35 +1554,7 @@ fn showIndexes(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const
             if (table_info.indexes.len == 0) continue;
 
             has_indexes = true;
-            for (table_info.indexes) |idx| {
-                const index_type = @tagName(idx.index_type);
-                const unique_str = if (idx.is_unique) " UNIQUE" else "";
-                const state_str = switch (idx.state) {
-                    .valid => "",
-                    .building => " (BUILDING)",
-                    .invalid => " (INVALID)",
-                };
-
-                if (idx.index_name.len > 0) {
-                    stdout.print("{s} ({s}{s} on {s}.{s}){s}\n", .{
-                        idx.index_name,
-                        index_type,
-                        unique_str,
-                        name,
-                        idx.column_name,
-                        state_str,
-                    }) catch {};
-                } else {
-                    // Auto-generated index
-                    stdout.print("(auto) ({s}{s} on {s}.{s}){s}\n", .{
-                        index_type,
-                        unique_str,
-                        name,
-                        idx.column_name,
-                        state_str,
-                    }) catch {};
-                }
-            }
+            for (table_info.indexes) |idx| printIndexLine(stdout, name, idx);
         }
 
         if (!has_indexes) {
@@ -1280,8 +1563,45 @@ fn showIndexes(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const
     }
 }
 
+/// Print one index as `name (type [UNIQUE] on table.column)[ state]`.
+fn printIndexLine(stdout: anytype, table_name: []const u8, idx: anytype) void {
+    const index_type = @tagName(idx.index_type);
+    const unique_str = if (idx.is_unique) " UNIQUE" else "";
+    const state_str = switch (idx.state) {
+        .valid => "",
+        .building => " (BUILDING)",
+        .invalid => " (INVALID)",
+    };
+
+    if (idx.index_name.len > 0) {
+        stdout.print("{s} ({s}{s} on {s}.{s}){s}\n", .{
+            idx.index_name,
+            index_type,
+            unique_str,
+            table_name,
+            idx.column_name,
+            state_str,
+        }) catch {};
+    } else {
+        // Auto-generated index (e.g., from PRIMARY KEY or UNIQUE constraint)
+        stdout.print("(auto) ({s}{s} on {s}.{s}){s}\n", .{
+            index_type,
+            unique_str,
+            table_name,
+            idx.column_name,
+            state_str,
+        }) catch {};
+    }
+}
+
 /// Show schema (CREATE TABLE statements) for all tables or a specific table
-fn showSchema(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const u8, stdout: anytype, stderr: anytype) void {
+fn showSchema(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    table_name: ?[]const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     var catalog = &db.catalog;
 
     if (table_name) |name| {
@@ -1327,7 +1647,13 @@ fn showSchema(allocator: std.mem.Allocator, db: *Database, table_name: ?[]const 
 }
 
 /// Helper to show schema for a single table
-fn showTableSchema(allocator: std.mem.Allocator, catalog: *silica.catalog.Catalog, table_name: []const u8, stdout: anytype, stderr: anytype) void {
+fn showTableSchema(
+    allocator: std.mem.Allocator,
+    catalog: *silica.catalog.Catalog,
+    table_name: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     const table = catalog.getTable(table_name) catch |err| {
         const msg = switch (err) {
             error.TableNotFound => "Table not found.",
@@ -1339,6 +1665,13 @@ fn showTableSchema(allocator: std.mem.Allocator, catalog: *silica.catalog.Catalo
     };
     defer table.deinit(allocator);
 
+    printCreateTable(stdout, table, table_name);
+}
+
+/// Print CREATE TABLE and CREATE INDEX statements for a table.
+fn printCreateTable(stdout: anytype, table: anytype, table_name: []const u8) void {
+    std.debug.assert(table_name.len > 0);
+    std.debug.assert(table.columns.len <= std.math.maxInt(u32));
     // Generate CREATE TABLE statement
     stdout.print("CREATE TABLE {s} (\n", .{table_name}) catch {};
 
@@ -1348,25 +1681,7 @@ fn showTableSchema(allocator: std.mem.Allocator, catalog: *silica.catalog.Catalo
         stdout.print("{s} ", .{col.name}) catch {};
 
         // Column type
-        const type_name = switch (col.column_type) {
-            .integer => "INTEGER",
-            .real => "REAL",
-            .text => "TEXT",
-            .blob => "BLOB",
-            .boolean => "BOOLEAN",
-            .date => "DATE",
-            .time => "TIME",
-            .timestamp => "TIMESTAMP",
-            .interval => "INTERVAL",
-            .numeric => "NUMERIC",
-            .uuid => "UUID",
-            .array => "ARRAY",
-            .json => "JSON",
-            .jsonb => "JSONB",
-            .tsvector => "TSVECTOR",
-            .tsquery => "TSQUERY",
-            .untyped => "",
-        };
+        const type_name = columnTypeName(col.column_type);
         if (type_name.len > 0) {
             stdout.writeAll(type_name) catch {};
         }
@@ -1394,61 +1709,91 @@ fn showTableSchema(allocator: std.mem.Allocator, catalog: *silica.catalog.Catalo
         stdout.writeAll("\n") catch {};
     }
 
-    // Table-level constraints
-    for (table.table_constraints, 0..) |constraint, i| {
-        stdout.writeAll("  ") catch {};
-        switch (constraint) {
-            .primary_key => |cols| {
-                stdout.writeAll("PRIMARY KEY (") catch {};
-                for (cols, 0..) |col_name, j| {
-                    stdout.writeAll(col_name) catch {};
-                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
-                }
-                stdout.writeAll(")") catch {};
-            },
-            .unique => |cols| {
-                stdout.writeAll("UNIQUE (") catch {};
-                for (cols, 0..) |col_name, j| {
-                    stdout.writeAll(col_name) catch {};
-                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
-                }
-                stdout.writeAll(")") catch {};
-            },
-        }
-        if (i < table.table_constraints.len - 1) {
-            stdout.writeAll(",") catch {};
-        }
-        stdout.writeAll("\n") catch {};
-    }
+    printTableConstraints(stdout, table.table_constraints);
 
     stdout.writeAll(");\n") catch {};
 
     // Show indexes if any (skip auto-generated indexes with empty names)
-    if (table.indexes.len > 0) {
-        for (table.indexes) |idx| {
-            // Skip auto-generated indexes (empty name)
-            if (idx.index_name.len == 0) continue;
+    for (table.indexes) |idx| {
+        // Skip auto-generated indexes (empty name)
+        if (idx.index_name.len == 0) continue;
 
-            const index_type = switch (idx.index_type) {
-                .btree => "BTREE",
-                .hash => "HASH",
-                .gist => "GIST",
-                .gin => "GIN",
-            };
-            const unique_str = if (idx.is_unique) "UNIQUE " else "";
-            stdout.print("CREATE {s}INDEX {s} ON {s} USING {s} ({s});\n", .{
-                unique_str,
-                idx.index_name,
-                table_name,
-                index_type,
-                idx.column_name,
-            }) catch {};
-        }
+        const index_type = switch (idx.index_type) {
+            .btree => "BTREE",
+            .hash => "HASH",
+            .gist => "GIST",
+            .gin => "GIN",
+        };
+        const unique_str = if (idx.is_unique) "UNIQUE " else "";
+        stdout.print("CREATE {s}INDEX {s} ON {s} USING {s} ({s});\n", .{
+            unique_str,
+            idx.index_name,
+            table_name,
+            index_type,
+            idx.column_name,
+        }) catch {};
     }
 }
 
+/// Print table-level PRIMARY KEY / UNIQUE constraints, one per line.
+fn printTableConstraints(stdout: anytype, table_constraints: anytype) void {
+    std.debug.assert(table_constraints.len <= std.math.maxInt(u32));
+    // Table-level constraints
+    for (table_constraints, 0..) |constraint, i| {
+        stdout.writeAll("  ") catch {};
+        switch (constraint) {
+            .primary_key => |cols| printConstraintCols(stdout, "PRIMARY KEY (", cols),
+            .unique => |cols| printConstraintCols(stdout, "UNIQUE (", cols),
+        }
+        if (i < table_constraints.len - 1) {
+            stdout.writeAll(",") catch {};
+        }
+        stdout.writeAll("\n") catch {};
+    }
+}
+
+/// SQL type keyword for a catalog column type (empty for untyped).
+fn columnTypeName(column_type: anytype) []const u8 {
+    return switch (column_type) {
+        .integer => "INTEGER",
+        .real => "REAL",
+        .text => "TEXT",
+        .blob => "BLOB",
+        .boolean => "BOOLEAN",
+        .date => "DATE",
+        .time => "TIME",
+        .timestamp => "TIMESTAMP",
+        .interval => "INTERVAL",
+        .numeric => "NUMERIC",
+        .uuid => "UUID",
+        .array => "ARRAY",
+        .json => "JSON",
+        .jsonb => "JSONB",
+        .tsvector => "TSVECTOR",
+        .tsquery => "TSQUERY",
+        .untyped => "",
+    };
+}
+
+/// Print `<open>col1, col2)` for a table-level constraint column list.
+fn printConstraintCols(stdout: anytype, open: []const u8, cols: []const []const u8) void {
+    std.debug.assert(open.len > 0);
+    std.debug.assert(open[open.len - 1] == '(');
+    stdout.writeAll(open) catch {};
+    for (cols, 0..) |col_name, j| {
+        stdout.writeAll(col_name) catch {};
+        if (j < cols.len - 1) stdout.writeAll(", ") catch {};
+    }
+    stdout.writeAll(")") catch {};
+}
+
 /// Dump entire database as SQL text (CREATE TABLE + INSERT statements)
-fn dumpDatabase(allocator: std.mem.Allocator, db: *Database, stdout: anytype, stderr: anytype) void {
+fn dumpDatabase(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     var catalog = &db.catalog;
 
     // Get all table names
@@ -1490,7 +1835,103 @@ fn dumpDatabase(allocator: std.mem.Allocator, db: *Database, stdout: anytype, st
 }
 
 /// Read and execute SQL statements from a file
-fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []const u8, mode: OutputMode, show_timer: bool, show_stats: bool, show_headers: bool, csv_separator: []const u8, null_display: []const u8, last_rows_affected: *u64, bail_on_error: bool, log_file: ?std.fs.File, show_eqp: bool, stdout: anytype, stderr: anytype) void {
+fn readAndExecuteFile(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    filename: []const u8,
+    mode: OutputMode,
+    show_timer: bool,
+    show_stats: bool,
+    show_headers: bool,
+    csv_separator: []const u8,
+    null_display: []const u8,
+    last_rows_affected: *u64,
+    bail_on_error: bool,
+    log_file: ?std.fs.File,
+    show_eqp: bool,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    const content = readScriptFile(allocator, filename, stderr) orelse return;
+    defer allocator.free(content);
+
+    // Split content into statements by lines first to handle comments
+    var statement_buf = std.ArrayListUnmanaged(u8){};
+    defer statement_buf.deinit(allocator);
+    var statement_count: usize = 0;
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        // Skip empty and comment-only lines
+        const trimmed_line = scriptLine(line) orelse continue;
+
+        // Append line to statement buffer
+        appendScriptLine(allocator, &statement_buf, trimmed_line) catch continue;
+
+        // Check if statement is complete (ends with semicolon)
+        if (std.mem.endsWith(u8, trimmed_line, ";")) {
+            const statement = statement_buf.items;
+            if (statement.len > 0) {
+                statement_count += 1;
+                const success = execAndDisplay(
+                    allocator,
+                    db,
+                    statement,
+                    mode,
+                    show_timer,
+                    show_stats,
+                    show_headers,
+                    csv_separator,
+                    null_display,
+                    last_rows_affected,
+                    log_file,
+                    show_eqp,
+                    stdout,
+                    stderr,
+                );
+
+                // If bail_on_error is enabled and execution failed, stop reading the file
+                if (bail_on_error and !success) {
+                    stderr.writeAll(
+                        "Error: Script execution stopped due to bail on error setting\n",
+                    ) catch {};
+                    return;
+                }
+            }
+            statement_buf.clearRetainingCapacity();
+        }
+    }
+
+    // Check for unterminated statement
+    if (std.mem.trim(u8, statement_buf.items, " \t\r\n").len > 0) {
+        printError(stderr, "Warning: Unterminated statement at end of file (missing ';')");
+    }
+
+    stdout.print("Executed {} statement(s) from {s}\n", .{ statement_count, filename }) catch {};
+}
+
+/// Append a line to the statement buffer, newline-separated from earlier lines.
+fn appendScriptLine(
+    allocator: std.mem.Allocator,
+    statement_buf: *std.ArrayListUnmanaged(u8),
+    line: []const u8,
+) std.mem.Allocator.Error!void {
+    std.debug.assert(line.len > 0);
+    if (statement_buf.items.len > 0) try statement_buf.append(allocator, '\n');
+    try statement_buf.appendSlice(allocator, line);
+}
+
+/// Trim a script line; null when it is empty or a `--` comment.
+fn scriptLine(line: []const u8) ?[]const u8 {
+    const trimmed_line = std.mem.trim(u8, line, " \t\r");
+    if (trimmed_line.len == 0) return null;
+    if (std.mem.startsWith(u8, trimmed_line, "--")) return null;
+    return trimmed_line;
+}
+
+/// Open and read a script file; prints an error and returns null on failure.
+fn readScriptFile(allocator: std.mem.Allocator, filename: []const u8, stderr: anytype) ?[]u8 {
+    std.debug.assert(filename.len > 0);
     // Open file
     const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         const msg = switch (err) {
@@ -1500,7 +1941,7 @@ fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []c
             else => "Failed to open file.",
         };
         printError(stderr, msg);
-        return;
+        return null;
     };
     defer file.close();
 
@@ -1513,61 +1954,21 @@ fn readAndExecuteFile(allocator: std.mem.Allocator, db: *Database, filename: []c
             else => "Failed to read file.",
         };
         printError(stderr, msg);
-        return;
+        return null;
     };
-    defer allocator.free(content);
-
-    // Split content into statements by lines first to handle comments
-    var statement_buf = std.ArrayListUnmanaged(u8){};
-    defer statement_buf.deinit(allocator);
-    var statement_count: usize = 0;
-
-    var line_iter = std.mem.splitScalar(u8, content, '\n');
-    while (line_iter.next()) |line| {
-        const trimmed_line = std.mem.trim(u8, line, " \t\r");
-
-        // Skip empty lines
-        if (trimmed_line.len == 0) continue;
-
-        // Skip comment-only lines
-        if (std.mem.startsWith(u8, trimmed_line, "--")) continue;
-
-        // Append line to statement buffer
-        if (statement_buf.items.len > 0) {
-            statement_buf.append(allocator, '\n') catch continue;
-        }
-        statement_buf.appendSlice(allocator, trimmed_line) catch continue;
-
-        // Check if statement is complete (ends with semicolon)
-        if (std.mem.endsWith(u8, trimmed_line, ";")) {
-            const statement = statement_buf.items;
-            if (statement.len > 0) {
-                statement_count += 1;
-                const success = execAndDisplay(allocator, db, statement, mode, show_timer, show_stats, show_headers, csv_separator, null_display, last_rows_affected, log_file, show_eqp, stdout, stderr);
-
-                // If bail_on_error is enabled and execution failed, stop reading the file
-                if (bail_on_error and !success) {
-                    stderr.writeAll("Error: Script execution stopped due to bail on error setting\n") catch {};
-                    return;
-                }
-            }
-            statement_buf.clearRetainingCapacity();
-        }
-    }
-
-    // Check for unterminated statement
-    if (statement_buf.items.len > 0) {
-        const remaining = std.mem.trim(u8, statement_buf.items, " \t\r\n");
-        if (remaining.len > 0) {
-            printError(stderr, "Warning: Unterminated statement at end of file (missing ';')");
-        }
-    }
-
-    stdout.print("Executed {} statement(s) from {s}\n", .{ statement_count, filename }) catch {};
+    std.debug.assert(content.len <= max_size);
+    return content;
 }
 
 /// Dump a single table (CREATE TABLE + CREATE INDEX + INSERT statements)
-fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catalog.Catalog, table_name: []const u8, stdout: anytype, stderr: anytype) void {
+fn dumpTable(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    catalog: *silica.catalog.Catalog,
+    table_name: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     // Get table schema
     const table = catalog.getTable(table_name) catch |err| {
         const msg = switch (err) {
@@ -1580,112 +1981,7 @@ fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catal
     };
     defer table.deinit(allocator);
 
-    // Generate CREATE TABLE statement
-    stdout.print("CREATE TABLE {s} (\n", .{table_name}) catch {};
-
-    // Columns
-    for (table.columns, 0..) |col, i| {
-        stdout.writeAll("  ") catch {};
-        stdout.print("{s} ", .{col.name}) catch {};
-
-        // Column type
-        const type_name = switch (col.column_type) {
-            .integer => "INTEGER",
-            .real => "REAL",
-            .text => "TEXT",
-            .blob => "BLOB",
-            .boolean => "BOOLEAN",
-            .date => "DATE",
-            .time => "TIME",
-            .timestamp => "TIMESTAMP",
-            .interval => "INTERVAL",
-            .numeric => "NUMERIC",
-            .uuid => "UUID",
-            .array => "ARRAY",
-            .json => "JSON",
-            .jsonb => "JSONB",
-            .tsvector => "TSVECTOR",
-            .tsquery => "TSQUERY",
-            .untyped => "",
-        };
-        if (type_name.len > 0) {
-            stdout.writeAll(type_name) catch {};
-        }
-
-        // Column constraints
-        if (col.flags.primary_key) {
-            stdout.writeAll(" PRIMARY KEY") catch {};
-        }
-        if (col.flags.not_null) {
-            stdout.writeAll(" NOT NULL") catch {};
-        }
-        if (col.flags.unique) {
-            stdout.writeAll(" UNIQUE") catch {};
-        }
-        if (col.flags.autoincrement) {
-            stdout.writeAll(" AUTOINCREMENT") catch {};
-        }
-
-        // Comma for all but last column (unless there are table constraints)
-        const is_last_column = (i == table.columns.len - 1);
-        const has_table_constraints = table.table_constraints.len > 0;
-        if (!is_last_column or has_table_constraints) {
-            stdout.writeAll(",") catch {};
-        }
-        stdout.writeAll("\n") catch {};
-    }
-
-    // Table-level constraints
-    for (table.table_constraints, 0..) |constraint, i| {
-        stdout.writeAll("  ") catch {};
-        switch (constraint) {
-            .primary_key => |cols| {
-                stdout.writeAll("PRIMARY KEY (") catch {};
-                for (cols, 0..) |col_name, j| {
-                    stdout.writeAll(col_name) catch {};
-                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
-                }
-                stdout.writeAll(")") catch {};
-            },
-            .unique => |cols| {
-                stdout.writeAll("UNIQUE (") catch {};
-                for (cols, 0..) |col_name, j| {
-                    stdout.writeAll(col_name) catch {};
-                    if (j < cols.len - 1) stdout.writeAll(", ") catch {};
-                }
-                stdout.writeAll(")") catch {};
-            },
-        }
-        if (i < table.table_constraints.len - 1) {
-            stdout.writeAll(",") catch {};
-        }
-        stdout.writeAll("\n") catch {};
-    }
-
-    stdout.writeAll(");\n") catch {};
-
-    // Show indexes (skip auto-generated indexes with empty names)
-    if (table.indexes.len > 0) {
-        for (table.indexes) |idx| {
-            // Skip auto-generated indexes (empty name)
-            if (idx.index_name.len == 0) continue;
-
-            const index_type = switch (idx.index_type) {
-                .btree => "BTREE",
-                .hash => "HASH",
-                .gist => "GIST",
-                .gin => "GIN",
-            };
-            const unique_str = if (idx.is_unique) "UNIQUE " else "";
-            stdout.print("CREATE {s}INDEX {s} ON {s} USING {s} ({s});\n", .{
-                unique_str,
-                idx.index_name,
-                table_name,
-                index_type,
-                idx.column_name,
-            }) catch {};
-        }
-    }
+    printCreateTable(stdout, table, table_name);
 
     // Dump data as INSERT statements
     const sql = std.fmt.allocPrint(allocator, "SELECT * FROM {s};", .{table_name}) catch {
@@ -1720,40 +2016,7 @@ fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catal
                 stdout.print("INSERT INTO {s} VALUES (", .{table_name}) catch {};
 
                 for (row.values, 0..) |value, i| {
-                    switch (value) {
-                        .null_value => stdout.writeAll("NULL") catch {},
-                        .integer => |v| stdout.print("{}", .{v}) catch {},
-                        .real => |v| stdout.print("{d}", .{v}) catch {},
-                        .text => |v| {
-                            // Escape single quotes in text
-                            stdout.writeAll("'") catch {};
-                            for (v) |ch| {
-                                if (ch == '\'') {
-                                    stdout.writeAll("''") catch {};
-                                } else {
-                                    stdout.writeByte(ch) catch {};
-                                }
-                            }
-                            stdout.writeAll("'") catch {};
-                        },
-                        .blob => |v| {
-                            // Output as hex string
-                            stdout.writeAll("X'") catch {};
-                            for (v) |byte| {
-                                stdout.print("{X:0>2}", .{byte}) catch {};
-                            }
-                            stdout.writeAll("'") catch {};
-                        },
-                        .boolean => |v| {
-                            const bool_str = if (v) "TRUE" else "FALSE";
-                            stdout.writeAll(bool_str) catch {};
-                        },
-                        else => {
-                            // For other types (date, time, timestamp, numeric, uuid, array, etc.)
-                            // Use NULL placeholder for now
-                            stdout.writeAll("NULL") catch {};
-                        },
-                    }
+                    printInsertValue(stdout, value);
 
                     if (i < row.values.len - 1) {
                         stdout.writeAll(", ") catch {};
@@ -1766,8 +2029,51 @@ fn dumpTable(allocator: std.mem.Allocator, db: *Database, catalog: *silica.catal
     }
 }
 
+/// Print one value as an SQL literal for an INSERT statement.
+fn printInsertValue(stdout: anytype, value: anytype) void {
+    switch (value) {
+        .null_value => stdout.writeAll("NULL") catch {},
+        .integer => |v| stdout.print("{}", .{v}) catch {},
+        .real => |v| stdout.print("{d}", .{v}) catch {},
+        .text => |v| {
+            // Escape single quotes in text
+            stdout.writeAll("'") catch {};
+            for (v) |ch| {
+                if (ch == '\'') {
+                    stdout.writeAll("''") catch {};
+                } else {
+                    stdout.writeByte(ch) catch {};
+                }
+            }
+            stdout.writeAll("'") catch {};
+        },
+        .blob => |v| {
+            // Output as hex string
+            stdout.writeAll("X'") catch {};
+            for (v) |byte| {
+                stdout.print("{X:0>2}", .{byte}) catch {};
+            }
+            stdout.writeAll("'") catch {};
+        },
+        .boolean => |v| {
+            const bool_str = if (v) "TRUE" else "FALSE";
+            stdout.writeAll(bool_str) catch {};
+        },
+        else => {
+            // For other types (date, time, timestamp, numeric, uuid, array, etc.)
+            // Use NULL placeholder for now
+            stdout.writeAll("NULL") catch {};
+        },
+    }
+}
+
 /// Create a backup copy of the database file
-fn backupDatabase(source_path: []const u8, dest_path: []const u8, stdout: anytype, stderr: anytype) void {
+fn backupDatabase(
+    source_path: []const u8,
+    dest_path: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     // Don't allow backing up to the same file
     if (std.mem.eql(u8, source_path, dest_path)) {
         printError(stderr, "Cannot backup to the same file");
@@ -1785,7 +2091,10 @@ fn backupDatabase(source_path: []const u8, dest_path: []const u8, stdout: anytyp
 
     // If we reach here and access() succeeded, the file exists
     if (std.fs.cwd().access(dest_path, .{})) |_| {
-        printError(stderr, "Destination file already exists. Remove it first or choose a different name");
+        printError(
+            stderr,
+            "Destination file already exists. Remove it first or choose a different name",
+        );
         return;
     } else |_| {}
 
@@ -1794,7 +2103,8 @@ fn backupDatabase(source_path: []const u8, dest_path: []const u8, stdout: anytyp
         const msg = switch (err) {
             error.FileNotFound => "Source database file not found",
             error.AccessDenied => "Access denied. Check file permissions",
-            error.PathAlreadyExists => "Destination file already exists. Remove it first or choose a different name",
+            error.PathAlreadyExists => "Destination file already exists. " ++
+                "Remove it first or choose a different name",
             error.IsDir => "Cannot backup to a directory",
             error.NotDir => "Parent directory does not exist",
             error.NoSpaceLeft => "No space left on device",
@@ -1808,10 +2118,20 @@ fn backupDatabase(source_path: []const u8, dest_path: []const u8, stdout: anytyp
 }
 
 /// Save database to a file (works with both file-based and :memory: databases)
-fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path: []const u8, dest_path: []const u8, stdout: anytype, stderr: anytype) void {
+fn saveDatabase(
+    allocator: std.mem.Allocator,
+    source_db: *Database,
+    source_path: []const u8,
+    dest_path: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     // Check if destination already exists
     if (std.fs.cwd().access(dest_path, .{})) |_| {
-        printError(stderr, "Destination file already exists. Remove it first or choose a different name");
+        printError(
+            stderr,
+            "Destination file already exists. Remove it first or choose a different name",
+        );
         return;
     } else |_| {}
 
@@ -1885,113 +2205,39 @@ fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path:
         var create_sql: std.ArrayList(u8) = .{};
         defer create_sql.deinit(allocator);
 
-        create_sql.writer(allocator).print("CREATE TABLE {s} (\n", .{table_name}) catch {
+        if (!buildCreateTableSql(allocator, &create_sql, table_name, table_info)) {
             printError(stderr, "Out of memory");
             _ = dest_db.exec("ROLLBACK;") catch {};
             return;
-        };
-
-        // Check if there are table-level constraints
-        const has_table_constraints = table_info.table_constraints.len > 0;
-
-        // Add columns
-        for (table_info.columns, 0..) |col, i| {
-            create_sql.writer(allocator).writeAll("  ") catch {};
-            create_sql.writer(allocator).writeAll(col.name) catch {};
-            create_sql.writer(allocator).writeAll(" ") catch {};
-
-            // Column type
-            const type_name = switch (col.column_type) {
-                .integer => "INTEGER",
-                .real => "REAL",
-                .text => "TEXT",
-                .blob => "BLOB",
-                .boolean => "BOOLEAN",
-                .date => "DATE",
-                .time => "TIME",
-                .timestamp => "TIMESTAMP",
-                .interval => "INTERVAL",
-                .numeric => "NUMERIC",
-                .uuid => "UUID",
-                .array => "ARRAY",
-                .json => "JSON",
-                .jsonb => "JSONB",
-                .tsvector => "TSVECTOR",
-                .tsquery => "TSQUERY",
-                .untyped => "INTEGER", // default for untyped
-            };
-            create_sql.writer(allocator).writeAll(type_name) catch {};
-
-            // Add column constraints (only if not part of table-level constraint)
-            if (col.flags.primary_key and !has_table_constraints) {
-                create_sql.writer(allocator).writeAll(" PRIMARY KEY") catch {};
-            }
-            if (col.flags.not_null) {
-                create_sql.writer(allocator).writeAll(" NOT NULL") catch {};
-            }
-            if (col.flags.unique and !col.flags.primary_key) {
-                create_sql.writer(allocator).writeAll(" UNIQUE") catch {};
-            }
-            if (col.flags.autoincrement) {
-                create_sql.writer(allocator).writeAll(" AUTOINCREMENT") catch {};
-            }
-
-            // Comma for all but last column (unless there are table constraints)
-            const is_last_column = (i == table_info.columns.len - 1);
-            if (!is_last_column or has_table_constraints) {
-                create_sql.writer(allocator).writeAll(",\n") catch {};
-            }
         }
-
-        // Add table-level constraints
-        for (table_info.table_constraints, 0..) |constraint, j| {
-            create_sql.writer(allocator).writeAll("  ") catch {};
-            switch (constraint) {
-                .primary_key => |cols| {
-                    create_sql.writer(allocator).writeAll("PRIMARY KEY (") catch {};
-                    for (cols, 0..) |col_name, k| {
-                        create_sql.writer(allocator).writeAll(col_name) catch {};
-                        if (k < cols.len - 1) {
-                            create_sql.writer(allocator).writeAll(", ") catch {};
-                        }
-                    }
-                    create_sql.writer(allocator).writeAll(")") catch {};
-                },
-                .unique => |cols| {
-                    create_sql.writer(allocator).writeAll("UNIQUE (") catch {};
-                    for (cols, 0..) |col_name, k| {
-                        create_sql.writer(allocator).writeAll(col_name) catch {};
-                        if (k < cols.len - 1) {
-                            create_sql.writer(allocator).writeAll(", ") catch {};
-                        }
-                    }
-                    create_sql.writer(allocator).writeAll(")") catch {};
-                },
-            }
-            if (j < table_info.table_constraints.len - 1) {
-                create_sql.writer(allocator).writeAll(",\n") catch {};
-            }
-        }
-
-        create_sql.writer(allocator).writeAll("\n);") catch {};
 
         // Execute CREATE TABLE in destination
         _ = dest_db.exec(create_sql.items) catch |err| {
-            stderr.print("Failed to create table {s}: {s}\n", .{ table_name, @errorName(err) }) catch {};
+            stderr.print(
+                "Failed to create table {s}: {s}\n",
+                .{ table_name, @errorName(err) },
+            ) catch {};
             _ = dest_db.exec("ROLLBACK;") catch {};
             return;
         };
 
         // Copy data: SELECT all rows from source, INSERT into dest
         var select_sql_buf: [256]u8 = undefined;
-        const select_sql = std.fmt.bufPrint(&select_sql_buf, "SELECT * FROM {s};", .{table_name}) catch {
+        const select_sql = std.fmt.bufPrint(
+            &select_sql_buf,
+            "SELECT * FROM {s};",
+            .{table_name},
+        ) catch {
             printError(stderr, "Table name too long");
             _ = dest_db.exec("ROLLBACK;") catch {};
             return;
         };
 
         var result = source_db.exec(select_sql) catch |err| {
-            stderr.print("Failed to read data from {s}: {s}\n", .{ table_name, @errorName(err) }) catch {};
+            stderr.print(
+                "Failed to read data from {s}: {s}\n",
+                .{ table_name, @errorName(err) },
+            ) catch {};
             _ = dest_db.exec("ROLLBACK;") catch {};
             return;
         };
@@ -2012,7 +2258,10 @@ fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path:
                     var insert_sql: std.ArrayList(u8) = .{};
                     defer insert_sql.deinit(allocator);
 
-                    insert_sql.writer(allocator).print("INSERT INTO {s} VALUES (", .{table_name}) catch continue;
+                    insert_sql.writer(allocator).print(
+                        "INSERT INTO {s} VALUES (",
+                        .{table_name},
+                    ) catch continue;
 
                     for (row.values, 0..) |value, j| {
                         switch (value) {
@@ -2053,7 +2302,10 @@ fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path:
 
                     // Execute INSERT in destination
                     _ = dest_db.exec(insert_sql.items) catch |err| {
-                        stderr.print("Failed to insert row into {s}: {s}\n", .{ table_name, @errorName(err) }) catch {};
+                        stderr.print(
+                            "Failed to insert row into {s}: {s}\n",
+                            .{ table_name, @errorName(err) },
+                        ) catch {};
                         // Continue with next row instead of aborting
                         continue;
                     };
@@ -2080,7 +2332,10 @@ fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path:
             }) catch continue;
 
             _ = dest_db.exec(create_index_sql.items) catch |err| {
-                stderr.print("Warning: Failed to create index {s}: {s}\n", .{ idx.index_name, @errorName(err) }) catch {};
+                stderr.print(
+                    "Warning: Failed to create index {s}: {s}\n",
+                    .{ idx.index_name, @errorName(err) },
+                ) catch {};
                 // Continue even if index creation fails
             };
         }
@@ -2096,7 +2351,107 @@ fn saveDatabase(allocator: std.mem.Allocator, source_db: *Database, source_path:
     stdout.print("Database saved to: {s}\n", .{dest_path}) catch {};
 }
 
-fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const u8, table_name: []const u8, csv_separator: []const u8, stdout: anytype, stderr: anytype) void {
+/// Build a CREATE TABLE statement for `table_info` into `create_sql`.
+/// Returns false when the statement header cannot be allocated.
+fn buildCreateTableSql(
+    allocator: std.mem.Allocator,
+    create_sql: *std.ArrayList(u8),
+    table_name: []const u8,
+    table_info: anytype,
+) bool {
+    std.debug.assert(table_name.len > 0);
+    std.debug.assert(create_sql.items.len == 0);
+    create_sql.writer(allocator).print("CREATE TABLE {s} (\n", .{table_name}) catch return false;
+
+    // Check if there are table-level constraints
+    const has_table_constraints = table_info.table_constraints.len > 0;
+    appendCreateColumns(allocator, create_sql, table_info, has_table_constraints);
+    appendCreateConstraints(allocator, create_sql, table_info.table_constraints);
+
+    create_sql.writer(allocator).writeAll("\n);") catch {};
+    return true;
+}
+
+/// Append the column definitions of a CREATE TABLE statement.
+fn appendCreateColumns(
+    allocator: std.mem.Allocator,
+    create_sql: *std.ArrayList(u8),
+    table_info: anytype,
+    has_table_constraints: bool,
+) void {
+    std.debug.assert(create_sql.items.len > 0);
+    for (table_info.columns, 0..) |col, i| {
+        create_sql.writer(allocator).writeAll("  ") catch {};
+        create_sql.writer(allocator).writeAll(col.name) catch {};
+        create_sql.writer(allocator).writeAll(" ") catch {};
+
+        // Column type (untyped defaults to INTEGER)
+        const type_name = columnTypeName(col.column_type);
+        const type_sql = if (type_name.len == 0) "INTEGER" else type_name;
+        create_sql.writer(allocator).writeAll(type_sql) catch {};
+
+        // Add column constraints (only if not part of table-level constraint)
+        if (col.flags.primary_key and !has_table_constraints) {
+            create_sql.writer(allocator).writeAll(" PRIMARY KEY") catch {};
+        }
+        if (col.flags.not_null) {
+            create_sql.writer(allocator).writeAll(" NOT NULL") catch {};
+        }
+        if (col.flags.unique and !col.flags.primary_key) {
+            create_sql.writer(allocator).writeAll(" UNIQUE") catch {};
+        }
+        if (col.flags.autoincrement) {
+            create_sql.writer(allocator).writeAll(" AUTOINCREMENT") catch {};
+        }
+
+        // Comma for all but last column (unless there are table constraints)
+        const is_last_column = (i == table_info.columns.len - 1);
+        if (!is_last_column or has_table_constraints) {
+            create_sql.writer(allocator).writeAll(",\n") catch {};
+        }
+    }
+}
+
+/// Append table-level PRIMARY KEY / UNIQUE constraints of a CREATE TABLE statement.
+fn appendCreateConstraints(
+    allocator: std.mem.Allocator,
+    create_sql: *std.ArrayList(u8),
+    table_constraints: anytype,
+) void {
+    std.debug.assert(create_sql.items.len > 0);
+    for (table_constraints, 0..) |constraint, j| {
+        create_sql.writer(allocator).writeAll("  ") catch {};
+        const cols = switch (constraint) {
+            .primary_key => |cols| cols,
+            .unique => |cols| cols,
+        };
+        const open = switch (constraint) {
+            .primary_key => "PRIMARY KEY (",
+            .unique => "UNIQUE (",
+        };
+        create_sql.writer(allocator).writeAll(open) catch {};
+        for (cols, 0..) |col_name, k| {
+            create_sql.writer(allocator).writeAll(col_name) catch {};
+            if (k < cols.len - 1) {
+                create_sql.writer(allocator).writeAll(", ") catch {};
+            }
+        }
+        create_sql.writer(allocator).writeAll(")") catch {};
+        if (j < table_constraints.len - 1) {
+            create_sql.writer(allocator).writeAll(",\n") catch {};
+        }
+    }
+}
+
+fn importCsvFile(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    csv_path: []const u8,
+    table_name: []const u8,
+    csv_separator: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     // Read CSV file (max 100 MB)
     const max_size = 100 * 1024 * 1024;
     const csv_content = std.fs.cwd().readFileAlloc(allocator, csv_path, max_size) catch |err| {
@@ -2127,12 +2482,7 @@ fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const 
 
         var field_iter = std.mem.splitSequence(u8, trimmed, csv_separator);
         while (field_iter.next()) |field| {
-            // Trim quotes if present
-            var cleaned_field = std.mem.trim(u8, field, " \t");
-            if (cleaned_field.len >= 2 and cleaned_field[0] == '"' and cleaned_field[cleaned_field.len - 1] == '"') {
-                cleaned_field = cleaned_field[1 .. cleaned_field.len - 1];
-            }
-            values.append(allocator, cleaned_field) catch {
+            values.append(allocator, cleanCsvField(field)) catch {
                 printError(stderr, "Out of memory while parsing CSV");
                 return;
             };
@@ -2152,17 +2502,7 @@ fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const 
 
         for (values.items, 0..) |value, i| {
             if (i > 0) sql_buf.writer(allocator).writeAll(", ") catch {};
-            // Escape single quotes and wrap in quotes
-            sql_buf.writer(allocator).writeByte('\'') catch {};
-            var j: usize = 0;
-            while (j < value.len) : (j += 1) {
-                if (value[j] == '\'') {
-                    sql_buf.writer(allocator).writeAll("''") catch {};
-                } else {
-                    sql_buf.writer(allocator).writeByte(value[j]) catch {};
-                }
-            }
-            sql_buf.writer(allocator).writeByte('\'') catch {};
+            appendQuotedSqlText(allocator, &sql_buf, value);
         }
         sql_buf.writer(allocator).writeAll(");") catch {};
 
@@ -2182,7 +2522,41 @@ fn importCsvFile(allocator: std.mem.Allocator, db: *Database, csv_path: []const 
         rows_imported += 1;
     }
 
-    stdout.print("Imported {d} rows from {s} into {s}\n", .{ rows_imported, csv_path, table_name }) catch {};
+    stdout.print(
+        "Imported {d} rows from {s} into {s}\n",
+        .{ rows_imported, csv_path, table_name },
+    ) catch {};
+}
+
+/// Trim blanks and one pair of surrounding double quotes from a CSV field.
+fn cleanCsvField(field: []const u8) []const u8 {
+    var cleaned_field = std.mem.trim(u8, field, " \t");
+    if (cleaned_field.len >= 2 and cleaned_field[0] == '"' and
+        cleaned_field[cleaned_field.len - 1] == '"')
+    {
+        cleaned_field = cleaned_field[1 .. cleaned_field.len - 1];
+    }
+    std.debug.assert(cleaned_field.len <= field.len);
+    return cleaned_field;
+}
+
+/// Append `value` as a single-quoted SQL string, doubling embedded quotes.
+fn appendQuotedSqlText(
+    allocator: std.mem.Allocator,
+    sql_buf: *std.ArrayList(u8),
+    value: []const u8,
+) void {
+    std.debug.assert(value.len <= std.math.maxInt(u32));
+    sql_buf.writer(allocator).writeByte('\'') catch {};
+    var j: usize = 0;
+    while (j < value.len) : (j += 1) {
+        if (value[j] == '\'') {
+            sql_buf.writer(allocator).writeAll("''") catch {};
+        } else {
+            sql_buf.writer(allocator).writeByte(value[j]) catch {};
+        }
+    }
+    sql_buf.writer(allocator).writeByte('\'') catch {};
 }
 
 const DotCommandResult = union(enum) {
@@ -2191,7 +2565,28 @@ const DotCommandResult = union(enum) {
     reopen: []const u8, // New database path to open
 };
 
-fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []const u8, cmd: []const u8, mode: *OutputMode, show_timer: *bool, show_headers: *bool, csv_separator: *[]const u8, null_display: *[]const u8, output_file: *?std.fs.File, once_file: *?std.fs.File, last_rows_affected: *u64, bail_on_error: *bool, log_file: *?std.fs.File, show_stats: *bool, show_eqp: *bool, main_prompt: *[]const u8, continue_prompt: *[]const u8, stdout: anytype, stderr: anytype) DotCommandResult {
+fn handleDotCommand(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    db_path: []const u8,
+    cmd: []const u8,
+    mode: *OutputMode,
+    show_timer: *bool,
+    show_headers: *bool,
+    csv_separator: *[]const u8,
+    null_display: *[]const u8,
+    output_file: *?std.fs.File,
+    once_file: *?std.fs.File,
+    last_rows_affected: *u64,
+    bail_on_error: *bool,
+    log_file: *?std.fs.File,
+    show_stats: *bool,
+    show_eqp: *bool,
+    main_prompt: *[]const u8,
+    continue_prompt: *[]const u8,
+    stdout: anytype,
+    stderr: anytype,
+) DotCommandResult {
     if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
         stdout.writeAll("Bye!\n") catch {};
         return .quit;
@@ -2205,57 +2600,7 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         // Clear screen using ANSI escape codes: ESC[2J (clear) + ESC[H (home cursor)
         stdout.writeAll("\x1b[2J\x1b[H") catch {};
     } else if (std.mem.eql(u8, cmd, ".help")) {
-        stdout.writeAll(
-            \\.help               Show this help
-            \\.quit               Exit the shell
-            \\.exit               Exit the shell
-            \\.version            Show version information
-            \\.clear              Clear the screen
-            \\.echo TEXT          Print literal text to output
-            \\.print TEXT         Print literal text to output (alias for .echo)
-            \\.show               Show current settings (mode, headers, timer, stats, separator, nullvalue, output, bail, eqp)
-            \\.changes            Show number of rows changed by last DML statement
-            \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
-            \\.mode               Show current output mode
-            \\.separator STRING   Set CSV output separator (default: ",")
-            \\.separator          Show current separator
-            \\.headers on|off     Enable or disable column headers in output
-            \\.headers            Show current headers setting
-            \\.timer on|off       Enable or disable query execution timing
-            \\.timer              Show current timer setting
-            \\.stats on|off       Show execution statistics after each query
-            \\.stats              Show current stats setting
-            \\.bail on|off        Stop script execution on first error
-            \\.bail               Show current bail setting
-            \\.eqp on|off         Automatically EXPLAIN query plans
-            \\.eqp                Show current eqp setting
-            \\.output FILENAME    Redirect output to file
-            \\.output             Reset output to stdout
-            \\.once FILENAME      Write next query output to file (one-time only)
-            \\.log FILENAME       Enable query logging to file (appends)
-            \\.log off            Disable query logging
-            \\.log                Show current log setting
-            \\.nullvalue STRING   Set string to display for NULL values
-            \\.nullvalue          Show current NULL display string
-            \\.databases          List database connections
-            \\.dbinfo             Show database file statistics
-            \\.tables             List all tables
-            \\.indexes [TABLE]    List all indexes or indexes for a specific table
-            \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
-            \\.dump               Dump database as SQL text (CREATE TABLE + INSERT statements)
-            \\.backup FILENAME    Create a backup copy of the database file
-            \\.save FILENAME      Save database to file (works with :memory: databases)
-            \\.import FILE TABLE  Import CSV data from file into table
-            \\.read FILENAME      Read and execute SQL from file
-            \\.cd DIRECTORY       Change the working directory
-            \\.open FILENAME      Close current database and open a new one
-            \\.open               Show current database path
-            \\.prompt MAIN CONT   Replace the standard prompts
-            \\.prompt             Show current prompts
-            \\.system CMD ARGS    Run CMD ARGS in a system shell
-            \\.shell CMD ARGS     Run CMD ARGS in a system shell (alias for .system)
-            \\
-        ) catch {};
+        printHelp(stdout);
     } else if (std.mem.startsWith(u8, cmd, ".headers")) {
         const rest = std.mem.trimLeft(u8, cmd[8..], " \t");
         if (rest.len == 0) {
@@ -2493,7 +2838,23 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         if (rest.len == 0) {
             printError(stderr, "Usage: .read FILENAME");
         } else {
-            readAndExecuteFile(allocator, db, rest, mode.*, show_timer.*, show_stats.*, show_headers.*, csv_separator.*, null_display.*, last_rows_affected, bail_on_error.*, log_file.*, show_eqp.*, stdout, stderr);
+            readAndExecuteFile(
+                allocator,
+                db,
+                rest,
+                mode.*,
+                show_timer.*,
+                show_stats.*,
+                show_headers.*,
+                csv_separator.*,
+                null_display.*,
+                last_rows_affected,
+                bail_on_error.*,
+                log_file.*,
+                show_eqp.*,
+                stdout,
+                stderr,
+            );
         }
     } else if (std.mem.startsWith(u8, cmd, ".cd")) {
         const rest = std.mem.trimLeft(u8, cmd[3..], " \t");
@@ -2618,68 +2979,13 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
         const offset: usize = if (std.mem.startsWith(u8, cmd, ".system")) 7 else 6;
         const rest = std.mem.trimLeft(u8, cmd[offset..], " \t");
         if (rest.len == 0) {
-            const usage = if (offset == 7) "Usage: .system CMD ARGS..." else "Usage: .shell CMD ARGS...";
+            const usage = if (offset == 7)
+                "Usage: .system CMD ARGS..."
+            else
+                "Usage: .shell CMD ARGS...";
             printError(stderr, usage);
         } else {
-            // Execute shell command and capture output
-            var child = std.process.Child.init(&[_][]const u8{
-                "/bin/sh",
-                "-c",
-                rest,
-            }, allocator);
-
-            child.stdout_behavior = .Pipe;
-            child.stderr_behavior = .Pipe;
-
-            child.spawn() catch {
-                printError(stderr, "Failed to execute command");
-                return .ok;
-            };
-
-            // Read stdout
-            const child_stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch {
-                _ = child.wait() catch {};
-                printError(stderr, "Failed to read command output");
-                return .ok;
-            };
-            defer allocator.free(child_stdout);
-
-            // Read stderr
-            const child_stderr = child.stderr.?.readToEndAlloc(allocator, 1024 * 1024) catch {
-                _ = child.wait() catch {};
-                printError(stderr, "Failed to read command errors");
-                return .ok;
-            };
-            defer allocator.free(child_stderr);
-
-            // Wait for child to complete
-            const term = child.wait() catch {
-                printError(stderr, "Failed to wait for command");
-                return .ok;
-            };
-
-            // Write stdout
-            if (child_stdout.len > 0) {
-                stdout.writeAll(child_stdout) catch {};
-            }
-
-            // Write stderr
-            if (child_stderr.len > 0) {
-                stderr.writeAll(child_stderr) catch {};
-            }
-
-            // Show non-zero exit code
-            switch (term) {
-                .Exited => |code| {
-                    if (code != 0) {
-                        stderr.print("Command exited with code {d}\n", .{code}) catch {};
-                    }
-                },
-                .Signal => |sig| {
-                    stderr.print("Command terminated by signal {d}\n", .{sig}) catch {};
-                },
-                else => {},
-            }
+            runShellCommand(allocator, rest, stdout, stderr);
         }
     } else {
         printError(stderr, "Unknown command. Type .help for usage hints.");
@@ -2687,7 +2993,133 @@ fn handleDotCommand(allocator: std.mem.Allocator, db: *Database, db_path: []cons
     return .ok;
 }
 
-// ── Utility Functions ──────────────────────────────────────────────────
+/// Print the dot-command help text.
+fn printHelp(stdout: anytype) void {
+    stdout.writeAll(
+        \\.help               Show this help
+        \\.quit               Exit the shell
+        \\.exit               Exit the shell
+        \\.version            Show version information
+        \\.clear              Clear the screen
+        \\.echo TEXT          Print literal text to output
+        \\.print TEXT         Print literal text to output (alias for .echo)
+    ++ "\n.show               Show current settings (mode, headers, timer, stats, " ++
+        "separator, nullvalue, output, bail, eqp)\n" ++
+        \\.changes            Show number of rows changed by last DML statement
+        \\.mode MODE          Set output mode (table, csv, json, jsonl, plain)
+        \\.mode               Show current output mode
+        \\.separator STRING   Set CSV output separator (default: ",")
+        \\.separator          Show current separator
+        \\.headers on|off     Enable or disable column headers in output
+        \\.headers            Show current headers setting
+        \\.timer on|off       Enable or disable query execution timing
+        \\.timer              Show current timer setting
+        \\.stats on|off       Show execution statistics after each query
+        \\.stats              Show current stats setting
+        \\.bail on|off        Stop script execution on first error
+        \\.bail               Show current bail setting
+        \\.eqp on|off         Automatically EXPLAIN query plans
+        \\.eqp                Show current eqp setting
+        \\.output FILENAME    Redirect output to file
+        \\.output             Reset output to stdout
+        \\.once FILENAME      Write next query output to file (one-time only)
+        \\.log FILENAME       Enable query logging to file (appends)
+        \\.log off            Disable query logging
+        \\.log                Show current log setting
+        \\.nullvalue STRING   Set string to display for NULL values
+        \\.nullvalue          Show current NULL display string
+        \\.databases          List database connections
+        \\.dbinfo             Show database file statistics
+        \\.tables             List all tables
+        \\.indexes [TABLE]    List all indexes or indexes for a specific table
+        \\.schema [TABLE]     Show CREATE TABLE statements for all tables or specific table
+        \\.dump               Dump database as SQL text (CREATE TABLE + INSERT statements)
+        \\.backup FILENAME    Create a backup copy of the database file
+        \\.save FILENAME      Save database to file (works with :memory: databases)
+        \\.import FILE TABLE  Import CSV data from file into table
+        \\.read FILENAME      Read and execute SQL from file
+        \\.cd DIRECTORY       Change the working directory
+        \\.open FILENAME      Close current database and open a new one
+        \\.open               Show current database path
+        \\.prompt MAIN CONT   Replace the standard prompts
+        \\.prompt             Show current prompts
+        \\.system CMD ARGS    Run CMD ARGS in a system shell
+        \\.shell CMD ARGS     Run CMD ARGS in a system shell (alias for .system)
+        \\
+    ) catch {};
+}
+
+/// Run `command` through `/bin/sh -c` and forward its output and exit status.
+fn runShellCommand(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    std.debug.assert(command.len > 0);
+    std.debug.assert(command.len <= std.math.maxInt(u32));
+    // Execute shell command and capture output
+    var child = std.process.Child.init(&[_][]const u8{
+        "/bin/sh",
+        "-c",
+        command,
+    }, allocator);
+
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    child.spawn() catch {
+        printError(stderr, "Failed to execute command");
+        return;
+    };
+
+    // Read stdout
+    const child_stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+        _ = child.wait() catch {};
+        printError(stderr, "Failed to read command output");
+        return;
+    };
+    defer allocator.free(child_stdout);
+
+    // Read stderr
+    const child_stderr = child.stderr.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+        _ = child.wait() catch {};
+        printError(stderr, "Failed to read command errors");
+        return;
+    };
+    defer allocator.free(child_stderr);
+
+    // Wait for child to complete
+    const term = child.wait() catch {
+        printError(stderr, "Failed to wait for command");
+        return;
+    };
+
+    // Write stdout
+    if (child_stdout.len > 0) {
+        stdout.writeAll(child_stdout) catch {};
+    }
+
+    // Write stderr
+    if (child_stderr.len > 0) {
+        stderr.writeAll(child_stderr) catch {};
+    }
+
+    // Show non-zero exit code
+    switch (term) {
+        .Exited => |code| {
+            if (code != 0) {
+                stderr.print("Command exited with code {d}\n", .{code}) catch {};
+            }
+        },
+        .Signal => |sig| {
+            stderr.print("Command terminated by signal {d}\n", .{sig}) catch {};
+        },
+        else => {},
+    }
+}
+
+// ── Utility Functions ────────────────────────
 
 fn sqlHighlighter(buf: []const u8, writer: std.io.AnyWriter) anyerror!void {
     var tok = silica.tokenizer.Tokenizer.init(buf);
@@ -2843,7 +3275,7 @@ const sql_keywords = [_][]const u8{
     "ARRAY",      "JSON",        "JSONB",        "TSVECTOR",      "TSQUERY",
 };
 
-// ── Tests ────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test {
     _ = tui_mod;
@@ -2960,7 +3392,28 @@ test "handleDotCommand help" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".help") != null);
@@ -3005,7 +3458,28 @@ test "handleDotCommand databases" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".databases",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3045,7 +3519,28 @@ test "handleDotCommand databases - memory database" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".databases", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".databases",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3088,7 +3583,28 @@ test "handleDotCommand dbinfo" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".dbinfo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".dbinfo",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3131,7 +3647,28 @@ test "handleDotCommand dbinfo - memory database" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".dbinfo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".dbinfo",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3167,7 +3704,28 @@ test "handleDotCommand quit" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".quit", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".quit",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.quit, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Bye!") != null);
@@ -3199,7 +3757,28 @@ test "handleDotCommand clear" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".clear", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".clear",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     // Verify ANSI clear screen escape sequence
@@ -3232,7 +3811,28 @@ test "handleDotCommand unknown" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".foobar",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Unknown command") != null);
@@ -3264,7 +3864,28 @@ test "handleDotCommand mode set" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    _ = handleDotCommand(allocator, &db, path, ".mode csv", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".mode csv",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(OutputMode.csv, mode);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "csv") != null);
@@ -3296,7 +3917,28 @@ test "handleDotCommand mode show" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    _ = handleDotCommand(allocator, &db, path, ".mode", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".mode",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "json") != null);
 }
@@ -3327,7 +3969,28 @@ test "handleDotCommand mode invalid" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    _ = handleDotCommand(allocator, &db, path, ".mode foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".mode foobar",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(OutputMode.table, mode); // unchanged
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Invalid mode") != null);
@@ -3363,7 +4026,28 @@ test "handleDotCommand tables" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".tables", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".tables",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "users") != null);
@@ -3376,8 +4060,12 @@ test "handleDotCommand schema - all tables" {
     defer db.close();
 
     // Create test tables
-    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);") catch return error.SkipZigTest;
-    _ = db.exec("CREATE TABLE posts (id INTEGER, title TEXT, UNIQUE(title));") catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+    ) catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE posts (id INTEGER, title TEXT, UNIQUE(title));",
+    ) catch return error.SkipZigTest;
 
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -3400,7 +4088,28 @@ test "handleDotCommand schema - all tables" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".schema",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3421,7 +4130,9 @@ test "handleDotCommand schema - specific table" {
     defer db.close();
 
     // Create test tables
-    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE);") catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE);",
+    ) catch return error.SkipZigTest;
     _ = db.exec("CREATE TABLE posts (id INTEGER, content TEXT);") catch return error.SkipZigTest;
 
     var buf: [2048]u8 = undefined;
@@ -3445,7 +4156,28 @@ test "handleDotCommand schema - specific table" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".schema users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".schema users",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3466,7 +4198,10 @@ test "handleDotCommand schema - with composite primary key" {
     defer db.close();
 
     // Create table with composite primary key
-    _ = db.exec("CREATE TABLE user_roles (user_id INTEGER, role_id INTEGER, PRIMARY KEY (user_id, role_id));") catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE user_roles (user_id INTEGER, role_id INTEGER, " ++
+            "PRIMARY KEY (user_id, role_id));",
+    ) catch return error.SkipZigTest;
 
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -3489,7 +4224,28 @@ test "handleDotCommand schema - with composite primary key" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".schema user_roles", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".schema user_roles",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3524,7 +4280,28 @@ test "handleDotCommand schema - table not found" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".schema nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".schema nonexistent",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -3564,7 +4341,28 @@ test "handleDotCommand schema - no tables" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".schema", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".schema",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -3608,7 +4406,28 @@ test "handleDotCommand indexes - named index" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".indexes users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".indexes users",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "idx_email") != null);
@@ -3629,7 +4448,9 @@ test "handleDotCommand indexes - all tables" {
     defer db.close();
 
     // Create tables with indexes
-    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
+    ) catch return error.SkipZigTest;
     _ = db.exec("CREATE INDEX idx_name ON users(name);") catch return error.SkipZigTest;
     _ = db.exec("CREATE TABLE posts (id INTEGER, title TEXT);") catch return error.SkipZigTest;
     _ = db.exec("CREATE UNIQUE INDEX idx_title ON posts(title);") catch return error.SkipZigTest;
@@ -3655,7 +4476,28 @@ test "handleDotCommand indexes - all tables" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".indexes",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     // Verify both indexes appear
@@ -3701,7 +4543,28 @@ test "handleDotCommand indexes - no indexes" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".indexes plain", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".indexes plain",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No indexes found") != null);
@@ -3741,7 +4604,28 @@ test "handleDotCommand indexes - table not found" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".indexes nonexistent", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".indexes nonexistent",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const eoutput = efbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, eoutput, "Table not found") != null);
@@ -3781,7 +4665,28 @@ test "handleDotCommand indexes - no tables" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".indexes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".indexes",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -3801,9 +4706,13 @@ test "handleDotCommand dump - basic table" {
     defer db.close();
 
     // Create table and insert data
-    var result1 = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);") catch return error.SkipZigTest;
+    var result1 = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+    ) catch return error.SkipZigTest;
     defer result1.close(allocator);
-    var result2 = db.exec("INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
+    var result2 = db.exec(
+        "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');",
+    ) catch return error.SkipZigTest;
     defer result2.close(allocator);
 
     // Run .dump
@@ -3828,7 +4737,28 @@ test "handleDotCommand dump - basic table" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".dump",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
@@ -3837,8 +4767,16 @@ test "handleDotCommand dump - basic table" {
     try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE users") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "id INTEGER PRIMARY KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "name TEXT NOT NULL") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO users VALUES (1, 'Alice')") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO users VALUES (2, 'Bob')") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "INSERT INTO users VALUES (1, 'Alice')",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "INSERT INTO users VALUES (2, 'Bob')",
+    ) != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "COMMIT") != null);
 }
 
@@ -3876,7 +4814,28 @@ test "handleDotCommand dump - empty database" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".dump",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "No tables found") != null);
@@ -3896,11 +4855,15 @@ test "handleDotCommand dump - with indexes" {
     defer db.close();
 
     // Create table with index
-    var result1 = db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT UNIQUE);") catch return error.SkipZigTest;
+    var result1 = db.exec(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT UNIQUE);",
+    ) catch return error.SkipZigTest;
     defer result1.close(allocator);
     var result2 = db.exec("CREATE INDEX idx_sku ON products (sku);") catch return error.SkipZigTest;
     defer result2.close(allocator);
-    var result3 = db.exec("INSERT INTO products (id, sku) VALUES (1, 'ABC123');") catch return error.SkipZigTest;
+    var result3 = db.exec(
+        "INSERT INTO products (id, sku) VALUES (1, 'ABC123');",
+    ) catch return error.SkipZigTest;
     defer result3.close(allocator);
 
     var buf: [2048]u8 = undefined;
@@ -3924,14 +4887,39 @@ test "handleDotCommand dump - with indexes" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".dump", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".dump",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
 
     // Verify CREATE TABLE and CREATE INDEX statements
     try std.testing.expect(std.mem.indexOf(u8, output, "CREATE TABLE products") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "CREATE INDEX idx_sku ON products") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "INSERT INTO products VALUES (1, 'ABC123')") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "INSERT INTO products VALUES (1, 'ABC123')",
+    ) != null);
 }
 
 test "processSQL parses valid SQL" {
@@ -4104,7 +5092,11 @@ test "formatTable renders bordered table" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Alice") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Bob") != null);
     // Should have table borders
-    try std.testing.expect(std.mem.indexOf(u8, output, "│") != null or std.mem.indexOf(u8, output, "|") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "│",
+    ) != null or std.mem.indexOf(u8, output, "|") != null);
 }
 
 test "formatCsv renders CSV output" {
@@ -4270,7 +5262,28 @@ test "handleDotCommand .read executes SQL from file" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".read test_script.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".read test_script.sql",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4329,7 +5342,28 @@ test "handleDotCommand .read handles file not found" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".read nonexistent.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".read nonexistent.sql",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -4386,7 +5420,28 @@ test "handleDotCommand .read skips SQL comments" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".read test_comments.sql", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".read test_comments.sql",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4430,7 +5485,28 @@ test "handleDotCommand .read requires filename" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".read", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".read",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = ebs.getWritten();
@@ -4477,12 +5553,37 @@ test "handleDotCommand .output to file" {
     const output_path = "test_output_results.txt";
     defer std.fs.cwd().deleteFile(output_path) catch {};
 
-    const result = handleDotCommand(allocator, &db, path, ".output test_output_results.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".output test_output_results.txt",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file != null);
 
     const output = fbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Output redirected to: test_output_results.txt") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Output redirected to: test_output_results.txt",
+    ) != null);
 
     // Clean up the file handle
     if (output_file) |f| f.close();
@@ -4529,7 +5630,28 @@ test "handleDotCommand .output reset to stdout" {
     const temp_path = "test_output_temp.txt";
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
-    _ = handleDotCommand(allocator, &db, path, ".output test_output_temp.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".output test_output_temp.txt",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expect(output_file != null);
 
     // Reset fbs for next command
@@ -4537,7 +5659,28 @@ test "handleDotCommand .output reset to stdout" {
     w = fbs.writer();
 
     // Then reset to stdout
-    const result = handleDotCommand(allocator, &db, path, ".output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".output",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null);
 
@@ -4582,7 +5725,28 @@ test "handleDotCommand .output already stdout" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".output",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null);
 
@@ -4628,7 +5792,28 @@ test "handleDotCommand .output file creation error" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Try to open a file in a non-existent directory
-    const result = handleDotCommand(allocator, &db, path, ".output /nonexistent/path/file.txt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".output /nonexistent/path/file.txt",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(output_file == null); // Should remain null on error
 
@@ -4663,7 +5848,28 @@ test "handleDotCommand .output in help text" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".output") != null);
@@ -4706,7 +5912,28 @@ test "handleDotCommand .timer on" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".timer on",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should be enabled now
 
@@ -4751,7 +5978,28 @@ test "handleDotCommand .timer off" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".timer off",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_timer); // Should be disabled now
 
@@ -4796,7 +6044,28 @@ test "handleDotCommand .timer shows current setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".timer",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4840,7 +6109,28 @@ test "handleDotCommand .timer invalid argument" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".timer foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".timer foobar",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_timer); // Should remain unchanged
 
@@ -4884,7 +6174,28 @@ test "handleDotCommand .help includes .timer" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -4928,7 +6239,28 @@ test "handleDotCommand .headers on" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".headers on",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_headers); // Should be enabled now
 
@@ -4973,7 +6305,28 @@ test "handleDotCommand .headers off" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".headers off",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(false, show_headers); // Should be disabled now
 
@@ -5018,7 +6371,28 @@ test "handleDotCommand .headers shows current setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".headers",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5062,7 +6436,28 @@ test "handleDotCommand .headers invalid argument" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".headers foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".headers foobar",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqual(true, show_headers); // Should remain unchanged
 
@@ -5106,7 +6501,28 @@ test "handleDotCommand .help includes .headers" {
     var show_eqp = false;
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5150,7 +6566,28 @@ test "handleDotCommand .separator set custom separator" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".separator |",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqualStrings("|", csv_separator);
 
@@ -5195,7 +6632,28 @@ test "handleDotCommand .separator show current separator" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".separator", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".separator",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5244,12 +6702,48 @@ test "handleDotCommand .separator pipe then query with CSV output" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Set separator to pipe
-    _ = handleDotCommand(allocator, &db, path, ".separator |", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".separator |",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqualStrings("|", csv_separator);
 
     // Execute query with CSV output
     fbs.reset();
-    _ = execAndDisplay(allocator, &db, "SELECT * FROM users;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
+    _ = execAndDisplay(
+        allocator,
+        &db,
+        "SELECT * FROM users;",
+        mode,
+        show_timer,
+        false,
+        show_headers,
+        csv_separator,
+        null_display,
+        &last_rows_affected,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     const output = fbs.getWritten();
     // Verify output uses pipe separator
@@ -5294,7 +6788,28 @@ test "handleDotCommand .help includes .separator" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5338,7 +6853,28 @@ test "handleDotCommand .nullvalue set custom string" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".nullvalue <empty>", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".nullvalue <empty>",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqualStrings("<empty>", null_display);
 
@@ -5384,7 +6920,28 @@ test "handleDotCommand .nullvalue show current string" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".nullvalue", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".nullvalue",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5434,12 +6991,48 @@ test "handleDotCommand .nullvalue with NULL values in query" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Set custom null display
-    _ = handleDotCommand(allocator, &db, path, ".nullvalue <empty>", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".nullvalue <empty>",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqualStrings("<empty>", null_display);
 
     // Execute query with NULL values
     fbs.reset();
-    _ = execAndDisplay(allocator, &db, "SELECT * FROM test;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
+    _ = execAndDisplay(
+        allocator,
+        &db,
+        "SELECT * FROM test;",
+        mode,
+        show_timer,
+        false,
+        show_headers,
+        csv_separator,
+        null_display,
+        &last_rows_affected,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     const output = fbs.getWritten();
     // Verify that NULL is displayed as "<empty>"
@@ -5483,7 +7076,28 @@ test "handleDotCommand .help includes .nullvalue" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5527,7 +7141,28 @@ test "handleDotCommand .echo prints literal text" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".echo Hello, World!", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".echo Hello, World!",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5571,7 +7206,28 @@ test "handleDotCommand .echo with no text" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".echo", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".echo",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5616,7 +7272,28 @@ test "handleDotCommand .help includes .echo" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5660,7 +7337,28 @@ test "handleDotCommand .help includes .clear" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5704,7 +7402,28 @@ test "handleDotCommand .print prints literal text" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".print SQLite-style output", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".print SQLite-style output",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5748,7 +7467,28 @@ test "handleDotCommand .print with no text" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".print", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".print",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5793,7 +7533,28 @@ test "handleDotCommand .help includes .print" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5837,7 +7598,28 @@ test "handleDotCommand .show displays all settings" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5888,7 +7670,28 @@ test "handleDotCommand .show with defaults" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5938,7 +7741,28 @@ test "handleDotCommand .help includes .show" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -5958,14 +7782,22 @@ test "handleDotCommand .backup creates backup file" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_backup_source.db", .{dir_path});
 
     var backup_path_buf: [512]u8 = undefined;
-    const backup_path = try std.fmt.bufPrint(&backup_path_buf, "{s}/test_backup_dest.db", .{dir_path});
+    const backup_path = try std.fmt.bufPrint(
+        &backup_path_buf,
+        "{s}/test_backup_dest.db",
+        .{dir_path},
+    );
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
     // Create a table with data to verify backup integrity
-    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch return error.SkipZigTest;
-    _ = db.exec("INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
+    ) catch return error.SkipZigTest;
+    _ = db.exec(
+        "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');",
+    ) catch return error.SkipZigTest;
 
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -5990,12 +7822,37 @@ test "handleDotCommand .backup creates backup file" {
 
     var cmd_buf: [600]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, ".backup {s}", .{backup_path});
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     var expect_buf: [600]u8 = undefined;
-    const expect_msg = try std.fmt.bufPrint(&expect_buf, "Database backed up to: {s}", .{backup_path});
+    const expect_msg = try std.fmt.bufPrint(
+        &expect_buf,
+        "Database backed up to: {s}",
+        .{backup_path},
+    );
     try std.testing.expect(std.mem.indexOf(u8, output, expect_msg) != null);
 
     // Verify backup file exists
@@ -6050,7 +7907,28 @@ test "handleDotCommand .backup requires filename" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".backup", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".backup",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -6095,11 +7973,36 @@ test "handleDotCommand .backup prevents same file backup" {
 
     var cmd_buf: [600]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, ".backup {s}", .{path});
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, err_output, "Cannot backup to the same file") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        err_output,
+        "Cannot backup to the same file",
+    ) != null);
 }
 
 test "handleDotCommand .backup handles existing file error" {
@@ -6115,7 +8018,11 @@ test "handleDotCommand .backup handles existing file error" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_backup_exists_src.db", .{dir_path});
 
     var backup_path_buf: [512]u8 = undefined;
-    const backup_path = try std.fmt.bufPrint(&backup_path_buf, "{s}/test_backup_exists_dest.db", .{dir_path});
+    const backup_path = try std.fmt.bufPrint(
+        &backup_path_buf,
+        "{s}/test_backup_exists_dest.db",
+        .{dir_path},
+    );
 
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
@@ -6147,7 +8054,28 @@ test "handleDotCommand .backup handles existing file error" {
 
     var cmd_buf: [600]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, ".backup {s}", .{backup_path});
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -6182,12 +8110,37 @@ test "handleDotCommand .help includes .backup" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".backup") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Create a backup copy of the database file") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Create a backup copy of the database file",
+    ) != null);
 }
 
 test "handleDotCommand .save creates file from :memory: database" {
@@ -6197,9 +8150,13 @@ test "handleDotCommand .save creates file from :memory: database" {
     defer db.close();
 
     // Create table and insert data
-    var result1 = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch return error.SkipZigTest;
+    var result1 = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
+    ) catch return error.SkipZigTest;
     defer result1.close(allocator);
-    var result2 = db.exec("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
+    var result2 = db.exec(
+        "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');",
+    ) catch return error.SkipZigTest;
     defer result2.close(allocator);
 
     var tmp = std.testing.tmpDir(.{});
@@ -6233,9 +8190,34 @@ test "handleDotCommand .save creates file from :memory: database" {
     var continue_prompt: []const u8 = "   ...> ";
 
     var cmd_buf: [600]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
+    const cmd = std.fmt.bufPrint(
+        &cmd_buf,
+        ".save {s}",
+        .{save_path},
+    ) catch return error.SkipZigTest;
 
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6284,7 +8266,28 @@ test "handleDotCommand .save requires filename" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".save", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".save",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -6306,7 +8309,10 @@ test "handleDotCommand .save prevents overwriting existing file" {
     var save_path_buf: [512]u8 = undefined;
     const save_path = try std.fmt.bufPrint(&save_path_buf, "{s}/test_save_exists.db", .{dir_path});
     // Create a dummy file
-    std.fs.cwd().writeFile(.{ .sub_path = save_path, .data = "dummy" }) catch return error.SkipZigTest;
+    std.fs.cwd().writeFile(.{
+        .sub_path = save_path,
+        .data = "dummy",
+    }) catch return error.SkipZigTest;
 
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -6330,9 +8336,34 @@ test "handleDotCommand .save prevents overwriting existing file" {
     var continue_prompt: []const u8 = "   ...> ";
 
     var cmd_buf: [600]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
+    const cmd = std.fmt.bufPrint(
+        &cmd_buf,
+        ".save {s}",
+        .{save_path},
+    ) catch return error.SkipZigTest;
 
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -6349,14 +8380,22 @@ test "handleDotCommand .save works with file-based databases (uses backup)" {
     defer allocator.free(dir_path);
 
     var source_path_buf: [512]u8 = undefined;
-    const source_path = try std.fmt.bufPrint(&source_path_buf, "{s}/test_save_source.db", .{dir_path});
+    const source_path = try std.fmt.bufPrint(
+        &source_path_buf,
+        "{s}/test_save_source.db",
+        .{dir_path},
+    );
     var db = Database.open(allocator, source_path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
     // Create table and insert data
-    var result1 = db.exec("CREATE TABLE products (id INTEGER, name TEXT);") catch return error.SkipZigTest;
+    var result1 = db.exec(
+        "CREATE TABLE products (id INTEGER, name TEXT);",
+    ) catch return error.SkipZigTest;
     defer result1.close(allocator);
-    var result2 = db.exec("INSERT INTO products VALUES (1, 'Widget');") catch return error.SkipZigTest;
+    var result2 = db.exec(
+        "INSERT INTO products VALUES (1, 'Widget');",
+    ) catch return error.SkipZigTest;
     defer result2.close(allocator);
 
     var save_path_buf: [512]u8 = undefined;
@@ -6384,14 +8423,43 @@ test "handleDotCommand .save works with file-based databases (uses backup)" {
     var continue_prompt: []const u8 = "   ...> ";
 
     var cmd_buf: [600]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, ".save {s}", .{save_path}) catch return error.SkipZigTest;
+    const cmd = std.fmt.bufPrint(
+        &cmd_buf,
+        ".save {s}",
+        .{save_path},
+    ) catch return error.SkipZigTest;
 
-    const result = handleDotCommand(allocator, &db, source_path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        source_path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     // Verify file was saved (should use backup mechanism)
     const output = fbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "backed up to") != null or std.mem.indexOf(u8, output, "saved to") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "backed up to",
+    ) != null or std.mem.indexOf(u8, output, "saved to") != null);
 }
 
 test "handleDotCommand .help includes .save" {
@@ -6421,7 +8489,28 @@ test "handleDotCommand .help includes .save" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6443,13 +8532,19 @@ test "handleDotCommand .import imports CSV data" {
     defer db.close();
 
     // Create table
-    var result1 = db.exec("CREATE TABLE users (id INTEGER, name TEXT, email TEXT);") catch return error.SkipZigTest;
+    var result1 = db.exec(
+        "CREATE TABLE users (id INTEGER, name TEXT, email TEXT);",
+    ) catch return error.SkipZigTest;
     defer result1.close(allocator);
 
     // Create CSV file
     const csv_path = "test_import.csv";
-    const csv_content = "1,Alice,alice@example.com\n2,Bob,bob@example.com\n3,Charlie,charlie@example.com\n";
-    std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content }) catch return error.SkipZigTest;
+    const csv_content = "1,Alice,alice@example.com\n2,Bob,bob@example.com\n" ++
+        "3,Charlie,charlie@example.com\n";
+    std.fs.cwd().writeFile(.{
+        .sub_path = csv_path,
+        .data = csv_content,
+    }) catch return error.SkipZigTest;
     defer std.fs.cwd().deleteFile(csv_path) catch {};
 
     var buf: [512]u8 = undefined;
@@ -6473,7 +8568,28 @@ test "handleDotCommand .import imports CSV data" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import test_import.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".import test_import.csv users",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6506,13 +8622,18 @@ test "handleDotCommand .import with custom separator" {
     defer db.close();
 
     // Create table
-    var result1 = db.exec("CREATE TABLE products (id INTEGER, name TEXT, price TEXT);") catch return error.SkipZigTest;
+    var result1 = db.exec(
+        "CREATE TABLE products (id INTEGER, name TEXT, price TEXT);",
+    ) catch return error.SkipZigTest;
     defer result1.close(allocator);
 
     // Create pipe-separated CSV file
     const csv_path = "test_import_pipe.csv";
     const csv_content = "1|Apple|1.99\n2|Banana|0.99\n";
-    std.fs.cwd().writeFile(.{ .sub_path = csv_path, .data = csv_content }) catch return error.SkipZigTest;
+    std.fs.cwd().writeFile(.{
+        .sub_path = csv_path,
+        .data = csv_content,
+    }) catch return error.SkipZigTest;
     defer std.fs.cwd().deleteFile(csv_path) catch {};
 
     var buf: [512]u8 = undefined;
@@ -6536,7 +8657,28 @@ test "handleDotCommand .import with custom separator" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import test_import_pipe.csv products", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".import test_import_pipe.csv products",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6570,7 +8712,28 @@ test "handleDotCommand .import missing arguments" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".import",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const eoutput = efbs.getWritten();
@@ -6604,7 +8767,28 @@ test "handleDotCommand .import file not found" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".import nonexistent.csv users", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".import nonexistent.csv users",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const eoutput = efbs.getWritten();
@@ -6638,12 +8822,37 @@ test "handleDotCommand .help includes .import" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".import") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Import CSV data from file into table") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Import CSV data from file into table",
+    ) != null);
 }
 
 test "handleDotCommand .changes shows rows affected by INSERT" {
@@ -6686,11 +8895,47 @@ test "handleDotCommand .changes shows rows affected by INSERT" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Execute INSERT and track rows_affected
-    _ = execAndDisplay(allocator, &db, "INSERT INTO test (id) VALUES (1), (2), (3);", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
+    _ = execAndDisplay(
+        allocator,
+        &db,
+        "INSERT INTO test (id) VALUES (1), (2), (3);",
+        mode,
+        show_timer,
+        false,
+        show_headers,
+        csv_separator,
+        null_display,
+        &last_rows_affected,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".changes",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6738,11 +8983,47 @@ test "handleDotCommand .changes shows rows affected by UPDATE" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Execute UPDATE and track rows_affected
-    _ = execAndDisplay(allocator, &db, "UPDATE test SET value = 99 WHERE id <= 2;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
+    _ = execAndDisplay(
+        allocator,
+        &db,
+        "UPDATE test SET value = 99 WHERE id <= 2;",
+        mode,
+        show_timer,
+        false,
+        show_headers,
+        csv_separator,
+        null_display,
+        &last_rows_affected,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".changes",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6790,11 +9071,47 @@ test "handleDotCommand .changes shows rows affected by DELETE" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Execute DELETE and track rows_affected
-    _ = execAndDisplay(allocator, &db, "DELETE FROM test WHERE id > 1;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
+    _ = execAndDisplay(
+        allocator,
+        &db,
+        "DELETE FROM test WHERE id > 1;",
+        mode,
+        show_timer,
+        false,
+        show_headers,
+        csv_separator,
+        null_display,
+        &last_rows_affected,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".changes",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6842,11 +9159,47 @@ test "handleDotCommand .changes shows 0 for SELECT" {
     var continue_prompt: []const u8 = "   ...> ";
 
     // Execute SELECT (doesn't affect rows)
-    _ = execAndDisplay(allocator, &db, "SELECT * FROM test;", mode, show_timer, false, show_headers, csv_separator, null_display, &last_rows_affected, null, false, &w, &ew);
+    _ = execAndDisplay(
+        allocator,
+        &db,
+        "SELECT * FROM test;",
+        mode,
+        show_timer,
+        false,
+        show_headers,
+        csv_separator,
+        null_display,
+        &last_rows_affected,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     // Now check .changes
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".changes", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".changes",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -6880,12 +9233,37 @@ test "handleDotCommand .help includes .changes" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".changes") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Show number of rows changed by last DML statement") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Show number of rows changed by last DML statement",
+    ) != null);
 }
 
 test "handleDotCommand .bail on" {
@@ -6915,7 +9293,28 @@ test "handleDotCommand .bail on" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".bail on",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(bail_on_error == true);
 
@@ -6950,7 +9349,28 @@ test "handleDotCommand .bail off" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".bail off",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(bail_on_error == false);
 
@@ -6985,7 +9405,28 @@ test "handleDotCommand .bail - show setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".bail",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7019,7 +9460,28 @@ test "handleDotCommand .bail invalid argument" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".bail foobar", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".bail foobar",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -7053,7 +9515,28 @@ test "handleDotCommand .show includes bail" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7087,12 +9570,37 @@ test "handleDotCommand .help includes .bail" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".bail") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Stop script execution on first error") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Stop script execution on first error",
+    ) != null);
 }
 
 test "readAndExecuteFile with bail_on_error off - continues on error" {
@@ -7113,7 +9621,8 @@ test "readAndExecuteFile with bail_on_error off - continues on error" {
     const file = std.fs.cwd().createFile(filename, .{}) catch return error.SkipZigTest;
     defer std.fs.cwd().deleteFile(filename) catch {};
     file.writeAll("CREATE TABLE test (id INTEGER PRIMARY KEY);\n") catch return error.SkipZigTest;
-    file.writeAll("INSERT INTO nonexistent VALUES (1);\n") catch return error.SkipZigTest; // This will fail
+    // This will fail
+    file.writeAll("INSERT INTO nonexistent VALUES (1);\n") catch return error.SkipZigTest;
     file.writeAll("INSERT INTO test VALUES (1);\n") catch return error.SkipZigTest;
     file.close();
 
@@ -7125,7 +9634,23 @@ test "readAndExecuteFile with bail_on_error off - continues on error" {
     var ew = efbs.writer();
     var last_rows_affected: u64 = 0;
 
-    readAndExecuteFile(allocator, &db, filename, .table, true, false, true, ",", "NULL", &last_rows_affected, false, null, false, &w, &ew);
+    readAndExecuteFile(
+        allocator,
+        &db,
+        filename,
+        .table,
+        true,
+        false,
+        true,
+        ",",
+        "NULL",
+        &last_rows_affected,
+        false,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     // With bail_on_error=false, all 3 statements should execute (one fails, two succeed)
     const output = fbs.getWritten();
@@ -7158,7 +9683,8 @@ test "readAndExecuteFile with bail_on_error on - stops on error" {
     const file = std.fs.cwd().createFile(filename, .{}) catch return error.SkipZigTest;
     defer std.fs.cwd().deleteFile(filename) catch {};
     file.writeAll("CREATE TABLE test (id INTEGER PRIMARY KEY);\n") catch return error.SkipZigTest;
-    file.writeAll("INSERT INTO nonexistent VALUES (1);\n") catch return error.SkipZigTest; // This will fail
+    // This will fail
+    file.writeAll("INSERT INTO nonexistent VALUES (1);\n") catch return error.SkipZigTest;
     file.writeAll("INSERT INTO test VALUES (1);\n") catch return error.SkipZigTest;
     file.close();
 
@@ -7170,11 +9696,31 @@ test "readAndExecuteFile with bail_on_error on - stops on error" {
     var ew = efbs.writer();
     var last_rows_affected: u64 = 0;
 
-    readAndExecuteFile(allocator, &db, filename, .table, true, false, true, ",", "NULL", &last_rows_affected, true, null, false, &w, &ew);
+    readAndExecuteFile(
+        allocator,
+        &db,
+        filename,
+        .table,
+        true,
+        false,
+        true,
+        ",",
+        "NULL",
+        &last_rows_affected,
+        true,
+        null,
+        false,
+        &w,
+        &ew,
+    );
 
     // With bail_on_error=true, execution should stop after the error
     const err_output = efbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, err_output, "Script execution stopped due to bail on error setting") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        err_output,
+        "Script execution stopped due to bail on error setting",
+    ) != null);
 
     // Verify that the third statement did NOT execute
     var result = db.exec("SELECT COUNT(*) FROM test;") catch return error.SkipZigTest;
@@ -7182,7 +9728,8 @@ test "readAndExecuteFile with bail_on_error on - stops on error" {
     var row = (result.rows.?.next() catch return error.SkipZigTest).?;
     defer row.deinit();
     const count_val = row.values[0];
-    try std.testing.expectEqual(@as(i64, 0), count_val.integer); // Table is empty (third INSERT didn't run)
+    // Table is empty (third INSERT didn't run)
+    try std.testing.expectEqual(@as(i64, 0), count_val.integer);
 }
 
 test "handleDotCommand .log FILENAME - enable logging" {
@@ -7224,7 +9771,28 @@ test "handleDotCommand .log FILENAME - enable logging" {
     defer if (log_file) |f| f.close();
 
     const cmd = ".log test_query.log";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(log_file != null);
 
@@ -7266,7 +9834,28 @@ test "handleDotCommand .log off - disable logging" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".log off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".log off",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(log_file == null);
 
@@ -7308,7 +9897,28 @@ test "handleDotCommand .log - show current status (off)" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".log",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7354,12 +9964,54 @@ test "handleDotCommand .log - show current status (on)" {
     defer if (log_file) |f| f.close();
 
     // Enable logging first
-    _ = handleDotCommand(allocator, &db, path, ".log test_status_on.log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    _ = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".log test_status_on.log",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expect(log_file != null);
 
     // Check status
     fbs.reset();
-    const result = handleDotCommand(allocator, &db, path, ".log", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".log",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7400,7 +10052,28 @@ test "handleDotCommand .show - includes log setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7442,7 +10115,28 @@ test "handleDotCommand .help - includes .log" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7483,7 +10177,28 @@ test "handleDotCommand .cd - show current directory" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".cd", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".cd",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7536,7 +10251,28 @@ test "handleDotCommand .cd DIRECTORY - change directory" {
     var continue_prompt: []const u8 = "   ...> ";
 
     const cmd = ".cd " ++ temp_dir;
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7582,7 +10318,28 @@ test "handleDotCommand .open - show current database" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".open", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".open",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7630,7 +10387,28 @@ test "handleDotCommand .open FILENAME - return reopen result" {
 
     var cmd_buf: [600]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, ".open {s}", .{new_db_path});
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
 
     // Verify we got a reopen result
     try std.testing.expect(result == .reopen);
@@ -7679,7 +10457,28 @@ test "handleDotCommand .help includes .open" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7720,7 +10519,28 @@ test "handleDotCommand .help includes .cd" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7761,7 +10581,28 @@ test "handleDotCommand .version shows version info" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".version", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".version",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7806,7 +10647,28 @@ test "handleDotCommand .help includes .version" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7847,7 +10709,28 @@ test "handleDotCommand .stats on - enable stats" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".stats on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".stats on",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_stats == true);
 
@@ -7889,7 +10772,28 @@ test "handleDotCommand .stats off - disable stats" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".stats off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".stats off",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_stats == false);
 
@@ -7931,7 +10835,28 @@ test "handleDotCommand .stats - show current stats setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".stats", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".stats",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -7972,7 +10897,28 @@ test "handleDotCommand .show - includes stats setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8013,7 +10959,28 @@ test "handleDotCommand .help - includes .stats command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8055,7 +11022,28 @@ test "handleDotCommand .eqp on - enable automatic explain" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".eqp on", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".eqp on",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_eqp == true);
 
@@ -8097,7 +11085,28 @@ test "handleDotCommand .eqp off - disable automatic explain" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".eqp off", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".eqp off",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expect(show_eqp == false);
 
@@ -8139,7 +11148,28 @@ test "handleDotCommand .eqp - show current eqp setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".eqp", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".eqp",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8180,7 +11210,28 @@ test "handleDotCommand .show - includes eqp setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8221,7 +11272,28 @@ test "handleDotCommand .prompt MAIN CONTINUE - set custom prompts" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".prompt db> ...", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".prompt db> ...",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
     try std.testing.expectEqualStrings("db>", main_prompt);
     try std.testing.expectEqualStrings("...", continue_prompt);
@@ -8264,7 +11336,28 @@ test "handleDotCommand .prompt - show current prompts" {
     var main_prompt: []const u8 = "custom> ";
     var continue_prompt: []const u8 = ">>>";
 
-    const result = handleDotCommand(allocator, &db, path, ".prompt", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".prompt",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8306,11 +11399,36 @@ test "handleDotCommand .prompt - error on missing argument" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".prompt only_one", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".prompt only_one",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = efbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, error_output, "Usage: .prompt MAIN CONTINUE") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        error_output,
+        "Usage: .prompt MAIN CONTINUE",
+    ) != null);
 }
 
 test "handleDotCommand .show - includes prompt setting" {
@@ -8347,7 +11465,28 @@ test "handleDotCommand .show - includes prompt setting" {
     var main_prompt: []const u8 = "my_db> ";
     var continue_prompt: []const u8 = "...";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8388,7 +11527,28 @@ test "handleDotCommand .help - includes .prompt command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8429,12 +11589,37 @@ test "handleDotCommand .help - includes .eqp command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".eqp") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Automatically EXPLAIN query plans") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Automatically EXPLAIN query plans",
+    ) != null);
 }
 
 test "handleDotCommand .once - write next query to file" {
@@ -8457,8 +11642,12 @@ test "handleDotCommand .once - write next query to file" {
     var db = Database.open(allocator, path, .{}) catch return error.SkipZigTest;
     defer db.close();
 
-    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);") catch return error.SkipZigTest;
-    _ = db.exec("INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');") catch return error.SkipZigTest;
+    _ = db.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
+    ) catch return error.SkipZigTest;
+    _ = db.exec(
+        "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');",
+    ) catch return error.SkipZigTest;
 
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -8483,11 +11672,36 @@ test "handleDotCommand .once - write next query to file" {
 
     // Set .once to redirect next query
     const cmd = ".once test_once_output.txt";
-    const result = handleDotCommand(allocator, &db, path, cmd, &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        cmd,
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Next output will be written to: test_once_output.txt") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "Next output will be written to: test_once_output.txt",
+    ) != null);
 
     // Verify once_file is now set
     try std.testing.expect(once_file != null);
@@ -8518,7 +11732,11 @@ test "handleDotCommand .once - write next query to file" {
     once_file = null;
 
     // Verify file was created and contains expected content
-    const file_content = std.fs.cwd().readFileAlloc(allocator, once_path, 1024) catch return error.SkipZigTest;
+    const file_content = std.fs.cwd().readFileAlloc(
+        allocator,
+        once_path,
+        1024,
+    ) catch return error.SkipZigTest;
     defer allocator.free(file_content);
 
     try std.testing.expect(std.mem.indexOf(u8, file_content, "id,name") != null);
@@ -8561,7 +11779,28 @@ test "handleDotCommand .once - requires filename" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".once", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".once",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const err_output = efbs.getWritten();
@@ -8603,7 +11842,28 @@ test "handleDotCommand .show - includes once setting" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".show", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".show",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8645,7 +11905,28 @@ test "handleDotCommand .help - includes .once command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8687,7 +11968,28 @@ test "handleDotCommand .system - executes shell command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".system echo Hello", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".system echo Hello",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8728,7 +12030,28 @@ test "handleDotCommand .system - missing command shows error" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".system", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".system",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = efbs.getWritten();
@@ -8769,7 +12092,28 @@ test "handleDotCommand .help - includes .system command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8810,7 +12154,28 @@ test "handleDotCommand .shell - executes shell command (SQLite alias)" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".shell echo World", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".shell echo World",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
@@ -8851,7 +12216,28 @@ test "handleDotCommand .shell - missing command shows error" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".shell", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".shell",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const error_output = efbs.getWritten();
@@ -8892,7 +12278,28 @@ test "handleDotCommand .help - includes .shell command" {
     var main_prompt: []const u8 = "silica> ";
     var continue_prompt: []const u8 = "   ...> ";
 
-    const result = handleDotCommand(allocator, &db, path, ".help", &mode, &show_timer, &show_headers, &csv_separator, &null_display, &output_file, &once_file, &last_rows_affected, &bail_on_error, &log_file, &show_stats, &show_eqp, &main_prompt, &continue_prompt, &w, &ew);
+    const result = handleDotCommand(
+        allocator,
+        &db,
+        path,
+        ".help",
+        &mode,
+        &show_timer,
+        &show_headers,
+        &csv_separator,
+        &null_display,
+        &output_file,
+        &once_file,
+        &last_rows_affected,
+        &bail_on_error,
+        &log_file,
+        &show_stats,
+        &show_eqp,
+        &main_prompt,
+        &continue_prompt,
+        &w,
+        &ew,
+    );
     try std.testing.expectEqual(DotCommandResult.ok, result);
 
     const output = fbs.getWritten();
